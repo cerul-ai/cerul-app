@@ -1,0 +1,109 @@
+{
+  "name": "@cerul/electron-shell",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "Cerul desktop shell",
+  "author": "Cerul",
+  "type": "commonjs",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "pnpm --filter @cerul/desktop build && pnpm build && electron dist/main.js",
+    "start": "electron dist/main.js",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && node scripts/build.mjs --check",
+    "stage:cerul-api": "node scripts/stage-cerul-api.mjs",
+    "package": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api --release && pnpm stage:cerul-api && pnpm build && electron-builder --publish never --dir",
+    "package:dist": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api --release && pnpm stage:cerul-api && pnpm build && electron-builder --publish never"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "electron": "^39.8.1",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.8.3"
+  },
+  "build": {
+    "appId": "ai.cerul.desktop",
+    "productName": "Cerul",
+    "icon": "../desktop/public/brand/app-store-icon-1024.png",
+    "directories": {
+      "output": "../../target/electron"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "Cerul Links",
+        "schemes": [
+          "cerul",
+          "cerul-app"
+        ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin"
+      },
+      {
+        "from": "../desktop/dist",
+        "to": "desktop-dist"
+      },
+      {
+        "from": "../../third-party",
+        "to": "third-party"
+      },
+      {
+        "from": "../../mlx-sidecar",
+        "to": "mlx-sidecar"
+      }
+    ],
+    "mac": {
+      "icon": "../desktop/public/brand/cerul.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "minimumSystemVersion": "10.15",
+      "category": "public.app-category.productivity"
+    },
+    "dmg": {
+      "background": "../desktop/public/brand/dmg/dmg-background.png",
+      "iconSize": 120,
+      "window": {
+        "width": 660,
+        "height": 400
+      },
+      "contents": [
+        {
+          "x": 173,
+          "y": 235,
+          "type": "file"
+        },
+        {
+          "x": 487,
+          "y": 235,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "icon": "../desktop/public/brand/cerul.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "installerSidebar": "../desktop/public/brand/nsis/installerSidebar.bmp",
+      "installerHeader": "../desktop/public/brand/nsis/installerHeader.bmp"
+    },
+    "linux": {
+      "icon": "../desktop/public/brand/icon-linux",
+      "target": "AppImage",
+      "category": "Utility"
+    }
+  }
+}

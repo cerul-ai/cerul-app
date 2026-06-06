@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Cerul app icon (dark)">
+  <defs>
+    <linearGradient id="gra" x1="0" y1="0" x2="0.42" y2="1">
+      <stop offset="0" stop-color="#3a3f49"></stop><stop offset="1" stop-color="#15171c"></stop>
+    </linearGradient>
+    <radialGradient id="hi" cx="0.3" cy="0.12" r="0.9">
+      <stop offset="0" stop-color="#9fb0c4" stop-opacity="0.22"></stop><stop offset="0.5" stop-color="#9fb0c4" stop-opacity="0"></stop>
+    </radialGradient>
+    <clipPath id="sq2"><rect width="1024" height="1024" rx="229"></rect></clipPath>
+  </defs>
+  <g clip-path="url(#sq2)">
+    <rect width="1024" height="1024" fill="url(#gra)"></rect>
+    <rect width="1024" height="1024" fill="url(#hi)"></rect>
+    <g transform="translate(226 226) scale(1.126)" fill="#eef0f4">
+      <rect width="211" height="508" rx="22"></rect><rect x="297" y="91" width="211" height="112" rx="22"></rect><rect x="297" y="301" width="211" height="207" rx="22"></rect>
+    </g>
+    <rect x="0.75" y="0.75" width="1022.5" height="1022.5" rx="228" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="1.5"></rect>
+  </g>
+</svg>

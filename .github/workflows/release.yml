@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      live_youtube_smoke:
+        description: "Run bounded live YouTube five-video index/search smoke on Linux"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  installers:
+    name: Build installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: cerul-macos
+            deps: brew install protobuf ffmpeg cmake
+          - os: ubuntu-22.04
+            artifact: cerul-linux
+            deps: |
+              sudo apt-get update
+              sudo apt-get install -y \
+                build-essential \
+                cmake \
+                curl \
+                dbus-x11 \
+                ffmpeg \
+                libayatana-appindicator3-dev \
+                librsvg2-dev \
+                libssl-dev \
+                patchelf \
+                protobuf-compiler \
+                ripgrep \
+                wget \
+                xauth \
+                xvfb
+              sudo apt-get install -y libwebkit2gtk-4.1-dev || sudo apt-get install -y libwebkit2gtk-4.0-dev
+          - os: windows-latest
+            artifact: cerul-windows
+            deps: choco install ffmpeg protoc cmake -y
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build dependencies
+        shell: bash
+        run: ${{ matrix.deps }}
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build installers
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
+        run: scripts/build-installers.sh
+      - name: Smoke release artifacts
+        shell: bash
+        run: scripts/smoke-release-artifacts.sh
+      - name: Smoke release footprint
+        shell: bash
+        run: scripts/smoke-release-footprint.sh
+      - name: Smoke live YouTube source
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.live_youtube_smoke == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: scripts/smoke-youtube-source.sh --live --fetch-first --index-first --index-count 5 --max 5 --clip-duration-sec 12
+      - name: Smoke installed macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: scripts/smoke-installed-app.sh
+      - name: Smoke daemon autostart macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: scripts/smoke-daemon-autostart-macos.sh
+      - name: Smoke daemon autostart Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: scripts/smoke-daemon-autostart-linux.sh
+      - name: Smoke installed Linux runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: scripts/smoke-installed-runtime-linux.sh
+      - name: Smoke daemon autostart Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: scripts/smoke-daemon-autostart-windows.sh
+      - name: Smoke installed Windows runtime
+        if: runner.os == 'Windows'
+        shell: bash
+        run: scripts/smoke-installed-runtime-windows.sh
+      - name: Smoke macOS signing
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
+        run: |
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "Skipping signing smoke; APPLE_SIGNING_IDENTITY is not configured."
+            exit 0
+          fi
+
+          args=()
+          if [ -n "${APPLE_TEAM_ID:-}" ]; then
+            args+=(--expected-team-id "$APPLE_TEAM_ID")
+          fi
+          if [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
+            args+=(--skip-notarization)
+          fi
+
+          scripts/smoke-macos-signing.sh "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/electron/*.dmg
+            target/electron/*.zip
+            target/electron/*.exe
+            target/electron/*.AppImage
+            target/electron/*.deb
+            target/electron/*.rpm
+            target/electron/*.yml
+            target/electron/*.blockmap
+          if-no-files-found: error
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            target/electron/*.dmg
+            target/electron/*.zip
+            target/electron/*.exe
+            target/electron/*.AppImage
+            target/electron/*.deb
+            target/electron/*.rpm
+            target/electron/*.yml
+            target/electron/*.blockmap

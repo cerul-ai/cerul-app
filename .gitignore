@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Node
+node_modules/
+apps/electron-shell/bin/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.parcel-cache/
+.cache/
+*.tsbuildinfo
+
+# Rust
+target/
+apps/desktop/src-tauri/gen/
+
+# Environment
+.env
+.env.*
+!.env.example
+*.local
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Data / generated
+data/
+storage/
+*.db
+*.sqlite
+*.sqlite3
+*.lance/
+indexes/
+media/
+tmp/
+.tmp/
+design/exports/
+.artifacts/
+third-party/*
+!third-party/README.md
+
+# Internal design/spec docs (kept local, not published)
+docs/
+
+# Build artifacts
+*.tar
+*.tar.gz
+*.zst
+*.zip
+.claude/

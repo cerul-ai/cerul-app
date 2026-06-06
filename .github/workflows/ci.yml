@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Build and smoke
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            curl \
+            ffmpeg \
+            libssl-dev \
+            pkg-config \
+            protobuf-compiler \
+            ripgrep
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build desktop renderer
+        run: pnpm --filter @cerul/desktop build
+      - name: Typecheck Electron shell
+        run: pnpm --filter @cerul/electron-shell typecheck
+      - name: Check Rust workspace
+        run: cargo check --workspace -j 1
+      - name: Run lightweight smoke checks
+        shell: bash
+        run: |
+          scripts/smoke-brand-assets-ui.sh
+          scripts/smoke-theme-ui.sh
+          scripts/smoke-hotkey-overlay.sh
+          scripts/smoke-jobs-ui.sh
+          scripts/smoke-library-ui.sh
+          scripts/smoke-release.sh --dry-run --skip-installers

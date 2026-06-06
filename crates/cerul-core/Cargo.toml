@@ -1,0 +1,15 @@
+[package]
+name = "cerul-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cerul-api = { path = "../cerul-api" }
+cerul-embed = { path = "../cerul-embed" }
+cerul-models = { path = "../cerul-models" }
+cerul-pipeline = { path = "../cerul-pipeline" }
+cerul-search = { path = "../cerul-search" }
+cerul-sources = { path = "../cerul-sources" }
+cerul-storage = { path = "../cerul-storage" }

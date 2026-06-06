@@ -1,0 +1,245 @@
+// Onboarding sub-components: hotkey demo + Accessibility callout,
+// folder picker (with the "Scan common locations" CTA added in PR #4
+// A2), and YouTube channel picker with inline validation. Extracted
+// from App.tsx (B13 Phase B).
+
+import {
+  Check,
+  Command,
+  Folder,
+  Loader2,
+  Search,
+  Wrench,
+  X,
+  Youtube,
+} from "lucide-react";
+import { useState } from "react";
+import { uniqueStrings } from "../lib/formatters";
+import { useT } from "../lib/i18n";
+import type { OnboardingYoutubeChannel, ValidationState } from "../lib/types";
+import {
+  uniqueYoutubeChannels,
+  validateHttpUrl,
+  waitForValidationFrame,
+  youtubeChannelFromUrl,
+} from "../lib/validation";
+import { SourcePreview } from "./source-preview";
+import { invokeHostCommand, openDialog } from "../lib/desktopHost";
+
+async function openAccessibilitySettings() {
+  try {
+    await invokeHostCommand("open_accessibility_settings");
+  } catch (error) {
+    console.warn("failed to open Accessibility settings", error);
+  }
+}
+
+export function AccessibilityPermissionCallout() {
+  const t = useT();
+  return (
+    <>
+      <div className="hotkey-demo" aria-hidden="true">
+        <div className="hotkey-demo-keys">
+          <kbd className="kbd">{t("onboarding.hotkey.altKey")}</kbd>
+          <span>+</span>
+          <kbd className="kbd">{t("onboarding.hotkey.spaceKey")}</kbd>
+        </div>
+        <div className="hotkey-demo-arrow">→</div>
+        <div className="hotkey-demo-overlay">
+          <Search size={14} />
+          <span className="hotkey-demo-caret">|</span>
+        </div>
+        <p className="hotkey-demo-caption">{t("onboarding.hotkey.caption")}</p>
+      </div>
+      <div className="permission-callout">
+        <Command size={18} />
+        <span>
+          <strong>{t("onboarding.accessibility.title")}</strong>
+          <small>{t("onboarding.accessibility.body")}</small>
+        </span>
+        <button
+          className="btn btn-ghost accent sm"
+          type="button"
+          onClick={openAccessibilitySettings}
+        >
+          {t("onboarding.accessibility.openSettings")}
+        </button>
+      </div>
+    </>
+  );
+}
+
+const COMMON_LOCATIONS = ["~/Movies", "~/Downloads", "~/Desktop", "~/Documents"];
+
+export function OnboardingFolderPicker({
+  folders,
+  setFolders,
+}: {
+  folders: string[];
+  setFolders: (folders: string[]) => void;
+}) {
+  const t = useT();
+  async function chooseFolders() {
+    const selected = await openDialog({ directory: true, multiple: true }).catch(() => null);
+    const picked = Array.isArray(selected)
+      ? selected
+      : typeof selected === "string"
+        ? [selected]
+        : [];
+    if (picked.length > 0) {
+      setFolders(uniqueStrings([...folders, ...picked]));
+    }
+  }
+
+  function addCommonLocations() {
+    setFolders(uniqueStrings([...folders, ...COMMON_LOCATIONS]));
+  }
+
+  function removeFolder(path: string) {
+    setFolders(folders.filter((folder) => folder !== path));
+  }
+
+  const commonLocationsAdded = COMMON_LOCATIONS.every((location) =>
+    folders.includes(location),
+  );
+
+  return (
+    <div className="onboarding-picker">
+      <button className="picker-button" type="button" onClick={chooseFolders}>
+        <Folder size={18} />
+        <span>{t("onboarding.folder.choose")}</span>
+      </button>
+      <button
+        className="picker-button picker-button-secondary"
+        type="button"
+        onClick={addCommonLocations}
+        disabled={commonLocationsAdded}
+        title={t("onboarding.folder.commonTooltip")}
+      >
+        <Wrench size={18} />
+        <span>
+          {commonLocationsAdded
+            ? t("onboarding.folder.commonAdded")
+            : t("onboarding.folder.scanCommon")}
+        </span>
+      </button>
+      {folders.length > 0 ? (
+        <div className="chip-row" aria-label={t("onboarding.folder.chipsAria")}>
+          {folders.map((folder) => (
+            <button
+              key={folder}
+              className="path-chip"
+              type="button"
+              onClick={() => removeFolder(folder)}
+              aria-label={t("onboarding.folder.removeChipAria", { folder })}
+            >
+              <span>{folder}</span>
+              <X size={13} />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="muted-copy">{t("onboarding.folder.emptyHint")}</p>
+      )}
+    </div>
+  );
+}
+
+export function OnboardingYoutubePicker({
+  channels,
+  setChannels,
+}: {
+  channels: OnboardingYoutubeChannel[];
+  setChannels: (channels: OnboardingYoutubeChannel[]) => void;
+}) {
+  const t = useT();
+  const [url, setUrl] = useState("https://youtube.com/@karpathy");
+  const [validation, setValidation] = useState<ValidationState>({
+    status: "idle",
+    message: null,
+  });
+
+  function updateUrl(value: string) {
+    setUrl(value);
+    setValidation({ status: "idle", message: null });
+  }
+
+  async function validateAndAddChannel() {
+    setValidation({ status: "validating", message: null });
+    await waitForValidationFrame();
+
+    const result = validateHttpUrl(url, t, ["youtube.com", "youtu.be"]);
+    if (!result.ok) {
+      setValidation({ status: "error", message: result.message });
+      return;
+    }
+
+    const channel = youtubeChannelFromUrl(url, t);
+    setChannels(uniqueYoutubeChannels([...channels, channel]));
+    setValidation({
+      status: "valid",
+      message: t("onboarding.youtube.readyMessage", { name: channel.name }),
+    });
+  }
+
+  function removeChannel(urlToRemove: string) {
+    setChannels(channels.filter((channel) => channel.url !== urlToRemove));
+  }
+
+  return (
+    <div className="onboarding-picker">
+      <label className="url-field">
+        <Youtube size={18} />
+        <input
+          value={url}
+          onChange={(event) => updateUrl(event.currentTarget.value)}
+          placeholder={t("onboarding.youtube.urlPlaceholder")}
+        />
+      </label>
+      <button
+        className="btn btn-secondary sm validate-button"
+        type="button"
+        onClick={() => void validateAndAddChannel()}
+        disabled={!url.trim() || validation.status === "validating"}
+      >
+        {validation.status === "validating" ? <Loader2 size={15} /> : <Check size={15} />}
+        <span>
+          {validation.status === "validating"
+            ? t("common.validating")
+            : t("onboarding.youtube.validate")}
+        </span>
+      </button>
+      <SourcePreview
+        icon={<Youtube size={19} />}
+        initials="YT"
+        title={t("source.preview.youtubeTitle")}
+        validation={validation}
+        idleMessage={t("source.preview.youtubeIdle")}
+        validDetail={t("onboarding.youtube.previewValidDetail")}
+      />
+      {channels.length > 0 ? (
+        <div
+          className="youtube-channel-list"
+          aria-label={t("onboarding.youtube.listAria")}
+        >
+          {channels.map((channel) => (
+            <button
+              key={channel.url}
+              className="youtube-channel-card"
+              type="button"
+              onClick={() => removeChannel(channel.url)}
+              aria-label={t("onboarding.youtube.removeAria", { name: channel.name })}
+            >
+              <span className="avatar">{channel.name.slice(0, 2).toUpperCase()}</span>
+              <span>
+                <strong>{channel.name}</strong>
+                <small>{channel.subscribers}</small>
+              </span>
+              <X size={14} />
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}

@@ -1,0 +1,96 @@
+[workspace]
+members = [
+  "crates/cerul-api",
+  "crates/cerul-cli",
+  "crates/cerul-core",
+  "crates/cerul-embed",
+  "crates/cerul-models",
+  "crates/cerul-pipeline",
+  "crates/cerul-search",
+  "crates/cerul-sources",
+  "crates/cerul-storage",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Cerul"]
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Dev-build optimization, narrowed to the ML/numeric hot path.
+#
+# Previously every dependency was compiled at opt-level 3 in dev, which made
+# clean rebuilds very slow. Only native ML code actually needs it: without
+# optimization, whisper.cpp / candle run 10-50x slower (transcription/embedding
+# become unusable). So we keep opt-level 3 ONLY for the ML + matmul crates and
+# drop everything else to opt-level 1 (still fine at runtime, much faster to
+# compile). Workspace crates stay at opt-level 0 (`*` does not match workspace
+# members), so iterating on Cerul code stays fast.
+[profile.dev.package."*"]
+opt-level = 1
+
+# Build scripts and proc-macros do not run the ML hot path. Keep them cheap
+# even when their parent crate is optimized for runtime speed.
+[profile.dev.build-override]
+opt-level = 0
+debug = 0
+
+# --- ML / numeric hot path: opt-level 3 is load-bearing for runtime speed ---
+# whisper.cpp is built by whisper-rs-sys through the `cc` crate, whose -O flag
+# follows OPT_LEVEL, so this also controls the native C optimization.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 3
+[profile.dev.package.whisper-rs]
+opt-level = 3
+# candle tensor engine + its CPU matmul kernels (gemm) + SIMD (pulp) + f16.
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f16]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.gemm-f64]
+opt-level = 3
+[profile.dev.package.gemm-c32]
+opt-level = 3
+[profile.dev.package.gemm-c64]
+opt-level = 3
+[profile.dev.package.pulp]
+opt-level = 3
+[profile.dev.package.half]
+opt-level = 3
+[profile.dev.package.bytemuck]
+opt-level = 3
+[profile.dev.package.num-traits]
+opt-level = 3
+[profile.dev.package.num-complex]
+opt-level = 3
+[profile.dev.package.matrixmultiply]
+opt-level = 3
+[profile.dev.package.ndarray]
+opt-level = 3
+[profile.dev.package.safetensors]
+opt-level = 3
+[profile.dev.package.rayon]
+opt-level = 3
+[profile.dev.package.rayon-core]
+opt-level = 3
+[profile.dev.package.tokenizers]
+opt-level = 3

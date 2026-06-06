@@ -1,0 +1,2 @@
+ALTER TABLE jobs ADD COLUMN stage TEXT;
+ALTER TABLE jobs ADD COLUMN stage_message TEXT;

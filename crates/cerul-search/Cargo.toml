@@ -1,0 +1,18 @@
+[package]
+name = "cerul-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+cerul-embed = { path = "../cerul-embed" }
+cerul-storage = { path = "../cerul-storage" }
+rusqlite = "0.31"
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

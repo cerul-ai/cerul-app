@@ -1,0 +1,8 @@
+mlx-embeddings==0.1.0
+qwen3-asr-mlx==0.1.0
+numpy>=2.4,<3
+pillow>=12,<13
+soundfile>=0.13,<0.14
+socksio>=1,<2
+torch>=2.9,<3
+torchvision>=0.24,<1

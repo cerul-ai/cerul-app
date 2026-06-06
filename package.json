@@ -1,0 +1,19 @@
+{
+  "name": "cerul-app",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "dev": "./run.sh",
+    "dev:electron": "pnpm --filter @cerul/electron-shell dev",
+    "check": "cargo check --workspace",
+    "test": "cargo test --workspace",
+    "build": "pnpm --filter @cerul/desktop build && pnpm --filter @cerul/electron-shell build",
+    "typecheck": "pnpm --filter @cerul/desktop typecheck && pnpm --filter @cerul/electron-shell typecheck",
+    "smoke": "scripts/smoke.sh",
+    "fetch:binaries": "scripts/fetch-binaries.sh",
+    "build:installers": "scripts/build-installers.sh",
+    "smoke:installed": "scripts/smoke-installed-app.sh",
+    "smoke:release": "scripts/smoke-release.sh"
+  }
+}

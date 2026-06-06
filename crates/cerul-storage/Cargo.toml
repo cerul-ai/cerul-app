@@ -1,0 +1,22 @@
+[package]
+name = "cerul-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+cerul-models = { path = "../cerul-models" }
+directories = "6"
+refinery = { version = "0.8", default-features = false, features = ["rusqlite"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rusqlite = { version = "0.31", features = ["blob", "bundled", "chrono"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid = { version = "1", features = ["v5"] }
+
+[dev-dependencies]
+tempfile = "3"

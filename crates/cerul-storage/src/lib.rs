@@ -1,0 +1,55 @@
+pub mod chunks;
+pub mod items;
+pub mod paths;
+pub mod providers;
+pub mod sqlite;
+pub mod usage;
+pub mod vectors;
+
+pub use chunks::{
+    replace_media_embeddings, replace_media_embeddings_for_profile,
+    replace_media_embeddings_with_ocr, replace_media_embeddings_with_ocr_for_profile,
+    replace_video_embeddings_with_ocr, replace_video_embeddings_with_ocr_for_profile,
+    write_media_chunks, write_media_chunks_with_ocr_and_lines, write_media_sqlite_chunks,
+    write_media_sqlite_chunks_with_ocr, write_media_sqlite_chunks_with_ocr_and_lines,
+    write_video_chunks, write_video_chunks_with_ocr, write_video_sqlite_chunks_with_ocr,
+    StorageImageChunk, StorageOcrChunk, StorageTranscriptChunk, StorageTranscriptLine,
+    StorageWriteSummary,
+};
+pub use items::{
+    get_item, item_ids_for_source, mark_indexed, set_item_duration, set_video_index_status,
+    set_video_multimodal_index_status, update_item_metadata, StoredItem,
+};
+pub use paths::AppPaths;
+pub use usage::{
+    list_usage_events, record_usage_event, usage_summary, usage_totals_for_item,
+    usage_totals_for_job, NewUsageEvent, UsageBreakdown, UsageEvent, UsageSummary, UsageTotals,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageBackend {
+    Sqlite,
+    Qdrant,
+}
+
+pub fn crate_ready() -> bool {
+    true
+}
+
+pub fn required_backends() -> &'static [StorageBackend] {
+    &[StorageBackend::Sqlite, StorageBackend::Qdrant]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{required_backends, StorageBackend};
+
+    #[test]
+    fn storage_scaffold_exposes_required_backends() {
+        assert_eq!(
+            required_backends(),
+            &[StorageBackend::Sqlite, StorageBackend::Qdrant]
+        );
+        assert!(!rusqlite::version().is_empty());
+    }
+}

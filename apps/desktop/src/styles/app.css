@@ -1,0 +1,404 @@
+/* ============================================================
+   CERUL · APP SHELL LAYOUT
+   ============================================================ */
+.app {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+
+/* ---------------- Rail ---------------- */
+.rail {
+  width: 220px;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 10px 12px;
+  transition: width var(--dur) var(--ease);
+  flex: none;
+}
+.rail[data-collapsed="true"] { width: 60px; }
+.rail-top { padding: 4px 4px 14px; display: flex; align-items: center; gap: 6px; }
+.rail-brand { display: flex; align-items: center; gap: 10px; background: none; border: 0; cursor: pointer; padding: 6px; border-radius: 8px; }
+.rail-collapse { margin-left: auto; flex: none; }
+.rail[data-collapsed="true"] .rail-top { flex-direction: column; gap: 2px; padding: 4px 4px 10px; }
+.rail[data-collapsed="true"] .rail-collapse { margin-left: 0; }
+.brandmark { color: var(--accent); display: inline-grid; place-items: center; }
+/* BrandMark / BrandLogo render a brand asset sized at 100%×100%, so the wrapper must
+   carry a definite size in every context (rail, empty states, overlay). Without
+   this the mark balloons to fill its flex container. Context-specific wrappers
+   (.mobilebar .brand-mark, .onb-brand, .overlay-mark) override as needed. */
+.brand-mark { width: 22px; height: 22px; }
+.brandmark-img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
+.brandmark-img-dark { display: none; }
+:root[data-theme="dark"] .brandmark-img-light { display: none; }
+:root[data-theme="dark"] .brandmark-img-dark { display: block; }
+.rail-nav { display: flex; flex-direction: column; gap: 2px; }
+.rail-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
+.rail-sep { height: 1px; background: var(--line); margin: 8px 6px; }
+
+.rail-item {
+  position: relative;
+  display: flex; align-items: center; gap: 11px;
+  height: 38px; padding: 0 10px;
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--text-muted); border-radius: var(--r-md);
+  font-family: var(--font-sans); font-size: var(--fs-meta); font-weight: 500;
+  white-space: nowrap; overflow: hidden;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.rail-item:hover { background: var(--surface-3); color: var(--text); }
+.rail-item.active { color: var(--text); background: var(--accent-soft); }
+.rail-item .rail-ind {
+  position: absolute; left: -10px; top: 50%; transform: translateY(-50%) scaleY(0);
+  width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: var(--accent);
+  transition: transform var(--dur) var(--ease);
+}
+.rail-item.active .rail-ind { transform: translateY(-50%) scaleY(1); }
+.rail-item.active svg { color: var(--accent); }
+.rail-label { overflow: hidden; }
+.rail[data-collapsed="true"] .rail-item { justify-content: center; padding: 0; gap: 0; }
+.rail[data-collapsed="true"] .rail-item .rail-ind { left: -10px; }
+.badge-dot { position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 999px; background: var(--accent); border: 2px solid var(--bg-sunken); }
+.badge-count {
+  position: absolute;
+  top: -8px;
+  right: -10px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  border: 2px solid var(--bg-sunken);
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+/* tooltips only when collapsed */
+.rail:not([data-collapsed="true"]) .tip::after { display: none; }
+
+/* ---------------- Content area ---------------- */
+.content { overflow-y: auto; overflow-x: hidden; height: 100vh; position: relative; }
+.page { max-width: 1080px; margin: 0 auto; padding: 0 40px 80px; }
+.page.wide { max-width: 1240px; }
+
+/* top header bar inside content */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg-app) 84%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+  padding: 0 40px;
+  height: 58px; display: flex; align-items: center; gap: 14px;
+}
+.topbar .tb-title { font-size: var(--fs-title); font-weight: 600; letter-spacing: -0.01em; }
+.topbar .tb-inner { max-width: 1080px; margin: 0 auto; width: 100%; display: flex; align-items: center; gap: 14px; }
+.page-head { padding: 34px 0 22px; }
+.page-eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
+.page-h1 { font-size: var(--fs-h2); font-weight: 600; letter-spacing: -0.02em; margin: 6px 0 0; }
+.page-sub { color: var(--text-muted); font-size: var(--fs-meta); margin-top: 6px; }
+
+.section-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 14px; }
+
+/* ---------------- Home search entry ---------------- */
+.home-page { min-height: 100%; }
+.home-search-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding-top: 14vh;
+}
+.home-search-stage h1 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.12;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.home-search-stage p {
+  margin: 10px 0 0;
+  font-size: 15px;
+}
+.home-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 600px;
+  margin-top: 16px;
+}
+.home-mode-grid button {
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.home-mode-grid span {
+  display: block;
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.home-mode-grid small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.home-status-line {
+  justify-content: center;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.home-recent-block {
+  margin-top: 56px;
+}
+.home-recent-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+.recent-indexed-card {
+  appearance: none;
+  border: 1px solid var(--line);
+  padding: 0;
+  text-align: left;
+  font-family: var(--font-sans);
+}
+/* Uniform 16:9 thumb so every card is the same height whether it has an
+   image (object-fit: cover) or falls back to a centered modality icon —
+   without this the icon-only cards collapse and the grid looks ragged. */
+.recent-indexed-card .thumb {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  color: var(--text-muted);
+}
+/* Duration pill, bottom-right on the thumbnail (YouTube-style, mirrors the
+   result-card thumb badge). Moving duration here frees the body meta line. */
+.recent-indexed-card .thumb .thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+.recent-indexed-card strong {
+  display: block;
+  min-height: 35px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.recent-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.recent-card-meta svg {
+  flex: none;
+  opacity: 0.75;
+}
+.recent-indexed-card .item-warning {
+  margin-top: 8px;
+}
+
+/* ---------------- Drawer ---------------- */
+.drawer-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 18px 16px 22px; border-bottom: 1px solid var(--line); }
+.drawer-head .grow { flex: 1; }
+.drawer-title { font-size: var(--fs-title); font-weight: 600; }
+.drawer-body { flex: 1; overflow-y: auto; padding: 14px 18px 24px; }
+.job-group-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); padding: 6px 6px 10px; }
+.job-row { display: flex; gap: 12px; padding: 12px 8px; border-radius: var(--r-md); }
+.job-row:hover { background: var(--surface-2); }
+.job-dot { width: 8px; height: 8px; border-radius: 999px; margin-top: 5px; flex: none; }
+
+/* ---------------- Results / list rows ---------------- */
+.result-row {
+  display: grid; grid-template-columns: 132px 1fr auto; gap: 18px;
+  padding: 14px; border-radius: var(--r-md); cursor: pointer; align-items: start;
+  border: 1px solid transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.result-row:hover { background: var(--surface-2); }
+.result-row + .result-row { border-top: 1px solid var(--line); border-radius: 0; }
+.result-row:hover + .result-row, .result-row:hover { border-top-color: transparent; }
+.results-filter-row {
+  justify-content: space-between;
+  padding: 22px 0 16px;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.results-card-list {
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+/* library grid */
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 16px; }
+.lib-card { overflow: hidden; cursor: pointer; }
+.lib-card .body { padding: 12px 13px 13px; }
+
+/* ---- batch selection ---- */
+.sel-check { width: 20px; height: 20px; flex: none; border-radius: 6px; border: 1.5px solid var(--line-strong); background: var(--surface); display: grid; place-items: center; cursor: pointer; color: #fff; transition: all var(--dur-fast) var(--ease); padding: 0; }
+.sel-check:hover { border-color: var(--accent); }
+.sel-check.on { background: var(--accent); border-color: var(--accent); }
+.sel-overlay { position: absolute; top: 8px; left: 8px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.lib-card:hover .sel-overlay, .lib-card.selecting .sel-overlay, .lib-card.sel .sel-overlay { opacity: 1; }
+.lib-card.sel { box-shadow: inset 0 0 0 2px var(--accent); border-color: var(--accent); }
+.tbl-row.sel { background: var(--accent-soft); }
+
+/* table rows (sources) */
+.tbl { width: 100%; }
+.tbl-head { display: grid; align-items: center; padding: 0 14px 10px; border-bottom: 1px solid var(--line); }
+.tbl-head .th { font-size: 12px; color: var(--text-faint); font-weight: 500; }
+.tbl-row { display: grid; align-items: center; padding: 13px 14px; border-bottom: 1px solid var(--line); transition: background var(--dur-fast) var(--ease); }
+.tbl-row:hover { background: var(--surface-2); }
+.tbl-row:last-child { border-bottom: 0; }
+
+/* settings */
+.settings-wrap { display: grid; grid-template-columns: 200px 1fr; gap: 40px; align-items: start; }
+.settings-nav { position: sticky; top: 78px; display: flex; flex-direction: column; gap: 1px; }
+.settings-nav button { display: flex; align-items: center; gap: 10px; text-align: left; font-family: var(--font-sans); font-size: var(--fs-meta); font-weight: 500; color: var(--text-muted); background: transparent; border: 0; height: 34px; padding: 0 11px; border-radius: var(--r-md); cursor: pointer; transition: all var(--dur-fast) var(--ease); }
+.settings-nav button:hover { color: var(--text); background: var(--surface-2); }
+.settings-nav button.active { color: var(--accent); background: var(--accent-soft); }
+.settings-nav button svg { color: currentColor; }
+.set-group { margin-bottom: 34px; }
+.set-group-title { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 4px; }
+.set-row { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.set-row:last-child { border-bottom: 0; }
+.set-row .label { font-size: var(--fs-meta); font-weight: 500; }
+.set-row .desc { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; max-width: 440px; }
+
+/* onboarding */
+.onb { position: fixed; inset: 0; background: var(--bg-app); z-index: 60; display: flex; flex-direction: column; }
+/* Flex (not grid place-items) so a card with width:100% reliably fills up to its
+   max-width instead of shrink-wrapping to short content. */
+.onb-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow-y: auto; padding: 32px; }
+.onb-card { width: 100%; max-width: 520px; text-align: center; }
+.onb-dots { display: flex; justify-content: center; gap: 8px; margin-bottom: 28px; }
+.onb-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--line-strong); transition: width var(--dur) var(--ease), background var(--dur) var(--ease); }
+.onb-dot.active { width: 20px; background: var(--accent); }
+.onb-brand { display: flex; justify-content: center; margin-bottom: 20px; }
+/* Match the app icon: a graphite mark on the brushed-silver tile (silver→graphite in dark). */
+.onb-brand .logo-lockup { width: 64px; height: 64px; border-radius: 16px; display: grid; place-items: center; background: var(--icon-grad-silver); box-shadow: var(--shadow-2); }
+:root[data-theme="dark"] .onb-brand .logo-lockup { background: var(--icon-grad-graphite); }
+.onb-brand .brand-logo-mark { width: 34px; height: 34px; color: #fff; }
+.onb-title { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 10px; }
+.onb-subtitle { font-size: 14px; margin: 0 0 26px; }
+.onb-actions { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 28px; flex-wrap: wrap; }
+
+/* misc */
+.kbd { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 2px 6px; }
+.copyfield { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 8px 8px 12px; }
+.copyfield .path { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg-app); font-size: 13px; font-weight: 500; padding: 10px 16px; border-radius: 8px; box-shadow: var(--shadow-pop); z-index: 300; animation: dialog-in var(--dur) var(--ease); }
+.media-bar { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); }
+.scrub { flex: 1; height: 4px; background: var(--surface-3); border-radius: 999px; position: relative; cursor: pointer; }
+.scrub .played { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 999px; }
+.scrub .head { position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 999px; background: var(--accent); transform: translate(-50%, -50%); box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.seg-line { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.seg-line:last-child { border-bottom: 0; }
+.seg-line .ts { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); width: 52px; flex: none; padding-top: 2px; }
+.seg-line.hot { background: var(--accent-soft); margin: 0 -14px; padding: 14px; border-radius: var(--r-md); border-bottom: 0; }
+.seg-line .spk { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+
+/* ---------------- Detail split (sticky media + transcript) ---------------- */
+.detail-split { display: grid; grid-template-columns: minmax(360px, 420px) 1fr; gap: 40px; align-items: start; padding-top: 26px; }
+/* The left column sticks while you scroll the transcript. Cap its height and let
+   it scroll on its own so a long analysis (chapters, key moments) stays reachable
+   instead of having its bottom pinned off-screen. */
+.detail-media { position: sticky; top: 78px; max-height: calc(100vh - 98px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.detail-transcript { min-width: 0; padding-bottom: 20px; }
+.seg-btn { display: flex; gap: 12px; width: 100%; background: transparent; border: 0; border-bottom: 1px solid var(--line); padding: 14px; margin: 0 -14px; width: calc(100% + 28px); border-radius: var(--r-md); cursor: pointer; font-family: var(--font-sans); transition: background var(--dur-fast) var(--ease); text-align: left; }
+.seg-btn:hover { background: var(--surface-2); }
+.seg-btn.hot { background: var(--accent-soft); border-bottom-color: transparent; }
+.seg-btn.matched { background: var(--accent-soft); border-bottom-color: transparent; }
+.seg-btn .ts { transition: color var(--dur-fast) var(--ease); }
+.seg-btn.hot .ts { color: var(--accent); }
+.seg-btn.matched .ts { color: var(--accent); }
+@media (max-width: 920px) {
+  .detail-split { grid-template-columns: 1fr; gap: 24px; }
+  .detail-media { position: static; max-height: none; overflow: visible; padding-right: 0; }
+}
+
+/* ============================================================
+   MOBILE / TABLET — bottom nav + top bar (≤720)
+   ============================================================ */
+.mobilebar { display: none; align-items: center; gap: 10px; height: 52px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--bg-app); flex: none; }
+.mobilebar .brandmark { color: var(--accent); display: inline-flex; }
+.mobilebar .rail-brand { padding: 0; }
+.mobilebar .brand-mark {
+  width: 26px;
+  height: 26px;
+}
+.mobilebar .tb-title { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
+.bottomnav { display: none; height: 60px; flex: none; border-top: 1px solid var(--line); background: var(--bg-sunken); padding-bottom: env(safe-area-inset-bottom, 0); }
+.bottomnav button { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; background: none; border: 0; cursor: pointer; color: var(--text-faint); font-family: var(--font-sans); font-size: 10.5px; font-weight: 500; transition: color var(--dur-fast) var(--ease); }
+.bottomnav button.active { color: var(--accent); }
+
+/* tablet: tighten the rail to icons-only so result/library density stays usable */
+@media (max-width: 1000px) {
+  .rail { width: 60px; }
+  .rail .rail-label { display: none; }
+  .rail .rail-top { flex-direction: column; gap: 2px; }
+  .rail .rail-collapse { display: none; }
+  .rail .rail-item { justify-content: center; padding: 0; gap: 0; }
+  .rail:not([data-collapsed]) .tip::after, .rail .tip::after { display: block; }
+  .page { padding: 0 28px 80px; }
+  .lib-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .rail { display: none; }
+  .mobilebar { display: flex; }
+  .bottomnav { display: flex; }
+  .content { flex: 1; height: auto; min-height: 0; }
+  .page, .page.wide { padding: 0 16px 28px; max-width: 100%; }
+  .topbar { padding: 0 16px; height: 52px; }
+  .topbar .tb-inner { max-width: 100%; }
+  .topbar .tb-title { font-size: 15px; }
+  /* drop non-primary topbar actions on small screens */
+  .topbar .btn-ghost, .topbar .btn-secondary { display: none; }
+  .page-head { padding: 22px 0 18px; flex-wrap: wrap; gap: 14px; }
+  .page-h1 { font-size: 22px; }
+  .home-search-stage { padding-top: 34px; }
+  .home-search-stage h1 { font-size: 23px; }
+  .home-search-stage p { max-width: 320px; font-size: 12.5px; line-height: 1.45; }
+  .home-mode-grid { grid-template-columns: 1fr; }
+  .home-status-line { flex-direction: column; gap: 8px; }
+  .home-recent-block { margin-top: 34px; }
+  .home-recent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* settings → single column, horizontal nav */
+  .settings-wrap { grid-template-columns: 1fr; gap: 18px; }
+  .settings-nav { position: static; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; margin: 0 -16px; padding-left: 16px; padding-right: 16px; }
+  .settings-nav button { white-space: nowrap; flex: none; }
+  .set-row { grid-template-columns: 1fr; gap: 12px; }
+  .set-row .row { justify-content: flex-start; }
+  /* results rows: drop the trailing open button, tighten */
+  .result-row { grid-template-columns: 96px 1fr; gap: 12px; }
+  .result-row > .btn-secondary { display: none; }
+  /* forms single column */
+  .gridhalf { grid-template-columns: 1fr; }
+  .toast { bottom: 76px; }
+}
