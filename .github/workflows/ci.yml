@@ -75,7 +75,7 @@ jobs:
 
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "Rust gate: $rust"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.9
           run_install: false
