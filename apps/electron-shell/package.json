@@ -27,6 +27,7 @@
     "appId": "ai.cerul.desktop",
     "productName": "Cerul",
     "icon": "../desktop/public/brand/app-store-icon-1024.png",
+    "afterPack": "./scripts/after-pack-sign.cjs",
     "directories": {
       "output": "../../target/electron"
     },
