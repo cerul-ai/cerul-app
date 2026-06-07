@@ -1,10 +1,19 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Run full clippy, workspace tests, and smoke checks"
+        required: false
+        default: true
+        type: boolean
   pull_request:
   push:
     branches:
       - main
+  schedule:
+    - cron: "0 20 * * 1"
 
 permissions:
   contents: read
@@ -19,10 +28,15 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          package-manager-cache: false
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - name: Enable pnpm
         shell: bash
         run: |
@@ -31,6 +45,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Decide CI depth
+        id: ci-depth
+        shell: bash
+        run: |
+          full=false
+          case "${{ github.event_name }}" in
+            pull_request)
+              full=false
+              ;;
+            workflow_dispatch)
+              full="${{ inputs.full }}"
+              ;;
+            *)
+              full=true
+              ;;
+          esac
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}" = "true" ]; then
+            full=true
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "CI depth: $([ "$full" = "true" ] && echo full || echo quick)"
       - name: Install native build dependencies
         shell: bash
         run: |
@@ -47,6 +85,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Fetch Linux runtime binaries
+        if: steps.ci-depth.outputs.full == 'true'
         run: scripts/fetch-binaries.sh --target x86_64-unknown-linux-gnu
       - name: Build desktop renderer
         run: pnpm --filter @cerul/desktop build
@@ -54,9 +93,14 @@ jobs:
         run: pnpm --filter @cerul/electron-shell typecheck
       - name: Rust format check
         run: cargo fmt --all -- --check
+      - name: Rust quick check
+        if: steps.ci-depth.outputs.full != 'true'
+        run: cargo check --workspace --all-targets --locked
       - name: Rust clippy
+        if: steps.ci-depth.outputs.full == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Rust tests
+        if: steps.ci-depth.outputs.full == 'true'
         # NOTE: two cerul-api reindex tests share an on-disk fixture path and fail
         # only inside the full suite (test-isolation bug, tracked separately).
         # Remove these --skip flags once fixtures use per-test temp dirs.
@@ -64,6 +108,7 @@ jobs:
           RUST_TEST_THREADS: 1
         run: cargo test --workspace -- --skip item_delete_and_reindex_update_storage --skip concurrent_reindex_requests_queue_without_sqlite_locking
       - name: Run lightweight smoke checks
+        if: steps.ci-depth.outputs.full == 'true'
         shell: bash
         run: |
           scripts/smoke-brand-assets-ui.sh

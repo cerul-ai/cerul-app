@@ -56,10 +56,15 @@ jobs:
             deps: choco install ffmpeg protoc cmake -y
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          package-manager-cache: false
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - name: Enable pnpm
         shell: bash
         run: |
