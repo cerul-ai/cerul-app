@@ -90,7 +90,7 @@ pub async fn search_fts_only(
     req: SearchRequest,
 ) -> anyhow::Result<Vec<SearchResult>> {
     let limit = req.limit.max(1);
-    let hits = sqlite_fts_search(paths, &req.q, retrieval_limit(limit)).await?;
+    let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
     let results = hydrate(paths, &hits)?;
     Ok(dedupe_results(results, limit))
 }
@@ -130,7 +130,7 @@ pub async fn search_with_vectors_for_profile(
     let retrieval_limit = retrieval_limit(limit);
     let collections = cerul_storage::vectors::collection_names(paths, profile);
     let (bm25_hits, text_hits, image_hits) = tokio::try_join!(
-        sqlite_fts_search(paths, &req.q, retrieval_limit),
+        sqlite_text_search(paths, &req.q, retrieval_limit),
         qdrant_vector_search(
             paths,
             &collections.text,
@@ -201,6 +201,29 @@ pub fn rrf_merge(sources: Vec<Vec<RawHit>>, k: usize) -> Vec<RawHit> {
     hits
 }
 
+async fn sqlite_text_search(
+    paths: &AppPaths,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<RawHit>> {
+    let mut hits = sqlite_fts_search(paths, query, limit).await?;
+    let mut seen = hits
+        .iter()
+        .map(|hit| hit.chunk_id.clone())
+        .collect::<HashSet<_>>();
+
+    for hit in sqlite_literal_search(paths, query, limit).await? {
+        if seen.insert(hit.chunk_id.clone()) {
+            hits.push(hit);
+        }
+        if hits.len() >= limit {
+            break;
+        }
+    }
+
+    Ok(hits)
+}
+
 async fn sqlite_fts_search(
     paths: &AppPaths,
     query: &str,
@@ -226,6 +249,47 @@ async fn sqlite_fts_search(
         Ok(RawHit {
             chunk_id,
             score: (-rank_score) as f32,
+            similarity_score: None,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+async fn sqlite_literal_search(
+    paths: &AppPaths,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<RawHit>> {
+    let Some(pattern) = sqlite_like_pattern(query) else {
+        return Ok(Vec::new());
+    };
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT c.id
+        FROM chunks c
+        WHERE c.text IS NOT NULL
+          AND c.chunk_type IN ('transcript', 'transcript_line', 'audio', 'ocr', 'understanding')
+          AND c.text LIKE ?1 ESCAPE '\'
+        ORDER BY
+          CASE c.chunk_type
+            WHEN 'transcript_line' THEN 0
+            WHEN 'transcript' THEN 1
+            WHEN 'audio' THEN 2
+            WHEN 'ocr' THEN 3
+            ELSE 4
+          END,
+          COALESCE(c.start_sec, 9223372036854775807),
+          c.id
+        LIMIT ?2
+        "#,
+    )?;
+    let rows = stmt.query_map((&pattern, limit as i64), |row| {
+        let chunk_id: String = row.get(0)?;
+        Ok(RawHit {
+            chunk_id,
+            score: 0.01,
             similarity_score: None,
         })
     })?;
@@ -431,6 +495,27 @@ fn fts_match_query(query: &str) -> Option<String> {
     }
 }
 
+fn sqlite_like_pattern(query: &str) -> Option<String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut escaped = String::with_capacity(trimmed.len() + 2);
+    escaped.push('%');
+    for ch in trimmed.chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('%');
+    Some(escaped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,6 +651,40 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk_id, "item-1:transcript:000000");
         assert!(results[0].snippet.contains("fallback search"));
+    }
+
+    #[tokio::test]
+    async fn search_with_paths_falls_back_to_literal_chinese_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let chunks = vec![StorageTranscriptChunk {
+            start: 7.0,
+            end: 12.0,
+            text: "所有光源只能出现在地下室".to_string(),
+        }];
+        cerul_storage::write_video_chunks(&paths, "item-1", &chunks, &[], &[fake_vector(0)], &[])
+            .await
+            .unwrap();
+
+        assert!(sqlite_fts_search(&paths, "地下室", 5)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let results = search_with_paths(
+            &paths,
+            SearchRequest {
+                q: "地下室".to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chunk_id, "item-1:transcript:000000");
+        assert!(results[0].snippet.contains("地下室"));
     }
 
     #[tokio::test]
