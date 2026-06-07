@@ -18,8 +18,8 @@ jobs:
     name: Build and smoke
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           package-manager-cache: false
@@ -46,6 +46,8 @@ jobs:
             ripgrep
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Fetch Linux runtime binaries
+        run: scripts/fetch-binaries.sh --target x86_64-unknown-linux-gnu
       - name: Build desktop renderer
         run: pnpm --filter @cerul/desktop build
       - name: Typecheck Electron shell
@@ -58,6 +60,8 @@ jobs:
         # NOTE: two cerul-api reindex tests share an on-disk fixture path and fail
         # only inside the full suite (test-isolation bug, tracked separately).
         # Remove these --skip flags once fixtures use per-test temp dirs.
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo test --workspace -- --skip item_delete_and_reindex_update_storage --skip concurrent_reindex_requests_queue_without_sqlite_locking
       - name: Run lightweight smoke checks
         shell: bash
