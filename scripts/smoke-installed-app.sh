@@ -193,11 +193,12 @@ check_bundled_binary() {
 run_bundled_binary() {
   local path="$1"
   shift
+  local timeout_sec="${CERUL_BUNDLED_BINARY_TIMEOUT_SEC:-60}"
 
   "$path" "$@" >/dev/null 2>&1 &
   local pid="$!"
   local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for ((i = 1; i <= timeout_sec; i++)); do
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       wait "$pid"
       return $?
