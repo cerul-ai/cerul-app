@@ -21,51 +21,8 @@ permissions:
   contents: write
 
 jobs:
-  macos-signing-preflight:
-    name: macOS signing preflight
-    runs-on: ubuntu-22.04
-    env:
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-      REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
-    steps:
-      - name: Validate required signing secrets
-        shell: bash
-        run: |
-          if [ "${REQUIRE_MACOS_SIGNING:-false}" != "true" ]; then
-            echo "macOS signing is optional for this release run."
-            exit 0
-          fi
-
-          missing=()
-          for name in \
-            CSC_LINK \
-            CSC_KEY_PASSWORD \
-            APPLE_SIGNING_IDENTITY \
-            APPLE_ID \
-            APPLE_PASSWORD \
-            APPLE_TEAM_ID; do
-            if [ -z "${!name:-}" ]; then
-              missing+=("$name")
-            fi
-          done
-          if [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
-            missing+=("CERUL_NOTARIZE=1")
-          fi
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'Missing required macOS release signing inputs:\n' >&2
-            printf '  - %s\n' "${missing[@]}" >&2
-            exit 2
-          fi
-
   installers:
     name: Build installer (${{ matrix.os }})
-    needs: macos-signing-preflight
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -120,7 +77,7 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.require_macos_signing }}
         run: |
           if [ -z "${CSC_LINK:-}" ]; then
             if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
@@ -154,7 +111,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-          REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.require_macos_signing }}
         run: |
           args=()
           if [ "$RUNNER_OS" = "macOS" ] && [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
@@ -202,7 +159,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-          REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.require_macos_signing }}
         run: |
           if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
             if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
