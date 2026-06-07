@@ -15,8 +15,14 @@ Before a public release, generate and review:
 
 ```bash
 cargo metadata --format-version 1
+cargo audit
+cargo deny check advisories licenses sources
 pnpm licenses list --prod
 ```
+
+The Rust dependency license/source gate is encoded in `deny.toml` and runs in
+CI. This file still records release-relevant packaged binaries and runtime
+assets that generated language-package reports cannot fully validate.
 
 ## Packaged Binaries
 
@@ -48,4 +54,3 @@ and Python wheel used by local runtime packs. In particular:
 
 Cerul brand assets in this repository are included so the official app can be
 built. They are not a general trademark license. See `TRADEMARKS.md`.
-

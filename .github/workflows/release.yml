@@ -3,6 +3,11 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      require_macos_signing:
+        description: "Require Developer ID signing and notarization for macOS artifacts"
+        required: false
+        default: false
+        type: boolean
       live_youtube_smoke:
         description: "Run bounded live YouTube five-video index/search smoke on Linux"
         required: false
@@ -72,10 +77,19 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
         run: |
           if [ -z "${CSC_LINK:-}" ]; then
+            if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
+              echo "CSC_LINK is required for signed macOS release artifacts." >&2
+              exit 2
+            fi
             echo "No CSC_LINK secret configured; building unsigned (skipping keychain import)."
             exit 0
+          fi
+          if [ -z "${CSC_KEY_PASSWORD:-}" ]; then
+            echo "CSC_KEY_PASSWORD is required when CSC_LINK is configured." >&2
+            exit 2
           fi
           KEYCHAIN="$RUNNER_TEMP/cerul-signing.keychain-db"
           KEYCHAIN_PW="$(openssl rand -base64 24)"
@@ -97,7 +111,13 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-        run: scripts/build-installers.sh
+          REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+        run: |
+          args=()
+          if [ "$RUNNER_OS" = "macOS" ] && [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
+            args+=(--require-signing)
+          fi
+          scripts/build-installers.sh "${args[@]}"
       - name: Smoke release artifacts
         shell: bash
         run: scripts/smoke-release-artifacts.sh
@@ -139,10 +159,19 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
+          REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
         run: |
           if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
+              echo "APPLE_SIGNING_IDENTITY is required for signed macOS release artifacts." >&2
+              exit 2
+            fi
             echo "Skipping signing smoke; APPLE_SIGNING_IDENTITY is not configured."
             exit 0
+          fi
+          if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ] && [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
+            echo "CERUL_NOTARIZE=1 is required for signed macOS release artifacts." >&2
+            exit 2
           fi
 
           args=()
