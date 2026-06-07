@@ -5273,7 +5273,7 @@ function AboutSettings({ version }: { version: string | null }) {
       <SettingsGroup title={t("settings.about.group.title")}>
         <SettingRow
           label={t("settings.about.version.label")}
-          control={<span className="settings-value">{version ?? "0.0.1-alpha.2"}</span>}
+          control={<span className="settings-value">{version ?? "0.0.1-alpha.3"}</span>}
         />
         <SettingRow
           label={t("settings.about.license.label")}
