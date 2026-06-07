@@ -21,8 +21,51 @@ permissions:
   contents: write
 
 jobs:
+  macos-signing-preflight:
+    name: macOS signing preflight
+    runs-on: ubuntu-22.04
+    env:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
+      REQUIRE_MACOS_SIGNING: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+    steps:
+      - name: Validate required signing secrets
+        shell: bash
+        run: |
+          if [ "${REQUIRE_MACOS_SIGNING:-false}" != "true" ]; then
+            echo "macOS signing is optional for this release run."
+            exit 0
+          fi
+
+          missing=()
+          for name in \
+            CSC_LINK \
+            CSC_KEY_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
+            missing+=("CERUL_NOTARIZE=1")
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing required macOS release signing inputs:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 2
+          fi
+
   installers:
     name: Build installer (${{ matrix.os }})
+    needs: macos-signing-preflight
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -182,6 +225,14 @@ jobs:
             args+=(--skip-notarization)
           fi
 
+          dmg="$(find target/electron -maxdepth 1 -type f -name '*.dmg' -print 2>/dev/null | sort | tail -1)"
+          if [ -n "$dmg" ]; then
+            args+=(--dmg "$dmg")
+          elif [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
+            echo "No DMG found under target/electron for mandatory macOS signing smoke." >&2
+            exit 1
+          fi
+
           scripts/smoke-macos-signing.sh "${args[@]}"
       - uses: actions/upload-artifact@v4
         with:
@@ -196,17 +247,25 @@ jobs:
             target/electron/*.yml
             target/electron/*.blockmap
           if-no-files-found: error
+  publish-release-assets:
+    name: Publish GitHub release assets
+    needs: installers
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
       - name: Publish GitHub release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            target/electron/*.dmg
-            target/electron/*.zip
-            target/electron/*.exe
-            target/electron/*.AppImage
-            target/electron/*.deb
-            target/electron/*.rpm
-            target/electron/*.yml
-            target/electron/*.blockmap
+            release-assets/**/*.dmg
+            release-assets/**/*.zip
+            release-assets/**/*.exe
+            release-assets/**/*.AppImage
+            release-assets/**/*.deb
+            release-assets/**/*.rpm
+            release-assets/**/*.yml
+            release-assets/**/*.blockmap
