@@ -74,7 +74,7 @@ if [ ! -x "$CURL_BIN" ]; then
 fi
 
 if [ -z "$DMG" ]; then
-  if [ -d "$ROOT/target" ]; then
+  if [ -d "$ROOT/target/electron" ]; then
     DMG="$(find "$ROOT/target/electron" -maxdepth 2 -name "*.dmg" -type f -print 2>/dev/null | sort | tail -1)"
   fi
 fi
@@ -104,7 +104,8 @@ emit_result() {
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ mount $DMG and copy Cerul.app to a temporary install directory"
-  echo "+ verify bundled third-party/$TARGET_TRIPLE/ffmpeg and yt-dlp"
+  echo "+ verify bundled third-party/$TARGET_TRIPLE/ffmpeg and yt-dlp are present and runnable"
+  echo "+ verify bundled macOS ffmpeg dependencies use app-relative loader paths"
   echo "+ verify Contents/Resources/bin/cerul-api is executable"
   echo "+ launch installed Electron app with isolated HOME and stripped PATH"
   echo "+ poll $API_HEALTH_URL for installed runtime health"
@@ -170,6 +171,7 @@ fi
 
 check_bundled_binary() {
   local name="$1"
+  shift
   local path="$APP_PATH/Contents/Resources/third-party/$TARGET_TRIPLE/$name"
 
   if [ ! -f "$path" ]; then
@@ -181,10 +183,63 @@ check_bundled_binary() {
     echo "Bundled $name is not executable: $path." >&2
     exit 1
   fi
+
+  if [ "$#" -gt 0 ] && ! run_bundled_binary "$path" "$@"; then
+    echo "Bundled $name is not runnable: $path" >&2
+    exit 1
+  fi
 }
 
-check_bundled_binary "ffmpeg"
-check_bundled_binary "yt-dlp"
+run_bundled_binary() {
+  local path="$1"
+  shift
+
+  "$path" "$@" >/dev/null 2>&1 &
+  local pid="$!"
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid"
+      return $?
+    fi
+    sleep 1
+  done
+
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  return 124
+}
+
+check_macos_loader_deps() {
+  local path="$1"
+  local loader_dir
+  loader_dir="$(cd "$(dirname "$path")" && pwd)"
+  local dep dep_path
+
+  while IFS= read -r dep; do
+    case "$dep" in
+      /usr/lib/*|/System/Library/*)
+        ;;
+      @loader_path/*)
+        dep_path="$loader_dir/${dep#@loader_path/}"
+        if [ ! -f "$dep_path" ]; then
+          echo "Bundled binary dependency is missing: $path -> $dep ($dep_path)" >&2
+          exit 1
+        fi
+        ;;
+      *)
+        echo "Bundled binary has an unbundled macOS dependency: $path -> $dep" >&2
+        exit 1
+        ;;
+    esac
+  done < <(otool -L "$path" 2>/dev/null | awk 'NR > 1 { print $1 }')
+}
+
+FFMPEG_PATH="$APP_PATH/Contents/Resources/third-party/$TARGET_TRIPLE/ffmpeg"
+if [ "$(uname -s)" = "Darwin" ]; then
+  check_macos_loader_deps "$FFMPEG_PATH"
+fi
+check_bundled_binary "ffmpeg" -version
+check_bundled_binary "yt-dlp" --version
 
 json_escape() {
   local value="$1"

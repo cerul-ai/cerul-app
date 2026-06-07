@@ -6,17 +6,23 @@ DMG=""
 APP=""
 EXPECTED_TEAM_ID="${APPLE_TEAM_ID:-}"
 SKIP_NOTARIZATION=0
+ALLOW_AD_HOC=0
 DRY_RUN=0
 MOUNT_DIR=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/smoke-macos-signing.sh [--dmg <path>] [--app <path>] [--expected-team-id <id>] [--skip-notarization] [--dry-run]
+Usage: scripts/smoke-macos-signing.sh [--dmg <path>] [--app <path>] [--expected-team-id <id>] [--allow-ad-hoc] [--skip-notarization] [--dry-run]
 
 Verifies the macOS public-release signing gate. With --dmg, the script mounts
 the image, verifies the embedded Cerul.app Developer ID signature, checks
 Gatekeeper assessment, and validates the stapled notarization ticket. With
 --app, only the app signature/Gatekeeper checks run unless --dmg is also set.
+
+Use --allow-ad-hoc only for unsigned internal/alpha artifacts. It still verifies
+that the app bundle has a complete code signature, but accepts an ad-hoc
+signature and skips Gatekeeper/notarization acceptance checks because macOS is
+expected to show "unidentified developer" for that distribution mode.
 EOF
 }
 
@@ -33,6 +39,10 @@ while [ "$#" -gt 0 ]; do
     --expected-team-id)
       EXPECTED_TEAM_ID="${2:?missing Apple team id}"
       shift 2
+      ;;
+    --allow-ad-hoc)
+      ALLOW_AD_HOC=1
+      shift
       ;;
     --skip-notarization)
       SKIP_NOTARIZATION=1
@@ -115,8 +125,13 @@ fi
 run codesign --verify --deep --strict --verbose=2 "$APP"
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ codesign -dv --verbose=4 $APP"
-  identity="Authority=Developer ID Application: dry run
+  if [ "$ALLOW_AD_HOC" -eq 1 ]; then
+    identity="Signature=adhoc
+TeamIdentifier=not set"
+  else
+    identity="Authority=Developer ID Application: dry run
 TeamIdentifier=${EXPECTED_TEAM_ID:-DRYRUNTEAM}"
+  fi
 else
   identity="$(
     codesign -dv --verbose=4 "$APP" 2>&1 || true
@@ -124,12 +139,24 @@ else
 fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
-  if ! printf '%s\n' "$identity" | grep -q '^Authority=Developer ID Application:'; then
+  if printf '%s\n' "$identity" | grep -q '^Authority=Developer ID Application:'; then
+    signing_mode="developer_id"
+  elif [ "$ALLOW_AD_HOC" -eq 1 ] &&
+    printf '%s\n' "$identity" | grep -q '^Signature=adhoc$'; then
+    signing_mode="ad_hoc"
+  else
     echo "Cerul.app is not signed with a Developer ID Application certificate." >&2
+    if [ "$ALLOW_AD_HOC" -eq 1 ]; then
+      echo "Cerul.app is also not ad-hoc signed; unsigned alpha artifacts must still have a valid ad-hoc signature." >&2
+    fi
     printf '%s\n' "$identity" >&2
     exit 1
   fi
+else
+  signing_mode="$([ "$ALLOW_AD_HOC" -eq 1 ] && echo ad_hoc || echo developer_id)"
+fi
 
+if [ "$DRY_RUN" -eq 0 ] && [ "$signing_mode" = "developer_id" ]; then
   if [ -n "$EXPECTED_TEAM_ID" ] &&
     ! printf '%s\n' "$identity" | grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$"; then
     echo "Cerul.app TeamIdentifier does not match expected Apple team id $EXPECTED_TEAM_ID." >&2
@@ -138,11 +165,20 @@ if [ "$DRY_RUN" -eq 0 ]; then
   fi
 fi
 
-run spctl --assess --type execute --verbose "$APP"
+if [ "$signing_mode" = "developer_id" ]; then
+  run spctl --assess --type execute --verbose "$APP"
+else
+  echo "Skipping Gatekeeper assessment for ad-hoc alpha artifact; macOS is expected to report an unidentified developer."
+fi
 
-if [ -n "$DMG" ] && [ "$SKIP_NOTARIZATION" -eq 0 ]; then
+if [ -n "$DMG" ] && [ "$SKIP_NOTARIZATION" -eq 0 ] && [ "$signing_mode" = "developer_id" ]; then
   run spctl --assess --type open --context context:primary-signature --verbose "$DMG"
   run xcrun stapler validate "$DMG"
 fi
 
-echo "macos_signing_smoke app=$APP dmg=${DMG:-none} notarization_checked=$((1 - SKIP_NOTARIZATION))"
+notarization_checked=0
+if [ "$signing_mode" = "developer_id" ]; then
+  notarization_checked=$((1 - SKIP_NOTARIZATION))
+fi
+
+echo "macos_signing_smoke app=$APP dmg=${DMG:-none} signing_mode=$signing_mode notarization_checked=$notarization_checked"

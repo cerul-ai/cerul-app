@@ -13,8 +13,10 @@ Usage: scripts/fetch-binaries.sh [--target <triple>] [--force] [--dry-run]
 Stages ffmpeg, yt-dlp, and qdrant into third-party/<target-triple>/ for desktop packaging.
 
 ffmpeg is copied from PATH unless CERUL_FFMPEG_URL or a target-specific
-CERUL_FFMPEG_URL_<TARGET> is set. The URL may point to a binary, .zip, .tar.gz,
-or .tar.xz archive containing an ffmpeg executable.
+CERUL_FFMPEG_URL_<TARGET> is set. On macOS, non-system dynamic libraries are
+copied next to the staged ffmpeg binary and rewritten to relative load paths.
+The URL may point to a binary, .zip, .tar.gz, or .tar.xz archive containing an
+ffmpeg executable.
 
 qdrant is downloaded from official Qdrant GitHub releases unless
 CERUL_QDRANT_DOWNLOAD_URL or a target-specific
@@ -158,6 +160,17 @@ target_specific_ffmpeg_url() {
   printf '%s' "${!env_name:-${CERUL_FFMPEG_URL:-}}"
 }
 
+ffmpeg_url() {
+  local override
+  override="$(target_specific_ffmpeg_url)"
+  if [ -n "$override" ]; then
+    echo "$override"
+    return 0
+  fi
+
+  return 1
+}
+
 target_specific_qdrant_url() {
   local env_name="CERUL_QDRANT_DOWNLOAD_URL_$(sanitize_env_target "$TARGET")"
   printf '%s' "${!env_name:-${CERUL_QDRANT_DOWNLOAD_URL:-}}"
@@ -204,6 +217,199 @@ stage_path_tool() {
   run chmod 0755 "$dest"
 }
 
+macos_rpaths() {
+  local binary="$1"
+  otool -l "$binary" 2>/dev/null | awk '
+    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+    in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+  '
+}
+
+resolve_macos_dependency() {
+  local dep="$1"
+  local loader="$2"
+  local loader_dir
+  loader_dir="$(cd "$(dirname "$loader")" && pwd)"
+
+  case "$dep" in
+    /usr/lib/*|/System/Library/*)
+      return 1
+      ;;
+    @loader_path/*)
+      local path="$loader_dir/${dep#@loader_path/}"
+      [ -f "$path" ] && echo "$path"
+      ;;
+    @executable_path/*)
+      local path="$loader_dir/${dep#@executable_path/}"
+      [ -f "$path" ] && echo "$path"
+      ;;
+    @rpath/*)
+      local suffix="${dep#@rpath/}"
+      local rpath
+      while IFS= read -r rpath; do
+        rpath="${rpath//@loader_path/$loader_dir}"
+        rpath="${rpath//@executable_path/$loader_dir}"
+        local path="$rpath/$suffix"
+        [ -f "$path" ] && echo "$path" && return 0
+      done < <(macos_rpaths "$loader")
+      ;;
+    /*)
+      [ -f "$dep" ] && echo "$dep"
+      ;;
+  esac
+}
+
+is_macho() {
+  file "$1" 2>/dev/null | grep -q 'Mach-O'
+}
+
+macos_staged_binary_has_unbundled_deps() {
+  local binary="$1"
+  local dep
+  while IFS= read -r dep; do
+    case "$dep" in
+      /usr/lib/*|/System/Library/*|@loader_path/lib/*)
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+  done < <(otool -L "$binary" 2>/dev/null | awk 'NR > 1 { print $1 }')
+
+  return 1
+}
+
+rewrite_macos_dependency() {
+  local binary="$1"
+  local from="$2"
+  local to="$3"
+
+  install_name_tool -change "$from" "$to" "$binary" >/dev/null 2>&1 || true
+}
+
+sign_macos_macho() {
+  local path="$1"
+  if is_macho "$path"; then
+    codesign --force --sign - "$path" >/dev/null 2>&1 || true
+  fi
+}
+
+stage_macos_runtime_libraries() {
+  local root_source="$1"
+  local root_staged="$2"
+  local lib_dir
+  lib_dir="$(dirname "$root_staged")/lib"
+  local tmp queue seen
+  tmp="$(mktemp -d)"
+  queue="$tmp/queue"
+  seen="$tmp/seen"
+
+  run mkdir -p "$lib_dir"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "+ stage non-system macOS runtime libraries for $root_source into $lib_dir"
+    rm -rf "$tmp"
+    return 0
+  fi
+
+  printf '%s\t%s\n' "$root_source" "$root_staged" > "$queue"
+  : > "$seen"
+
+  while IFS="$(printf '\t')" read -r current_source current_staged; do
+    [ -f "$current_source" ] || continue
+    [ -f "$current_staged" ] || continue
+    if grep -qxF "$current_staged" "$seen"; then
+      continue
+    fi
+    printf '%s\n' "$current_staged" >> "$seen"
+
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      local resolved
+      resolved="$(resolve_macos_dependency "$dep" "$current_source" || true)"
+      [ -n "$resolved" ] || continue
+
+      local dep_name dest current_name replacement
+      dep_name="$(basename "$resolved")"
+      current_name="$(basename "$current_staged")"
+      if [ "$dep_name" = "$current_name" ]; then
+        continue
+      fi
+
+      dest="$lib_dir/$dep_name"
+      if [ ! -f "$dest" ]; then
+        cp -L "$resolved" "$dest"
+        chmod 0755 "$dest"
+        xattr -cr "$dest" >/dev/null 2>&1 || true
+        echo "Staged macOS runtime library: $dest"
+      fi
+      if [ "$current_staged" = "$root_staged" ]; then
+        replacement="@loader_path/lib/$dep_name"
+      else
+        replacement="@loader_path/$dep_name"
+      fi
+      rewrite_macos_dependency "$current_staged" "$dep" "$replacement"
+      printf '%s\t%s\n' "$resolved" "$dest" >> "$queue"
+    done < <(otool -L "$current_source" 2>/dev/null | awk 'NR > 1 { print $1 }')
+
+    if [ "$current_staged" != "$root_staged" ]; then
+      install_name_tool -id "@loader_path/$(basename "$current_staged")" "$current_staged" >/dev/null 2>&1 || true
+    fi
+  done < "$queue"
+
+  while IFS= read -r lib; do
+    sign_macos_macho "$lib"
+  done < <(find "$lib_dir" -type f -print 2>/dev/null)
+  sign_macos_macho "$root_staged"
+
+  rm -rf "$tmp"
+}
+
+stage_ffmpeg() {
+  if FFMPEG_URL="$(ffmpeg_url)"; then
+    stage_from_archive "$FFMPEG_URL" "$FFMPEG_EXE" "$FFMPEG_OUT"
+    if [ "$(target_os "$TARGET")" = "macos" ]; then
+      stage_macos_runtime_libraries "$FFMPEG_OUT" "$FFMPEG_OUT"
+    fi
+  else
+    local src
+    src="$(command -v "$FFMPEG_EXE" || true)"
+    if [ -z "$src" ]; then
+      echo "Could not find $FFMPEG_EXE on PATH and no download URL was configured." >&2
+      return 1
+    fi
+    run cp "$src" "$FFMPEG_OUT"
+    run chmod 0755 "$FFMPEG_OUT"
+    if [ "$(target_os "$TARGET")" = "macos" ]; then
+      rm -rf "$(dirname "$FFMPEG_OUT")/lib"
+      stage_macos_runtime_libraries "$src" "$FFMPEG_OUT"
+    fi
+  fi
+}
+
+run_probe() {
+  local path="$1"
+  shift
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 "$path" "$@" >/dev/null 2>&1
+    return $?
+  fi
+
+  "$path" "$@" >/dev/null 2>&1 &
+  local pid="$!"
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid"
+      return $?
+    fi
+    sleep 1
+  done
+
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  return 124
+}
+
 verify_staged_binary() {
   local name="$1"
   local path="$2"
@@ -219,11 +425,36 @@ verify_staged_binary() {
     echo "Skipping runtime probe for cross-target $name binary: $path"
     return 0
   fi
-  if ! "$path" "$@" >/dev/null 2>&1; then
+  if ! run_probe "$path" "$@"; then
     echo "Staged $name is not runnable: $path" >&2
     echo "Use a standalone build or an archive that includes its required runtime libraries." >&2
     return 1
   fi
+}
+
+needs_stage_binary() {
+  local name="$1"
+  local path="$2"
+  shift 2
+
+  if [ "$FORCE" -eq 1 ] || [ ! -x "$path" ]; then
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ] || [ "$TARGET" != "$HOST_TARGET" ]; then
+    return 1
+  fi
+  if [ "$name" = "ffmpeg" ] &&
+    [ "$(target_os "$TARGET")" = "macos" ] &&
+    macos_staged_binary_has_unbundled_deps "$path"; then
+    echo "Existing staged ffmpeg has unbundled macOS dynamic library paths; staging a fresh copy: $path" >&2
+    return 0
+  fi
+  if run_probe "$path" "$@"; then
+    return 1
+  fi
+
+  echo "Existing staged $name is not runnable; staging a fresh copy: $path" >&2
+  return 0
 }
 
 OUT_DIR="$ROOT/third-party/$TARGET"
@@ -236,16 +467,11 @@ FFMPEG_OUT="$OUT_DIR/$FFMPEG_EXE"
 YTDLP_OUT="$OUT_DIR/$YTDLP_EXE"
 QDRANT_OUT="$OUT_DIR/$QDRANT_EXE"
 
-if [ "$FORCE" -eq 1 ] || [ ! -x "$FFMPEG_OUT" ]; then
-  FFMPEG_URL="$(target_specific_ffmpeg_url)"
-  if [ -n "$FFMPEG_URL" ]; then
-    stage_from_archive "$FFMPEG_URL" "$FFMPEG_EXE" "$FFMPEG_OUT"
-  else
-    stage_path_tool "$FFMPEG_EXE" "$FFMPEG_OUT"
-  fi
+if needs_stage_binary "ffmpeg" "$FFMPEG_OUT" -version; then
+  stage_ffmpeg
 fi
 
-if [ "$FORCE" -eq 1 ] || [ ! -x "$YTDLP_OUT" ]; then
+if needs_stage_binary "yt-dlp" "$YTDLP_OUT" --version; then
   if URL="$(ytdlp_url)"; then
     if ! stage_from_archive "$URL" "$YTDLP_EXE" "$YTDLP_OUT"; then
       stage_path_tool "$YTDLP_EXE" "$YTDLP_OUT"
@@ -255,7 +481,7 @@ if [ "$FORCE" -eq 1 ] || [ ! -x "$YTDLP_OUT" ]; then
   fi
 fi
 
-if [ "$FORCE" -eq 1 ] || [ ! -x "$QDRANT_OUT" ]; then
+if needs_stage_binary "qdrant" "$QDRANT_OUT" --version; then
   if URL="$(qdrant_url)"; then
     if ! stage_from_archive "$URL" "$QDRANT_EXE" "$QDRANT_OUT"; then
       stage_path_tool "$QDRANT_EXE" "$QDRANT_OUT"

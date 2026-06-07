@@ -145,25 +145,26 @@ jobs:
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
           REQUIRE_MACOS_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.require_macos_signing }}
         run: |
-          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
-              echo "APPLE_SIGNING_IDENTITY is required for signed macOS release artifacts." >&2
-              exit 2
-            fi
-            echo "Skipping signing smoke; APPLE_SIGNING_IDENTITY is not configured."
-            exit 0
+          if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "APPLE_SIGNING_IDENTITY is required for signed macOS release artifacts." >&2
+            exit 2
           fi
-          if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ] && [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ] && [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
             echo "CERUL_NOTARIZE=1 is required for signed macOS release artifacts." >&2
             exit 2
           fi
 
           args=()
-          if [ -n "${APPLE_TEAM_ID:-}" ]; then
-            args+=(--expected-team-id "$APPLE_TEAM_ID")
-          fi
-          if [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
-            args+=(--skip-notarization)
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "APPLE_SIGNING_IDENTITY is not configured; verifying ad-hoc signed alpha artifact."
+            args+=(--allow-ad-hoc --skip-notarization)
+          else
+            if [ -n "${APPLE_TEAM_ID:-}" ]; then
+              args+=(--expected-team-id "$APPLE_TEAM_ID")
+            fi
+            if [ "${CERUL_NOTARIZE:-0}" != "1" ]; then
+              args+=(--skip-notarization)
+            fi
           fi
 
           dmg="$(find target/electron -maxdepth 1 -type f -name '*.dmg' -print 2>/dev/null | sort | tail -1)"
