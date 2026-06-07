@@ -1594,16 +1594,32 @@ mod tests {
             .unwrap();
         assert_eq!(status, "indexed");
 
-        let chunk_count: i64 = conn
+        let total_chunk_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
+        let chunk_count = |chunk_type: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = ?1",
+                [chunk_type],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        let transcript_count = chunk_count("transcript");
+        let transcript_line_count = chunk_count("transcript_line");
+        let keyframe_count = chunk_count("keyframe");
+        let ocr_count = chunk_count("ocr");
+        assert_eq!(transcript_count, summary.transcript_chunks as i64);
+        assert!(transcript_line_count > 0);
+        assert_eq!(keyframe_count, summary.image_vectors as i64);
+        assert_eq!(ocr_count, 0);
         assert_eq!(
-            chunk_count,
-            (summary.transcript_chunks + summary.sampled_frames) as i64
+            total_chunk_count,
+            transcript_count + transcript_line_count + keyframe_count + ocr_count
         );
 
         let profile = vectors::ensure_active_embedding_profile(&paths).unwrap();
