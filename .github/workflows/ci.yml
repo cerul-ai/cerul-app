@@ -28,26 +28,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
         with:
-          version: 9.15.9
-          run_install: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Enable pnpm
-        shell: bash
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.9 --activate
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+          fetch-depth: 2
       - name: Decide CI depth
         id: ci-depth
         shell: bash
@@ -69,7 +51,54 @@ jobs:
           fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "CI depth: $([ "$full" = "true" ] && echo full || echo quick)"
+      - name: Detect changed areas
+        id: changes
+        shell: bash
+        run: |
+          rust=true
+          if [ "${{ steps.ci-depth.outputs.full }}" != "true" ] && [ "${{ github.event_name }}" = "pull_request" ]; then
+            rust=false
+            changed="$RUNNER_TEMP/changed-files.txt"
+            if git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+              git diff --name-only HEAD^1 HEAD > "$changed"
+            else
+              git diff-tree --no-commit-id --name-only -r HEAD > "$changed"
+            fi
+
+            if grep -Eq '^(Cargo\.toml|Cargo\.lock|crates/|mlx-sidecar/|scripts/.*(fetch-binaries|build-installers|smoke)|\.github/workflows/ci\.yml)' "$changed"; then
+              rust=true
+            fi
+
+            echo "Changed files:"
+            sed 's/^/  /' "$changed"
+          fi
+
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "Rust gate: $rust"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          cache-on-failure: true
       - name: Install native build dependencies
+        if: steps.changes.outputs.rust == 'true'
         shell: bash
         run: |
           sudo apt-get update
@@ -92,9 +121,10 @@ jobs:
       - name: Typecheck Electron shell
         run: pnpm --filter @cerul/electron-shell typecheck
       - name: Rust format check
+        if: steps.changes.outputs.rust == 'true'
         run: cargo fmt --all -- --check
       - name: Rust quick check
-        if: steps.ci-depth.outputs.full != 'true'
+        if: steps.ci-depth.outputs.full != 'true' && steps.changes.outputs.rust == 'true'
         run: cargo check --workspace --all-targets --locked
       - name: Rust clippy
         if: steps.ci-depth.outputs.full == 'true'
