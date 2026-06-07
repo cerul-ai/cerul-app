@@ -8,7 +8,7 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 candle-core = "0.10.2"
-fastembed = { version = "5.13.4", default-features = false, features = ["qwen3", "hf-hub-native-tls", "image-models", "ort-load-dynamic"] }
+fastembed = { version = "5.16.0", default-features = false, features = ["qwen3", "hf-hub-native-tls", "image-models", "ort-load-dynamic"] }
 image = "0.25"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde.workspace = true
