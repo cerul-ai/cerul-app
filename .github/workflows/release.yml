@@ -31,29 +31,6 @@ jobs:
           - os: macos-latest
             artifact: cerul-macos
             deps: brew install protobuf ffmpeg cmake
-          - os: ubuntu-22.04
-            artifact: cerul-linux
-            deps: |
-              sudo apt-get update
-              sudo apt-get install -y \
-                build-essential \
-                cmake \
-                curl \
-                dbus-x11 \
-                ffmpeg \
-                libayatana-appindicator3-dev \
-                librsvg2-dev \
-                libssl-dev \
-                patchelf \
-                protobuf-compiler \
-                ripgrep \
-                wget \
-                xauth \
-                xvfb
-              sudo apt-get install -y libwebkit2gtk-4.1-dev || sudo apt-get install -y libwebkit2gtk-4.0-dev
-          - os: windows-latest
-            artifact: cerul-windows
-            deps: choco install ffmpeg protoc cmake -y
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
