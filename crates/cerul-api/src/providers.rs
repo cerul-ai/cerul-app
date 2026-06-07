@@ -257,7 +257,7 @@ async fn run_provider_test(
     provider: &cerul_storage::providers::Provider,
     key: &str,
 ) -> anyhow::Result<()> {
-    let spec = provider_test_request(provider, &key)?;
+    let spec = provider_test_request(provider, key)?;
     let client = reqwest::Client::builder().timeout(TEST_TIMEOUT).build()?;
     let mut request = client.get(spec.url);
     for (name, value) in spec.headers {

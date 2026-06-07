@@ -186,7 +186,7 @@ pub async fn replace_item_embeddings_for_profile(
     image_records: &[VectorRecord],
     profile: &EmbeddingProfile,
 ) -> anyhow::Result<()> {
-    ensure_collections_for_profile(paths, &profile).await?;
+    ensure_collections_for_profile(paths, profile).await?;
     let collections = collection_names(paths, profile);
 
     replace_collection_item_embeddings(paths, &collections.text, item_id, text_records).await?;

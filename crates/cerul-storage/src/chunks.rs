@@ -180,6 +180,7 @@ pub async fn replace_video_embeddings_with_ocr(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn replace_video_embeddings_with_ocr_for_profile(
     paths: &AppPaths,
     item_id: &str,
@@ -341,6 +342,7 @@ pub async fn replace_media_embeddings_with_ocr(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn replace_media_embeddings_with_ocr_for_profile(
     paths: &AppPaths,
     item_id: &str,
@@ -364,6 +366,7 @@ pub async fn replace_media_embeddings_with_ocr_for_profile(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn write_media_chunks_with_ocr_and_lines(
     paths: &AppPaths,
     item_id: &str,
@@ -446,6 +449,7 @@ async fn replace_chunk_vectors(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn replace_chunk_vectors_for_profile(
     paths: &AppPaths,
     item_id: &str,

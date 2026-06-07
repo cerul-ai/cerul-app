@@ -169,6 +169,7 @@ pub fn set_video_index_status(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn set_video_multimodal_index_status(
     paths: &AppPaths,
     item_id: &str,

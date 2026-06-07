@@ -158,9 +158,7 @@ pub fn apply_download_env(models_dir: &Path, config: &ModelDownloadConfig) -> an
     if std::env::var_os("FASTEMBED_CACHE_DIR").is_none() {
         std::env::set_var("FASTEMBED_CACHE_DIR", &fastembed_cache);
     }
-    if config.source == ModelDownloadSource::Auto && std::env::var_os("HF_ENDPOINT").is_none() {
-        std::env::set_var("HF_ENDPOINT", config.effective_hf_endpoint());
-    } else if config.source != ModelDownloadSource::Auto {
+    if config.source != ModelDownloadSource::Auto || std::env::var_os("HF_ENDPOINT").is_none() {
         std::env::set_var("HF_ENDPOINT", config.effective_hf_endpoint());
     }
     Ok(())

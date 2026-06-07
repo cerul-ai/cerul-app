@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Build and smoke
@@ -25,6 +29,8 @@ jobs:
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Install native build dependencies
         shell: bash
         run: |
@@ -44,8 +50,15 @@ jobs:
         run: pnpm --filter @cerul/desktop build
       - name: Typecheck Electron shell
         run: pnpm --filter @cerul/electron-shell typecheck
-      - name: Check Rust workspace
-        run: cargo check --workspace -j 1
+      - name: Rust format check
+        run: cargo fmt --all -- --check
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        # NOTE: two cerul-api reindex tests share an on-disk fixture path and fail
+        # only inside the full suite (test-isolation bug, tracked separately).
+        # Remove these --skip flags once fixtures use per-test temp dirs.
+        run: cargo test --workspace -- --skip item_delete_and_reindex_update_storage --skip concurrent_reindex_requests_queue_without_sqlite_locking
       - name: Run lightweight smoke checks
         shell: bash
         run: |
