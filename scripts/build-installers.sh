@@ -174,7 +174,7 @@ if [ "$SKIP_FETCH" -eq 0 ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
     fetch_args+=(--dry-run)
   fi
-  run "$ROOT/scripts/fetch-binaries.sh" "${fetch_args[@]}"
+  run "$ROOT/scripts/fetch-binaries.sh" ${fetch_args[@]+"${fetch_args[@]}"}
 fi
 
 run pnpm --filter @cerul/desktop build
