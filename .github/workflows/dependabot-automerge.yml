@@ -1,0 +1,57 @@
+name: Dependabot automerge
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable:
+    name: Enable automerge for low-risk Dependabot PRs
+    if: github.actor == 'dependabot[bot]' && !github.event.pull_request.draft
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Decide eligibility
+        id: eligible
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          eligible=false
+          case "$HEAD_REF" in
+            dependabot/cargo/cargo-minor-patch-*|dependabot/npm_and_yarn/npm-minor-patch-*|dependabot/github_actions/actions-*)
+              eligible=true
+              ;;
+          esac
+
+          if [ "$eligible" != "true" ]; then
+            echo "Not eligible for automerge: $PR_TITLE ($HEAD_REF)"
+          fi
+
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+      - name: Approve and enable auto-merge
+        if: steps.eligible.outputs.eligible == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "DEPENDABOT_AUTOMERGE_TOKEN is not configured; leaving the PR for manual review."
+            exit 0
+          fi
+
+          gh pr review "$PR_URL" --approve --body "Auto-approving grouped patch/minor dependency update. Required checks still gate the merge."
+          gh pr merge "$PR_URL" --squash --auto --delete-branch
