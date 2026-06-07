@@ -46,6 +46,8 @@ jobs:
             ripgrep
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Fetch Linux runtime binaries
+        run: scripts/fetch-binaries.sh --target x86_64-unknown-linux-gnu
       - name: Build desktop renderer
         run: pnpm --filter @cerul/desktop build
       - name: Typecheck Electron shell
