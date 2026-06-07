@@ -32,7 +32,7 @@
 <br />
 
 > [!NOTE]
-> **Alpha.** Cerul App is the open-source, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.1-alpha.1**. The core is functional — desktop shell, local API, indexing pipeline, hybrid search, overlay, and tray all run today. Signed public installers are still release-gated; for now you build and run from source unless a GitHub Release explicitly lists an installer as signed/notarized. See [Status & roadmap](#status--roadmap).
+> **Alpha.** Cerul App is the open-source, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.1-alpha.2**. The core is functional — desktop shell, local API, indexing pipeline, hybrid search, overlay, and tray all run today. Signed public installers are still release-gated; for now you build and run from source unless a GitHub Release explicitly lists an installer as signed/notarized. See [Status & roadmap](#status--roadmap).
 
 ## Why Cerul App
 
