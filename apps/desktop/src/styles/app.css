@@ -161,6 +161,45 @@
   margin-top: 16px;
   flex-wrap: wrap;
 }
+.home-continue-block {
+  margin-top: 40px;
+}
+.continue-card {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 12px;
+  font-family: var(--font-sans);
+}
+.continue-card .continue-thumb {
+  position: relative;
+  flex: 0 0 132px;
+  width: 132px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+.continue-card .continue-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.continue-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.continue-cta {
+  font-size: var(--fs-meta);
+  color: var(--accent);
+}
 .home-recent-block {
   margin-top: 56px;
 }
@@ -329,6 +368,11 @@
    instead of having its bottom pinned off-screen. */
 .detail-media { position: sticky; top: 78px; max-height: calc(100vh - 98px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .detail-transcript { min-width: 0; padding-bottom: 20px; }
+.transcript-reading { max-width: 64ch; margin: 0 auto; padding: 4px 2px 24px; }
+.transcript-reading .reading-title { font-size: var(--fs-title); font-weight: var(--fw-semibold); margin: 0 0 16px; line-height: var(--lh-tight); }
+.transcript-reading .reading-para { font-size: var(--fs-body); line-height: var(--lh-relax); margin: 0 0 14px; color: var(--text); }
+.transcript-reading .reading-ts { font-size: var(--fs-caption); color: var(--text-faint); background: none; border: none; padding: 0 8px 0 0; cursor: pointer; }
+.transcript-reading .reading-ts:hover { color: var(--accent); }
 .seg-btn { display: flex; gap: 12px; width: 100%; background: transparent; border: 0; border-bottom: 1px solid var(--line); padding: 14px; margin: 0 -14px; width: calc(100% + 28px); border-radius: var(--r-md); cursor: pointer; font-family: var(--font-sans); transition: background var(--dur-fast) var(--ease); text-align: left; }
 .seg-btn:hover { background: var(--surface-2); }
 .seg-btn.hot { background: var(--accent-soft); border-bottom-color: transparent; }

@@ -223,6 +223,35 @@ const sidebarParentFor: Partial<Record<View, View>> = {
 };
 const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
+const lastOpenedStorageKey = "cerul.lastOpened.v1";
+
+function recordLastOpened(itemId: string, timestamp?: string | null) {
+  try {
+    window.localStorage.setItem(
+      lastOpenedStorageKey,
+      JSON.stringify({ itemId, timestamp: timestamp ?? null, at: Date.now() }),
+    );
+  } catch {
+    // localStorage may be unavailable; continue-watching is best-effort.
+  }
+}
+
+function readLastOpened(): { itemId: string; timestamp: string | null } | null {
+  try {
+    const raw = window.localStorage.getItem(lastOpenedStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { itemId?: unknown; timestamp?: unknown };
+    if (parsed && typeof parsed.itemId === "string") {
+      return {
+        itemId: parsed.itemId,
+        timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : null,
+      };
+    }
+  } catch {
+    // ignore malformed storage
+  }
+  return null;
+}
 
 function hasOpenModalSurface() {
   return Boolean(document.querySelector(".scrim, .modal-backdrop, [role='dialog'][aria-modal='true']"));
@@ -996,6 +1025,9 @@ function AppWorkspace() {
     setViewState(nextView);
     const hash = routeHash(nextView, routeParams);
     window.location.hash = hash;
+    if ((nextView === "item-detail" || nextView === "result-detail") && routeParams.itemId) {
+      recordLastOpened(routeParams.itemId, routeParams.timestamp ?? null);
+    }
     void persistLastRoute({
       view: nextView,
       itemId: routeParams.itemId ?? null,
@@ -1509,6 +1541,10 @@ function HomeScreen({
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const lastOpened = readLastOpened();
+  const continueItem = lastOpened
+    ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed")
+    : undefined;
 
   const statusLabel =
     activeJobs.length > 0
@@ -1606,6 +1642,13 @@ function HomeScreen({
         </div>
       </div>
 
+      {continueItem ? (
+        <div className="home-continue-block">
+          <p className="section-label" style={{ marginBottom: 10 }}>{t("home.continueWatching")}</p>
+          <ContinueWatchingCard item={continueItem} onOpen={() => onOpenItem(continueItem)} />
+        </div>
+      ) : null}
+
       <div className="home-recent-block">
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 14 }}>
           <p className="section-label" style={{ margin: 0 }}>{t("home.recentIndexed")}</p>
@@ -1636,6 +1679,28 @@ function HomeScreen({
         )}
       </div>
     </div>
+  );
+}
+
+function ContinueWatchingCard({ item, onOpen }: { item: Item; onOpen: () => void }) {
+  const t = useT();
+  return (
+    <button className="card hover continue-card" type="button" onClick={onOpen}>
+      <span className={`thumb continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+        {item.thumbnailUrl ? (
+          <img src={item.thumbnailUrl} alt="" loading="lazy" />
+        ) : (
+          <ItemModalityIcon item={item} size={24} />
+        )}
+        {item.contentType !== "image" && item.duration ? (
+          <small className="thumb-duration mono">{item.duration}</small>
+        ) : null}
+      </span>
+      <span className="continue-body">
+        <strong className="clamp1">{item.title}</strong>
+        <span className="continue-cta">{t("home.continueResume")}</span>
+      </span>
+    </button>
   );
 }
 
@@ -2040,6 +2105,35 @@ function TranscriptExportButtons({ title, lines }: { title: string; lines: Trans
   );
 }
 
+function TranscriptReadingView({
+  title,
+  lines,
+  onSeek,
+}: {
+  title: string;
+  lines: TranscriptLine[];
+  onSeek?: (timestamp: string) => void;
+}) {
+  return (
+    <article className="transcript-reading">
+      <h2 className="reading-title">{title}</h2>
+      {lines.map((line) => (
+        <p key={line.id} className="reading-para">
+          <button
+            type="button"
+            className="reading-ts mono"
+            onClick={() => onSeek?.(line.time)}
+            aria-label={line.time}
+          >
+            {line.time}
+          </button>
+          <span>{line.text}</span>
+        </p>
+      ))}
+    </article>
+  );
+}
+
 function ResultDetail({
   item,
   startChunkId,
@@ -2076,6 +2170,7 @@ function ResultDetail({
     message: string | null;
   }>({ status: "idle", message: null });
   const [clipExportStatus, setClipExportStatus] = useState<"idle" | "exporting" | "done">("idle");
+  const [readingMode, setReadingMode] = useState(false);
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
     actionsEnabled && mediaState.status !== "idle" ? mediaState.lines : transcript;
@@ -2538,20 +2633,30 @@ function ResultDetail({
                 <p className="section-label" style={{ marginBottom: 2 }}>{t("detail.transcript.eyebrow")}</p>
                 <span className="faint mono" style={{ fontSize: 12 }}>{t("detail.transcript.chunkCount", { count: transcriptLines.length })}</span>
               </div>
-              {otherMatches.length > 0 ? (
-                <div className="row gap-1" aria-label={t("detail.otherMatches")}>
-                  {otherMatches.map((timestamp) => (
-                    <button
-                      key={timestamp}
-                      type="button"
-                      className={timestamp === currentTimestamp ? "chip accent" : "chip neutral"}
-                      onClick={() => seekTo(timestamp)}
-                    >
-                      {timestamp}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
+              <div className="row gap-2" style={{ alignItems: "center" }}>
+                {otherMatches.length > 0 && !readingMode ? (
+                  <div className="row gap-1" aria-label={t("detail.otherMatches")}>
+                    {otherMatches.map((timestamp) => (
+                      <button
+                        key={timestamp}
+                        type="button"
+                        className={timestamp === currentTimestamp ? "chip accent" : "chip neutral"}
+                        onClick={() => seekTo(timestamp)}
+                      >
+                        {timestamp}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn btn-ghost sm"
+                  aria-pressed={readingMode}
+                  onClick={() => setReadingMode((on) => !on)}
+                >
+                  <span>{readingMode ? t("detail.transcriptMode") : t("detail.readingMode")}</span>
+                </button>
+              </div>
             </div>
 
             {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
@@ -2569,12 +2674,16 @@ function ResultDetail({
             {mediaState.status === "error" && mediaState.message ? (
               <InlineNotice tone="error" message={mediaState.message} />
             ) : null}
-            <TranscriptList
-              lines={transcriptLines}
-              activeTime={currentTimestamp}
-              matchTime={startTimestamp}
-              onSeek={seekTo}
-            />
+            {readingMode ? (
+              <TranscriptReadingView title={item.title} lines={transcriptLines} onSeek={seekTo} />
+            ) : (
+              <TranscriptList
+                lines={transcriptLines}
+                activeTime={currentTimestamp}
+                matchTime={startTimestamp}
+                onSeek={seekTo}
+              />
+            )}
           </div>
         </div>
       </div>
