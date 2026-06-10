@@ -39,6 +39,9 @@
 .rail-nav { display: flex; flex-direction: column; gap: 2px; }
 .rail-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
 .rail-sep { height: 1px; background: var(--line); margin: 8px 6px; }
+.rail-status { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: 11px; color: var(--text-faint); }
+.rail-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
+.rail-status-dot[data-ok="true"] { background: var(--success); }
 
 .rail-item {
   position: relative;

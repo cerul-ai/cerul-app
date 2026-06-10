@@ -1264,6 +1264,16 @@ function AppWorkspace() {
             <span className="rail-label">{t("nav.settings")}</span>
           </button>
           <AccountRailButton />
+          <div className="rail-status mono">
+            <span
+              className="rail-status-dot"
+              data-ok={screenApiStatus === "online" ? "true" : undefined}
+              aria-hidden="true"
+            />
+            <span className="rail-label">
+              {screenApiStatus === "online" ? t("shell.coreLocal") : t("shell.coreOffline")}
+            </span>
+          </div>
         </div>
       </aside>
 
