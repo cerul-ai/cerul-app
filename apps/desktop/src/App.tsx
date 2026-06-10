@@ -663,7 +663,7 @@ const transcript: TranscriptLine[] = [
   },
 ];
 
-const settingsSections = ["General", "Models", "Indexing", "Storage", "Advanced", "About"] as const;
+const settingsSections = ["Models", "General", "Indexing", "Storage", "Advanced", "About"] as const;
 type SettingsSection = (typeof settingsSections)[number];
 
 function normalizeSettingsSection(section?: string | null): SettingsSection {
@@ -673,7 +673,7 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
   if (settingsSections.includes(section as SettingsSection)) {
     return section as SettingsSection;
   }
-  return "General";
+  return "Models";
 }
 
 function viewChromeLabel(view: View, settingsSection: string) {
