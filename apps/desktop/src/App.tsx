@@ -1963,6 +1963,83 @@ function ResultsSkeletonList() {
   );
 }
 
+function parseTimeToSeconds(time: string): number {
+  const parts = time.split(":").map((part) => Number.parseInt(part, 10) || 0);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] ?? 0;
+}
+
+function secondsToSrtTimestamp(total: number): string {
+  const pad = (value: number, width = 2) =>
+    String(Math.max(0, Math.floor(value))).padStart(width, "0");
+  return `${pad(total / 3600)}:${pad((total % 3600) / 60)}:${pad(total % 60)},000`;
+}
+
+function transcriptToSrt(lines: TranscriptLine[]): string {
+  return lines
+    .map((line, index) => {
+      const start = parseTimeToSeconds(line.time);
+      const nextStart =
+        index + 1 < lines.length ? parseTimeToSeconds(lines[index + 1].time) : start + 3;
+      const end = Math.max(nextStart, start + 1);
+      return `${index + 1}\n${secondsToSrtTimestamp(start)} --> ${secondsToSrtTimestamp(end)}\n${line.text}`;
+    })
+    .join("\n\n");
+}
+
+function transcriptToMarkdown(title: string, lines: TranscriptLine[]): string {
+  const body = lines.map((line) => `**[${line.time}]** ${line.text}`).join("\n\n");
+  return `# ${title}\n\n${body}\n`;
+}
+
+function transcriptFilenameBase(title: string): string {
+  const cleaned = title.replace(/[^\p{L}\p{N}\-_ ]/gu, "").trim().slice(0, 60);
+  return cleaned || "transcript";
+}
+
+function downloadTextFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function TranscriptExportButtons({ title, lines }: { title: string; lines: TranscriptLine[] }) {
+  const t = useT();
+  if (lines.length === 0) {
+    return null;
+  }
+  const base = transcriptFilenameBase(title);
+  return (
+    <>
+      <button
+        className="btn btn-secondary sm"
+        type="button"
+        onClick={() =>
+          downloadTextFile(`${base}.md`, transcriptToMarkdown(title, lines), "text/markdown;charset=utf-8")
+        }
+      >
+        <Download size={15} />
+        <span>{t("detail.action.exportMarkdown")}</span>
+      </button>
+      <button
+        className="btn btn-secondary sm"
+        type="button"
+        onClick={() => downloadTextFile(`${base}.srt`, transcriptToSrt(lines), "text/plain;charset=utf-8")}
+      >
+        <Download size={15} />
+        <span>{t("detail.action.exportSrt")}</span>
+      </button>
+    </>
+  );
+}
+
 function ResultDetail({
   item,
   startChunkId,
@@ -2419,6 +2496,7 @@ function ResultDetail({
             )}
 
             <div className="row gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
+              <TranscriptExportButtons title={item.title} lines={transcriptLines} />
               {item.contentType === "video" ? (
                 <button
                   className="btn btn-secondary sm"
