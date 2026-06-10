@@ -1290,6 +1290,7 @@ function AppWorkspace() {
             onSubmit={submitSearch}
             onAddSource={() => setShowAddSource(true)}
             onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
+            onOpenLibrary={() => navigate("library")}
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}
@@ -1477,6 +1478,7 @@ function HomeScreen({
   onSubmit,
   onAddSource,
   onOpenItem,
+  onOpenLibrary,
   items,
   sources,
   jobs,
@@ -1489,6 +1491,7 @@ function HomeScreen({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAddSource: () => void;
   onOpenItem: (item: Item) => void;
+  onOpenLibrary: () => void;
   items: Item[];
   sources: Source[];
   jobs: api.JobRecord[];
@@ -1606,10 +1609,16 @@ function HomeScreen({
       <div className="home-recent-block">
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 14 }}>
           <p className="section-label" style={{ margin: 0 }}>{t("home.recentIndexed")}</p>
-          <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
-            <Plus size={14} />
-            <span>{t("home.addSource")}</span>
-          </button>
+          <div className="row gap-2">
+            <button className="btn btn-ghost sm" type="button" onClick={onOpenLibrary}>
+              <span>{t("home.browseLibrary")}</span>
+              <ChevronRight size={14} />
+            </button>
+            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+              <Plus size={14} />
+              <span>{t("home.addSource")}</span>
+            </button>
+          </div>
         </div>
         {recentIndexed.length > 0 ? (
           <div className="home-recent-grid">
