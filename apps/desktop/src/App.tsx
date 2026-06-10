@@ -36,7 +36,6 @@ import {
   FileVideo,
   Folder,
   HardDrive,
-  Home,
   Image as ImageIcon,
   Info,
   Library,
@@ -218,7 +217,8 @@ const viewIds: View[] = [
 // Mapping from sub-pages to their sidebar parent so the sidebar still
 // highlights the right top-level item when a sub-page is active.
 const sidebarParentFor: Partial<Record<View, View>> = {
-  "result-detail": "results",
+  "results": "home",
+  "result-detail": "home",
   "item-detail": "library",
 };
 const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
@@ -1150,8 +1150,7 @@ function AppWorkspace() {
 
   const sidebarActiveView = sidebarParentFor[view] ?? view;
   const railItems: { id: View; labelKey: string; icon: LucideIcon }[] = [
-    { id: "home", labelKey: "nav.home", icon: Home },
-    { id: "results", labelKey: "nav.results", icon: Search },
+    { id: "home", labelKey: "nav.home", icon: Search },
     { id: "library", labelKey: "nav.library", icon: Library },
     { id: "sources", labelKey: "nav.sources", icon: Database },
   ];
