@@ -235,6 +235,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             patch(providers::update_provider).delete(providers::delete_provider),
         )
         .route("/providers/:id/test", post(providers::test_provider))
+        .route(
+            "/providers/:id/models",
+            get(providers::discover_provider_models),
+        )
         .route("/settings", get(list_settings).patch(update_settings))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1793,6 +1797,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/providers", &["get", "post"]),
     ("/providers/{id}", &["patch", "delete"]),
     ("/providers/{id}/test", &["post"]),
+    ("/providers/{id}/models", &["get"]),
     ("/settings", &["get", "patch"]),
 ];
 
@@ -2313,6 +2318,35 @@ mod tests {
         assert_eq!(created_json["base_url"], "https://api.openai.com/v1");
         assert_eq!(created_json["has_key"], false);
 
+        let models_without_key = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!(
+                        "/providers/{}/models",
+                        created_json["id"].as_str().unwrap()
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(models_without_key.status(), StatusCode::BAD_REQUEST);
+
+        let local_models = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/providers/local/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(local_models.status(), StatusCode::BAD_REQUEST);
+
         let local_patch = app
             .clone()
             .oneshot(
@@ -2440,6 +2474,33 @@ mod tests {
         assert_eq!(
             asr_info.base_url.as_deref(),
             Some("https://api.groq.com/openai/v1")
+        );
+
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('asr_model', ?1, strftime('%s','now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                "#,
+                [Value::String("gemini-2.5-flash".to_string()).to_string()],
+            )
+            .unwrap();
+        }
+
+        let gateway_named_model_info = crate::api_models::routed_transcriber(paths.clone())
+            .inference_provider()
+            .unwrap();
+        assert_eq!(
+            gateway_named_model_info.provider_id.as_deref(),
+            asr_provider["id"].as_str()
+        );
+        assert_eq!(
+            gateway_named_model_info.model_id.as_deref(),
+            Some("gemini-2.5-flash")
         );
 
         let embedding_info = crate::api_models::selected_embedder(&paths)

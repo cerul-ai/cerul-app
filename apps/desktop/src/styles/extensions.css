@@ -289,6 +289,20 @@
   font-size: var(--fs-meta);
   color: var(--text-muted);
 }
+.model-custom-row,
+.model-discovery-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.model-custom-row .settings-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.model-discovery-actions {
+  flex-wrap: wrap;
+}
 
 /* ============================================================
    7 · MODEL CONNECTIONS SHELL  (.model-connections-shell / .provider-* /

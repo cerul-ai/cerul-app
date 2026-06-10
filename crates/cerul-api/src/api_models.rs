@@ -89,7 +89,16 @@ pub(crate) fn selected_transcriber(paths: &AppPaths) -> anyhow::Result<ApiTransc
     } else {
         configured_model
     };
-    let provider = if is_gemini_audio_model(&model) {
+    let provider = if let Some(provider_id) =
+        crate::setting_string(paths, "asr_provider_id")?.filter(|id| !id.is_empty())
+    {
+        provider_by_id_for_type(
+            paths,
+            &provider_id,
+            &["openai", "openai-compatible", "gemini"],
+            "ASR",
+        )?
+    } else if is_gemini_audio_model(&model) {
         provider_for_type(paths, "asr_provider_id", &["gemini"], "Gemini Audio ASR")?
     } else {
         provider_for_type(
@@ -592,6 +601,24 @@ fn provider_for_type(
                 allowed_types.join(" or ")
             )
         })
+}
+
+fn provider_by_id_for_type(
+    paths: &AppPaths,
+    provider_id: &str,
+    allowed_types: &[&str],
+    capability: &str,
+) -> anyhow::Result<cerul_storage::providers::Provider> {
+    let provider = cerul_storage::providers::get_provider(paths, provider_id)?
+        .ok_or_else(|| anyhow::anyhow!("{capability} provider {provider_id} was not found"))?;
+    anyhow::ensure!(
+        allowed_types.contains(&provider.provider_type.as_str()),
+        "{capability} provider {} has unsupported type {}; expected one of {}",
+        provider.label,
+        provider.provider_type,
+        allowed_types.join(", ")
+    );
+    Ok(provider)
 }
 
 fn missing_key_error(label: &str, capability: &str) -> anyhow::Error {

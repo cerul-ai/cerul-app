@@ -231,6 +231,12 @@ export type ProviderRecord = {
   updated_at: number | null;
 };
 
+export type ProviderModelRecord = {
+  id: string;
+  label: string;
+  source: string;
+};
+
 export type CreateProviderRequest = {
   type: Exclude<ProviderType, "local">;
   label: string;
@@ -433,6 +439,10 @@ export async function testProvider(id: string) {
   return fetchJson<ProviderRecord>(`/providers/${encodeURIComponent(id)}/test`, {
     method: "POST",
   });
+}
+
+export async function discoverProviderModels(id: string) {
+  return fetchJson<ProviderModelRecord[]>(`/providers/${encodeURIComponent(id)}/models`);
 }
 
 export async function listSettings() {

@@ -28,6 +28,10 @@ rg -qF "Inference mode" apps/desktop/src
 rg -qF "Remote API" apps/desktop/src
 rg -qF "Local model" apps/desktop/src
 rg -qF "Provider connections" apps/desktop/src
+rg -qF "Explore models" apps/desktop/src
+rg -qF "discoverProviderModels" apps/desktop/src
+rg -qF "/providers/:id/models" crates/cerul-api/src/lib.rs
+rg -qF "discover_provider_models" crates/cerul-api/src
 rg -qF "Show in Finder" apps/desktop/src
 rg -qF "Clear cache" apps/desktop/src
 rg -qF "API key for remote access" apps/desktop/src
@@ -60,4 +64,4 @@ rg -qF ".settings-stack-control" apps/desktop/src/styles/extensions.css
 rg -qF ".setting-row-control > .select" apps/desktop/src/styles/extensions.css
 rg -qF ".select:disabled" apps/desktop/src/styles/ui.css
 
-echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded storage_actions=enabled advanced_actions=remote_auth about_actions=enabled"
+echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled advanced_actions=remote_auth about_actions=enabled"

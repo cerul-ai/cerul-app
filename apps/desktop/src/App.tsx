@@ -3935,9 +3935,7 @@ function ModelsSettings({
   const asrModels = catalog?.models.filter((model) => model.capability === "asr") ?? [];
   const remoteAsrModels = asrModels.filter((model) => model.tier !== "local");
   const remoteAsrOptions = remoteAsrModels.length > 0 ? remoteAsrModels : fallbackAsrModels;
-  const activeRemoteAsr = remoteAsrOptions.some((model) => model.id === selectedAsr)
-    ? selectedAsr
-    : remoteAsrOptions[0]?.id ?? selectedAsr;
+  const activeRemoteAsr = selectedAsr.trim() || (remoteAsrOptions[0]?.id ?? "");
   const embeddingModels =
     catalog?.models.filter((model) => model.capability === "multimodal_embedding") ?? [];
   const videoUnderstandingModels =
@@ -3969,10 +3967,11 @@ function ModelsSettings({
       : localRuntimeIssue ?? t("settings.models.runtime.msg.localChecking")
     : runtimeIssue ??
       t("settings.models.runtime.msg.remoteReady");
-  const asrProviderOptions = providers.filter((provider) =>
-    activeRemoteAsr.startsWith("gemini-")
-      ? provider.type === "gemini"
-      : provider.type === "openai" || provider.type === "openai-compatible",
+  const asrProviderOptions = providers.filter(
+    (provider) =>
+      provider.type === "openai" ||
+      provider.type === "openai-compatible" ||
+      provider.type === "gemini",
   );
   const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
   const videoUnderstandingProviderOptions = providers.filter((provider) => provider.type === "gemini");
@@ -4073,59 +4072,16 @@ function ModelsSettings({
       />
 
       <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
-        <article className="model-control-card">
-          <p className="model-section-kicker">{t("settings.models.transcription.kicker")}</p>
-          {isLocalMode ? (
-            <>
-              <div className="model-select-row">
-                <select className="select" value="local" disabled>
-                  <option value="local">{localAsrLabel}</option>
-                </select>
-              </div>
-              <p className="field-hint">
-                {t("settings.models.transcription.localHelp", { model: localAsrLabel })}
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="model-select-row">
-                <select
-                  className="select"
-                  value={selectedAsrProvider}
-                  disabled={disabled || asrProviderOptions.length === 0}
-                  onChange={(event) =>
-                    void onSettingsChange({ asr_provider_id: event.currentTarget.value })
-                  }
-                >
-                  <option value="">{t("settings.models.transcription.autoProvider")}</option>
-                  {asrProviderOptions.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.label}
-                      {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="model-select-row">
-                <select
-                  className="select"
-                  value={activeRemoteAsr}
-                  disabled={disabled || remoteAsrOptions.length === 0}
-                  onChange={(event) => void onSettingsChange({ asr_model: event.currentTarget.value })}
-                >
-                  {remoteAsrOptions.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label} - {model.size_label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <p className="field-hint">
-                {t("settings.models.transcription.remoteHelp")}
-              </p>
-            </>
-          )}
-        </article>
+        <TranscriptionControl
+          isLocalMode={isLocalMode}
+          localAsrLabel={localAsrLabel}
+          providers={asrProviderOptions}
+          selectedProviderId={selectedAsrProvider}
+          models={remoteAsrOptions}
+          selectedModelId={activeRemoteAsr}
+          disabled={disabled}
+          onSettingsChange={onSettingsChange}
+        />
 
         <EmbeddingControl
           models={embeddingModels}
@@ -4180,11 +4136,257 @@ function ModelsSettings({
   );
 }
 
-const fallbackAsrModels: Pick<api.ModelCatalogRecord, "id" | "label" | "size_label">[] = [
+type AsrModelOption = Pick<api.ModelCatalogRecord, "id" | "label" | "size_label">;
+
+const customModelOptionValue = "__custom_model__";
+
+const fallbackAsrModels: AsrModelOption[] = [
   { id: "whisper-1", label: "OpenAI Whisper", size_label: "usage-based" },
   { id: "gpt-4o-mini-transcribe", label: "OpenAI GPT-4o mini transcribe", size_label: "usage-based" },
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
 ];
+
+function TranscriptionControl({
+  isLocalMode,
+  localAsrLabel,
+  providers,
+  selectedProviderId,
+  models,
+  selectedModelId,
+  disabled,
+  onSettingsChange,
+}: {
+  isLocalMode: boolean;
+  localAsrLabel: string;
+  providers: api.ProviderRecord[];
+  selectedProviderId: string;
+  models: AsrModelOption[];
+  selectedModelId: string;
+  disabled: boolean;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+}) {
+  const t = useT();
+  const [customModel, setCustomModel] = useState(selectedModelId || "whisper-1");
+  const [discoveredModels, setDiscoveredModels] = useState<api.ProviderModelRecord[]>([]);
+  const [discoveredProviderId, setDiscoveredProviderId] = useState<string | null>(null);
+  const [action, setAction] = useState<{
+    status: "idle" | "running" | "done" | "error";
+    message: string | null;
+  }>({ status: "idle", message: null });
+
+  useEffect(() => {
+    setCustomModel(selectedModelId || "whisper-1");
+  }, [selectedModelId]);
+
+  useEffect(() => {
+    setDiscoveredModels([]);
+    setDiscoveredProviderId(null);
+    setAction({ status: "idle", message: null });
+  }, [selectedProviderId]);
+
+  const activeProviderId = providers.some((provider) => provider.id === selectedProviderId)
+    ? selectedProviderId
+    : "";
+  const providerForDiscovery =
+    providers.find((provider) => provider.id === activeProviderId) ??
+    providers.find((provider) => provider.has_key) ??
+    providers[0] ??
+    null;
+  const discoveredOptions = discoveredModels.map((model) => ({
+    id: model.id,
+    label: model.label || model.id,
+    size_label: model.source || "provider",
+  }));
+  const mergedModels = mergeAsrModelOptions(models, discoveredOptions);
+  const selectedKnown = mergedModels.some((model) => model.id === selectedModelId);
+  const modelSelectValue = selectedKnown ? selectedModelId : customModelOptionValue;
+  const providerLabel =
+    providerForDiscovery?.label ?? t("settings.models.transcription.providerFallback");
+
+  async function selectProvider(providerId: string) {
+    setDiscoveredModels([]);
+    setDiscoveredProviderId(null);
+    await onSettingsChange({ asr_provider_id: providerId });
+  }
+
+  async function selectModel(modelId: string) {
+    if (modelId === customModelOptionValue) {
+      return;
+    }
+    setCustomModel(modelId);
+    await onSettingsChange({ asr_model: modelId });
+  }
+
+  async function saveCustomModel() {
+    const model = customModel.trim();
+    if (!model) {
+      setAction({ status: "error", message: t("settings.models.transcription.error.modelEmpty") });
+      return;
+    }
+    setAction({
+      status: "running",
+      message: t("settings.models.transcription.status.savingCustom"),
+    });
+    try {
+      await onSettingsChange({ asr_model: model });
+      setAction({ status: "done", message: t("settings.models.transcription.status.savedCustom") });
+    } catch (err) {
+      setAction({ status: "error", message: errorMessage(err) });
+    }
+  }
+
+  async function exploreProviderModels() {
+    if (!providerForDiscovery) {
+      setAction({ status: "error", message: t("settings.models.transcription.error.noProvider") });
+      return;
+    }
+    if (!providerForDiscovery.has_key) {
+      setAction({ status: "error", message: t("settings.models.transcription.error.noKey") });
+      return;
+    }
+    setAction({
+      status: "running",
+      message: t("settings.models.transcription.status.exploring", {
+        provider: providerForDiscovery.label,
+      }),
+    });
+    try {
+      const models = await api.discoverProviderModels(providerForDiscovery.id);
+      setDiscoveredModels(models);
+      setDiscoveredProviderId(providerForDiscovery.id);
+      setAction({
+        status: "done",
+        message:
+          models.length > 0
+            ? t("settings.models.transcription.status.explored", {
+                count: models.length,
+                provider: providerForDiscovery.label,
+              })
+            : t("settings.models.transcription.status.exploredEmpty", {
+                provider: providerForDiscovery.label,
+              }),
+      });
+    } catch (err) {
+      setAction({ status: "error", message: errorMessage(err) });
+    }
+  }
+
+  return (
+    <article className="model-control-card">
+      <p className="model-section-kicker">{t("settings.models.transcription.kicker")}</p>
+      {isLocalMode ? (
+        <>
+          <div className="model-select-row">
+            <select className="select" value="local" disabled>
+              <option value="local">{localAsrLabel}</option>
+            </select>
+          </div>
+          <p className="field-hint">
+            {t("settings.models.transcription.localHelp", { model: localAsrLabel })}
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="model-select-row">
+            <select
+              className="select"
+              value={activeProviderId}
+              disabled={disabled || providers.length === 0}
+              onChange={(event) => void selectProvider(event.currentTarget.value)}
+            >
+              <option value="">{t("settings.models.transcription.autoProvider")}</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.label}
+                  {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="model-select-row">
+            <select
+              className="select"
+              value={modelSelectValue}
+              disabled={disabled}
+              onChange={(event) => void selectModel(event.currentTarget.value)}
+            >
+              {mergedModels.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label} - {model.size_label}
+                </option>
+              ))}
+              <option value={customModelOptionValue}>
+                {selectedKnown
+                  ? t("settings.models.transcription.customOption")
+                  : t("settings.models.transcription.customSelected", { model: selectedModelId })}
+              </option>
+            </select>
+          </div>
+          <div className="model-custom-row">
+            <input
+              className="settings-input"
+              value={customModel}
+              disabled={disabled}
+              placeholder={t("settings.models.transcription.customPlaceholder")}
+              aria-label={t("settings.models.transcription.customAria")}
+              onChange={(event) => setCustomModel(event.currentTarget.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-secondary sm"
+              disabled={disabled || action.status === "running" || !customModel.trim()}
+              onClick={() => void saveCustomModel()}
+            >
+              <Check size={16} />
+              <span>{t("settings.models.transcription.useCustom")}</span>
+            </button>
+          </div>
+          <div className="model-discovery-actions">
+            <button
+              type="button"
+              className="btn btn-secondary sm"
+              disabled={
+                disabled ||
+                action.status === "running" ||
+                !providerForDiscovery ||
+                !providerForDiscovery.has_key
+              }
+              onClick={() => void exploreProviderModels()}
+            >
+              <RefreshCcw size={16} />
+              <span>{t("settings.models.transcription.explore")}</span>
+            </button>
+            {discoveredProviderId ? (
+              <span className="field-hint">
+                {t("settings.models.transcription.lastExplored", { provider: providerLabel })}
+              </span>
+            ) : null}
+          </div>
+          <p className="field-hint">{t("settings.models.transcription.remoteHelp")}</p>
+          {action.message ? (
+            <InlineNotice
+              tone={action.status === "error" ? "error" : "muted"}
+              message={action.message}
+            />
+          ) : null}
+        </>
+      )}
+    </article>
+  );
+}
+
+function mergeAsrModelOptions(base: AsrModelOption[], discovered: AsrModelOption[]) {
+  const seen = new Set<string>();
+  const merged: AsrModelOption[] = [];
+  for (const model of [...base, ...discovered]) {
+    if (!model.id || seen.has(model.id)) {
+      continue;
+    }
+    seen.add(model.id);
+    merged.push(model);
+  }
+  return merged;
+}
 
 function InferenceModeOverview({
   inferenceMode,
