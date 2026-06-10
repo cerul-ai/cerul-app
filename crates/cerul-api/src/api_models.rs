@@ -158,7 +158,7 @@ pub(crate) fn profiled_embedder(
 }
 
 pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<QueryEmbedding> {
-    if effective_query_inference_mode(paths) == "local" {
+    if effective_query_inference_mode(paths)? == "local" {
         let profile = cerul_storage::vectors::embedding_profile_for_inference_mode(paths, "local")?;
         let embedder = local_query_sidecar(paths)?;
         let mut vectors = embedder.embed_texts(&[query.to_string()])?;
@@ -182,18 +182,9 @@ pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<Query
     Ok(QueryEmbedding { vector, profile })
 }
 
-fn effective_query_inference_mode(paths: &AppPaths) -> String {
+fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
     let runtime = crate::models::model_runtime_status(paths);
-    match query_inference_mode(paths, &runtime) {
-        Ok(mode) => mode,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "failed to evaluate local runtime readiness for query embedding; using remote"
-            );
-            "remote".to_string()
-        }
-    }
+    query_inference_mode(paths, &runtime)
 }
 
 fn query_inference_mode(
@@ -201,15 +192,23 @@ fn query_inference_mode(
     runtime: &crate::models::ModelRuntimeStatus,
 ) -> anyhow::Result<String> {
     let selected = selected_inference_mode(paths);
-    if selected != "local" {
-        return Ok(selected);
+    if selected == "remote" {
+        return Ok("remote".to_string());
     }
 
     crate::sync_deferred_embedding_rebuild_if_ready(paths, runtime)?;
-    if runtime.local_runtime_ready {
-        Ok("local".to_string())
-    } else {
-        Ok("remote".to_string())
+    match selected.as_str() {
+        "auto" if runtime.local_runtime_ready => Ok("local".to_string()),
+        "auto" => Ok("remote".to_string()),
+        "local" if runtime.local_runtime_ready => Ok("local".to_string()),
+        "local" => anyhow::bail!(
+            "Local-only smart processing is selected, but the local runtime is not ready: {}",
+            runtime
+                .local_runtime_error
+                .clone()
+                .unwrap_or_else(|| "local runtime unavailable".to_string())
+        ),
+        _ => Ok("remote".to_string()),
     }
 }
 
@@ -681,7 +680,7 @@ fn selected_inference_mode(paths: &AppPaths) -> String {
         .ok()
         .flatten()
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local")
+        .filter(|value| value == "local" || value == "auto")
         .unwrap_or_else(|| "remote".to_string())
 }
 
@@ -1231,14 +1230,14 @@ mod tests {
     }
 
     #[test]
-    fn query_embedding_uses_remote_until_local_runtime_ready() {
+    fn query_embedding_auto_uses_remote_until_local_runtime_ready() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+        set_setting(&paths, "inference_mode", serde_json::json!("auto"));
         set_setting(
             &paths,
             "embedding_profile_rebuild_deferred_mode",
-            serde_json::json!("local"),
+            serde_json::json!("auto"),
         );
 
         let mode = query_inference_mode(&paths, &local_runtime_status(false)).unwrap();
@@ -1246,8 +1245,21 @@ mod tests {
         assert_eq!(mode, "remote");
         assert_eq!(
             crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
-            Some("local".to_string())
+            Some("auto".to_string())
         );
+    }
+
+    #[test]
+    fn query_embedding_local_only_errors_until_local_runtime_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+
+        let error = query_inference_mode(&paths, &local_runtime_status(false)).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Local-only smart processing is selected"));
     }
 
     #[test]

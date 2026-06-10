@@ -649,7 +649,7 @@ pub(crate) fn selected_video_understanding_model_id(paths: &AppPaths) -> Option<
 fn selected_inference_mode(paths: &AppPaths) -> String {
     selected_setting(paths, "inference_mode")
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local")
+        .filter(|value| value == "local" || value == "auto")
         .unwrap_or_else(|| "remote".to_string())
 }
 

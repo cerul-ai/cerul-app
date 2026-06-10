@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
+    fs,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path as FsPath, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -137,6 +138,35 @@ pub struct JobRecord {
     pub usage: cerul_storage::UsageTotals,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlaybackPositionRecord {
+    pub item_id: String,
+    pub position_sec: f64,
+    pub timestamp: String,
+    pub chunk_id: Option<String>,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdatePlaybackPositionRequest {
+    position_sec: f64,
+    chunk_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageUsageResponse {
+    pub data_dir: String,
+    pub total_bytes: u64,
+    pub categories: Vec<StorageUsageCategory>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageUsageCategory {
+    pub key: String,
+    pub label: String,
+    pub bytes: u64,
+}
+
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
@@ -198,6 +228,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/sources/:id/resume", post(resume_source))
         .route("/items", get(list_items))
         .route("/items/:id", get(get_item).delete(remove_item))
+        .route(
+            "/items/:id/playback",
+            get(get_item_playback_position).patch(update_item_playback_position),
+        )
         .route("/items/:id/reindex", post(reindex_item))
         .route("/items/:id/chunks", get(list_item_chunks))
         .route(
@@ -211,6 +245,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/jobs", get(list_jobs))
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
+        .route("/storage/usage", get(storage_usage))
         .route("/models/catalog", get(models::model_catalog))
         .route("/models/whisper", get(models::list_whisper_models))
         .route(
@@ -638,6 +673,60 @@ async fn get_item(
     Ok(Json(item))
 }
 
+async fn get_item_playback_position(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<PlaybackPositionRecord>> {
+    let item = cerul_storage::get_item(&state.paths, &id)
+        .map_err(|_| ApiError::not_found(format!("item not found: {id}")))?;
+    Ok(Json(playback_position_from_metadata(
+        &item.id,
+        &item.metadata,
+    )))
+}
+
+async fn update_item_playback_position(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdatePlaybackPositionRequest>,
+) -> ApiResult<Json<PlaybackPositionRecord>> {
+    if !request.position_sec.is_finite() || request.position_sec < 0.0 {
+        return Err(ApiError::bad_request(
+            "position_sec must be a finite non-negative number",
+        ));
+    }
+
+    let updated_at = current_unix_seconds();
+    let position_sec = request.position_sec;
+    let chunk_id = request.chunk_id.filter(|value| !value.trim().is_empty());
+    cerul_storage::update_item_metadata(&state.paths, &id, |metadata| {
+        metadata.insert(
+            "playback_position".to_string(),
+            json!({
+                "position_sec": position_sec,
+                "timestamp": format_playback_timestamp(position_sec),
+                "chunk_id": chunk_id,
+                "updated_at": updated_at,
+            }),
+        );
+    })
+    .map_err(|error| {
+        if error.to_string().contains("item not found") {
+            ApiError::not_found(format!("item not found: {id}"))
+        } else {
+            ApiError::internal(error)
+        }
+    })?;
+
+    Ok(Json(PlaybackPositionRecord {
+        item_id: id,
+        position_sec,
+        timestamp: format_playback_timestamp(position_sec),
+        chunk_id,
+        updated_at: Some(updated_at),
+    }))
+}
+
 async fn remove_item(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -873,6 +962,10 @@ async fn usage_summary(
     Ok(Json(cerul_storage::usage_summary(&state.paths)?))
 }
 
+async fn storage_usage(State(state): State<ApiState>) -> ApiResult<Json<StorageUsageResponse>> {
+    Ok(Json(storage_usage_for_paths(&state.paths)?))
+}
+
 #[derive(Debug, Deserialize)]
 struct UsageEventsQuery {
     limit: Option<usize>,
@@ -1003,10 +1096,10 @@ fn configured_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
 }
 
 fn normalize_inference_mode(value: &str) -> String {
-    if value.trim().eq_ignore_ascii_case("local") {
-        "local".to_string()
-    } else {
-        "remote".to_string()
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => "auto".to_string(),
+        "local" => "local".to_string(),
+        _ => "remote".to_string(),
     }
 }
 
@@ -1017,8 +1110,11 @@ fn sync_inference_mode_side_effects(
 ) -> anyhow::Result<()> {
     let previous_mode = normalize_inference_mode(previous_mode);
     let next_mode = normalize_inference_mode(next_mode);
-    cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(paths, &next_mode)?;
-    if next_mode != "local" {
+    let runtime = models::model_runtime_status(paths);
+    let previous_effective = effective_inference_mode_for_runtime(&previous_mode, &runtime);
+    let next_effective = effective_inference_mode_for_runtime(&next_mode, &runtime);
+    cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(paths, &next_effective)?;
+    if next_effective != "local" {
         api_models::shutdown_local_query_sidecar();
     }
 
@@ -1026,34 +1122,55 @@ fn sync_inference_mode_side_effects(
         .as_deref()
         .map(normalize_inference_mode);
     let has_deferred_rebuild = deferred_mode.as_deref() == Some(next_mode.as_str());
-    if previous_mode == next_mode && !has_deferred_rebuild {
+    if previous_mode == next_mode && previous_effective == next_effective && !has_deferred_rebuild {
         return Ok(());
     }
 
-    if next_mode == "local" {
-        let runtime = models::model_runtime_status(paths);
-        if !runtime.local_runtime_ready {
-            set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
-            tracing::warn!(
-                previous_mode,
-                next_mode,
-                local_runtime_error = ?runtime.local_runtime_error,
-                "local inference mode selected but runtime is not ready; deferred embedding profile rebuild"
-            );
+    if next_mode == "local" && !runtime.local_runtime_ready {
+        set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
+        tracing::warn!(
+            previous_mode,
+            next_mode,
+            local_runtime_error = ?runtime.local_runtime_error,
+            "local-only inference mode selected but runtime is not ready; deferred embedding profile rebuild"
+        );
+        return Ok(());
+    }
+
+    if next_mode == "auto" && !runtime.local_runtime_ready {
+        set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
+        if previous_effective == next_effective && !has_deferred_rebuild {
             return Ok(());
         }
     }
 
     let (rebuild_items, queued_jobs) = queue_items_for_embedding_mode_rebuild(paths)?;
-    clear_deferred_embedding_rebuild_mode(paths)?;
+    if next_mode == "auto" && !runtime.local_runtime_ready {
+        set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
+    } else {
+        clear_deferred_embedding_rebuild_mode(paths)?;
+    }
     tracing::info!(
         previous_mode,
         next_mode,
+        previous_effective,
+        next_effective,
         rebuild_items,
         queued_jobs,
         "inference mode changed; queued items for embedding profile rebuild"
     );
     Ok(())
+}
+
+fn effective_inference_mode_for_runtime(
+    mode: &str,
+    runtime: &models::ModelRuntimeStatus,
+) -> String {
+    match normalize_inference_mode(mode).as_str() {
+        "local" => "local".to_string(),
+        "auto" if runtime.local_runtime_ready => "local".to_string(),
+        _ => "remote".to_string(),
+    }
 }
 
 pub(crate) fn sync_deferred_embedding_rebuild_if_ready(
@@ -1065,14 +1182,14 @@ pub(crate) fn sync_deferred_embedding_rebuild_if_ready(
     }
 
     let inference_mode = configured_inference_mode(paths)?;
-    if inference_mode != "local" {
+    if inference_mode != "local" && inference_mode != "auto" {
         return Ok(());
     }
 
     let deferred_mode = setting_string(paths, DEFERRED_EMBEDDING_REBUILD_MODE_SETTING)?
         .as_deref()
         .map(normalize_inference_mode);
-    if deferred_mode.as_deref() != Some("local") {
+    if deferred_mode.as_deref() != Some(inference_mode.as_str()) {
         return Ok(());
     }
 
@@ -1414,6 +1531,47 @@ fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
     }
 }
 
+fn playback_position_from_metadata(item_id: &str, metadata: &Value) -> PlaybackPositionRecord {
+    let position = metadata.get("playback_position").unwrap_or(&Value::Null);
+    let position_sec = position
+        .get("position_sec")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.0);
+    let timestamp = position
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format_playback_timestamp(position_sec));
+    let chunk_id = position
+        .get("chunk_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string);
+    let updated_at = position.get("updated_at").and_then(Value::as_i64);
+
+    PlaybackPositionRecord {
+        item_id: item_id.to_string(),
+        position_sec,
+        timestamp,
+        chunk_id,
+        updated_at,
+    }
+}
+
+fn format_playback_timestamp(position_sec: f64) -> String {
+    let total_seconds = position_sec.max(0.0).floor() as u64;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 fn chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChunkRecord> {
     let metadata: Option<String> = row.get(7)?;
 
@@ -1547,6 +1705,81 @@ fn safe_filename_part(value: &str) -> String {
         part = part.replace("--", "-");
     }
     part.trim_matches('-').chars().take(80).collect()
+}
+
+fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageResponse> {
+    let total_bytes = path_size(&paths.data)?;
+    let database_bytes = file_size(&paths.db)?;
+    let models_bytes = path_size(&paths.models)?;
+    let index_bytes = path_size(&paths.qdrant)?;
+    let cache_bytes = path_size(&paths.cache)?;
+    let known_bytes = database_bytes
+        .saturating_add(models_bytes)
+        .saturating_add(index_bytes)
+        .saturating_add(cache_bytes);
+    let other_bytes = total_bytes.saturating_sub(known_bytes);
+
+    Ok(StorageUsageResponse {
+        data_dir: paths.data.to_string_lossy().to_string(),
+        total_bytes,
+        categories: vec![
+            storage_category("database", "Database", database_bytes),
+            storage_category("models", "Models", models_bytes),
+            storage_category("index", "Search index", index_bytes),
+            storage_category("cache", "Cache", cache_bytes),
+            storage_category("other", "Other", other_bytes),
+        ],
+    })
+}
+
+fn storage_category(key: &str, label: &str, bytes: u64) -> StorageUsageCategory {
+    StorageUsageCategory {
+        key: key.to_string(),
+        label: label.to_string(),
+        bytes,
+    }
+}
+
+fn file_size(path: &FsPath) -> anyhow::Result<u64> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(metadata) if metadata.is_dir() => path_size(path),
+        Ok(_) => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn path_size(path: &FsPath) -> anyhow::Result<u64> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => return Ok(metadata.len()),
+        Ok(metadata) if !metadata.is_dir() => return Ok(0),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut total = 0_u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn current_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResult<Response> {
@@ -1825,6 +2058,24 @@ mod tests {
         http::{Method, Request},
     };
     use tower::ServiceExt;
+
+    fn seed_indexing_schema_version(paths: &AppPaths) {
+        let conn = cerul_storage::sqlite::open(paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?1, ?2, strftime('%s','now'))
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            "#,
+            (
+                INDEXING_SCHEMA_VERSION_SETTING,
+                Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+            ),
+        )
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn router_serves_health_and_openapi() {
@@ -2635,6 +2886,7 @@ mod tests {
             )
             .unwrap();
         }
+        seed_indexing_schema_version(&paths);
         let app = router_with_paths(paths.clone());
 
         let reindex = app
@@ -2697,6 +2949,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn item_playback_position_persists_in_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+
+        let update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/items/item-1/playback")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "position_sec": 75.4, "chunk_id": "chunk-1" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update.status(), StatusCode::OK);
+        let update = response_json(update).await;
+        assert_eq!(update["position_sec"], 75.4);
+        assert_eq!(update["timestamp"], "1:15");
+        assert_eq!(update["chunk_id"], "chunk-1");
+        assert!(update["updated_at"].as_i64().unwrap() > 0);
+
+        let get = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items/item-1/playback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::OK);
+        let get = response_json(get).await;
+        assert_eq!(get["timestamp"], "1:15");
+
+        let items = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert_eq!(
+            items[0]["metadata"]["playback_position"]["timestamp"],
+            "1:15"
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_usage_reports_data_directory_breakdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let _ = cerul_storage::sqlite::open(&paths).unwrap();
+        std::fs::write(paths.models.join("model.bin"), b"model").unwrap();
+        std::fs::write(paths.cache.join("cache.bin"), b"cache-data").unwrap();
+        std::fs::write(paths.qdrant.join("index.bin"), b"idx").unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/storage/usage")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let usage = response_json(response).await;
+        assert!(usage["total_bytes"].as_u64().unwrap() >= 18);
+        let categories = usage["categories"].as_array().unwrap();
+        let bytes_for = |key: &str| {
+            categories
+                .iter()
+                .find(|category| category["key"] == key)
+                .and_then(|category| category["bytes"].as_u64())
+                .unwrap()
+        };
+        assert_eq!(bytes_for("models"), 5);
+        assert_eq!(bytes_for("cache"), 10);
+        assert_eq!(bytes_for("index"), 3);
+        assert!(bytes_for("database") > 0);
+    }
+
+    #[tokio::test]
     async fn concurrent_reindex_requests_queue_without_sqlite_locking() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -2723,6 +3090,7 @@ mod tests {
                 .unwrap();
             }
         }
+        seed_indexing_schema_version(&paths);
         let app = router_with_paths(paths.clone());
 
         let request = |item_id: &str| {
@@ -3392,21 +3760,26 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
+for arg in "$@"; do
+  if [ "$arg" = "--flat-playlist" ]; then
   printf '{"id":"abc123","title":"First video","duration":12}\n'
   printf '{"id":"def456","title":"Second video","duration":34}\n'
-else
-  out=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-o" ]; then
-      shift
-      out="$1"
-    fi
+  exit 0
+  fi
+done
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
     shift
-  done
-  mkdir -p "$(dirname "$out")"
-  printf 'video' > "$out"
+    out="$1"
+  fi
+  shift
+done
+if [ -z "$out" ]; then
+  exit 1
 fi
+mkdir -p "$(dirname "$out")"
+printf 'video' > "$out"
 "#,
         )
         .unwrap();

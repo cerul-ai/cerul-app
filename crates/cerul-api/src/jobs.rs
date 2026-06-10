@@ -504,7 +504,7 @@ fn configured_inference_mode(paths: &AppPaths) -> String {
         .ok()
         .flatten()
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local")
+        .filter(|value| value == "local" || value == "auto")
         .unwrap_or_else(|| "remote".to_string())
 }
 
@@ -517,22 +517,30 @@ fn effective_indexing_inference_mode(paths: &AppPaths) -> String {
     let runtime = crate::models::model_runtime_status(paths);
     match indexing_inference_mode(paths, &runtime) {
         Ok(mode) => {
-            if mode != configured {
+            if configured == "auto" && mode != configured {
                 tracing::warn!(
                     configured_mode = %configured,
                     effective_mode = %mode,
                     local_runtime_error = ?runtime.local_runtime_error,
-                    "local inference mode is selected but runtime is unavailable; indexing with remote pipeline"
+                    "auto smart processing selected remote pipeline while local runtime is unavailable"
                 );
             }
             mode
         }
         Err(error) => {
-            tracing::warn!(
-                %error,
-                "failed to evaluate local runtime readiness; indexing with remote pipeline"
-            );
-            "remote".to_string()
+            if configured == "local" {
+                tracing::warn!(
+                    %error,
+                    "local-only smart processing is selected; indexing will stay on the local pipeline"
+                );
+                "local".to_string()
+            } else {
+                tracing::warn!(
+                    %error,
+                    "failed to evaluate local runtime readiness; indexing with remote pipeline"
+                );
+                "remote".to_string()
+            }
         }
     }
 }
@@ -542,15 +550,16 @@ fn indexing_inference_mode(
     runtime: &crate::models::ModelRuntimeStatus,
 ) -> anyhow::Result<String> {
     let configured = configured_inference_mode(paths);
-    if configured != "local" {
-        return Ok(configured);
+    if configured == "remote" {
+        return Ok("remote".to_string());
     }
 
     crate::sync_deferred_embedding_rebuild_if_ready(paths, runtime)?;
-    if runtime.local_runtime_ready {
-        Ok("local".to_string())
-    } else {
-        Ok("remote".to_string())
+    match configured.as_str() {
+        "auto" if runtime.local_runtime_ready => Ok("local".to_string()),
+        "auto" => Ok("remote".to_string()),
+        "local" => Ok("local".to_string()),
+        _ => Ok("remote".to_string()),
     }
 }
 
@@ -961,14 +970,14 @@ mod tests {
     }
 
     #[test]
-    fn indexing_mode_uses_remote_until_local_runtime_ready() {
+    fn indexing_auto_uses_remote_until_local_runtime_ready() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+        set_setting(&paths, "inference_mode", serde_json::json!("auto"));
         set_setting(
             &paths,
             "embedding_profile_rebuild_deferred_mode",
-            serde_json::json!("local"),
+            serde_json::json!("auto"),
         );
 
         let mode = indexing_inference_mode(&paths, &local_runtime_status(false)).unwrap();
@@ -976,8 +985,19 @@ mod tests {
         assert_eq!(mode, "remote");
         assert_eq!(
             crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
-            Some("local".to_string())
+            Some("auto".to_string())
         );
+    }
+
+    #[test]
+    fn indexing_local_only_does_not_fallback_to_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+
+        let mode = indexing_inference_mode(&paths, &local_runtime_status(false)).unwrap();
+
+        assert_eq!(mode, "local");
     }
 
     #[test]

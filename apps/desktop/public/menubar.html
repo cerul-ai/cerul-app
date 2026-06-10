@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cerul Mini Window</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          "Hanken Grotesk",
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: transparent;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: #101318;
+        background: transparent;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .panel {
+        width: 100vw;
+        height: 100vh;
+        padding: 14px;
+        background:
+          linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(242, 246, 244, 0.9)),
+          #f7faf7;
+        border: 1px solid rgba(24, 38, 33, 0.12);
+        border-radius: 16px;
+        box-shadow: 0 22px 60px rgba(18, 27, 24, 0.18);
+        overflow: hidden;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+      }
+
+      .brand img {
+        width: 24px;
+        height: 24px;
+        display: block;
+      }
+
+      .brand-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 740;
+        line-height: 1.2;
+      }
+
+      .status-pill {
+        min-height: 24px;
+        padding: 4px 9px;
+        border-radius: 999px;
+        background: #e9f4ef;
+        color: #1e5a42;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.25;
+        white-space: nowrap;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .metric {
+        min-height: 68px;
+        padding: 11px 10px;
+        border: 1px solid rgba(22, 34, 29, 0.1);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .metric-value {
+        display: block;
+        font-size: 22px;
+        font-weight: 780;
+        line-height: 1;
+        color: #17201c;
+      }
+
+      .metric-label {
+        display: block;
+        margin-top: 8px;
+        color: #65716c;
+        font-size: 11px;
+        font-weight: 650;
+        line-height: 1.2;
+      }
+
+      .progress {
+        height: 7px;
+        margin-top: 16px;
+        border-radius: 999px;
+        background: #e1e8e4;
+        overflow: hidden;
+      }
+
+      .progress-fill {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #226d4e, #d49f42);
+        transition: width 180ms ease;
+      }
+
+      .subtle {
+        min-height: 18px;
+        margin: 10px 0 0;
+        color: #6b756f;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 15px;
+      }
+
+      .action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 12px;
+        border: 1px solid rgba(22, 34, 29, 0.16);
+        border-radius: 9px;
+        background: #ffffff;
+        color: #19201d;
+        font-size: 12px;
+        font-weight: 760;
+        cursor: default;
+      }
+
+      .action.primary {
+        border-color: #226d4e;
+        background: #226d4e;
+        color: #ffffff;
+      }
+
+      .action:active {
+        transform: translateY(1px);
+      }
+
+      .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .footer-text {
+        margin: 0;
+        color: #7a847f;
+        font-size: 10px;
+        font-weight: 650;
+        line-height: 1.2;
+      }
+
+      .close {
+        width: 25px;
+        height: 25px;
+        border: 1px solid rgba(22, 34, 29, 0.12);
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.75);
+        color: #5f6964;
+        font-size: 14px;
+        line-height: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="topbar">
+        <div class="brand">
+          <img src="/brand/cerul-mark-dark.svg" alt="" />
+          <h1 class="brand-title">Cerul</h1>
+        </div>
+        <div class="status-pill" id="status">Starting</div>
+      </header>
+
+      <section class="stats" aria-label="Library status">
+        <div class="metric">
+          <span class="metric-value" id="indexed">0</span>
+          <span class="metric-label">Indexed</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="queued">0</span>
+          <span class="metric-label">Queued</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="active">0</span>
+          <span class="metric-label">Active</span>
+        </div>
+      </section>
+
+      <div class="progress" aria-hidden="true">
+        <div class="progress-fill" id="progress"></div>
+      </div>
+      <p class="subtle" id="detail">Checking local service</p>
+
+      <div class="actions">
+        <button class="action primary" type="button" data-command="show_search_overlay">Search</button>
+        <button class="action" type="button" data-command="open_main_window">Open</button>
+      </div>
+
+      <footer class="footer">
+        <p class="footer-text" id="updated">Not synced yet</p>
+        <button class="close" type="button" data-command="hide_menubar" aria-label="Close">x</button>
+      </footer>
+    </main>
+    <script type="module" src="/menubar.js"></script>
+  </body>
+</html>

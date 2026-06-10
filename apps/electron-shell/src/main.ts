@@ -10,6 +10,7 @@ import {
   nativeImage,
   net,
   protocol,
+  screen,
   shell,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -41,6 +42,7 @@ const contentSecurityPolicy = [
 
 let mainWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
+let menuBarWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let apiProcess: ChildProcessWithoutNullStreams | null = null;
 let ownsApiProcess = false;
@@ -341,6 +343,52 @@ function createOverlayWindow() {
   void overlayWindow.loadURL(`${appScheme}://${appHost}/overlay.html`);
 }
 
+function createMenuBarWindow() {
+  if (menuBarWindow) {
+    return menuBarWindow;
+  }
+  const isMac = process.platform === "darwin";
+  menuBarWindow = new BrowserWindow({
+    width: 320,
+    height: 260,
+    title: "Cerul",
+    icon: desktopAppIconPath(),
+    show: false,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    movable: true,
+    hasShadow: true,
+    roundedCorners: true,
+    vibrancy: isMac ? "popover" : undefined,
+    visualEffectState: "active",
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  secureDesktopWindow(menuBarWindow);
+  menuBarWindow.on("blur", () => {
+    menuBarWindow?.hide();
+  });
+  menuBarWindow.on("closed", () => {
+    menuBarWindow = null;
+  });
+  menuBarWindow.webContents.once("did-finish-load", () => {
+    console.log("cerul_electron_menubar_window_loaded");
+  });
+  menuBarWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
+    console.error(`Cerul menu bar window failed to load code=${code} url=${url}: ${description}`);
+  });
+  void menuBarWindow.loadURL(`${appScheme}://${appHost}/menubar.html`);
+  return menuBarWindow;
+}
+
 function secureDesktopWindow(window: BrowserWindow) {
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternalUrl(url)) {
@@ -367,14 +415,52 @@ function setupTray() {
   }
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 }));
   tray.setToolTip("Cerul");
+  tray.on("click", () => toggleMenuBarWindow());
   tray.setContextMenu(
     Menu.buildFromTemplate([
+      { label: "Mini Window", click: () => toggleMenuBarWindow({ forceShow: true }) },
       { label: "Open Cerul", click: () => focusMainWindow() },
       { label: "Search Overlay", click: () => showOverlay() },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
     ]),
   );
+}
+
+function toggleMenuBarWindow(options: { forceShow?: boolean } = {}) {
+  if (!tray) {
+    return;
+  }
+  const window = createMenuBarWindow();
+  if (!options.forceShow && window.isVisible()) {
+    window.hide();
+    return;
+  }
+  positionMenuBarWindow(window);
+  window.show();
+  window.focus();
+}
+
+function positionMenuBarWindow(window: BrowserWindow) {
+  if (!tray) {
+    return;
+  }
+  const trayBounds = tray.getBounds();
+  const windowBounds = window.getBounds();
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(trayBounds.x + trayBounds.width / 2),
+    y: Math.round(trayBounds.y + trayBounds.height / 2),
+  });
+  const workArea = display.workArea;
+  const centeredX = Math.round(trayBounds.x + trayBounds.width / 2 - windowBounds.width / 2);
+  const belowTray = Math.round(trayBounds.y + trayBounds.height + 8);
+  const aboveTray = Math.round(trayBounds.y - windowBounds.height - 8);
+  const x = Math.max(workArea.x + 8, Math.min(centeredX, workArea.x + workArea.width - windowBounds.width - 8));
+  const y =
+    belowTray + windowBounds.height <= workArea.y + workArea.height
+      ? belowTray
+      : Math.max(workArea.y + 8, aboveTray);
+  window.setBounds({ x, y, width: windowBounds.width, height: windowBounds.height });
 }
 
 function startStatusMonitor() {
@@ -1193,6 +1279,17 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
       return null;
     case "hide_overlay":
       overlayWindow?.hide();
+      return null;
+    case "hide_menubar":
+      menuBarWindow?.hide();
+      return null;
+    case "open_main_window":
+      menuBarWindow?.hide();
+      focusMainWindow();
+      return null;
+    case "show_search_overlay":
+      menuBarWindow?.hide();
+      showOverlay();
       return null;
     case "resize_overlay":
       resizeOverlay(Number(args.height ?? 0));

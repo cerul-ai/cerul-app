@@ -118,6 +118,7 @@ export type Item = {
   visualIndexMessage: string | null;
   embeddingIndexStatus: EmbeddingIndexStatus;
   embeddingIndexMessage: string | null;
+  playbackPosition: api.PlaybackPositionRecord | null;
   usage: import("./api").UsageTotals;
 };
 

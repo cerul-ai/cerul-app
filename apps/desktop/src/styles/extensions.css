@@ -2659,6 +2659,16 @@ body.overlay-body {
   font-weight: 600;
   color: var(--text);
 }
+.storage-breakdown {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+.storage-row {
+  display: grid;
+  gap: 6px;
+  font-size: var(--fs-caption);
+}
 .toggle {
   appearance: none;
   position: relative;

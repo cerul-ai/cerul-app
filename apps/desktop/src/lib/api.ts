@@ -64,6 +64,26 @@ export type UsageSummary = {
   by_capability: UsageBreakdown[];
 };
 
+export type PlaybackPositionRecord = {
+  item_id: string;
+  position_sec: number;
+  timestamp: string;
+  chunk_id: string | null;
+  updated_at: number | null;
+};
+
+export type StorageUsageCategory = {
+  key: string;
+  label: string;
+  bytes: number;
+};
+
+export type StorageUsageResponse = {
+  data_dir: string;
+  total_bytes: number;
+  categories: StorageUsageCategory[];
+};
+
 export type UsageEvent = {
   id: string;
   created_at: number | null;
@@ -309,6 +329,10 @@ export async function usageSummary() {
   return fetchJson<UsageSummary>("/usage/summary");
 }
 
+export async function storageUsage() {
+  return fetchJson<StorageUsageResponse>("/storage/usage");
+}
+
 export async function usageEvents(limit = 50) {
   return fetchJson<UsageEvent[]>(`/usage/events?limit=${encodeURIComponent(String(limit))}`);
 }
@@ -343,6 +367,20 @@ export async function reindexItem(id: string) {
       method: "POST",
     },
   );
+}
+
+export async function updatePlaybackPosition(
+  id: string,
+  positionSec: number,
+  chunkId?: string | null,
+) {
+  return fetchJson<PlaybackPositionRecord>(`/items/${encodeURIComponent(id)}/playback`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      position_sec: positionSec,
+      chunk_id: chunkId ?? null,
+    }),
+  });
 }
 
 export async function getItemUnderstanding(id: string) {

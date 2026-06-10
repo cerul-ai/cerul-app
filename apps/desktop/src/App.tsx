@@ -63,7 +63,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, ReactNode } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
 import { LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
 import {
@@ -255,6 +255,71 @@ function readLastOpened(): { itemId: string; timestamp: string | null } | null {
 
 function hasOpenModalSurface() {
   return Boolean(document.querySelector(".scrim, .modal-backdrop, [role='dialog'][aria-modal='true']"));
+}
+
+function usePlaybackPositionPersistence({
+  itemId,
+  videoRef,
+  chunkId,
+  enabled,
+}: {
+  itemId: string;
+  videoRef: RefObject<HTMLVideoElement | null>;
+  chunkId: string | null;
+  enabled: boolean;
+}) {
+  const lastSavedAtRef = useRef(0);
+  const chunkIdRef = useRef(chunkId);
+
+  useEffect(() => {
+    chunkIdRef.current = chunkId;
+  }, [chunkId]);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+
+    let disposed = false;
+    const persist = (force: boolean) => {
+      if (disposed) {
+        return;
+      }
+      const positionSec = video.currentTime;
+      if (!Number.isFinite(positionSec) || positionSec < 1) {
+        return;
+      }
+      const now = Date.now();
+      if (!force && now - lastSavedAtRef.current < 10_000) {
+        return;
+      }
+      lastSavedAtRef.current = now;
+      const timestamp = formatTimestamp(positionSec);
+      recordLastOpened(itemId, timestamp);
+      void api
+        .updatePlaybackPosition(itemId, positionSec, chunkIdRef.current)
+        .catch((error) => console.warn("failed to save playback position", error));
+    };
+    const persistThrottled = () => persist(false);
+    const persistForced = () => persist(true);
+
+    video.addEventListener("timeupdate", persistThrottled);
+    video.addEventListener("pause", persistForced);
+    video.addEventListener("ended", persistForced);
+    window.addEventListener("pagehide", persistForced);
+    return () => {
+      persistForced();
+      disposed = true;
+      video.removeEventListener("timeupdate", persistThrottled);
+      video.removeEventListener("pause", persistForced);
+      video.removeEventListener("ended", persistForced);
+      window.removeEventListener("pagehide", persistForced);
+    };
+  }, [enabled, itemId, videoRef]);
 }
 
 async function readDaemonStatus() {
@@ -496,6 +561,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -521,6 +587,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: "pending",
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -546,6 +613,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -571,6 +639,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -596,6 +665,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
 ];
@@ -1167,7 +1237,7 @@ function AppWorkspace() {
       }
       setModelDownloadState({ status: "downloading", error: null });
       await api.updateSettings({
-        inference_mode: "remote",
+        inference_mode: "auto",
         asr_model: "whisper-1",
         active_embedding_profile: "gemini-embedding-2-3072",
       });
@@ -1331,7 +1401,9 @@ function AppWorkspace() {
             setQuery={setQuery}
             onSubmit={submitSearch}
             onAddSource={() => setShowAddSource(true)}
-            onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
+            onOpenItem={(item, timestamp) =>
+              navigate("item-detail", { itemId: item.id, timestamp })
+            }
             onOpenLibrary={() => navigate("library")}
             items={visibleItems}
             sources={visibleSources}
@@ -1532,7 +1604,7 @@ function HomeScreen({
   setQuery: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAddSource: () => void;
-  onOpenItem: (item: Item) => void;
+  onOpenItem: (item: Item, timestamp?: string | null) => void;
   onOpenLibrary: () => void;
   items: Item[];
   sources: Source[];
@@ -1551,10 +1623,21 @@ function HomeScreen({
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const serverContinueItem = items
+    .filter((item) => item.status === "indexed" && item.playbackPosition?.updated_at)
+    .sort(
+      (left, right) =>
+        (right.playbackPosition?.updated_at ?? 0) - (left.playbackPosition?.updated_at ?? 0),
+    )[0];
   const lastOpened = readLastOpened();
-  const continueItem = lastOpened
-    ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed")
-    : undefined;
+  const fallbackContinueItem =
+    !serverContinueItem && lastOpened
+      ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed")
+      : undefined;
+  const continueItem = serverContinueItem ?? fallbackContinueItem;
+  const continueTimestamp =
+    continueItem?.playbackPosition?.timestamp ??
+    (continueItem?.id === lastOpened?.itemId ? lastOpened.timestamp : null);
 
   const statusLabel =
     activeJobs.length > 0
@@ -1655,7 +1738,11 @@ function HomeScreen({
       {continueItem ? (
         <div className="home-continue-block">
           <p className="section-label" style={{ marginBottom: 10 }}>{t("home.continueWatching")}</p>
-          <ContinueWatchingCard item={continueItem} onOpen={() => onOpenItem(continueItem)} />
+          <ContinueWatchingCard
+            item={continueItem}
+            timestamp={continueTimestamp}
+            onOpen={() => onOpenItem(continueItem, continueTimestamp)}
+          />
         </div>
       ) : null}
 
@@ -1692,7 +1779,15 @@ function HomeScreen({
   );
 }
 
-function ContinueWatchingCard({ item, onOpen }: { item: Item; onOpen: () => void }) {
+function ContinueWatchingCard({
+  item,
+  timestamp,
+  onOpen,
+}: {
+  item: Item;
+  timestamp: string | null;
+  onOpen: () => void;
+}) {
   const t = useT();
   return (
     <button className="card hover continue-card" type="button" onClick={onOpen}>
@@ -1708,6 +1803,7 @@ function ContinueWatchingCard({ item, onOpen }: { item: Item; onOpen: () => void
       </span>
       <span className="continue-body">
         <strong className="clamp1">{item.title}</strong>
+        {timestamp ? <span className="mono faint">{timestamp}</span> : null}
         <span className="continue-cta">{t("home.continueResume")}</span>
       </span>
     </button>
@@ -2207,6 +2303,13 @@ function ResultDetail({
       match: line.time === startTimestamp,
     }))
     .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
+
+  usePlaybackPositionPersistence({
+    itemId: item.id,
+    videoRef,
+    chunkId: mediaState.chunkId,
+    enabled: actionsEnabled && Boolean(playbackUrl),
+  });
 
   useEffect(() => {
     setCurrentTimestamp(startTimestamp);
@@ -3312,10 +3415,17 @@ function ItemDetail({
   const playableChunkId =
     item.contentType === "video"
       ? extractChunkIdFromThumbnail(item.thumbnailUrl) ??
-        (chunkState.status === "loaded" && chunkState.lines[0]?.id) ??
+        (chunkState.status === "loaded" ? chunkState.lines[0]?.id : null) ??
         null
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+
+  usePlaybackPositionPersistence({
+    itemId: item.id,
+    videoRef,
+    chunkId: playableChunkId,
+    enabled: actionsEnabled && Boolean(itemPlaybackUrl),
+  });
 
   useEffect(() => {
     setItemAction({ status: "idle", message: null });
@@ -4072,7 +4182,7 @@ function ModelsSettings({
     "video_understanding_model",
     "gemini-3.5-flash",
   );
-  const inferenceMode = settingString(settings, "inference_mode", "remote");
+  const inferenceMode = settingString(settings, "inference_mode", "auto");
   const [catalog, setCatalog] = useState<api.ModelCatalogResponse | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [modelTab, setModelTab] = useState<"setup" | "catalog">("setup");
@@ -4155,18 +4265,20 @@ function ModelsSettings({
   const localRuntimeIssue = catalog?.runtime.local_runtime_error ?? null;
   // The runtime banner reflects the selected mode. Remote provider readiness is
   // still used for remote model blockers in the catalog tab.
+  const isAutoMode = inferenceMode === "auto";
   const isLocalMode = inferenceMode === "local";
+  const effectiveLocalMode = isLocalMode || (isAutoMode && localRuntimeReady);
   const localAsrLabel =
     asrModels.find((model) => model.tier === "local")?.label ?? t("settings.models.localAsr.fallbackLabel");
-  const bannerReady = isLocalMode ? localRuntimeReady : runtimeReady;
-  const bannerBadge = isLocalMode
+  const bannerReady = isLocalMode ? localRuntimeReady : isAutoMode ? localRuntimeReady || runtimeReady : runtimeReady;
+  const bannerBadge = effectiveLocalMode
     ? localRuntimeReady
       ? t("settings.models.runtime.badge.localReady")
       : t("settings.models.runtime.badge.runtimeNeeded")
     : runtimeReady
       ? t("settings.models.runtime.badge.apiReady")
       : t("settings.models.runtime.badge.connectionNeeded");
-  const bannerMessage = isLocalMode
+  const bannerMessage = effectiveLocalMode
     ? localRuntimeReady
       ? t("settings.models.runtime.msg.localReady")
       : localRuntimeIssue ?? t("settings.models.runtime.msg.localChecking")
@@ -4180,6 +4292,14 @@ function ModelsSettings({
   );
   const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
   const videoUnderstandingProviderOptions = providers.filter((provider) => provider.type === "gemini");
+  const inferenceModeOptions = [
+    { value: "auto", label: t("settings.models.inferenceMode.auto") },
+    { value: "local", label: t("settings.models.inferenceMode.local") },
+    { value: "remote", label: t("settings.models.inferenceMode.remote") },
+  ];
+  const inferenceModeLabel =
+    inferenceModeOptions.find((option) => option.value === inferenceMode)?.label ??
+    t("settings.models.inferenceMode.auto");
   const modelGroups = [
     {
       id: "core",
@@ -4254,14 +4374,14 @@ function ModelsSettings({
           description={t("settings.models.inferenceMode.description")}
           control={
             <Segmented
-              values={[t("settings.models.inferenceMode.remote"), t("settings.models.inferenceMode.local")]}
-              value={inferenceMode === "local" ? t("settings.models.inferenceMode.local") : t("settings.models.inferenceMode.remote")}
+              values={inferenceModeOptions.map((option) => option.label)}
+              value={inferenceModeLabel}
               disabled={disabled}
-              onChange={(value) =>
-                void onSettingsChange({
-                  inference_mode: value === t("settings.models.inferenceMode.local") ? "local" : "remote",
-                })
-              }
+              onChange={(label) => {
+                const nextMode =
+                  inferenceModeOptions.find((option) => option.label === label)?.value ?? "auto";
+                void onSettingsChange({ inference_mode: nextMode });
+              }}
             />
           }
         />
@@ -4278,7 +4398,7 @@ function ModelsSettings({
 
       <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
         <TranscriptionControl
-          isLocalMode={isLocalMode}
+          isLocalMode={effectiveLocalMode}
           localAsrLabel={localAsrLabel}
           providers={asrProviderOptions}
           selectedProviderId={selectedAsrProvider}
@@ -4293,7 +4413,7 @@ function ModelsSettings({
           activeProfile={activeProfile}
           providers={embeddingProviderOptions}
           selectedProviderId={selectedEmbeddingProvider}
-          localActive={isLocalMode}
+          localActive={effectiveLocalMode}
           localRuntimeReady={localRuntimeReady}
           localRuntimeIssue={localRuntimeIssue}
           disabled={disabled}
@@ -4605,9 +4725,16 @@ function InferenceModeOverview({
   const availableBadge = t("settings.models.overview.badge.available");
   const modes = [
     {
+      id: "auto",
+      label: t("settings.models.inferenceMode.auto"),
+      badge: inferenceMode === "auto" ? activeBadge : availableBadge,
+      cost: usageSummary?.total.estimated_usd ?? 0,
+      events: usageSummary?.total.event_count ?? 0,
+    },
+    {
       id: "remote",
       label: t("settings.models.inferenceMode.remote"),
-      badge: inferenceMode === "local" ? availableBadge : activeBadge,
+      badge: inferenceMode === "remote" ? activeBadge : availableBadge,
       cost: usageSummary?.remote.estimated_usd ?? 0,
       events: usageSummary?.remote.event_count ?? 0,
     },
@@ -5252,9 +5379,33 @@ function VideoUnderstandingControl({
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const activeModelId = models.some((model) => model.id === selectedModelId)
-    ? selectedModelId
-    : models[0]?.id ?? selectedModelId;
+  const selectedKnown = models.some((model) => model.id === selectedModelId);
+  const activeModelId = selectedKnown ? selectedModelId : customModelOptionValue;
+  const [customModel, setCustomModel] = useState(selectedKnown ? "" : selectedModelId);
+
+  useEffect(() => {
+    if (!selectedKnown) {
+      setCustomModel(selectedModelId);
+    }
+  }, [selectedKnown, selectedModelId]);
+
+  async function selectModel(value: string) {
+    if (value === customModelOptionValue) {
+      if (customModel.trim()) {
+        await onSettingsChange({ video_understanding_model: customModel.trim() });
+      }
+      return;
+    }
+    await onSettingsChange({ video_understanding_model: value });
+  }
+
+  async function saveCustomModel() {
+    const next = customModel.trim();
+    if (!next) {
+      return;
+    }
+    await onSettingsChange({ video_understanding_model: next });
+  }
 
   return (
     <article className="model-control-card">
@@ -5281,10 +5432,8 @@ function VideoUnderstandingControl({
         <select
           className="select"
           value={activeModelId}
-          disabled={disabled || models.length === 0}
-          onChange={(event) =>
-            void onSettingsChange({ video_understanding_model: event.currentTarget.value })
-          }
+          disabled={disabled}
+          onChange={(event) => void selectModel(event.currentTarget.value)}
         >
           {models.length > 0 ? (
             models.map((model) => (
@@ -5293,9 +5442,32 @@ function VideoUnderstandingControl({
               </option>
             ))
           ) : (
-            <option value={activeModelId}>{t("settings.models.video.fallbackModel")}</option>
+            <option value="">{t("settings.models.video.fallbackModel")}</option>
           )}
+          <option value={customModelOptionValue}>
+            {selectedKnown
+              ? t("settings.models.video.customOption")
+              : t("settings.models.video.customSelected", { model: selectedModelId })}
+          </option>
         </select>
+      </div>
+      <div className="model-custom-row">
+        <input
+          className="settings-input"
+          value={customModel}
+          disabled={disabled}
+          placeholder={t("settings.models.video.customPlaceholder")}
+          aria-label={t("settings.models.video.customAria")}
+          onChange={(event) => setCustomModel(event.currentTarget.value)}
+        />
+        <button
+          type="button"
+          className="btn btn-secondary sm"
+          disabled={disabled || !customModel.trim()}
+          onClick={() => void saveCustomModel()}
+        >
+          {t("settings.models.transcription.customSave")}
+        </button>
       </div>
       <p className="settings-help">
         {t("settings.models.video.help")}
@@ -5426,9 +5598,21 @@ function UsageValue({
   );
 }
 
+function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
+  const labels: Record<string, string> = {
+    database: t("settings.storage.category.database"),
+    models: t("settings.storage.category.models"),
+    index: t("settings.storage.category.index"),
+    cache: t("settings.storage.category.cache"),
+    other: t("settings.storage.category.other"),
+  };
+  return labels[key] ?? fallback;
+}
+
 function StorageSettings({ disabled }: { disabled: boolean }) {
   const t = useT();
   const [locations, setLocations] = useState<StorageLocations | null>(null);
+  const [usage, setUsage] = useState<api.StorageUsageResponse | null>(null);
   const [action, setAction] = useState<{
     status: SettingsActionStatus;
     message: string | null;
@@ -5437,19 +5621,28 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
 
   useEffect(() => {
     let cancelled = false;
-    void readStorageLocations()
-      .then((value) => {
+    void Promise.all([readStorageLocations(), api.storageUsage()])
+      .then(([locationsValue, usageValue]) => {
         if (!cancelled) {
-          setLocations(value);
+          setLocations(locationsValue);
+          setUsage(usageValue);
         }
       })
       .catch((error) => {
-        console.warn("failed to read Cerul storage locations", error);
+        console.warn("failed to read Cerul storage information", error);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  async function refreshStorageUsage() {
+    try {
+      setUsage(await api.storageUsage());
+    } catch (error) {
+      console.warn("failed to refresh Cerul storage usage", error);
+    }
+  }
 
   async function runStorageAction(actionName: "reveal-data" | "clear-cache") {
     setAction({ status: "running", message: null });
@@ -5465,6 +5658,7 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
           status: "done",
           message: t("settings.storage.message.cacheCleared", { size: formatBytes(result.bytes_removed) }),
         });
+        await refreshStorageUsage();
         return;
       }
     } catch (error) {
@@ -5492,7 +5686,33 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
             </div>
           }
         />
-        <SettingRow label={t("settings.storage.cacheSize.label")} control={<ProgressBar value={58} />} />
+        <SettingRow
+          label={t("settings.storage.cacheSize.label")}
+          control={
+            <span className="settings-value">
+              {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
+            </span>
+          }
+        />
+        {usage ? (
+          <div className="storage-breakdown">
+            {usage.categories.map((category) => {
+              const pct =
+                usage.total_bytes > 0
+                  ? Math.min(100, Math.round((category.bytes / usage.total_bytes) * 100))
+                  : 0;
+              return (
+                <div className="storage-row" key={category.key}>
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <span>{storageCategoryLabel(category.key, category.label, t)}</span>
+                    <span className="mono faint">{formatBytes(category.bytes)}</span>
+                  </div>
+                  <ProgressBar value={pct} />
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
       </SettingsGroup>
       <div className="settings-actions">
         <button
