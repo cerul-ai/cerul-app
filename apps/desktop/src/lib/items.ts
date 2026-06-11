@@ -80,7 +80,7 @@ export function itemSourceKind(
 ): ItemSourceKind {
   const url = itemOriginalUrl(record);
   const platform = metadataString(record.metadata, "platform");
-  if (url && (url.includes("youtube.com") || url.includes("youtu.be"))) {
+  if (url && urlHostMatches(url, ["youtube.com", "youtu.be"])) {
     return "youtube";
   }
   if (
@@ -91,7 +91,7 @@ export function itemSourceKind(
   }
   if (
     platform === "bilibili" ||
-    (url && (url.includes("bilibili.com") || url.includes("b23.tv")))
+    (url && urlHostMatches(url, ["bilibili.com", "b23.tv"]))
   ) {
     return "web_video";
   }
@@ -102,6 +102,15 @@ export function itemSourceKind(
     return "folder";
   }
   return "unknown";
+}
+
+function urlHostMatches(value: string, hosts: string[]) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^www\./, "").toLowerCase();
+    return hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+  } catch {
+    return false;
+  }
 }
 
 export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
