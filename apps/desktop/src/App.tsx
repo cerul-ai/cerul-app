@@ -24,6 +24,7 @@
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleDot,
   Clock,
@@ -42,6 +43,7 @@ import {
   ListChecks,
   ListFilter,
   Loader2,
+  Lock,
   Mic,
   MoreHorizontal,
   Eye,
@@ -62,7 +64,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
 import { LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
@@ -72,7 +74,6 @@ import {
   formatBytes,
   formatDuration,
   formatTimestamp,
-  formatUnixTime,
   formatUsd,
   metadataString,
   parseTimestampSeconds,
@@ -89,6 +90,7 @@ import {
   EmptyState,
   InlineNotice,
 } from "./components/leaf";
+import { useClickOutside, useEscapeToClose } from "./lib/use-dismissable";
 import {
   ProgressBar,
   StatusBadge,
@@ -97,7 +99,7 @@ import {
   highlightSnippet,
 } from "./components/transcript";
 import { DetailIssuePanel } from "./components/detail-issue-panel";
-import { CerulPlayer, type PlayerMarker } from "./components/player";
+import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "./components/player";
 import {
   ItemCard,
   ItemModalityIcon,
@@ -254,7 +256,9 @@ function readLastOpened(): { itemId: string; timestamp: string | null } | null {
 }
 
 function hasOpenModalSurface() {
-  return Boolean(document.querySelector(".scrim, .modal-backdrop, [role='dialog'][aria-modal='true']"));
+  // Every transient surface must be reachable from this selector, otherwise
+  // page-level Escape handlers fire underneath it (e.g. detail "back").
+  return Boolean(document.querySelector(".scrim, .account-pop, .menu, [role='dialog']"));
 }
 
 function usePlaybackPositionPersistence({
@@ -546,7 +550,7 @@ const items: Item[] = [
     source: "Andrej Karpathy",
     sourceKind: "youtube",
     duration: "1 h 18 m",
-    indexedAt: "Today",
+    indexedAt: "今天",
     indexedAtEpoch: 1780444800,
     status: "indexed",
     error: null,
@@ -572,7 +576,7 @@ const items: Item[] = [
     source: "Talks 2026",
     sourceKind: "folder",
     duration: "49 m",
-    indexedAt: "Yesterday",
+    indexedAt: "昨天",
     indexedAtEpoch: 1780358400,
     status: "indexing",
     error: null,
@@ -598,7 +602,7 @@ const items: Item[] = [
     source: "Engineering Notes",
     sourceKind: "podcast",
     duration: "56 m",
-    indexedAt: "May 12",
+    indexedAt: "5月12日",
     indexedAtEpoch: 1778544000,
     status: "indexed",
     error: null,
@@ -624,7 +628,7 @@ const items: Item[] = [
     source: "Design Reviews",
     sourceKind: "folder",
     duration: "23 m",
-    indexedAt: "May 11",
+    indexedAt: "5月11日",
     indexedAtEpoch: 1778457600,
     status: "failed",
     error: "The original file moved or was deleted from ~/Movies/design-reviews/multimodal-search-review.mp4.",
@@ -650,7 +654,7 @@ const items: Item[] = [
     source: "Andrej Karpathy",
     sourceKind: "youtube",
     duration: "41 m",
-    indexedAt: "May 10",
+    indexedAt: "5月10日",
     indexedAtEpoch: 1778371200,
     status: "failed",
     error: "yt-dlp fetch failed: video unavailable or private.",
@@ -1027,7 +1031,7 @@ function AppWorkspace() {
         ]);
       const mappedItems = itemRecords.map((record) => mapItemRecord(record, jobRecords, t));
       const nextData: AppData = {
-        sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems)),
+        sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
         jobs: jobRecords,
         settings,
@@ -1637,7 +1641,9 @@ function HomeScreen({
   const continueItem = serverContinueItem ?? fallbackContinueItem;
   const continueTimestamp =
     continueItem?.playbackPosition?.timestamp ??
-    (continueItem?.id === lastOpened?.itemId ? lastOpened.timestamp : null);
+    (continueItem && lastOpened && continueItem.id === lastOpened.itemId
+      ? lastOpened.timestamp
+      : null);
 
   const statusLabel =
     activeJobs.length > 0
@@ -1829,7 +1835,7 @@ function RecentIndexedCard({ item, onOpen }: { item: Item; onOpen: () => void })
         <span className="recent-card-meta muted">
           {item.contentType !== "video" ? <ItemModalityIcon item={item} size={13} /> : null}
           <span>
-            {item.indexedAt === "Never"
+            {item.indexedAtEpoch === null
               ? t("library.itemCard.notIndexed")
               : t("library.itemCard.indexedAt", { when: item.indexedAt })}
           </span>
@@ -2264,6 +2270,14 @@ function ResultDetail({
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [isPlaying, setIsPlaying] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
+  const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
+    setPlayerChapters(
+      chapters
+        .filter((chapter) => chapter.start_sec !== null)
+        .map((chapter) => ({ seconds: chapter.start_sec as number, title: chapter.title })),
+    );
+  }, []);
   const shouldAutoPlayRef = useRef(true);
   const [mediaState, setMediaState] = useState<{
     status: "idle" | "loading" | "ready" | "error";
@@ -2649,9 +2663,9 @@ function ResultDetail({
           <div className="detail-media">
             <div className="row gap-2" style={{ marginBottom: 12, flexWrap: "wrap" }}>
               <span className="chip neutral">{item.source}</span>
-              <span className="chip success">
+              <span className={item.indexedAtEpoch === null ? "chip neutral" : "chip success"}>
                 <span className="dot" />
-                {item.indexedAt === "Never" ? t("detail.notIndexed") : t("detail.indexedAt", { when: item.indexedAt })}
+                {item.indexedAtEpoch === null ? t("detail.notIndexed") : t("detail.indexedAt", { when: item.indexedAt })}
               </span>
               <span className="mono faint" style={{ fontSize: 12 }}>{item.duration}</span>
             </div>
@@ -2674,6 +2688,7 @@ function ResultDetail({
                 videoRef={videoRef}
                 src={playbackUrl}
                 markers={playerMarkers}
+                chapters={playerChapters}
                 ariaLabel={t("itemDetail.player.aria", { title: item.title })}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
@@ -2737,6 +2752,7 @@ function ResultDetail({
               enabled={actionsEnabled}
               onSeek={seekTo}
               requestConfirm={requestConfirm}
+              onChapters={handleUnderstandingChapters}
             />
           </div>
 
@@ -2809,11 +2825,13 @@ function VideoUnderstandingPanel({
   enabled,
   onSeek,
   requestConfirm,
+  onChapters,
 }: {
   item: Item;
   enabled: boolean;
   onSeek?: (timestamp: string) => void;
   requestConfirm: RequestConfirm;
+  onChapters?: (chapters: api.VideoUnderstandingChapter[]) => void;
 }) {
   const t = useT();
   const [state, setState] = useState<{
@@ -2857,6 +2875,11 @@ function VideoUnderstandingPanel({
       cancelled = true;
     };
   }, [enabled, item.contentType, item.id]);
+
+  // Surface chapters to the host so the player can segment its timeline.
+  useEffect(() => {
+    onChapters?.(record?.chapters ?? []);
+  }, [record, onChapters]);
 
   useEffect(() => {
     if (state.status !== "analyzing") {
@@ -3387,6 +3410,14 @@ function ItemDetail({
 }) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
+  const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
+    setPlayerChapters(
+      chapters
+        .filter((chapter) => chapter.start_sec !== null)
+        .map((chapter) => ({ seconds: chapter.start_sec as number, title: chapter.title })),
+    );
+  }, []);
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
@@ -3646,7 +3677,7 @@ function ItemDetail({
         <h1 className="page-h1" style={{ marginTop: 12 }}>{item.title}</h1>
         <p className="page-sub">
           {item.source} ·{" "}
-          {item.indexedAt === "Never"
+          {item.indexedAtEpoch === null
             ? t("detail.notIndexed")
             : t("detail.indexedAt", { when: item.indexedAt })}
         </p>
@@ -3672,6 +3703,7 @@ function ItemDetail({
               videoRef={videoRef}
               src={itemPlaybackUrl}
               markers={playerMarkers}
+              chapters={playerChapters}
               ariaLabel={t("itemDetail.player.aria", { title: item.title })}
               onSeekMarker={(marker) => seekTo(marker.label)}
             />
@@ -3698,7 +3730,7 @@ function ItemDetail({
             </div>
             <div className="proprow">
               <span className="k">{t("itemDetail.metric.ingested")}</span>
-              <span className="v">{item.indexedAt === "Never" ? t("detail.notIndexed") : item.indexedAt}</span>
+              <span className="v">{item.indexedAtEpoch === null ? t("detail.notIndexed") : item.indexedAt}</span>
             </div>
             <div className="proprow">
               <span className="k">{t("itemDetail.metric.duration")}</span>
@@ -3724,6 +3756,7 @@ function ItemDetail({
             enabled={actionsEnabled}
             onSeek={seekTo}
             requestConfirm={requestConfirm}
+            onChapters={handleUnderstandingChapters}
           />
           {itemAction.message ? (
             <p
@@ -3987,8 +4020,8 @@ function GeneralSettings({
   const languageOptions: { value: string; label: string; disabled?: boolean }[] = [
     { value: "zh", label: t("settings.general.language.zh") },
     { value: "en", label: t("settings.general.language.en") },
-    { value: "zh-TW", label: "繁體中文 (即将支持)", disabled: true },
-    { value: "ja", label: "日本語 (即将支持)", disabled: true },
+    { value: "zh-TW", label: t("settings.general.language.zhTW"), disabled: true },
+    { value: "ja", label: t("settings.general.language.ja"), disabled: true },
   ];
 
   return (
@@ -3999,6 +4032,11 @@ function GeneralSettings({
           control={
             <Segmented
               values={["System", "Light", "Dark"]}
+              labels={{
+                System: t("settings.general.theme.system"),
+                Light: t("settings.general.theme.light"),
+                Dark: t("settings.general.theme.dark"),
+              }}
               value={theme}
               disabled={disabled}
               onChange={(value) => void onSettingsChange({ theme: value })}
@@ -4292,14 +4330,6 @@ function ModelsSettings({
   );
   const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
   const videoUnderstandingProviderOptions = providers.filter((provider) => provider.type === "gemini");
-  const inferenceModeOptions = [
-    { value: "auto", label: t("settings.models.inferenceMode.auto") },
-    { value: "local", label: t("settings.models.inferenceMode.local") },
-    { value: "remote", label: t("settings.models.inferenceMode.remote") },
-  ];
-  const inferenceModeLabel =
-    inferenceModeOptions.find((option) => option.value === inferenceMode)?.label ??
-    t("settings.models.inferenceMode.auto");
   const modelGroups = [
     {
       id: "core",
@@ -4328,19 +4358,26 @@ function ModelsSettings({
     <div className="models-settings-panel">
       {catalogError ? <InlineNotice tone="error" message={catalogError} /> : null}
 
-      <section className={bannerReady ? "model-runtime-card ready" : "model-runtime-card warning"}>
-        <div>
-          <p className="model-section-kicker">{t("settings.models.runtime.kicker")}</p>
-          <h2>{catalog?.runtime.platform ?? t("settings.models.runtime.checkingPlatform")}</h2>
-          <p>{bannerMessage}</p>
+      <div className="model-runtime-block">
+        <div className="model-runtime-row">
+          <div className="model-runtime-row__info">
+            <span className="model-runtime-row__label">{t("settings.models.runtime.kicker")}</span>
+            <span
+              className="model-runtime-row__value"
+              title={catalog?.runtime.platform ?? undefined}
+            >
+              {humanizeRuntimePlatform(catalog?.runtime.platform, t)}
+            </span>
+          </div>
+          <span className={bannerReady ? "chip success" : "chip warn"}>
+            <span className="dot" />
+            {bannerBadge}
+          </span>
         </div>
-        <span className={bannerReady ? "chip success" : "chip warn"}>
-          <span className="dot" />
-          {bannerBadge}
-        </span>
-      </section>
+        {bannerReady ? null : <p className="model-runtime-row__note">{bannerMessage}</p>}
+      </div>
 
-      <nav className="segmented model-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
+      <nav className="seg-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
         <button
           type="button"
           role="tab"
@@ -4363,30 +4400,12 @@ function ModelsSettings({
 
       {modelTab === "setup" && (
         <>
-      <InferenceModeOverview
+      <InferenceModeSelector
         inferenceMode={inferenceMode}
         usageSummary={usageSummary}
+        disabled={disabled}
+        onSettingsChange={onSettingsChange}
       />
-
-      <SettingsGroup title={t("settings.models.inferenceMode.title")}>
-        <SettingRow
-          label={t("settings.models.inferenceMode.label")}
-          description={t("settings.models.inferenceMode.description")}
-          control={
-            <Segmented
-              values={inferenceModeOptions.map((option) => option.label)}
-              value={inferenceModeLabel}
-              disabled={disabled}
-              onChange={(label) => {
-                const nextMode =
-                  inferenceModeOptions.find((option) => option.label === label)?.value ?? "auto";
-                void onSettingsChange({ inference_mode: nextMode });
-              }}
-            />
-          }
-        />
-        <p className="settings-help">{t("settings.models.inferenceMode.localRequirements")}</p>
-      </SettingsGroup>
 
       <ProviderConnections
         providers={providers}
@@ -4463,7 +4482,201 @@ function ModelsSettings({
 
 type AsrModelOption = Pick<api.ModelCatalogRecord, "id" | "label" | "size_label">;
 
-const customModelOptionValue = "__custom_model__";
+// Env-bootstrapped default connections are seeded with English labels in the
+// backend (providers.rs) and persisted, so we can't localise them at the
+// source. Map their stable ids to localised display names instead; user-named
+// connections fall through unchanged. (Redesign B6.)
+function providerDisplayLabel(provider: api.ProviderRecord, t: TFunction): string {
+  switch (provider.id) {
+    case "env-asr":
+      return t("settings.models.providers.defaults.asr");
+    case "env-embedding":
+      return t("settings.models.providers.defaults.embedding");
+    case "env-video-understanding":
+      return t("settings.models.providers.defaults.video");
+    default:
+      return provider.label;
+  }
+}
+
+// The backend reports the runtime as a target triple (e.g. "macos-aarch64").
+// Surface a human label for known platforms; keep the raw value as a tooltip
+// for anyone who needs it. (Redesign A1.)
+function humanizeRuntimePlatform(platform: string | undefined, t: TFunction): string {
+  if (!platform) {
+    return t("settings.models.runtime.checkingPlatform");
+  }
+  const normalized = platform.toLowerCase();
+  if (normalized.includes("aarch64") || normalized.includes("arm64")) {
+    return t("settings.models.runtime.platform.appleSilicon");
+  }
+  if (normalized.startsWith("macos")) {
+    return t("settings.models.runtime.platform.macIntel");
+  }
+  return platform;
+}
+
+// Strip protocol + path so a connection's endpoint reads as a short host in the
+// row sub-line ("https://api.groq.com/openai/v1" -> "api.groq.com"). (B2.)
+function shortenEndpoint(url: string | null): string | null {
+  if (!url) {
+    return null;
+  }
+  return url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+type ModelComboOption = { id: string; label: string; hint?: string };
+
+// B4 · One control for model selection: pick from the known/discovered list,
+// type a custom model name, or refresh the list — replacing a stacked
+// select + text input + two ghost buttons. Selecting applies immediately.
+function ModelCombobox({
+  value,
+  options,
+  disabled = false,
+  busy = false,
+  onSelect,
+  onExplore,
+  onOpen,
+  ariaLabel,
+}: {
+  value: string;
+  options: ModelComboOption[];
+  disabled?: boolean;
+  /** Discovery in flight — spins the refresh affordance. */
+  busy?: boolean;
+  /** Applies the chosen/typed model immediately. */
+  onSelect: (id: string) => void;
+  /** Re-fetch the provider's /models list. Omit to hide discovery. */
+  onExplore?: () => void;
+  /** Fired when the popup opens (used to auto-discover on first open). */
+  onOpen?: () => void;
+  ariaLabel?: string;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEscapeToClose(() => setOpen(false), open);
+  useClickOutside(rootRef, () => setOpen(false), open);
+
+  useEffect(() => {
+    if (open) {
+      inputRef.current?.focus();
+    }
+  }, [open]);
+
+  function openPop() {
+    if (disabled) {
+      return;
+    }
+    setDraft("");
+    setOpen(true);
+    onOpen?.();
+  }
+
+  function choose(id: string) {
+    const next = id.trim();
+    setOpen(false);
+    if (next && next !== value) {
+      onSelect(next);
+    }
+  }
+
+  const query = draft.trim().toLowerCase();
+  const filtered = query
+    ? options.filter(
+        (option) =>
+          option.id.toLowerCase().includes(query) || option.label.toLowerCase().includes(query),
+      )
+    : options;
+
+  return (
+    <div className={open ? "model-combobox open" : "model-combobox"} ref={rootRef}>
+      <button
+        type="button"
+        className="model-combobox__field"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel ?? t("settings.models.combobox.aria")}
+        onClick={() => (open ? setOpen(false) : openPop())}
+      >
+        <span className={value ? "model-combobox__value" : "model-combobox__value placeholder"}>
+          {value || t("settings.models.combobox.placeholder")}
+        </span>
+        {onExplore ? (
+          <RefreshCcw
+            size={14}
+            className={busy ? "model-combobox__refresh spin" : "model-combobox__refresh"}
+          />
+        ) : null}
+        <ChevronDown size={15} className="model-combobox__chev" />
+      </button>
+      {open ? (
+        <div className="model-combobox__pop">
+          <div className="model-combobox__search">
+            <input
+              ref={inputRef}
+              value={draft}
+              placeholder={t("settings.models.combobox.searchPlaceholder")}
+              onChange={(event) => setDraft(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  if (draft.trim()) {
+                    choose(draft);
+                  }
+                }
+              }}
+            />
+          </div>
+          <div className="model-combobox__list" role="listbox">
+            {filtered.length > 0 ? (
+              filtered.map((option) => (
+                <button
+                  type="button"
+                  key={option.id}
+                  className="model-combobox__opt"
+                  role="option"
+                  aria-selected={option.id === value}
+                  onClick={() => choose(option.id)}
+                >
+                  <span className="model-combobox__opt-id">{option.id}</span>
+                  {option.hint ? (
+                    <span className="model-combobox__opt-hint">{option.hint}</span>
+                  ) : null}
+                </button>
+              ))
+            ) : (
+              <p className="model-combobox__empty">
+                {query
+                  ? t("settings.models.combobox.customHint")
+                  : t("settings.models.combobox.empty")}
+              </p>
+            )}
+          </div>
+          {onExplore ? (
+            <div className="model-combobox__foot">
+              <button type="button" disabled={busy} onClick={() => onExplore()}>
+                <RefreshCcw size={13} />
+                <span>
+                  {busy
+                    ? t("settings.models.combobox.refreshing")
+                    : t("settings.models.combobox.refresh")}
+                </span>
+              </button>
+              <span className="model-combobox__foot-hint">
+                {t("settings.models.combobox.customHint")}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const fallbackAsrModels: AsrModelOption[] = [
   { id: "whisper-1", label: "OpenAI Whisper", size_label: "usage-based" },
@@ -4491,17 +4704,12 @@ function TranscriptionControl({
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const [customModel, setCustomModel] = useState(selectedModelId || "whisper-1");
   const [discoveredModels, setDiscoveredModels] = useState<api.ProviderModelRecord[]>([]);
   const [discoveredProviderId, setDiscoveredProviderId] = useState<string | null>(null);
   const [action, setAction] = useState<{
     status: "idle" | "running" | "done" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
-
-  useEffect(() => {
-    setCustomModel(selectedModelId || "whisper-1");
-  }, [selectedModelId]);
 
   useEffect(() => {
     setDiscoveredModels([]);
@@ -4523,41 +4731,11 @@ function TranscriptionControl({
     size_label: model.source || "provider",
   }));
   const mergedModels = mergeAsrModelOptions(models, discoveredOptions);
-  const selectedKnown = mergedModels.some((model) => model.id === selectedModelId);
-  const modelSelectValue = selectedKnown ? selectedModelId : customModelOptionValue;
-  const providerLabel =
-    providerForDiscovery?.label ?? t("settings.models.transcription.providerFallback");
 
   async function selectProvider(providerId: string) {
     setDiscoveredModels([]);
     setDiscoveredProviderId(null);
     await onSettingsChange({ asr_provider_id: providerId });
-  }
-
-  async function selectModel(modelId: string) {
-    if (modelId === customModelOptionValue) {
-      return;
-    }
-    setCustomModel(modelId);
-    await onSettingsChange({ asr_model: modelId });
-  }
-
-  async function saveCustomModel() {
-    const model = customModel.trim();
-    if (!model) {
-      setAction({ status: "error", message: t("settings.models.transcription.error.modelEmpty") });
-      return;
-    }
-    setAction({
-      status: "running",
-      message: t("settings.models.transcription.status.savingCustom"),
-    });
-    try {
-      await onSettingsChange({ asr_model: model });
-      setAction({ status: "done", message: t("settings.models.transcription.status.savedCustom") });
-    } catch (err) {
-      setAction({ status: "error", message: errorMessage(err) });
-    }
   }
 
   async function exploreProviderModels() {
@@ -4601,18 +4779,17 @@ function TranscriptionControl({
       <p className="model-section-kicker">{t("settings.models.transcription.kicker")}</p>
       {isLocalMode ? (
         <>
-          <div className="model-select-row">
-            <select className="select" value="local" disabled>
-              <option value="local">{localAsrLabel}</option>
-            </select>
+          <div className="model-readonly-row">
+            <span className="model-readonly-row__value">{localAsrLabel}</span>
           </div>
-          <p className="field-hint">
+          <p className="settings-help">
             {t("settings.models.transcription.localHelp", { model: localAsrLabel })}
           </p>
         </>
       ) : (
         <>
-          <div className="model-select-row">
+          <div className="model-field">
+            <span className="model-field__label">{t("settings.models.field.connection")}</span>
             <select
               className="select"
               value={activeProviderId}
@@ -4622,72 +4799,37 @@ function TranscriptionControl({
               <option value="">{t("settings.models.transcription.autoProvider")}</option>
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>
-                  {provider.label}
+                  {providerDisplayLabel(provider, t)}
                   {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
                 </option>
               ))}
             </select>
           </div>
-          <div className="model-select-row">
-            <select
-              className="select"
-              value={modelSelectValue}
+          <div className="model-field">
+            <span className="model-field__label">{t("settings.models.field.model")}</span>
+            <ModelCombobox
+              value={selectedModelId}
+              options={mergedModels.map((model) => ({
+                id: model.id,
+                label: model.label,
+                hint: model.size_label,
+              }))}
               disabled={disabled}
-              onChange={(event) => void selectModel(event.currentTarget.value)}
-            >
-              {mergedModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.label} - {model.size_label}
-                </option>
-              ))}
-              <option value={customModelOptionValue}>
-                {selectedKnown
-                  ? t("settings.models.transcription.customOption")
-                  : t("settings.models.transcription.customSelected", { model: selectedModelId })}
-              </option>
-            </select>
-          </div>
-          <div className="model-custom-row">
-            <input
-              className="settings-input"
-              value={customModel}
-              disabled={disabled}
-              placeholder={t("settings.models.transcription.customPlaceholder")}
-              aria-label={t("settings.models.transcription.customAria")}
-              onChange={(event) => setCustomModel(event.currentTarget.value)}
+              busy={action.status === "running"}
+              onSelect={(id) => void onSettingsChange({ asr_model: id })}
+              onExplore={() => void exploreProviderModels()}
+              onOpen={() => {
+                if (
+                  providerForDiscovery?.has_key &&
+                  discoveredProviderId !== providerForDiscovery.id &&
+                  action.status !== "running"
+                ) {
+                  void exploreProviderModels();
+                }
+              }}
             />
-            <button
-              type="button"
-              className="btn btn-secondary sm"
-              disabled={disabled || action.status === "running" || !customModel.trim()}
-              onClick={() => void saveCustomModel()}
-            >
-              <Check size={16} />
-              <span>{t("settings.models.transcription.useCustom")}</span>
-            </button>
           </div>
-          <div className="model-discovery-actions">
-            <button
-              type="button"
-              className="btn btn-secondary sm"
-              disabled={
-                disabled ||
-                action.status === "running" ||
-                !providerForDiscovery ||
-                !providerForDiscovery.has_key
-              }
-              onClick={() => void exploreProviderModels()}
-            >
-              <RefreshCcw size={16} />
-              <span>{t("settings.models.transcription.explore")}</span>
-            </button>
-            {discoveredProviderId ? (
-              <span className="field-hint">
-                {t("settings.models.transcription.lastExplored", { provider: providerLabel })}
-              </span>
-            ) : null}
-          </div>
-          <p className="field-hint">{t("settings.models.transcription.remoteHelp")}</p>
+          <p className="settings-help">{t("settings.models.transcription.remoteHelp")}</p>
           {action.message ? (
             <InlineNotice
               tone={action.status === "error" ? "error" : "muted"}
@@ -4713,60 +4855,104 @@ function mergeAsrModelOptions(base: AsrModelOption[], discovered: AsrModelOption
   return merged;
 }
 
-function InferenceModeOverview({
+// Smart-processing selector. The three cards ARE the inference-mode switch:
+// clicking one applies it. Each carries its own one-line explanation, and the
+// local card carries the Apple-Silicon constraint as a badge — replacing the
+// read-only overview + a detached segmented control + one floating help
+// paragraph. (Redesign A2/A4/A5.)
+function InferenceModeSelector({
   inferenceMode,
   usageSummary,
+  disabled,
+  onSettingsChange,
 }: {
   inferenceMode: string;
   usageSummary: api.UsageSummary | null;
+  disabled: boolean;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const activeBadge = t("settings.models.overview.badge.active");
-  const availableBadge = t("settings.models.overview.badge.available");
   const modes = [
     {
       id: "auto",
       label: t("settings.models.inferenceMode.auto"),
-      badge: inferenceMode === "auto" ? activeBadge : availableBadge,
+      desc: t("settings.models.inferenceMode.auto.desc"),
+      badge: null as string | null,
       cost: usageSummary?.total.estimated_usd ?? 0,
       events: usageSummary?.total.event_count ?? 0,
     },
     {
-      id: "remote",
-      label: t("settings.models.inferenceMode.remote"),
-      badge: inferenceMode === "remote" ? activeBadge : availableBadge,
-      cost: usageSummary?.remote.estimated_usd ?? 0,
-      events: usageSummary?.remote.event_count ?? 0,
-    },
-    {
       id: "local",
       label: t("settings.models.inferenceMode.local"),
-      badge: inferenceMode === "local" ? activeBadge : availableBadge,
+      desc: t("settings.models.inferenceMode.local.desc"),
+      badge: t("settings.models.inferenceMode.local.badge"),
       cost: usageSummary?.local.estimated_usd ?? 0,
       events: usageSummary?.local.event_count ?? 0,
+    },
+    {
+      id: "remote",
+      label: t("settings.models.inferenceMode.remote"),
+      desc: t("settings.models.inferenceMode.remote.desc"),
+      badge: null as string | null,
+      cost: usageSummary?.remote.estimated_usd ?? 0,
+      events: usageSummary?.remote.event_count ?? 0,
     },
   ];
 
   return (
-    <section className="inference-mode-grid" aria-label={t("settings.models.overview.aria")}>
-      {modes.map((mode) => (
-        <article className="inference-mode-card" key={mode.id}>
-          <div>
-            <strong>{mode.label}</strong>
-            <span>{mode.badge}</span>
-          </div>
-          <dl>
-            <div>
-              <dt>{t("settings.models.overview.estimatedCost")}</dt>
-              <dd>{formatUsd(mode.cost)}</dd>
-            </div>
-            <div>
-              <dt>{t("settings.models.overview.usageEvents")}</dt>
-              <dd>{mode.events}</dd>
-            </div>
-          </dl>
-        </article>
-      ))}
+    <section aria-label={t("settings.models.overview.aria")}>
+      <div className="imode-head">
+        <h2>{t("settings.models.inferenceMode.title")}</h2>
+        <p>{t("settings.models.inferenceMode.description")}</p>
+      </div>
+      <div className="imode-grid">
+        {modes.map((mode) => {
+          const selected = inferenceMode === mode.id;
+          return (
+            <button
+              type="button"
+              key={mode.id}
+              className="imode-card"
+              aria-pressed={selected}
+              disabled={disabled}
+              onClick={() => {
+                if (!selected) {
+                  void onSettingsChange({ inference_mode: mode.id });
+                }
+              }}
+            >
+              <div className="imode-card__top">
+                <span className="imode-card__name">{mode.label}</span>
+                {selected ? (
+                  <span
+                    className="imode-card__check"
+                    aria-label={t("settings.models.inferenceMode.selectedAria")}
+                  >
+                    <Check size={12} />
+                  </span>
+                ) : null}
+              </div>
+              <p className="imode-card__desc">{mode.desc}</p>
+              {mode.badge ? (
+                <span className="imode-card__badge">
+                  <Cpu size={11} />
+                  {mode.badge}
+                </span>
+              ) : null}
+              <dl className="imode-card__stats">
+                <div className="imode-card__stat">
+                  <dt>{t("settings.models.overview.estimatedCost")}</dt>
+                  <dd>{formatUsd(mode.cost)}</dd>
+                </div>
+                <div className="imode-card__stat">
+                  <dt>{t("settings.models.overview.usageEvents")}</dt>
+                  <dd>{mode.events}</dd>
+                </div>
+              </dl>
+            </button>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -4790,6 +4976,96 @@ const providerTypeOptions: { value: RemoteProviderType; label: string; placehold
     placeholder: "https://your-provider.example/v1",
   },
 ];
+
+// B2 · A saved connection row. Name-first; the endpoint is demoted to an
+// elided sub-line; status sits in its own slot; edit/delete live in an
+// overflow menu so delete isn't a permanent red target on every row.
+function ProviderConnectionRow({
+  provider,
+  disabled,
+  typeLabel,
+  onEdit,
+  onRemove,
+}: {
+  provider: api.ProviderRecord;
+  disabled: boolean;
+  typeLabel: (type: api.ProviderType) => string;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const t = useT();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement | null>(null);
+  useEscapeToClose(() => setMenuOpen(false), menuOpen);
+  useClickOutside(actionsRef, () => setMenuOpen(false), menuOpen);
+
+  const name = providerDisplayLabel(provider, t);
+  const sub = [
+    typeLabel(provider.type),
+    shortenEndpoint(provider.base_url),
+    provider.has_key
+      ? t("settings.models.providers.keySaved")
+      : t("settings.models.providers.noKey"),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  function runAndClose(action: () => void) {
+    setMenuOpen(false);
+    action();
+  }
+
+  return (
+    <article className="provider-conn-row">
+      <span className="provider-conn-row__avatar" aria-hidden="true">
+        {name.slice(0, 1)}
+      </span>
+      <div className="provider-conn-row__body">
+        <span className="provider-conn-row__name">{name}</span>
+        <span className="provider-conn-row__sub" title={provider.base_url ?? undefined}>
+          {sub}
+        </span>
+        {provider.last_error ? (
+          <span className="provider-conn-row__error" title={provider.last_error}>
+            {provider.last_error}
+          </span>
+        ) : null}
+      </div>
+      <span className={`model-state ${provider.status}`}>
+        {providerStatusLabel(provider.status, t)}
+      </span>
+      <div className="row-actions" ref={actionsRef}>
+        <button
+          className="btn-icon"
+          type="button"
+          aria-label={t("settings.models.providers.moreActionsAria")}
+          aria-expanded={menuOpen}
+          disabled={disabled}
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <MoreHorizontal size={16} />
+        </button>
+        {menuOpen ? (
+          <div className="menu row-menu">
+            <button type="button" disabled={disabled} onClick={() => runAndClose(onEdit)}>
+              <SlidersHorizontal size={15} />
+              <span>{t("settings.models.providers.edit")}</span>
+            </button>
+            <button
+              className="danger"
+              type="button"
+              disabled={disabled}
+              onClick={() => runAndClose(onRemove)}
+            >
+              <Trash2 size={15} />
+              <span>{t("settings.models.providers.delete")}</span>
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
 
 function ProviderConnections({
   providers,
@@ -4994,46 +5270,14 @@ function ProviderConnections({
           <p className="provider-empty">{t("settings.models.providers.empty")}</p>
         ) : null}
         {remoteProviders.map((provider) => (
-          <article className="provider-row" key={provider.id}>
-            <div className="provider-main">
-              <strong>{provider.label}</strong>
-              <div className="provider-meta mono">
-                {[
-                  typeLabel(provider.type),
-                  provider.base_url || null,
-                  provider.has_key
-                    ? t("settings.models.providers.keySaved")
-                    : t("settings.models.providers.noKey"),
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </div>
-              {provider.last_error ? (
-                <p className="settings-help danger">{provider.last_error}</p>
-              ) : null}
-            </div>
-            <span className={`model-state ${provider.status}`}>
-              {providerStatusLabel(provider.status, t)}
-            </span>
-            <div className="provider-actions">
-              <button
-                type="button"
-                className="btn btn-ghost sm"
-                disabled={disabled}
-                onClick={() => openEdit(provider)}
-              >
-                {t("settings.models.providers.edit")}
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger sm"
-                disabled={disabled}
-                onClick={() => void removeConnection(provider)}
-              >
-                {t("settings.models.providers.delete")}
-              </button>
-            </div>
-          </article>
+          <ProviderConnectionRow
+            key={provider.id}
+            provider={provider}
+            disabled={disabled}
+            typeLabel={typeLabel}
+            onEdit={() => openEdit(provider)}
+            onRemove={() => void removeConnection(provider)}
+          />
         ))}
       </div>
 
@@ -5301,12 +5545,20 @@ function EmbeddingControl({
   }
 
   const showPrepare = !localActive && Boolean(info && !info.ready && !info.preparing);
+  const activeModelLabel =
+    models.find((model) => model.id === activeModelId)?.label ||
+    (models.length > 0 ? activeModelId : t("settings.models.embedding.loadingOption"));
+  // Distinguish an actual connection failure (loud inline error + retry) from
+  // informational status (quiet line). The raw exception is tucked behind a
+  // "details" toggle so the headline stays human-readable. (Redesign B3.)
+  const remoteError = localActive ? null : statusError ?? info?.last_error ?? null;
 
   return (
     <article className="model-control-card">
       <p className="model-section-kicker">{t("settings.models.embedding.kicker")}</p>
       {localActive ? null : (
-        <div className="model-select-row">
+        <div className="model-field">
+          <span className="model-field__label">{t("settings.models.field.connection")}</span>
           <select
             className="select"
             value={selectedProviderId}
@@ -5318,46 +5570,59 @@ function EmbeddingControl({
             <option value="">{t("settings.models.embedding.autoProvider")}</option>
             {providers.map((provider) => (
               <option key={provider.id} value={provider.id}>
-                {provider.label}
+                {providerDisplayLabel(provider, t)}
                 {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
               </option>
             ))}
           </select>
         </div>
       )}
-      <div className="model-select-row">
-        <select className="select" value={activeModelId} disabled={models.length === 0} onChange={() => {}}>
-          {models.length > 0 ? (
-            models.map((model) => (
-              <option key={model.id} value={model.id} disabled={model.id !== activeModelId}>
-                {model.label}
-                {model.id === activeModelId ? "" : t("settings.models.embedding.notAvailableSuffix")}
-              </option>
-            ))
-          ) : (
-            <option value="">{t("settings.models.embedding.loadingOption")}</option>
-          )}
-        </select>
+      <div className="model-field">
+        <span className="model-field__label">{t("settings.models.field.model")}</span>
+        {/* Read-only by design: the embedding model is bound to the existing
+            index, so it's a locked fact, not a disabled <select> that reads as
+            broken. Changing it requires a full re-index. */}
+        <div className="model-readonly-row">
+          <span className="model-readonly-row__value">{activeModelLabel}</span>
+          <span className="chip neutral">
+            <Lock size={12} />
+            {t("settings.models.embedding.boundBadge")}
+          </span>
+        </div>
       </div>
-      <p className="settings-help">{statusText}</p>
-      {showPrepare ? (
-        <button
-          type="button"
-          className="model-inline-action"
-          onClick={() => void prepareNow()}
-        >
-          {t("settings.models.embedding.testButton")}
-        </button>
+      {models.length > 0 ? (
+        <p className="settings-help">{t("settings.models.embedding.lockedHelp")}</p>
       ) : null}
-      {!localActive && info?.last_error ? (
-        <p className="settings-help" style={{ color: "var(--danger)" }}>
-          {t("settings.models.embedding.lastError", { error: info.last_error })}
-        </p>
-      ) : null}
+      {remoteError ? (
+        <InlineNotice
+          tone="error"
+          message={t("settings.models.embedding.error.connect")}
+          detail={remoteError}
+          detailLabel={t("common.details")}
+          action={{ label: t("common.retry"), onClick: () => void prepareNow() }}
+        />
+      ) : (
+        <>
+          <p className="settings-help">{statusText}</p>
+          {showPrepare ? (
+            <button
+              type="button"
+              className="model-inline-action"
+              onClick={() => void prepareNow()}
+            >
+              {t("settings.models.embedding.testButton")}
+            </button>
+          ) : null}
+        </>
+      )}
       {triggerError ? (
-        <p className="settings-help" style={{ color: "var(--danger)" }}>
-          {triggerError}
-        </p>
+        <InlineNotice
+          tone="error"
+          message={t("settings.models.embedding.error.connect")}
+          detail={triggerError}
+          detailLabel={t("common.details")}
+          action={{ label: t("common.retry"), onClick: () => void prepareNow() }}
+        />
       ) : null}
     </article>
   );
@@ -5379,38 +5644,17 @@ function VideoUnderstandingControl({
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const selectedKnown = models.some((model) => model.id === selectedModelId);
-  const activeModelId = selectedKnown ? selectedModelId : customModelOptionValue;
-  const [customModel, setCustomModel] = useState(selectedKnown ? "" : selectedModelId);
-
-  useEffect(() => {
-    if (!selectedKnown) {
-      setCustomModel(selectedModelId);
-    }
-  }, [selectedKnown, selectedModelId]);
-
-  async function selectModel(value: string) {
-    if (value === customModelOptionValue) {
-      if (customModel.trim()) {
-        await onSettingsChange({ video_understanding_model: customModel.trim() });
-      }
-      return;
-    }
-    await onSettingsChange({ video_understanding_model: value });
-  }
-
-  async function saveCustomModel() {
-    const next = customModel.trim();
-    if (!next) {
-      return;
-    }
-    await onSettingsChange({ video_understanding_model: next });
-  }
+  const modelOptions = models.map((model) => ({
+    id: model.id,
+    label: model.label,
+    hint: model.size_label,
+  }));
 
   return (
     <article className="model-control-card">
       <p className="model-section-kicker">{t("settings.models.video.kicker")}</p>
-      <div className="model-select-row">
+      <div className="model-field">
+        <span className="model-field__label">{t("settings.models.field.connection")}</span>
         <select
           className="select"
           value={selectedProviderId}
@@ -5422,56 +5666,22 @@ function VideoUnderstandingControl({
           <option value="">{t("settings.models.video.autoProvider")}</option>
           {providers.map((provider) => (
             <option key={provider.id} value={provider.id}>
-              {provider.label}
+              {providerDisplayLabel(provider, t)}
               {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
             </option>
           ))}
         </select>
       </div>
-      <div className="model-select-row">
-        <select
-          className="select"
-          value={activeModelId}
+      <div className="model-field">
+        <span className="model-field__label">{t("settings.models.field.model")}</span>
+        <ModelCombobox
+          value={selectedModelId}
+          options={modelOptions}
           disabled={disabled}
-          onChange={(event) => void selectModel(event.currentTarget.value)}
-        >
-          {models.length > 0 ? (
-            models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label} - {model.size_label}
-              </option>
-            ))
-          ) : (
-            <option value="">{t("settings.models.video.fallbackModel")}</option>
-          )}
-          <option value={customModelOptionValue}>
-            {selectedKnown
-              ? t("settings.models.video.customOption")
-              : t("settings.models.video.customSelected", { model: selectedModelId })}
-          </option>
-        </select>
-      </div>
-      <div className="model-custom-row">
-        <input
-          className="settings-input"
-          value={customModel}
-          disabled={disabled}
-          placeholder={t("settings.models.video.customPlaceholder")}
-          aria-label={t("settings.models.video.customAria")}
-          onChange={(event) => setCustomModel(event.currentTarget.value)}
+          onSelect={(id) => void onSettingsChange({ video_understanding_model: id })}
         />
-        <button
-          type="button"
-          className="btn btn-secondary sm"
-          disabled={disabled || !customModel.trim()}
-          onClick={() => void saveCustomModel()}
-        >
-          {t("settings.models.transcription.customSave")}
-        </button>
       </div>
-      <p className="settings-help">
-        {t("settings.models.video.help")}
-      </p>
+      <p className="settings-help">{t("settings.models.video.help")}</p>
     </article>
   );
 }
@@ -6005,11 +6215,14 @@ function Segmented({
   values,
   value,
   disabled = false,
+  labels,
   onChange,
 }: {
   values: string[];
   value: string;
   disabled?: boolean;
+  /** Display label per stored value — stored values stay stable (e.g. "Dark"). */
+  labels?: Record<string, string>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -6022,7 +6235,7 @@ function Segmented({
           disabled={disabled}
           onClick={() => onChange(option)}
         >
-          {option}
+          {labels?.[option] ?? option}
         </button>
       ))}
     </div>

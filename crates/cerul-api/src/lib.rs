@@ -3,7 +3,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -28,6 +28,8 @@ pub mod jobs;
 pub mod models;
 pub mod providers;
 pub mod video_understanding;
+
+const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -459,11 +461,14 @@ async fn search(
 ) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
     let query = req.q.clone();
     let paths = state.paths.clone();
-    let query_embedding =
-        tokio::task::spawn_blocking(move || api_models::embed_query(&paths, &query)).await;
+    let query_embedding = tokio::time::timeout(
+        QUERY_EMBEDDING_TIMEOUT,
+        tokio::task::spawn_blocking(move || api_models::embed_query(&paths, &query)),
+    )
+    .await;
 
     match query_embedding {
-        Ok(Ok(embedding)) => Ok(Json(
+        Ok(Ok(Ok(embedding))) => Ok(Json(
             cerul_search::search_with_vector_for_profile(
                 &state.paths,
                 req,
@@ -472,14 +477,24 @@ async fn search(
             )
             .await?,
         )),
-        Ok(Err(error)) => {
+        Ok(Ok(Err(error))) => {
             tracing::warn!(%error, "API semantic query embedding unavailable; falling back to FTS");
             Ok(Json(
                 cerul_search::search_fts_only(&state.paths, req).await?,
             ))
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(%error, "API query embedding task failed; falling back to FTS");
+            Ok(Json(
+                cerul_search::search_fts_only(&state.paths, req).await?,
+            ))
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                timeout_sec = QUERY_EMBEDDING_TIMEOUT.as_secs(),
+                "API query embedding timed out; falling back to FTS"
+            );
             Ok(Json(
                 cerul_search::search_fts_only(&state.paths, req).await?,
             ))

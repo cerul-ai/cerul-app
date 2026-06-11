@@ -1,9 +1,14 @@
 // Pure formatting helpers. Extracted from App.tsx as the first
 // step of the B13 audit follow-up (split App.tsx into modules).
+//
+// Helpers that surface user-visible words take an optional TFunction (t-last
+// convention); without it they fall back to English for non-UI callers.
 
-export function formatDuration(seconds: number | null) {
+import type { TFunction } from "./i18n";
+
+export function formatDuration(seconds: number | null, t?: TFunction) {
   if (!seconds || seconds <= 0) {
-    return "Unknown";
+    return t ? t("time.unknown") : "Unknown";
   }
   const total = Math.round(seconds);
   const hours = Math.floor(total / 3600);
@@ -71,17 +76,28 @@ export function parseTimestampSeconds(timestamp: string) {
   return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
-export function formatUnixTime(value: number | null) {
+export function formatUnixTime(value: number | null, t?: TFunction) {
   if (!value) {
-    return "Never";
+    return t ? t("time.never") : "Never";
   }
   const date = new Date(value * 1000);
   if (Number.isNaN(date.getTime())) {
-    return "Unknown";
+    return t ? t("time.unknown") : "Unknown";
   }
-  // Force English locale to avoid mixed-language strings like
-  // "polled 5月19日" appearing in an otherwise English UI.
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const now = new Date();
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return t ? t("time.today") : "Today";
+  }
+  // The locale tag lives in the catalog so dates read natively in either
+  // language (en: "May 12" / zh: "5月12日") instead of mixing scripts.
+  return date.toLocaleDateString(t ? t("time.localeTag") : "en-US", {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 export function formatBytes(bytes: number) {
@@ -117,8 +133,16 @@ export function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+export function sanitizeErrorText(value: string) {
+  return value
+    .replace(/\s*\(\.env\)/gi, "")
+    .replace(/\s+from\s+\.env\b/gi, "")
+    .replace(/\s+via\s+\.env\b/gi, "")
+    .trim();
+}
+
 export function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  return sanitizeErrorText(error instanceof Error ? error.message : String(error));
 }
 
 export function metadataString(metadata: Record<string, unknown>, key: string) {

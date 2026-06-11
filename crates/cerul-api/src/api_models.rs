@@ -160,6 +160,10 @@ pub(crate) fn profiled_embedder(
 pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<QueryEmbedding> {
     if effective_query_inference_mode(paths)? == "local" {
         let profile = cerul_storage::vectors::embedding_profile_for_inference_mode(paths, "local")?;
+        anyhow::ensure!(
+            local_embedding_model_cached(paths)?,
+            "Local embedding model is not prepared yet; using text search fallback"
+        );
         let embedder = local_query_sidecar(paths)?;
         let mut vectors = embedder.embed_texts(&[query.to_string()])?;
         let vector = vectors
@@ -180,6 +184,64 @@ pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<Query
         query,
     );
     Ok(QueryEmbedding { vector, profile })
+}
+
+fn local_embedding_model_cached(paths: &AppPaths) -> anyhow::Result<bool> {
+    let config = cerul_pipeline::mlx_sidecar::runtime_config(paths)?;
+    let model_path = Path::new(&config.embedding_model);
+    if model_path.exists() {
+        return Ok(true);
+    }
+
+    let repo_cache = config
+        .models_cache
+        .join("huggingface")
+        .join("hub")
+        .join(format!(
+            "models--{}",
+            config.embedding_model.replace('/', "--")
+        ));
+    if contains_incomplete_download(&repo_cache)? {
+        return Ok(false);
+    }
+
+    let snapshots = repo_cache.join("snapshots");
+    if !snapshots.is_dir() {
+        return Ok(false);
+    }
+
+    for entry in std::fs::read_dir(snapshots)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && directory_has_entries(&entry.path())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn contains_incomplete_download(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if entry.file_name().to_string_lossy().ends_with(".incomplete") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn directory_has_entries(path: &Path) -> anyhow::Result<bool> {
+    Ok(std::fs::read_dir(path)?.next().transpose()?.is_some())
 }
 
 fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
@@ -1271,6 +1333,37 @@ mod tests {
         let mode = query_inference_mode(&paths, &local_runtime_status(true)).unwrap();
 
         assert_eq!(mode, "local");
+    }
+
+    #[test]
+    fn local_embedding_model_cache_requires_complete_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+
+        assert!(!local_embedding_model_cached(&paths).unwrap());
+
+        let repo_cache = paths
+            .models
+            .join("mlx")
+            .join("huggingface")
+            .join("hub")
+            .join("models--mlx-community--Qwen3-VL-Embedding-2B-6bit");
+        let snapshot = repo_cache.join("snapshots").join("test-snapshot");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        std::fs::write(snapshot.join("config.json"), "{}").unwrap();
+        std::fs::create_dir_all(repo_cache.join("blobs")).unwrap();
+
+        assert!(local_embedding_model_cached(&paths).unwrap());
+
+        std::fs::write(
+            repo_cache
+                .join("blobs")
+                .join("model.safetensors.incomplete"),
+            "",
+        )
+        .unwrap();
+
+        assert!(!local_embedding_model_cached(&paths).unwrap());
     }
 
     #[test]

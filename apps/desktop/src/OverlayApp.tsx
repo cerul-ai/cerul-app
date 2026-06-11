@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import * as api from "./lib/api";
-import { cleanMediaTitle, compactPathParent } from "./lib/formatters";
+import { cleanMediaTitle, compactPathParent, errorMessage } from "./lib/formatters";
 import { useT } from "./lib/i18n";
 import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
@@ -719,10 +719,6 @@ function formatTimestamp(seconds: number | null) {
   const minutes = Math.floor(total / 60);
   const remaining = `${total % 60}`.padStart(2, "0");
   return `${minutes}:${remaining}`;
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function highlightOverlay(text: string, phrase: string) {

@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatUnixTime,
   metadataString,
+  sanitizeErrorText,
 } from "./formatters";
 import { jobStepProgressPercent } from "./jobs";
 import type { TFunction } from "./i18n";
@@ -235,11 +236,11 @@ export function mapItemRecord(
     contentType: record.content_type,
     source: itemSourceLabel(record, t),
     sourceKind: itemSourceKind(record, rawPath),
-    duration: formatDuration(record.duration_sec),
-    indexedAt: formatUnixTime(record.indexed_at),
+    duration: formatDuration(record.duration_sec, t),
+    indexedAt: formatUnixTime(record.indexed_at, t),
     indexedAtEpoch: record.indexed_at,
     status,
-    error: record.error,
+    error: record.error ? sanitizeErrorText(record.error) : null,
     rawPath,
     originalUrl: itemOriginalUrl(record),
     color: itemColor(record.content_type),

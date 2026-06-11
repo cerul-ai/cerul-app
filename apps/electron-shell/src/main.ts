@@ -30,7 +30,7 @@ const contentSecurityPolicy = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "font-src 'self'",
+  "font-src 'self' data:",
   "img-src 'self' app: http://127.0.0.1:7777 data: blob:",
   "media-src 'self' http://127.0.0.1:7777 blob:",
   `connect-src 'self' http://127.0.0.1:7777 ${cloudAccountOrigin}`,
@@ -349,8 +349,8 @@ function createMenuBarWindow() {
   }
   const isMac = process.platform === "darwin";
   menuBarWindow = new BrowserWindow({
-    width: 320,
-    height: 260,
+    width: 332,
+    height: 312,
     title: "Cerul",
     icon: desktopAppIconPath(),
     show: false,

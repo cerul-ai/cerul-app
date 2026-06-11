@@ -236,7 +236,7 @@ export function ItemCard({
           <span className="muted">{item.source}</span>
           <span className="muted">
             {item.duration} ·{" "}
-            {item.indexedAt === "Never"
+            {item.indexedAtEpoch === null
               ? t("library.itemCard.notIndexed")
               : t("library.itemCard.indexedAt", { when: item.indexedAt })}
           </span>

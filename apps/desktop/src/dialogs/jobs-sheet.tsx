@@ -3,6 +3,7 @@
 
 import { X } from "lucide-react";
 import * as api from "../lib/api";
+import { formatUsd } from "../lib/formatters";
 import { useT } from "../lib/i18n";
 import { isActiveJob } from "../lib/items";
 import {
@@ -20,6 +21,7 @@ import {
   jobUsageLabel,
 } from "../lib/jobs";
 import type { Item } from "../lib/types";
+import { useEscapeToClose } from "../lib/use-dismissable";
 import { useNowSeconds } from "../lib/use-now";
 import { EmptyState } from "../components/leaf";
 import { ProgressBar, StatusBadge } from "../components/transcript";
@@ -36,6 +38,7 @@ export function JobsSheet({
   onClose: () => void;
 }) {
   const t = useT();
+  useEscapeToClose(onClose);
   const sortedJobs = [...jobs].sort((a, b) => {
     const activeDelta = Number(isActiveJob(b)) - Number(isActiveJob(a));
     if (activeDelta !== 0) {
@@ -45,6 +48,12 @@ export function JobsSheet({
   });
   const activeJobs = sortedJobs.filter(isActiveJob);
   const recentJobs = sortedJobs.filter((job) => !isActiveJob(job));
+  // Incurred remote cost across the running batch (QA: spend must be visible
+  // before/while it happens, not only after). Local processing reports $0.
+  const activeCostUsd = activeJobs.reduce(
+    (sum, job) => sum + (job.usage?.estimated_usd ?? 0),
+    0,
+  );
   const now = useNowSeconds(activeJobs.length > 0);
   const title =
     activeJobs.length > 0
@@ -113,6 +122,17 @@ export function JobsSheet({
         </header>
 
         <div className="drawer-body jobs-body">
+          {activeJobs.length > 0 ? (
+            <section className="jobs-cost-card">
+              <div className="jobs-cost-main">
+                <span className="jobs-cost-label">{t("jobs.cost.title")}</span>
+                <strong className="jobs-cost-value mono">{formatUsd(activeCostUsd)}</strong>
+              </div>
+              <p className="jobs-cost-note">
+                {activeCostUsd > 0 ? t("jobs.cost.noteRemote") : t("jobs.cost.noteLocal")}
+              </p>
+            </section>
+          ) : null}
           {sortedJobs.length > 0 ? (
             <>
               {activeJobs.length > 0 ? (

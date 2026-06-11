@@ -13,6 +13,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
+import { useEscapeToClose } from "../lib/use-dismissable";
 import { InlineNotice } from "./leaf";
 import { useAuthStore } from "../lib/cloud/authStore";
 import { CloudApiError } from "../lib/cloud/types";
@@ -78,6 +79,7 @@ export function AccountRailButton() {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [pos, setPos] = useState({ left: 10, bottom: 56 });
+  useEscapeToClose(() => setOpen(false), open);
 
   useEffect(() => {
     if (useAuthStore.getState().status === "loading") {
@@ -376,6 +378,7 @@ function VerifyPanel() {
           inputMode="numeric"
           maxLength={6}
           placeholder="000000"
+          aria-label={t("settings.account.codeAria")}
           value={code}
           disabled={verifying}
           onChange={(event) => setCode(event.currentTarget.value.replace(/\D/g, ""))}

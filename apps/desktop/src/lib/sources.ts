@@ -1,7 +1,8 @@
 // Source-related helpers and mappers. Extracted from App.tsx (B13 Phase E).
 
 import type * as api from "./api";
-import { cleanMediaTitle, compactPathDisplay, formatUnixTime } from "./formatters";
+import { cleanMediaTitle, compactPathDisplay, formatUnixTime, sanitizeErrorText } from "./formatters";
+import type { TFunction } from "./i18n";
 import type { Item, Source, SourceStatus } from "./types";
 
 export function sourceType(type: string): Source["type"] {
@@ -52,12 +53,14 @@ export function sourceError(record: api.SourceRecord, status: SourceStatus) {
   }
   const errorValue = record.config.error ?? record.config.last_error;
   if (typeof errorValue === "string" && errorValue.trim()) {
-    return errorValue;
+    return sanitizeErrorText(errorValue);
   }
-  return "Cerul could not poll this source. Check the path, feed URL, or channel settings.";
+  // No backend detail: return null so the UI renders its localized fallback
+  // (sourceRow.errorFallback) instead of a hardcoded English sentence.
+  return null;
 }
 
-export function mapSourceRecord(record: api.SourceRecord, allItems: Item[]): Source {
+export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: TFunction): Source {
   const type = sourceType(record.type);
   const itemsForSource = allItems.filter((item) => item.sourceId === record.id).length;
   const status = sourceStatus(record.status);
@@ -67,7 +70,7 @@ export function mapSourceRecord(record: api.SourceRecord, allItems: Item[]): Sou
     name: sourceName(record),
     status,
     items: itemsForSource,
-    lastPolled: formatUnixTime(record.last_poll_at),
+    lastPolled: formatUnixTime(record.last_poll_at, t),
     error: sourceError(record, status),
   };
 }

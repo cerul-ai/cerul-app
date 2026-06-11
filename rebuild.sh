@@ -12,6 +12,7 @@ STEP_RETRIES="${CERUL_REBUILD_STEP_RETRIES:-4}"
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
+export GGML_NATIVE="${GGML_NATIVE:-OFF}"
 
 usage() {
   cat <<'EOF'
@@ -30,6 +31,7 @@ Environment:
   CARGO_INCREMENTAL             Rust incremental compilation, default 0 here
   CARGO_PROFILE_DEV_DEBUG       Dev debug info level, default 0 here
   CARGO_PROFILE_TEST_DEBUG      Test/check debug info level, default 0 here
+  GGML_NATIVE                   whisper.cpp native CPU feature probing, default OFF here
 EOF
 }
 

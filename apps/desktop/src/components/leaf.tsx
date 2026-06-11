@@ -2,19 +2,50 @@
 // These have no coupling to App state — they take everything via props
 // so they're safe to lift out without rewiring.
 
-import { Inbox, Plus } from "lucide-react";
+import { AlertTriangle, Inbox, Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useState } from "react";
 
 export function InlineNotice({
   tone,
   message,
+  action,
+  detail,
+  detailLabel,
 }: {
   tone: "error" | "muted";
   message: string;
+  /** Optional recovery action (e.g. Retry) rendered at the trailing edge. */
+  action?: { label: string; onClick: () => void };
+  /** Raw technical detail (e.g. the underlying exception) shown behind a toggle
+      so the human-readable `message` stays the headline. */
+  detail?: string;
+  detailLabel?: string;
 }) {
+  const [showDetail, setShowDetail] = useState(false);
+  const hasDetail = Boolean(detail && detail !== message);
   return (
     <div className={`inline-notice ${tone}`} role={tone === "error" ? "alert" : undefined}>
-      {message}
+      {tone === "error" ? <AlertTriangle size={15} className="inline-notice-icon" /> : null}
+      <div className="inline-notice-body">
+        <span>{message}</span>
+        {hasDetail && showDetail ? <pre className="inline-notice-detail">{detail}</pre> : null}
+      </div>
+      {hasDetail ? (
+        <button
+          type="button"
+          className="inline-notice-link"
+          aria-expanded={showDetail}
+          onClick={() => setShowDetail((open) => !open)}
+        >
+          {detailLabel ?? "Details"}
+        </button>
+      ) : null}
+      {action ? (
+        <button type="button" className="inline-notice-action" onClick={action.onClick}>
+          {action.label}
+        </button>
+      ) : null}
     </div>
   );
 }

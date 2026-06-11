@@ -9,7 +9,7 @@
 // effects keep working untouched; this component renders that <video> (sans
 // native controls) and mirrors its state via media events for the UI.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { useT } from "../lib/i18n";
 
@@ -18,6 +18,11 @@ export type PlayerMarker = {
   label: string;
   text?: string;
   match?: boolean;
+};
+
+export type PlayerChapter = {
+  seconds: number;
+  title: string;
 };
 
 function fmtClock(seconds: number): string {
@@ -30,6 +35,7 @@ export function CerulPlayer({
   videoRef,
   src,
   markers = [],
+  chapters = [],
   ariaLabel,
   onPlay,
   onPause,
@@ -38,6 +44,7 @@ export function CerulPlayer({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   src: string;
   markers?: PlayerMarker[];
+  chapters?: PlayerChapter[];
   ariaLabel?: string;
   onPlay?: () => void;
   onPause?: () => void;
@@ -95,6 +102,27 @@ export function CerulPlayer({
 
   const pct = duration > 0 ? (time / duration) * 100 : 0;
 
+  // Chapter starts → contiguous segments over the track. A leading untitled
+  // segment covers media that begins before the first chapter.
+  const segments = useMemo(() => {
+    if (!(duration > 0) || chapters.length === 0) {
+      return [];
+    }
+    const sorted = chapters
+      .filter((chapter) => chapter.seconds >= 0 && chapter.seconds < duration)
+      .sort((a, b) => a.seconds - b.seconds);
+    if (sorted.length === 0) {
+      return [];
+    }
+    const withLead = sorted[0].seconds > 1 ? [{ seconds: 0, title: "" }, ...sorted] : sorted;
+    return withLead.map((chapter, index) => ({
+      title: chapter.title,
+      start: chapter.seconds,
+      end: index + 1 < withLead.length ? withLead[index + 1].seconds : duration,
+    }));
+  }, [chapters, duration]);
+  const hasChapters = segments.length > 1;
+
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -125,7 +153,7 @@ export function CerulPlayer({
   };
   const onTrackMove = (event: React.MouseEvent) => {
     const track = trackRef.current;
-    if (!track || !(duration > 0) || markers.length === 0) {
+    if (!track || !(duration > 0) || (markers.length === 0 && !hasChapters)) {
       return;
     }
     const rect = track.getBoundingClientRect();
@@ -138,6 +166,19 @@ export function CerulPlayer({
         best = distance;
         nearest = marker;
       }
+    }
+    if (!nearest && hasChapters) {
+      const seconds = ratio * duration;
+      const segment = segments.find((entry) => seconds >= entry.start && seconds < entry.end);
+      if (segment?.title) {
+        setHover({
+          left: Math.min(100, Math.max(0, ratio * 100)),
+          marker: { seconds: segment.start, label: segment.title },
+        });
+        return;
+      }
+      setHover(null);
+      return;
     }
     setHover(nearest ? { left: (nearest.seconds / duration) * 100, marker: nearest } : null);
   };
@@ -220,8 +261,29 @@ export function CerulPlayer({
               {hover.marker.text ? `${hover.marker.text.slice(0, 46)}…` : hover.marker.label}
             </div>
           ) : null}
-          <div className="cplayer-track" ref={trackRef} onPointerDown={onTrackDown}>
-            <div className="cplayer-fill" style={{ width: `${pct}%` }} />
+          <div
+            className={hasChapters ? "cplayer-track has-chapters" : "cplayer-track"}
+            ref={trackRef}
+            onPointerDown={onTrackDown}
+          >
+            {hasChapters ? (
+              segments.map((segment) => (
+                <div
+                  key={segment.start}
+                  className="cplayer-seg"
+                  style={{ flexGrow: Math.max(segment.end - segment.start, 1) }}
+                >
+                  <div
+                    className="cplayer-seg-fill"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, ((time - segment.start) / Math.max(segment.end - segment.start, 0.01)) * 100))}%`,
+                    }}
+                  />
+                </div>
+              ))
+            ) : (
+              <div className="cplayer-fill" style={{ width: `${pct}%` }} />
+            )}
             {showMarkers
               ? markers.map((marker, index) => (
                   <button
