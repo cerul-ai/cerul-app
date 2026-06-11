@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
@@ -138,6 +138,107 @@ pub struct JobRecord {
     pub stage: Option<String>,
     pub stage_message: Option<String>,
     pub usage: cerul_storage::UsageTotals,
+    pub error_info: Option<JobErrorInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobErrorInfo {
+    pub code: String,
+    pub capability: String,
+    pub settings_section: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MomentRecord {
+    pub id: String,
+    pub item_id: String,
+    pub chunk_id: Option<String>,
+    pub start_sec: Option<f64>,
+    pub end_sec: Option<f64>,
+    pub timestamp: String,
+    pub title: String,
+    pub quote: String,
+    pub note: Option<String>,
+    pub created_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMomentRequest {
+    pub item_id: String,
+    pub chunk_id: Option<String>,
+    pub start_sec: Option<f64>,
+    pub end_sec: Option<f64>,
+    pub title: Option<String>,
+    pub quote: String,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AskRequest {
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AskResponse {
+    pub answer: String,
+    pub citations: Vec<AskCitation>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AskCitation {
+    pub chunk_id: String,
+    pub item_id: String,
+    pub title: String,
+    pub timestamp: String,
+    pub start_sec: Option<f64>,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntitySummary {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub mention_count: usize,
+    pub item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityMention {
+    pub entity_id: String,
+    pub label: String,
+    pub kind: String,
+    pub item_id: String,
+    pub item_title: String,
+    pub chunk_id: Option<String>,
+    pub timestamp: String,
+    pub start_sec: Option<f64>,
+    pub quote: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EntityDetail {
+    pub entity: EntitySummary,
+    pub mentions: Vec<EntityMention>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeeklyReviewResponse {
+    pub week_start: i64,
+    pub indexed_items: usize,
+    pub indexed_seconds: f64,
+    pub watched_percent: u8,
+    pub topics: Vec<WeeklyTopic>,
+    pub has_data: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeeklyTopic {
+    pub id: String,
+    pub label: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,11 +324,17 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
         .route("/search", post(search))
+        .route("/ask", post(ask_library))
         .route("/sources", get(list_sources).post(add_source))
         .route("/sources/preview/rss", post(preview_rss_source))
         .route("/sources/:id", delete(remove_source))
         .route("/sources/:id/pause", post(pause_source))
         .route("/sources/:id/resume", post(resume_source))
+        .route("/moments", get(list_moments).post(create_moment))
+        .route("/moments/:id", delete(remove_moment))
+        .route("/entities", get(list_entities))
+        .route("/entities/:id", get(get_entity))
+        .route("/weekly-review", get(weekly_review))
         .route("/items", get(list_items))
         .route("/items/:id", get(get_item).delete(remove_item))
         .route(
@@ -459,35 +566,38 @@ async fn search(
     State(state): State<ApiState>,
     Json(req): Json<cerul_search::SearchRequest>,
 ) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
+    Ok(Json(search_records(&state.paths, req).await?))
+}
+
+async fn search_records(
+    paths: &AppPaths,
+    req: cerul_search::SearchRequest,
+) -> anyhow::Result<Vec<cerul_search::SearchResult>> {
     let query = req.q.clone();
-    let paths = state.paths.clone();
+    let paths_for_embedding = paths.clone();
     let query_embedding = tokio::time::timeout(
         QUERY_EMBEDDING_TIMEOUT,
-        tokio::task::spawn_blocking(move || api_models::embed_query(&paths, &query)),
+        tokio::task::spawn_blocking(move || api_models::embed_query(&paths_for_embedding, &query)),
     )
     .await;
 
     match query_embedding {
-        Ok(Ok(Ok(embedding))) => Ok(Json(
+        Ok(Ok(Ok(embedding))) => {
             cerul_search::search_with_vector_for_profile(
-                &state.paths,
+                paths,
                 req,
                 embedding.vector,
                 &embedding.profile,
             )
-            .await?,
-        )),
+            .await
+        }
         Ok(Ok(Err(error))) => {
             tracing::warn!(%error, "API semantic query embedding unavailable; falling back to FTS");
-            Ok(Json(
-                cerul_search::search_fts_only(&state.paths, req).await?,
-            ))
+            cerul_search::search_fts_only(paths, req).await
         }
         Ok(Err(error)) => {
             tracing::warn!(%error, "API query embedding task failed; falling back to FTS");
-            Ok(Json(
-                cerul_search::search_fts_only(&state.paths, req).await?,
-            ))
+            cerul_search::search_fts_only(paths, req).await
         }
         Err(error) => {
             tracing::warn!(
@@ -495,11 +605,183 @@ async fn search(
                 timeout_sec = QUERY_EMBEDDING_TIMEOUT.as_secs(),
                 "API query embedding timed out; falling back to FTS"
             );
-            Ok(Json(
-                cerul_search::search_fts_only(&state.paths, req).await?,
-            ))
+            cerul_search::search_fts_only(paths, req).await
         }
     }
+}
+
+async fn ask_library(
+    State(state): State<ApiState>,
+    Json(req): Json<AskRequest>,
+) -> ApiResult<Json<AskResponse>> {
+    let query = req.q.trim();
+    if query.is_empty() {
+        return Err(ApiError::bad_request("question cannot be empty"));
+    }
+
+    let limit = req.limit.unwrap_or(6).clamp(1, 8);
+    let results = search_records(
+        &state.paths,
+        cerul_search::SearchRequest {
+            q: query.to_string(),
+            limit,
+        },
+    )
+    .await?;
+    let citations = results
+        .into_iter()
+        .filter(|result| !result.snippet.trim().is_empty())
+        .take(limit)
+        .map(|result| AskCitation {
+            chunk_id: result.chunk_id,
+            item_id: result.item_id,
+            title: result
+                .item_title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| "Untitled media".to_string()),
+            timestamp: format_playback_timestamp(result.start_sec.unwrap_or(0.0)),
+            start_sec: result.start_sec,
+            snippet: trim_for_answer(&result.snippet, 280),
+        })
+        .collect::<Vec<_>>();
+
+    let answer = if citations.is_empty() {
+        format!(
+            "没有在本地索引里找到和「{}」直接相关的片段。可以先换一个关键词，或等当前索引任务完成后再问。",
+            query
+        )
+    } else {
+        let mut sentences = Vec::new();
+        for citation in citations.iter().take(3) {
+            sentences.push(format!(
+                "在《{}》{} 附近，索引里提到：{}",
+                citation.title, citation.timestamp, citation.snippet
+            ));
+        }
+        format!(
+            "{} 这不是云端幻觉式回答；它只基于当前本地检索到的片段生成，下面每条引用都能跳回原始时刻。",
+            sentences.join(" ")
+        )
+    };
+
+    Ok(Json(AskResponse { answer, citations }))
+}
+
+async fn list_moments(State(state): State<ApiState>) -> ApiResult<Json<Vec<MomentRecord>>> {
+    Ok(Json(read_moments(&state.paths)?))
+}
+
+async fn create_moment(
+    State(state): State<ApiState>,
+    Json(req): Json<CreateMomentRequest>,
+) -> ApiResult<Json<MomentRecord>> {
+    let quote = req.quote.trim();
+    if quote.is_empty() {
+        return Err(ApiError::bad_request("quote cannot be empty"));
+    }
+
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let item_title: Option<String> = conn
+        .query_row(
+            "SELECT title FROM items WHERE id = ?1",
+            [req.item_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(item_title) = item_title else {
+        return Err(ApiError::not_found(format!(
+            "item not found: {}",
+            req.item_id
+        )));
+    };
+
+    if let Some(chunk_id) = req
+        .chunk_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let chunk_exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM chunks WHERE id = ?1 AND item_id = ?2",
+                (chunk_id, req.item_id.as_str()),
+                |row| row.get(0),
+            )
+            .optional()?;
+        if chunk_exists.is_none() {
+            return Err(ApiError::bad_request("chunk does not belong to item"));
+        }
+    }
+
+    let id = new_id("moment");
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(item_title.as_str());
+    conn.execute(
+        r#"
+        INSERT INTO moments (id, item_id, chunk_id, start_sec, end_sec, title, quote, note)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        (
+            id.as_str(),
+            req.item_id.as_str(),
+            req.chunk_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            req.start_sec,
+            req.end_sec,
+            title,
+            quote,
+            req.note.as_deref().filter(|value| !value.trim().is_empty()),
+        ),
+    )?;
+
+    read_moment(&state.paths, &id)?
+        .map(Json)
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("moment was not recorded")))
+}
+
+async fn remove_moment(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let removed = conn.execute("DELETE FROM moments WHERE id = ?1", [id.as_str()])?;
+    if removed != 1 {
+        return Err(ApiError::not_found(format!("moment not found: {id}")));
+    }
+    Ok(Json(json!({ "status": "removed", "id": id })))
+}
+
+async fn list_entities(State(state): State<ApiState>) -> ApiResult<Json<Vec<EntitySummary>>> {
+    let mentions = collect_entity_mentions(&state.paths)?;
+    Ok(Json(entity_summaries(&mentions)))
+}
+
+async fn get_entity(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<EntityDetail>> {
+    let mentions = collect_entity_mentions(&state.paths)?;
+    let mut summaries = entity_summaries(&mentions);
+    let Some(entity) = summaries.iter_mut().find(|entity| entity.id == id).cloned() else {
+        return Err(ApiError::not_found(format!("entity not found: {id}")));
+    };
+    let entity_mentions = mentions
+        .into_iter()
+        .filter(|mention| mention.entity_id == id)
+        .collect::<Vec<_>>();
+
+    Ok(Json(EntityDetail {
+        entity,
+        mentions: entity_mentions,
+    }))
+}
+
+async fn weekly_review(State(state): State<ApiState>) -> ApiResult<Json<WeeklyReviewResponse>> {
+    Ok(Json(weekly_review_for_paths(&state.paths)?))
 }
 
 async fn list_sources(State(state): State<ApiState>) -> ApiResult<Json<Vec<SourceRecord>>> {
@@ -953,18 +1235,23 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
     )?;
     let rows = stmt.query_map([], |row| {
         let job_id: String = row.get(0)?;
+        let job_type: String = row.get(2)?;
+        let error: Option<String> = row.get(6)?;
         Ok(JobRecord {
             id: job_id.clone(),
             item_id: row.get(1)?,
-            job_type: row.get(2)?,
+            job_type: job_type.clone(),
             status: row.get(3)?,
             started_at: row.get(4)?,
             finished_at: row.get(5)?,
-            error: row.get(6)?,
+            error: error.clone(),
             progress: row.get(7)?,
             stage: row.get(8)?,
             stage_message: row.get(9)?,
             usage: cerul_storage::usage_totals_for_job(&state.paths, &job_id).unwrap_or_default(),
+            error_info: error
+                .as_deref()
+                .and_then(|message| classify_job_error(&job_type, message)),
         })
     })?;
 
@@ -994,6 +1281,459 @@ async fn list_usage_events(
         &state.paths,
         query.limit.unwrap_or(50).min(500),
     )?))
+}
+
+fn read_moments(paths: &AppPaths) -> anyhow::Result<Vec<MomentRecord>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT m.id, m.item_id, m.chunk_id, m.start_sec, m.end_sec,
+               COALESCE(NULLIF(m.title, ''), i.title, 'Untitled media') AS title,
+               m.quote, m.note, m.created_at
+        FROM moments m
+        JOIN items i ON i.id = m.item_id
+        ORDER BY m.created_at DESC, m.id DESC
+        "#,
+    )?;
+    let rows = stmt.query_map([], moment_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn read_moment(paths: &AppPaths, id: &str) -> anyhow::Result<Option<MomentRecord>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.query_row(
+        r#"
+        SELECT m.id, m.item_id, m.chunk_id, m.start_sec, m.end_sec,
+               COALESCE(NULLIF(m.title, ''), i.title, 'Untitled media') AS title,
+               m.quote, m.note, m.created_at
+        FROM moments m
+        JOIN items i ON i.id = m.item_id
+        WHERE m.id = ?1
+        "#,
+        [id],
+        moment_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn moment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MomentRecord> {
+    let start_sec: Option<f64> = row.get(3)?;
+    Ok(MomentRecord {
+        id: row.get(0)?,
+        item_id: row.get(1)?,
+        chunk_id: row.get(2)?,
+        start_sec,
+        end_sec: row.get(4)?,
+        timestamp: format_playback_timestamp(start_sec.unwrap_or(0.0)),
+        title: row.get(5)?,
+        quote: row.get(6)?,
+        note: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+fn collect_entity_mentions(paths: &AppPaths) -> anyhow::Result<Vec<EntityMention>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut mentions = Vec::new();
+
+    let mut understanding_stmt = conn.prepare(
+        r#"
+        SELECT iu.item_id, COALESCE(i.title, 'Untitled media'), iu.result
+        FROM item_understandings iu
+        JOIN items i ON i.id = iu.item_id
+        WHERE iu.status = 'completed'
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, iu.item_id ASC
+        "#,
+    )?;
+    let understanding_rows = understanding_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in understanding_rows {
+        let (item_id, item_title, raw_result) = row?;
+        let result = parse_json(&raw_result);
+        if let Some(topics) = result.get("topics").and_then(Value::as_array) {
+            for topic in topics {
+                if let Some(label) = topic.as_str() {
+                    push_entity_mention(
+                        &mut mentions,
+                        label,
+                        "topic",
+                        &item_id,
+                        &item_title,
+                        None,
+                        None,
+                        label,
+                    );
+                }
+            }
+        }
+        if let Some(events) = result.get("events").and_then(Value::as_array) {
+            for event in events {
+                let start_sec = event.get("start_sec").and_then(Value::as_f64);
+                let quote = event
+                    .get("caption")
+                    .and_then(Value::as_str)
+                    .or_else(|| event.get("visual").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .trim();
+                if let Some(entities) = event.get("entities").and_then(Value::as_array) {
+                    for entity in entities {
+                        if let Some(label) = entity.as_str() {
+                            push_entity_mention(
+                                &mut mentions,
+                                label,
+                                "person_or_entity",
+                                &item_id,
+                                &item_title,
+                                None,
+                                start_sec,
+                                if quote.is_empty() { label } else { quote },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut chunk_stmt = conn.prepare(
+        r#"
+        SELECT c.id, c.item_id, COALESCE(i.title, 'Untitled media'), c.start_sec, c.text
+        FROM chunks c
+        JOIN items i ON i.id = c.item_id
+        WHERE c.text IS NOT NULL
+          AND c.chunk_type IN ('transcript', 'transcript_line', 'understanding', 'ocr')
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, COALESCE(c.start_sec, 0), c.id
+        LIMIT 1000
+        "#,
+    )?;
+    let chunk_rows = chunk_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<f64>>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    for row in chunk_rows {
+        let (chunk_id, item_id, item_title, start_sec, text) = row?;
+        for label in extract_candidate_entities(&text).into_iter().take(4) {
+            let kind = entity_kind(&label);
+            push_entity_mention(
+                &mut mentions,
+                &label,
+                kind,
+                &item_id,
+                &item_title,
+                Some(&chunk_id),
+                start_sec,
+                &text,
+            );
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    mentions.retain(|mention| {
+        seen.insert(format!(
+            "{}:{}:{}",
+            mention.entity_id,
+            mention.item_id,
+            mention.chunk_id.as_deref().unwrap_or("")
+        ))
+    });
+    Ok(mentions)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_entity_mention(
+    mentions: &mut Vec<EntityMention>,
+    label: &str,
+    kind: &str,
+    item_id: &str,
+    item_title: &str,
+    chunk_id: Option<&str>,
+    start_sec: Option<f64>,
+    quote: &str,
+) {
+    let Some(label) = normalize_entity_label(label) else {
+        return;
+    };
+    let entity_id = entity_slug(&label);
+    if entity_id.is_empty() {
+        return;
+    }
+    mentions.push(EntityMention {
+        entity_id,
+        label,
+        kind: kind.to_string(),
+        item_id: item_id.to_string(),
+        item_title: item_title.to_string(),
+        chunk_id: chunk_id.map(ToString::to_string),
+        timestamp: format_playback_timestamp(start_sec.unwrap_or(0.0)),
+        start_sec,
+        quote: trim_for_answer(quote, 220),
+    });
+}
+
+fn entity_summaries(mentions: &[EntityMention]) -> Vec<EntitySummary> {
+    let mut by_id: BTreeMap<String, (String, usize, BTreeSet<String>)> = BTreeMap::new();
+    for mention in mentions {
+        let entry = by_id
+            .entry(mention.entity_id.clone())
+            .or_insert_with(|| (mention.label.clone(), 0, BTreeSet::<String>::new()));
+        entry.1 += 1;
+        entry.2.insert(mention.item_id.clone());
+    }
+    let mut summaries = by_id
+        .into_iter()
+        .map(|(id, (label, mention_count, item_ids))| EntitySummary {
+            kind: entity_kind(&label).to_string(),
+            id,
+            label,
+            mention_count,
+            item_count: item_ids.len(),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .mention_count
+            .cmp(&left.mention_count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    summaries.truncate(30);
+    summaries
+}
+
+fn weekly_review_for_paths(paths: &AppPaths) -> anyhow::Result<WeeklyReviewResponse> {
+    let now = current_unix_seconds();
+    let week_start = now - 7 * 24 * 60 * 60;
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let (indexed_items, indexed_seconds, watched_seconds): (i64, f64, f64) = conn.query_row(
+        r#"
+        SELECT COUNT(*),
+               COALESCE(SUM(duration_sec), 0),
+               COALESCE(SUM(
+                 MIN(
+                   COALESCE(json_extract(metadata, '$.playback_position.position_sec'), 0),
+                   COALESCE(duration_sec, 0)
+                 )
+               ), 0)
+        FROM items
+        WHERE indexed_at IS NOT NULL
+          AND indexed_at >= ?1
+        "#,
+        [week_start],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let watched_percent = if indexed_seconds > 0.0 {
+        ((watched_seconds / indexed_seconds) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
+    } else {
+        0
+    };
+    let topics = entity_summaries(&collect_entity_mentions(paths)?)
+        .into_iter()
+        .take(3)
+        .map(|entity| WeeklyTopic {
+            id: entity.id,
+            label: entity.label,
+            count: entity.mention_count,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(WeeklyReviewResponse {
+        week_start,
+        indexed_items: indexed_items.max(0) as usize,
+        indexed_seconds,
+        watched_percent,
+        has_data: indexed_items > 0 || !topics.is_empty(),
+        topics,
+    })
+}
+
+fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
+    let normalized = message.to_ascii_lowercase();
+    let capability = capability_for_job_type(job_type).to_string();
+    let (code, friendly) = if normalized.contains("api key")
+        || normalized.contains("missing key")
+        || normalized.contains("no key")
+        || normalized.contains("unauthorized")
+        || normalized.contains("401")
+    {
+        (
+            "missing_api_key",
+            format!("{capability} 连接缺少可用 API 密钥。"),
+        )
+    } else if normalized.contains("model")
+        && (normalized.contains("not found")
+            || normalized.contains("does not exist")
+            || normalized.contains("unsupported")
+            || normalized.contains("404"))
+    {
+        (
+            "model_not_found",
+            format!("{capability} 当前选择的模型不可用，请换一个模型或连接。"),
+        )
+    } else if normalized.contains("ffmpeg") {
+        (
+            "ffmpeg_unavailable",
+            "本机视频处理运行时不可用，需要修复本地工具链。".to_string(),
+        )
+    } else if normalized.contains("yt-dlp")
+        || normalized.contains("video unavailable")
+        || normalized.contains("private")
+        || normalized.contains("geo")
+    {
+        (
+            "source_unavailable",
+            "来源暂时不可访问，可能是私有、地区限制或下载器失效。".to_string(),
+        )
+    } else if normalized.trim().is_empty() {
+        return None;
+    } else {
+        (
+            "unknown_processing_error",
+            format!("{capability} 处理失败，需要查看技术详情。"),
+        )
+    };
+
+    Some(JobErrorInfo {
+        code: code.to_string(),
+        capability,
+        settings_section: "Models".to_string(),
+        message: friendly,
+    })
+}
+
+fn capability_for_job_type(job_type: &str) -> &'static str {
+    match job_type {
+        "index_audio" => "转录",
+        "index_image" => "图像索引",
+        "index_video" => "视频索引",
+        _ => "索引",
+    }
+}
+
+fn extract_candidate_entities(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = text.to_ascii_lowercase();
+    for phrase in [
+        "test-time compute",
+        "retrieval quality",
+        "media memory",
+        "semantic retrieval",
+        "video understanding",
+        "prompt engineering",
+        "agent",
+        "agents",
+    ] {
+        if lower.contains(phrase) {
+            out.push(phrase.to_string());
+        }
+    }
+
+    let words = text
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '-' || ch == '\''))
+        .filter(|word| word.len() > 1)
+        .collect::<Vec<_>>();
+    let mut current = Vec::new();
+    for word in words {
+        if word
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+            && !matches!(word, "I" | "The" | "This" | "That" | "And" | "But")
+        {
+            current.push(word);
+            if current.len() >= 4 {
+                out.push(current.join(" "));
+                current.clear();
+            }
+        } else {
+            if current.len() >= 2 {
+                out.push(current.join(" "));
+            }
+            current.clear();
+        }
+    }
+    if current.len() >= 2 {
+        out.push(current.join(" "));
+    }
+
+    let mut seen = BTreeSet::new();
+    out.into_iter()
+        .filter_map(|label| normalize_entity_label(&label))
+        .filter(|label| seen.insert(label.to_ascii_lowercase()))
+        .take(12)
+        .collect()
+}
+
+fn normalize_entity_label(label: &str) -> Option<String> {
+    let cleaned = label
+        .trim()
+        .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != ' ')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.len() < 3 || cleaned.len() > 80 {
+        return None;
+    }
+    let lower = cleaned.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "the" | "and" | "this" | "that" | "with" | "from" | "your" | "you"
+    ) {
+        return None;
+    }
+    Some(cleaned)
+}
+
+fn entity_slug(label: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in label.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn entity_kind(label: &str) -> &'static str {
+    if label
+        .split_whitespace()
+        .next()
+        .and_then(|word| word.chars().next())
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+    {
+        "person_or_entity"
+    } else {
+        "topic"
+    }
+}
+
+fn trim_for_answer(value: &str, max_chars: usize) -> String {
+    let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let mut out = text
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    out.push('…');
+    out
 }
 
 async fn list_settings(State(state): State<ApiState>) -> ApiResult<Json<BTreeMap<String, Value>>> {
@@ -2020,11 +2760,17 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/metrics", &["get"]),
     ("/openapi.json", &["get"]),
     ("/search", &["post"]),
+    ("/ask", &["post"]),
     ("/sources", &["get", "post"]),
     ("/sources/preview/rss", &["post"]),
     ("/sources/{id}", &["delete"]),
     ("/sources/{id}/pause", &["post"]),
     ("/sources/{id}/resume", &["post"]),
+    ("/moments", &["get", "post"]),
+    ("/moments/{id}", &["delete"]),
+    ("/entities", &["get"]),
+    ("/entities/{id}", &["get"]),
+    ("/weekly-review", &["get"]),
     ("/items", &["get"]),
     ("/items/{id}", &["get", "delete"]),
     ("/items/{id}/reindex", &["post"]),

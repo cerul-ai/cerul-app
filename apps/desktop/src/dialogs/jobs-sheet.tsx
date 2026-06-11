@@ -31,11 +31,13 @@ export function JobsSheet({
   items,
   stepStarts,
   onClose,
+  onOpenSettingsFix,
 }: {
   jobs: api.JobRecord[];
   items: Item[];
   stepStarts: Record<string, number>;
   onClose: () => void;
+  onOpenSettingsFix: (section: string) => void;
 }) {
   const t = useT();
   useEscapeToClose(onClose);
@@ -55,19 +57,29 @@ export function JobsSheet({
     0,
   );
   const now = useNowSeconds(activeJobs.length > 0);
-  const title =
-    activeJobs.length > 0
-      ? t(
-          activeJobs.length === 1 ? "jobs.activeCountOne" : "jobs.activeCountOther",
-          { count: activeJobs.length },
-        )
-      : t("jobs.noneTitle");
+  // ① The header used to read "No jobs running" even while failed jobs sat in the
+  // list right below it. Summarise running + failed so the title can't contradict
+  // the rows. (Batch spend stays in the cost card.)
+  const failedJobs = sortedJobs.filter((job) => jobBadgeStatus(job.status) === "failed");
+  const summaryParts: string[] = [];
+  if (activeJobs.length > 0) {
+    summaryParts.push(
+      t(activeJobs.length === 1 ? "jobs.activeCountOne" : "jobs.activeCountOther", {
+        count: activeJobs.length,
+      }),
+    );
+  }
+  if (failedJobs.length > 0) {
+    summaryParts.push(t("jobs.failedCount", { count: failedJobs.length }));
+  }
+  const title = summaryParts.length > 0 ? summaryParts.join(" · ") : t("jobs.noneTitle");
 
   const renderRow = (job: api.JobRecord) => {
     const stage = jobStageMessage(job, t);
     const usage = jobUsageLabel(job, t);
     const badgeStatus = jobBadgeStatus(job.status);
     const isRunning = job.status === "running";
+    const isFailed = badgeStatus === "failed";
     const step = jobStepInfo(job);
     const stepElapsed = jobStepElapsedSeconds(job, stepStarts, now);
     const elapsed = jobElapsedSeconds(job, now);
@@ -86,8 +98,35 @@ export function JobsSheet({
             <StatusBadge status={badgeStatus} label={jobDisplayStatus(job, t)} />
           </div>
           <span className="muted">{jobTypeLabel(job.job_type, t)}</span>
-          <ProgressBar value={jobStepProgressPercent(job)} animated={isRunning} />
-          {stage ? <p className="muted">{stage}</p> : null}
+          {/* ④ A failed card no longer carries a frozen 0% progress bar — progress
+              is for running jobs only; failure reads from the red dot + badge. */}
+          {isRunning ? <ProgressBar value={jobStepProgressPercent(job)} animated /> : null}
+          {/* ② Raw HTTP/JSON error payloads are tucked into a collapsible instead
+              of dumped in the user's face. Friendly mapping is task #7. */}
+          {isFailed ? (
+            <>
+              {job.error_info ? (
+                <div className="job-fix">
+                  <p>{job.error_info.message}</p>
+                  <button
+                    type="button"
+                    className="btn btn-primary sm"
+                    onClick={() => onOpenSettingsFix(job.error_info?.settings_section ?? "Models")}
+                  >
+                    {t("jobs.fixSettings")}
+                  </button>
+                </div>
+              ) : null}
+              {job.error ? (
+                <details className="job-tech">
+                  <summary>{t("jobs.tech.summary")}</summary>
+                  <pre className="job-tech-raw mono">{job.error}</pre>
+                </details>
+              ) : null}
+            </>
+          ) : stage ? (
+            <p className="muted">{stage}</p>
+          ) : null}
           {meta.length > 0 ? <p className="job-meta faint mono">{meta.join(" · ")}</p> : null}
           {usage ? <p className="job-usage faint mono">{usage}</p> : null}
         </div>

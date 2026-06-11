@@ -321,6 +321,113 @@
   flex-direction: column;
   gap: var(--sp-3);
 }
+/* P3 · The connection editor now lives in a focused modal (progressive
+   disclosure) instead of sprawling inline under the connection list. */
+.provider-conn-dialog {
+  max-width: 420px;
+}
+.provider-conn-dialog__form {
+  padding: 14px 20px 20px;
+}
+.provider-conn-dialog__form .provider-form-grid {
+  grid-template-columns: 1fr;
+}
+
+/* F5 · Account & Usage settings — gives the scattered $ figures a home. */
+.usage-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-3);
+}
+.usage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 16px 18px;
+}
+.usage-card__label {
+  font: 600 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.usage-card__value {
+  font-size: var(--fs-h2);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-card__note {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin: 0;
+}
+.usage-card .chip {
+  align-self: flex-start;
+}
+.usage-split {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 16px 18px;
+}
+.usage-split__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+.usage-split__bar {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.usage-split__bar > div {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+}
+.usage-split__legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-caption);
+  color: var(--text-faint);
+}
+.usage-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 16px 18px;
+}
+.usage-breakdown__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  font-size: var(--fs-meta);
+}
+.usage-breakdown__row + .usage-breakdown__row {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
 .provider-form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1168,6 +1275,140 @@ body.overlay-body {
 }
 .overlay-recents button:hover {
   background: var(--accent-soft);
+}
+.overlay-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 13px 10px 43px;
+  border-bottom: 1px solid var(--line);
+}
+.overlay-tabs button {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+}
+.overlay-tabs button.active {
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.overlay-tabs span {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.overlay-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+.overlay-answer > p {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.7;
+  color: var(--text);
+}
+.overlay-answer-cites {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.overlay-answer-cites button {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: baseline;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+.overlay-answer-cites button:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.overlay-answer-cites small {
+  grid-column: 2;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+/* F3 · "Index this link" row — overlay becomes a quick paste-to-queue inbox. */
+.overlay-urlrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 11px 11px;
+  padding: 11px 13px;
+  border: 1px dashed var(--accent-line);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+.overlay-urlrow__plus {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--accent-soft-2);
+  color: var(--accent-press);
+  font-size: 15px;
+  line-height: 1;
+}
+.overlay-urlrow__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.overlay-urlrow__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.overlay-urlrow__link {
+  font: 400 11px/1.3 var(--font-mono);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overlay-urlrow__btn {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.overlay-urlrow__btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.overlay-urlrow__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.overlay-urlrow__done {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--success);
 }
 .overlay-results {
   display: flex;
@@ -2789,9 +3030,17 @@ body.overlay-body {
   animation: menu-in var(--dur-fast) var(--ease);
 }
 .account-pop-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: var(--fs-meta);
   font-weight: var(--fw-semibold);
   color: var(--text);
+}
+.account-pop-mark {
+  width: 15px;
+  height: 15px;
+  flex: none;
 }
 .account-pop-sub {
   margin: 3px 0 0;
@@ -2801,11 +3050,31 @@ body.overlay-body {
 }
 .account-pop-tabs {
   display: flex;
-  width: 100%;
+  gap: var(--sp-4);
   margin: 12px 0 14px;
+  border-bottom: 1px solid var(--line);
 }
 .account-pop-tabs button {
-  flex: 1;
+  appearance: none;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 0 2px var(--sp-2);
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.account-pop-tabs button:hover {
+  color: var(--text);
+}
+.account-pop-tabs button.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
 }
 .account-pop-form {
   display: flex;
@@ -2886,22 +3155,45 @@ body.overlay-body {
   margin-top: 1px;
   line-height: 1.45;
 }
+/* P1 · "or" divider + stacked OAuth buttons. */
+.account-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  font-size: var(--fs-caption);
+  color: var(--text-faint);
+}
+.account-or::before,
+.account-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.account-oauth {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.account-oauth .btn svg {
+  flex: none;
+}
+/* P1 · "local needs no account" demoted from a boxed panel to a quiet footer. */
 .account-reassure {
   display: flex;
-  gap: 8px;
-  align-items: flex-start;
+  gap: 7px;
+  align-items: center;
   margin-top: 14px;
-  padding: 9px 11px;
-  border-radius: 10px;
-  background: var(--surface-2);
-  font-size: 11.5px;
-  color: var(--text-muted);
-  line-height: 1.45;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.4;
 }
 .account-reassure svg {
-  color: var(--accent);
+  color: var(--text-faint);
   flex: none;
-  margin-top: 1px;
 }
 .account-reveal {
   margin-top: 14px;
@@ -2948,6 +3240,210 @@ body.overlay-body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 8px;
+}
+/* ② Collapsible raw error payload on failed jobs (replaces dumping JSON inline). */
+.job-tech {
+  margin-top: 2px;
+}
+.job-tech summary {
+  cursor: pointer;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  list-style: none;
+  user-select: none;
+}
+.job-tech summary::-webkit-details-marker {
+  display: none;
+}
+.job-tech summary::before {
+  content: "▸ ";
+  color: var(--text-faint);
+}
+.job-tech[open] summary::before {
+  content: "▾ ";
+}
+.job-tech-raw {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow: auto;
+}
+.job-fix {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+}
+.job-fix p {
+  margin: 0;
+  flex: 1 1 160px;
+  font-size: var(--fs-caption);
+  color: var(--text);
+}
+
+.weekly-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 16px 18px;
+}
+.weekly-card h2 {
+  margin: 2px 0 5px;
+  font-size: var(--fs-h3);
+  color: var(--text);
+}
+.weekly-card p {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+.weekly-topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.seg-btn {
+  position: relative;
+}
+.seg-btn-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.seg-action {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.moment-star {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.moment-star:hover:not(:disabled),
+.moment-star.saved {
+  color: var(--warn);
+  border-color: rgba(177, 121, 31, 0.28);
+  background: rgba(177, 121, 31, 0.10);
+}
+.moment-star:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.moments-list,
+.entity-mentions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.moment-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 14px;
+}
+.moment-card__main,
+.entity-mention {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 4px 12px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  padding: 0;
+}
+.moment-card__main p,
+.entity-mention p {
+  grid-column: 2;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+}
+.moment-card__time,
+.entity-mention__time {
+  color: var(--accent-press);
+  font-size: var(--fs-caption);
+}
+.entity-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+.entity-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.entity-chip:hover {
+  border-color: var(--accent-line);
+  color: var(--accent-press);
+  background: var(--accent-soft);
+}
+.entity-chip small {
+  color: var(--text-faint);
+}
+.entity-mention {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 14px;
+}
+.entity-mention:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 /* ============================================================
@@ -3035,43 +3531,22 @@ body.overlay-body {
    target triple as an H1). The runtime is an environment fact, not the
    decision the user makes on this page — so: compact row, neutral surface,
    self-sizing badge. */
-.model-runtime-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-.model-runtime-row {
+/* P2 · Runtime readiness moved onto the local mode card; this alert only renders
+   when there's an actual blocker (replaces the always-on runtime banner). */
+.model-runtime-alert {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--line);
+  border: 1px solid var(--warn);
   border-radius: var(--r-md);
-  background: var(--surface-2);
+  background: var(--warn-soft);
+  flex-wrap: wrap;
 }
-.model-runtime-row__info {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-.model-runtime-row__label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  font-weight: 600;
-  color: var(--text-faint);
-}
-.model-runtime-row__value {
-  font-size: var(--fs-meta);
-  font-weight: 600;
-  color: var(--text);
-}
-.model-runtime-row__note {
+.model-runtime-alert__note {
   font-size: var(--fs-caption);
-  color: var(--warn);
-  margin: 0 0 0 2px;
+  color: var(--text);
+  margin: 0;
 }
 
 /* A3 · Underline tabs. Were detached segmented buttons floating between the
@@ -3203,6 +3678,42 @@ body.overlay-body {
   color: var(--text-muted);
   background: var(--surface-3);
   padding: 2px 8px;
+  border-radius: var(--r-pill);
+}
+/* P2 · "This Mac can run on-device" — green only as a success signal. */
+.imode-card__badge.ready {
+  color: var(--success);
+  background: var(--success-soft);
+}
+/* P2 · Usage summary strip — replaces the old runtime banner's slot with
+   something actionable: spend, run count, and the on-device (free) share. */
+.imode-usage-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  flex-wrap: wrap;
+}
+.imode-usage-strip__metric {
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.imode-usage-strip__bar {
+  flex: 1;
+  min-width: 80px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+.imode-usage-strip__bar > div {
+  height: 100%;
+  background: var(--accent);
   border-radius: var(--r-pill);
 }
 .imode-card__stats {

@@ -53,6 +53,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const cloudClient = {
+  oauthStartUrl(provider: "google" | "github") {
+    const redirect = encodeURIComponent("cerul-app://auth/callback");
+    return `${CLOUD_API_BASE_URL}/v1/auth/oauth/${provider}/start?redirect_uri=${redirect}`;
+  },
   register(input: RegisterInput) {
     return request<AuthResponse>("/v1/auth/register", { method: "POST", body: input });
   },

@@ -57,16 +57,19 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
+  Star,
   Trash2,
   Video,
   Wrench,
   Youtube,
+  Wallet,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
+import { useAuthStore } from "./lib/cloud/authStore";
 import { LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
 import {
   errorMessage,
@@ -210,6 +213,8 @@ const viewIds: View[] = [
   "results",
   "result-detail",
   "library",
+  "moments",
+  "entity-detail",
   "item-detail",
   "sources",
   "settings",
@@ -221,6 +226,7 @@ const viewIds: View[] = [
 const sidebarParentFor: Partial<Record<View, View>> = {
   "results": "home",
   "result-detail": "home",
+  "entity-detail": "library",
   "item-detail": "library",
 };
 const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
@@ -726,6 +732,7 @@ const demoJobs: api.JobRecord[] = [
     stage: "transcribing",
     stage_message: "Transcribing audio",
     usage: emptyUsageTotals,
+    error_info: null,
   },
   {
     id: "job-2",
@@ -739,8 +746,126 @@ const demoJobs: api.JobRecord[] = [
     stage: "failed",
     stage_message: "Index failed",
     usage: emptyUsageTotals,
+    error_info: {
+      code: "source_unavailable",
+      capability: "视频索引",
+      settings_section: "Models",
+      message: "来源暂时不可访问，可能是私有、地区限制或文件已移动。",
+    },
   },
 ];
+
+const demoMoments: api.MomentRecord[] = [
+  {
+    id: "moment-1",
+    item_id: "item-1",
+    chunk_id: "sample-2",
+    start_sec: 754,
+    end_sec: null,
+    timestamp: "12:34",
+    title: "Software Is Changing Again",
+    quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
+    note: null,
+    created_at: Math.floor(Date.now() / 1000) - 3600,
+  },
+  {
+    id: "moment-2",
+    item_id: "item-2",
+    chunk_id: "sample-3",
+    start_sec: 782,
+    end_sec: null,
+    timestamp: "13:02",
+    title: "API-first Media Systems",
+    quote: "Search quality improves when lexical recall and semantic retrieval are evaluated separately.",
+    note: null,
+    created_at: Math.floor(Date.now() / 1000) - 7200,
+  },
+];
+
+const demoEntities: api.EntitySummary[] = [
+  { id: "andrej-karpathy", label: "Andrej Karpathy", kind: "person_or_entity", mention_count: 6, item_count: 2 },
+  { id: "test-time-compute", label: "test-time compute", kind: "topic", mention_count: 5, item_count: 2 },
+  { id: "retrieval-quality", label: "retrieval quality", kind: "topic", mention_count: 4, item_count: 3 },
+];
+
+const demoEntityDetail: api.EntityDetail = {
+  entity: demoEntities[1],
+  mentions: [
+    {
+      entity_id: "test-time-compute",
+      label: "test-time compute",
+      kind: "topic",
+      item_id: "item-1",
+      item_title: "Software Is Changing Again",
+      chunk_id: "sample-2",
+      timestamp: "12:34",
+      start_sec: 754,
+      quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
+    },
+    {
+      entity_id: "test-time-compute",
+      label: "test-time compute",
+      kind: "topic",
+      item_id: "item-2",
+      item_title: "API-first Media Systems",
+      chunk_id: "sample-3",
+      timestamp: "13:02",
+      start_sec: 782,
+      quote: "The retrieval layer becomes part of the reasoning loop when answers cite exact moments.",
+    },
+  ],
+};
+
+const demoVideoUnderstanding: api.VideoUnderstandingRecord = {
+  item_id: "item-1",
+  provider_id: "fixture",
+  model_id: "qwen3-vl-fixture",
+  status: "completed",
+  summary:
+    "A discussion of test-time compute, retrieval quality, and how timestamped media evidence changes search workflows.",
+  chapters: [
+    {
+      start_sec: 730,
+      end_sec: 820,
+      title: "Test-time compute",
+      summary: "Reasoning budget can be spent after the prompt arrives.",
+    },
+    {
+      start_sec: 900,
+      end_sec: 1020,
+      title: "Retrieval as evidence",
+      summary: "Answers are grounded by exact transcript moments.",
+    },
+  ],
+  events: [
+    {
+      start_sec: 754,
+      end_sec: 790,
+      caption: "The speaker explains why test-time compute changes answer quality.",
+      visual: null,
+      audio: null,
+      actions: ["explains"],
+      entities: ["test-time compute"],
+      confidence: 0.91,
+    },
+  ],
+  topics: ["test-time compute", "retrieval quality", "media memory"],
+  searchable_text: null,
+  error: null,
+  created_at: Math.floor(Date.now() / 1000) - 3600,
+  updated_at: Math.floor(Date.now() / 1000) - 1800,
+};
+
+const demoUsageSummary: api.UsageSummary = {
+  total: { ...emptyUsageTotals, event_count: 18, request_count: 18, estimated_usd: 0.42, billed_credits: 42 },
+  remote: { ...emptyUsageTotals, event_count: 7, request_count: 7, estimated_usd: 0.42, billed_credits: 42 },
+  local: { ...emptyUsageTotals, event_count: 11, request_count: 11, estimated_usd: 0, billed_credits: 0 },
+  by_capability: [
+    { key: "asr", totals: { ...emptyUsageTotals, event_count: 6, request_count: 6, estimated_usd: 0.12 } },
+    { key: "embedding", totals: { ...emptyUsageTotals, event_count: 9, request_count: 9, estimated_usd: 0.18 } },
+    { key: "video_understanding", totals: { ...emptyUsageTotals, event_count: 3, request_count: 3, estimated_usd: 0.12 } },
+  ],
+};
 
 const transcript: TranscriptLine[] = [
   {
@@ -766,7 +891,7 @@ const transcript: TranscriptLine[] = [
   },
 ];
 
-const settingsSections = ["Models", "General", "Indexing", "Storage", "Advanced", "About"] as const;
+const settingsSections = ["Models", "Usage", "General", "Indexing", "Storage", "Advanced", "About"] as const;
 type SettingsSection = (typeof settingsSections)[number];
 
 function normalizeSettingsSection(section?: string | null): SettingsSection {
@@ -1258,6 +1383,7 @@ function AppWorkspace() {
   const railItems: { id: View; labelKey: string; icon: LucideIcon }[] = [
     { id: "home", labelKey: "nav.home", icon: Search },
     { id: "library", labelKey: "nav.library", icon: Library },
+    { id: "moments", labelKey: "nav.moments", icon: Star },
     { id: "sources", labelKey: "nav.sources", icon: Database },
   ];
   const mobileNavItems = [
@@ -1465,6 +1591,7 @@ function AppWorkspace() {
             actionsEnabled={screenApiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
+            onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
             onDeleteItems={async (itemIds) => {
               for (const itemId of itemIds) {
                 await api.deleteItem(itemId);
@@ -1479,6 +1606,28 @@ function AppWorkspace() {
             }}
             onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
             requestConfirm={requestConfirm}
+          />
+        ) : null}
+        {view === "moments" ? (
+          <MomentsScreen
+            actionsEnabled={screenApiStatus === "online"}
+            onOpenItem={(moment) =>
+              navigate("item-detail", { itemId: moment.item_id, timestamp: moment.timestamp })
+            }
+          />
+        ) : null}
+        {view === "entity-detail" ? (
+          <EntityDetailScreen
+            entityId={selectedItemId}
+            actionsEnabled={screenApiStatus === "online"}
+            onBack={() => navigate("library")}
+            onOpenMention={(mention) =>
+              navigate("item-detail", {
+                itemId: mention.item_id,
+                chunkId: mention.chunk_id,
+                timestamp: mention.timestamp,
+              })
+            }
           />
         ) : null}
         {view === "item-detail" ? (
@@ -1571,6 +1720,10 @@ function AppWorkspace() {
           items={visibleItems}
           stepStarts={stepStarts}
           onClose={() => setShowJobsSheet(false)}
+          onOpenSettingsFix={(section) => {
+            setShowJobsSheet(false);
+            navigate("settings", { settingsSection: section });
+          }}
         />
       ) : null}
       <ConfirmDialog
@@ -1588,6 +1741,18 @@ function submitSearchInputOnEnter(event: KeyboardEvent<HTMLInputElement>) {
   }
   event.preventDefault();
   event.currentTarget.form?.requestSubmit();
+}
+
+function formatWeeklyHours(seconds: number) {
+  const hours = Math.floor(Math.max(0, seconds) / 3600);
+  const minutes = Math.round((Math.max(0, seconds) % 3600) / 60);
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  return `${minutes}m`;
 }
 
 function HomeScreen({
@@ -1627,6 +1792,23 @@ function HomeScreen({
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
+    visualFixtureModeEnabled()
+      ? {
+          week_start: 0,
+          indexed_items: 4,
+          indexed_seconds: 6 * 3600 + 12 * 60,
+          watched_percent: 40,
+          topics: [
+            { id: "test-time-compute", label: "test-time compute", count: 5 },
+            { id: "retrieval-quality", label: "retrieval quality", count: 4 },
+            { id: "media-memory", label: "media memory", count: 3 },
+          ],
+          has_data: true,
+        }
+      : null,
+  );
+  const [weeklyDismissed, setWeeklyDismissed] = useState(false);
   const serverContinueItem = items
     .filter((item) => item.status === "indexed" && item.playbackPosition?.updated_at)
     .sort(
@@ -1662,6 +1844,24 @@ function HomeScreen({
 
     onSubmit(event);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureModeEnabled() || apiStatus !== "online") {
+      return;
+    }
+    api
+      .weeklyReview()
+      .then((review) => {
+        if (!cancelled) {
+          setWeeklyReview(review.has_data ? review : null);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [apiStatus, indexedCount, activeJobs.length]);
 
   if (!hasSources && apiStatus === "online") {
     return (
@@ -1750,6 +1950,37 @@ function HomeScreen({
             onOpen={() => onOpenItem(continueItem, continueTimestamp)}
           />
         </div>
+      ) : null}
+
+      {weeklyReview && !weeklyDismissed ? (
+        <section className="weekly-card" aria-label={t("weekly.title")}>
+          <div>
+            <p className="section-label">{t("weekly.eyebrow")}</p>
+            <h2>{t("weekly.title")}</h2>
+            <p>
+              {t("weekly.body", {
+                items: weeklyReview.indexed_items,
+                hours: formatWeeklyHours(weeklyReview.indexed_seconds),
+                watched: weeklyReview.watched_percent,
+              })}
+            </p>
+            {weeklyReview.topics.length > 0 ? (
+              <div className="weekly-topics">
+                {weeklyReview.topics.map((topic) => (
+                  <span className="chip neutral" key={topic.id}>{topic.label}</span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="btn-icon sm"
+            aria-label={t("common.close")}
+            onClick={() => setWeeklyDismissed(true)}
+          >
+            <X size={15} />
+          </button>
+        </section>
       ) : null}
 
       <div className="home-recent-block">
@@ -2217,6 +2448,144 @@ function TranscriptExportButtons({ title, lines }: { title: string; lines: Trans
   );
 }
 
+function useItemMoments(item: Item, enabled: boolean) {
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
+    visualFixtureMode ? demoMoments.filter((moment) => moment.item_id === item.id) : [],
+  );
+  const [pendingLineId, setPendingLineId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    if (visualFixtureMode) {
+      setMoments((current) => current.filter((moment) => moment.item_id === item.id));
+      return;
+    }
+    if (!enabled) {
+      setMoments([]);
+      return;
+    }
+    const records = await api.listMoments();
+    setMoments(records.filter((moment) => moment.item_id === item.id));
+  }, [enabled, item.id, visualFixtureMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureMode) {
+      setMoments(demoMoments.filter((moment) => moment.item_id === item.id));
+      return;
+    }
+    if (!enabled) {
+      setMoments([]);
+      return;
+    }
+    api
+      .listMoments()
+      .then((records) => {
+        if (!cancelled) {
+          setMoments(records.filter((moment) => moment.item_id === item.id));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, item.id, visualFixtureMode]);
+
+  function momentForLine(line: TranscriptLine) {
+    return moments.find(
+      (moment) =>
+        moment.chunk_id === line.id ||
+        (moment.timestamp === line.time && moment.quote.trim() === line.text.trim()),
+    );
+  }
+
+  async function toggle(line: TranscriptLine) {
+    if (!enabled || pendingLineId) {
+      return;
+    }
+    setPendingLineId(line.id);
+    setMessage(null);
+    try {
+      const existing = momentForLine(line);
+      if (visualFixtureMode) {
+        const startSec = parseTimestampSeconds(line.time);
+        setMoments((current) =>
+          existing
+            ? current.filter((moment) => moment.id !== existing.id)
+            : [
+                ...current,
+                {
+                  id: `fixture-${line.id}`,
+                  item_id: item.id,
+                  chunk_id: line.id,
+                  start_sec: Number.isFinite(startSec) ? startSec : null,
+                  end_sec: null,
+                  timestamp: line.time,
+                  title: item.title,
+                  quote: line.text,
+                  note: null,
+                  created_at: Math.floor(Date.now() / 1000),
+                },
+              ],
+        );
+        return;
+      }
+      if (existing) {
+        await api.deleteMoment(existing.id);
+      } else {
+        const startSec = parseTimestampSeconds(line.time);
+        await api.createMoment({
+          item_id: item.id,
+          chunk_id: line.id,
+          start_sec: Number.isFinite(startSec) ? startSec : null,
+          title: item.title,
+          quote: line.text,
+        });
+      }
+      await reload();
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPendingLineId(null);
+    }
+  }
+
+  return {
+    moments,
+    pendingLineId,
+    message,
+    momentForLine,
+    toggle,
+  };
+}
+
+function MomentLineAction({
+  saved,
+  pending,
+  disabled,
+  onToggle,
+}: {
+  saved: boolean;
+  pending: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      className={saved ? "moment-star saved" : "moment-star"}
+      disabled={disabled || pending}
+      title={saved ? t("moments.unsave") : t("moments.save")}
+      aria-label={saved ? t("moments.unsave") : t("moments.save")}
+      onClick={onToggle}
+    >
+      {pending ? <Loader2 size={14} /> : <Star size={14} fill={saved ? "currentColor" : "none"} />}
+    </button>
+  );
+}
+
 function TranscriptReadingView({
   title,
   lines,
@@ -2294,6 +2663,7 @@ function ResultDetail({
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
     actionsEnabled && mediaState.status !== "idle" ? mediaState.lines : transcript;
+  const momentActions = useItemMoments(item, actionsEnabled && mediaState.status === "ready");
   const playbackUrl =
     item.contentType === "video" && mediaState.chunkId
       ? api.videoSegmentUrl(mediaState.chunkId)
@@ -2790,6 +3160,7 @@ function ResultDetail({
 
             {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
             {copyStatus === "copied" ? <InlineNotice tone="muted" message={t("detail.copy.success")} /> : null}
+            {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
             {itemAction.message ? (
               <InlineNotice
                 tone={itemAction.status === "error" ? "error" : "muted"}
@@ -2811,6 +3182,17 @@ function ResultDetail({
                 activeTime={currentTimestamp}
                 matchTime={startTimestamp}
                 onSeek={seekTo}
+                renderAction={(line) => {
+                  const saved = Boolean(momentActions.momentForLine(line));
+                  return (
+                    <MomentLineAction
+                      saved={saved}
+                      pending={momentActions.pendingLineId === line.id}
+                      disabled={!actionsEnabled}
+                      onToggle={() => void momentActions.toggle(line)}
+                    />
+                  );
+                }}
               />
             )}
           </div>
@@ -2826,19 +3208,25 @@ function VideoUnderstandingPanel({
   onSeek,
   requestConfirm,
   onChapters,
+  fixtureRecord,
 }: {
   item: Item;
   enabled: boolean;
   onSeek?: (timestamp: string) => void;
   requestConfirm: RequestConfirm;
   onChapters?: (chapters: api.VideoUnderstandingChapter[]) => void;
+  fixtureRecord?: api.VideoUnderstandingRecord | null;
 }) {
   const t = useT();
   const [state, setState] = useState<{
     status: "idle" | "loading" | "analyzing" | "loaded" | "error";
     record: api.VideoUnderstandingRecord | null;
     message: string | null;
-  }>({ status: "idle", record: null, message: null });
+  }>({
+    status: fixtureRecord ? "loaded" : "idle",
+    record: fixtureRecord ?? null,
+    message: null,
+  });
   const record = state.record;
   const isPending = state.status === "loading" || state.status === "analyzing";
   // Elapsed timer for the analyze run. The request is a single blocking call
@@ -2847,6 +3235,10 @@ function VideoUnderstandingPanel({
   const [analyzeElapsedMs, setAnalyzeElapsedMs] = useState(0);
 
   useEffect(() => {
+    if (fixtureRecord) {
+      setState({ status: "loaded", record: fixtureRecord, message: null });
+      return;
+    }
     if (!enabled || item.contentType !== "video") {
       setState({ status: "idle", record: null, message: null });
       return;
@@ -2874,7 +3266,7 @@ function VideoUnderstandingPanel({
     return () => {
       cancelled = true;
     };
-  }, [enabled, item.contentType, item.id]);
+  }, [enabled, fixtureRecord, item.contentType, item.id]);
 
   // Surface chapters to the host so the player can segment its timeline.
   useEffect(() => {
@@ -3100,6 +3492,230 @@ async function writeClipboardText(text: string) {
   }
 }
 
+function MomentsScreen({
+  actionsEnabled,
+  onOpenItem,
+}: {
+  actionsEnabled: boolean;
+  onOpenItem: (moment: api.MomentRecord) => void;
+}) {
+  const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
+    visualFixtureMode ? demoMoments : [],
+  );
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    visualFixtureMode ? "ready" : "loading",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+
+  const load = useCallback(async () => {
+    if (visualFixtureMode) {
+      setStatus("ready");
+      setMoments(demoMoments);
+      return;
+    }
+    if (!actionsEnabled) {
+      setStatus("ready");
+      setMoments([]);
+      return;
+    }
+    setStatus("loading");
+    setMessage(null);
+    try {
+      setMoments(await api.listMoments());
+      setStatus("ready");
+    } catch (error) {
+      setMessage(errorMessage(error));
+      setStatus("error");
+    }
+  }, [actionsEnabled, visualFixtureMode]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function remove(moment: api.MomentRecord) {
+    if (visualFixtureMode) {
+      setMoments((current) => current.filter((record) => record.id !== moment.id));
+      return;
+    }
+    try {
+      await api.deleteMoment(moment.id);
+      await load();
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function copyMarkdown() {
+    const markdown = moments
+      .map((moment) => `- [${moment.timestamp}] ${moment.quote}\n  - ${moment.title}`)
+      .join("\n");
+    try {
+      await writeClipboardText(markdown);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
+  }
+
+  return (
+    <div className="page wide">
+      <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
+        <div>
+          <p className="page-eyebrow">{t("moments.eyebrow")}</p>
+          <h1 className="page-h1">{t("moments.heading")}</h1>
+          <p className="page-sub">{t("moments.sub")}</p>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary sm"
+          disabled={moments.length === 0}
+          onClick={() => void copyMarkdown()}
+        >
+          <Copy size={15} />
+          <span>{copyStatus === "copied" ? t("detail.copy.copied") : t("moments.copyMarkdown")}</span>
+        </button>
+      </div>
+      {message ? <InlineNotice tone={status === "error" ? "error" : "muted"} message={message} /> : null}
+      {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
+      {status === "loading" ? (
+        <div className="state"><Loader2 size={22} /><span>{t("common.loading")}</span></div>
+      ) : null}
+      {status !== "loading" && moments.length === 0 ? (
+        <EmptyState
+          title={t("moments.empty.title")}
+          body={t("moments.empty.body")}
+        />
+      ) : null}
+      {moments.length > 0 ? (
+        <div className="moments-list">
+          {moments.map((moment) => (
+            <article className="moment-card" key={moment.id}>
+              <button type="button" className="moment-card__main" onClick={() => onOpenItem(moment)}>
+                <span className="mono moment-card__time">{moment.timestamp}</span>
+                <strong>{moment.title}</strong>
+                <p>{moment.quote}</p>
+              </button>
+              <button
+                type="button"
+                className="btn-icon sm"
+                aria-label={t("moments.unsave")}
+                onClick={() => void remove(moment)}
+              >
+                <Trash2 size={15} />
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EntityDetailScreen({
+  entityId,
+  actionsEnabled,
+  onBack,
+  onOpenMention,
+}: {
+  entityId: string | null;
+  actionsEnabled: boolean;
+  onBack: () => void;
+  onOpenMention: (mention: api.EntityMention) => void;
+}) {
+  const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [detail, setDetail] = useState<api.EntityDetail | null>(() =>
+    visualFixtureMode ? demoEntityDetail : null,
+  );
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    visualFixtureMode ? "ready" : "loading",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureMode) {
+      const entity = demoEntities.find((record) => record.id === entityId) ?? demoEntityDetail.entity;
+      setDetail({ ...demoEntityDetail, entity });
+      setStatus("ready");
+      setMessage(null);
+      return;
+    }
+    if (!actionsEnabled || !entityId) {
+      setStatus("ready");
+      setDetail(null);
+      return;
+    }
+    setStatus("loading");
+    setMessage(null);
+    api
+      .getEntity(entityId)
+      .then((next) => {
+        if (!cancelled) {
+          setDetail(next);
+          setStatus("ready");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMessage(errorMessage(error));
+          setStatus("error");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, entityId, visualFixtureMode]);
+
+  return (
+    <div className="page wide">
+      <div className="page-head">
+        <button className="btn btn-ghost sm" type="button" onClick={onBack}>
+          <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
+          <span>{t("library.heading")}</span>
+        </button>
+        <p className="page-eyebrow" style={{ marginTop: 18 }}>{t("entities.eyebrow")}</p>
+        <h1 className="page-h1">{detail?.entity.label ?? t("entities.heading")}</h1>
+        {detail ? (
+          <p className="page-sub">
+            {t("entities.detail.sub", {
+              count: detail.entity.mention_count,
+              items: detail.entity.item_count,
+            })}
+          </p>
+        ) : null}
+      </div>
+      {message ? <InlineNotice tone="error" message={message} /> : null}
+      {status === "loading" ? (
+        <div className="state"><Loader2 size={22} /><span>{t("common.loading")}</span></div>
+      ) : null}
+      {status !== "loading" && !detail ? (
+        <EmptyState title={t("entities.empty.title")} body={t("entities.empty.body")} />
+      ) : null}
+      {detail ? (
+        <div className="entity-mentions">
+          {detail.mentions.map((mention) => (
+            <button
+              key={`${mention.item_id}-${mention.chunk_id ?? mention.timestamp}`}
+              type="button"
+              className="entity-mention"
+              onClick={() => onOpenMention(mention)}
+            >
+              <span className="mono entity-mention__time">{mention.timestamp}</span>
+              <strong>{mention.item_title}</strong>
+              <p>{mention.quote}</p>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LibraryScreen({
   items,
   jobs,
@@ -3109,6 +3725,7 @@ function LibraryScreen({
   onDeleteItems,
   onReindexItems,
   onOpenItem,
+  onOpenEntity,
   onOpenJobs,
   requestConfirm,
 }: {
@@ -3120,6 +3737,7 @@ function LibraryScreen({
   onDeleteItems: (itemIds: string[]) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
+  onOpenEntity: (entity: api.EntitySummary) => void;
   onOpenJobs: () => void;
   requestConfirm: RequestConfirm;
 }) {
@@ -3134,6 +3752,8 @@ function LibraryScreen({
     status: "idle" | "reindexing" | "deleting" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
+  const [entities, setEntities] = useState<api.EntitySummary[]>([]);
+  const visualFixtureMode = visualFixtureModeEnabled();
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
@@ -3164,6 +3784,29 @@ function LibraryScreen({
       return next.size === current.size ? current : next;
     });
   }, [items]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureMode) {
+      setEntities(demoEntities);
+      return;
+    }
+    if (!actionsEnabled) {
+      setEntities([]);
+      return;
+    }
+    api
+      .listEntities()
+      .then((records) => {
+        if (!cancelled) {
+          setEntities(records.slice(0, 10));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, items.length, visualFixtureMode]);
 
   function clearLibraryFilters() {
     setLibraryQuery("");
@@ -3310,6 +3953,22 @@ function LibraryScreen({
           </button>
         ) : null}
       </div>
+      {entities.length > 0 ? (
+        <div className="entity-chip-row" aria-label={t("entities.eyebrow")}>
+          {entities.map((entity) => (
+            <button
+              key={entity.id}
+              type="button"
+              className="entity-chip"
+              onClick={() => onOpenEntity(entity)}
+            >
+              <CircleDot size={12} />
+              <span>{entity.label}</span>
+              <small className="mono">{entity.mention_count}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {batchState.status === "error" && batchState.message ? (
         <InlineNotice tone="error" message={batchState.message} />
       ) : null}
@@ -3409,6 +4068,7 @@ function ItemDetail({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
@@ -3423,7 +4083,11 @@ function ItemDetail({
     status: "idle" | "loading" | "loaded" | "error";
     lines: TranscriptLine[];
     message: string | null;
-  }>({ status: "idle", lines: transcript, message: null });
+  }>({
+    status: visualFixtureMode ? "loaded" : "idle",
+    lines: transcript,
+    message: null,
+  });
   const [itemAction, setItemAction] = useState<{
     status: "idle" | "locating" | "reindexing" | "deleting" | "queued" | "error";
     message: string | null;
@@ -3431,6 +4095,10 @@ function ItemDetail({
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
     apiStatus === "online" && chunkState.status !== "idle" ? chunkState.lines : transcript;
+  const momentActions = useItemMoments(
+    item,
+    (visualFixtureMode || actionsEnabled) && chunkState.status === "loaded",
+  );
   const playerMarkers: PlayerMarker[] = transcriptLines
     .map((line) => ({ seconds: parseTimestampSeconds(line.time), label: line.time, text: line.text }))
     .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
@@ -3532,6 +4200,10 @@ function ItemDetail({
   }, [onBack]);
 
   useEffect(() => {
+    if (visualFixtureMode) {
+      setChunkState({ status: "loaded", lines: transcript, message: null });
+      return;
+    }
     if (apiStatus !== "online") {
       setChunkState({ status: "idle", lines: transcript, message: null });
       return;
@@ -3557,7 +4229,7 @@ function ItemDetail({
     return () => {
       cancelled = true;
     };
-  }, [apiStatus, item.id]);
+  }, [apiStatus, item.id, visualFixtureMode]);
 
   async function locateSourceFile() {
     setItemAction({ status: "locating", message: null });
@@ -3757,6 +4429,7 @@ function ItemDetail({
             onSeek={seekTo}
             requestConfirm={requestConfirm}
             onChapters={handleUnderstandingChapters}
+            fixtureRecord={visualFixtureMode ? demoVideoUnderstanding : null}
           />
           {itemAction.message ? (
             <p
@@ -3766,6 +4439,7 @@ function ItemDetail({
               {itemAction.message}
             </p>
           ) : null}
+          {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
           {chunkState.status === "loading" ? <TranscriptSkeleton /> : null}
           {chunkState.status === "error" && chunkState.message ? (
             <InlineNotice tone="error" message={chunkState.message} />
@@ -3782,7 +4456,22 @@ function ItemDetail({
             <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
           ) : null}
           {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
-            <TranscriptList lines={transcriptLines} activeTime={currentTimestamp} onSeek={seekTo} />
+            <TranscriptList
+              lines={transcriptLines}
+              activeTime={currentTimestamp}
+              onSeek={seekTo}
+              renderAction={(line) => {
+                const saved = Boolean(momentActions.momentForLine(line));
+                return (
+                  <MomentLineAction
+                    saved={saved}
+                    pending={momentActions.pendingLineId === line.id}
+                    disabled={!actionsEnabled}
+                    onToggle={() => void momentActions.toggle(line)}
+                  />
+                );
+              }}
+            />
           ) : null}
         </div>
       </div>
@@ -3813,6 +4502,7 @@ function SettingsScreen({
   const sectionIcons: Record<string, LucideIcon> = {
     General: SlidersHorizontal,
     Models: Cpu,
+    Usage: Wallet,
     Indexing: ListChecks,
     Storage: HardDrive,
     Advanced: Wrench,
@@ -3821,6 +4511,7 @@ function SettingsScreen({
   const sectionLabels: Record<string, string> = {
     General: t("settings.section.general"),
     Models: t("settings.section.models"),
+    Usage: t("settings.section.usage"),
     Indexing: t("settings.section.indexing"),
     Storage: t("settings.section.storage"),
     Advanced: t("settings.section.advanced"),
@@ -3974,6 +4665,7 @@ function SettingsScreen({
               requestConfirm={requestConfirm}
             />
           ) : null}
+          {activeSection === "Usage" ? <UsageSettings /> : null}
           {activeSection === "Storage" ? <StorageSettings disabled={controlsDisabled} /> : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
@@ -4358,24 +5050,19 @@ function ModelsSettings({
     <div className="models-settings-panel">
       {catalogError ? <InlineNotice tone="error" message={catalogError} /> : null}
 
-      <div className="model-runtime-block">
-        <div className="model-runtime-row">
-          <div className="model-runtime-row__info">
-            <span className="model-runtime-row__label">{t("settings.models.runtime.kicker")}</span>
-            <span
-              className="model-runtime-row__value"
-              title={catalog?.runtime.platform ?? undefined}
-            >
-              {humanizeRuntimePlatform(catalog?.runtime.platform, t)}
-            </span>
-          </div>
-          <span className={bannerReady ? "chip success" : "chip warn"}>
+      {/* P2 · The always-on "Runtime · macOS · Apple Silicon · ready" banner was
+          pure noise when nothing was wrong. Readiness now lives as a pill on the
+          local mode card; this strip only appears when there's an actual blocker
+          (runtime needed / connection needed / error) the user must act on. */}
+      {bannerReady ? null : (
+        <div className="model-runtime-alert" role="status">
+          <span className="chip warn">
             <span className="dot" />
             {bannerBadge}
           </span>
+          <p className="model-runtime-alert__note">{bannerMessage}</p>
         </div>
-        {bannerReady ? null : <p className="model-runtime-row__note">{bannerMessage}</p>}
-      </div>
+      )}
 
       <nav className="seg-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
         <button
@@ -4403,6 +5090,8 @@ function ModelsSettings({
       <InferenceModeSelector
         inferenceMode={inferenceMode}
         usageSummary={usageSummary}
+        localRuntimeReady={localRuntimeReady}
+        platformLabel={humanizeRuntimePlatform(catalog?.runtime.platform, t)}
         disabled={disabled}
         onSettingsChange={onSettingsChange}
       />
@@ -4863,15 +5552,25 @@ function mergeAsrModelOptions(base: AsrModelOption[], discovered: AsrModelOption
 function InferenceModeSelector({
   inferenceMode,
   usageSummary,
+  localRuntimeReady,
+  platformLabel,
   disabled,
   onSettingsChange,
 }: {
   inferenceMode: string;
   usageSummary: api.UsageSummary | null;
+  localRuntimeReady: boolean;
+  platformLabel: string;
   disabled: boolean;
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
+  // Share of processing that ran on-device (free). Drives the usage strip that
+  // replaced the old runtime banner's prime real estate.
+  const localShare =
+    usageSummary && usageSummary.total.event_count > 0
+      ? Math.round((usageSummary.local.event_count / usageSummary.total.event_count) * 100)
+      : 0;
   const modes = [
     {
       id: "auto",
@@ -4933,7 +5632,15 @@ function InferenceModeSelector({
                 ) : null}
               </div>
               <p className="imode-card__desc">{mode.desc}</p>
-              {mode.badge ? (
+              {mode.id === "local" ? (
+                <span
+                  className={localRuntimeReady ? "imode-card__badge ready" : "imode-card__badge"}
+                  title={platformLabel}
+                >
+                  <Cpu size={11} />
+                  {localRuntimeReady ? t("settings.models.localCard.ready") : mode.badge}
+                </span>
+              ) : mode.badge ? (
                 <span className="imode-card__badge">
                   <Cpu size={11} />
                   {mode.badge}
@@ -4953,6 +5660,22 @@ function InferenceModeSelector({
           );
         })}
       </div>
+      {usageSummary && usageSummary.total.event_count > 0 ? (
+        <div className="imode-usage-strip">
+          <span className="imode-usage-strip__metric mono">
+            {t("settings.models.usage.strip.spent", {
+              cost: formatUsd(usageSummary.total.estimated_usd),
+              events: usageSummary.total.event_count,
+            })}
+          </span>
+          <div className="imode-usage-strip__bar" aria-hidden="true">
+            <div style={{ width: `${localShare}%` }} />
+          </div>
+          <span className="imode-usage-strip__metric mono">
+            {t("settings.models.usage.strip.localShare", { pct: localShare })}
+          </span>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -5106,6 +5829,9 @@ function ProviderConnections({
   // and Local model cards above — it is not a remote API key, so it does not
   // belong in this list. Show only genuinely remote provider connections here.
   const remoteProviders = providers.filter((provider) => provider.type !== "local");
+
+  // P3 · The connection editor is a focused modal now, so Esc dismisses it.
+  useEscapeToClose(closeForm, mode !== null);
 
   function openCreate() {
     setMode("create");
@@ -5282,13 +6008,39 @@ function ProviderConnections({
       </div>
 
       {mode ? (
-        <form
-          className="provider-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void saveConnection(false);
-          }}
-        >
+        <div className="scrim" role="presentation" onMouseDown={closeForm}>
+          <section
+            className="dialog provider-conn-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="provider-conn-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="dhead">
+              <div>
+                <p className="section-label">{t("settings.models.providers.kicker")}</p>
+                <h2 id="provider-conn-title" className="dtitle">
+                  {mode === "create"
+                    ? t("settings.models.providers.add")
+                    : t("settings.models.providers.edit")}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="btn-icon"
+                aria-label={t("common.close")}
+                onClick={closeForm}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <form
+              className="provider-form provider-conn-dialog__form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveConnection(false);
+              }}
+            >
           <div className="provider-form-grid">
             <label>
               <span>{t("settings.models.providers.form.type")}</span>
@@ -5365,7 +6117,9 @@ function ProviderConnections({
               {t("settings.models.providers.form.cancel")}
             </button>
           </div>
-        </form>
+            </form>
+          </section>
+        </div>
       ) : null}
     </section>
   );
@@ -6077,6 +6831,100 @@ function AdvancedSettings({
         />
       ) : null}
     </>
+  );
+}
+
+// F5 · Account & Usage. Spend, on-device/cloud split, and per-capability
+// breakdown come from the local usageSummary endpoint.
+function UsageSettings() {
+  const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [summary, setSummary] = useState<api.UsageSummary | null>(() =>
+    visualFixtureMode ? demoUsageSummary : null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const user = useAuthStore((state) => state.user);
+  const status = useAuthStore((state) => state.status);
+  const signedIn = status === "signedIn" && !!user;
+
+  useEffect(() => {
+    if (visualFixtureMode) {
+      setSummary(demoUsageSummary);
+      setError(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const next = await api.usageSummary();
+        if (active) {
+          setSummary(next);
+        }
+      } catch (err) {
+        if (active) {
+          setError(errorMessage(err));
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [visualFixtureMode]);
+
+  const total = summary?.total.estimated_usd ?? 0;
+  const events = summary?.total.event_count ?? 0;
+  const localEvents = summary?.local.event_count ?? 0;
+  const remoteEvents = summary?.remote.event_count ?? 0;
+  const localShare = events > 0 ? Math.round((localEvents / events) * 100) : 0;
+
+  return (
+    <section className="usage-settings">
+      <p className="settings-help">{t("settings.usage.desc")}</p>
+      {error ? <InlineNotice tone="error" message={error} /> : null}
+      <div className="usage-cards">
+        <div className="usage-card">
+          <span className="usage-card__label">{t("settings.usage.account.label")}</span>
+          {signedIn && user ? (
+            <>
+              <strong className="usage-card__value">{user.email}</strong>
+              <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
+            </>
+          ) : (
+            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
+          )}
+        </div>
+        <div className="usage-card">
+          <span className="usage-card__label">{t("settings.usage.spend.label")}</span>
+          <strong className="usage-card__value mono">{formatUsd(total)}</strong>
+          <span className="usage-card__note">{t("settings.usage.spend.events", { count: events })}</span>
+        </div>
+      </div>
+      <div className="usage-split">
+        <div className="usage-split__head">
+          <span className="usage-card__label">{t("settings.usage.split.label")}</span>
+          <span className="mono">{t("settings.usage.split.value", { pct: localShare })}</span>
+        </div>
+        <div className="usage-split__bar" aria-hidden="true">
+          <div style={{ width: `${localShare}%` }} />
+        </div>
+        <div className="usage-split__legend">
+          <span>{t("settings.usage.split.local", { count: localEvents })}</span>
+          <span>{t("settings.usage.split.cloud", { count: remoteEvents })}</span>
+        </div>
+      </div>
+      {summary?.by_capability.length ? (
+        <div className="usage-breakdown">
+          <span className="usage-card__label">{t("settings.usage.breakdown.label")}</span>
+          {summary.by_capability.map((row) => (
+            <div className="usage-breakdown__row" key={row.key}>
+              <span>{t(`usage.capability.${row.key}`)}</span>
+              <span className="mono">{formatUsd(row.totals.estimated_usd)}</span>
+              <span className="mono faint">{t("settings.usage.spend.events", { count: row.totals.event_count })}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
