@@ -32,6 +32,8 @@ Environment:
   CARGO_PROFILE_DEV_DEBUG       Dev debug info level, default 0 here
   CARGO_PROFILE_TEST_DEBUG      Test/check debug info level, default 0 here
   GGML_NATIVE                   whisper.cpp native CPU feature probing, default OFF here
+  CERUL_SKIP_DEV_RUNTIME_CLEANUP
+                                Skip orphan runtime cleanup and port check when set to 1
 EOF
 }
 
@@ -141,6 +143,7 @@ run_retry_on_cargo_sigkill() {
   done
 }
 
+bash scripts/clean-dev-runtime.sh
 rm -rf apps/desktop/dist .cache .turbo .cerul
 run_step cargo clean
 run_step pnpm install
