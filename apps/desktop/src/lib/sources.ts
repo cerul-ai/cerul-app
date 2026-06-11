@@ -11,6 +11,9 @@ export function sourceType(type: string): Source["type"] {
   if (type === "youtube") {
     return "youtube";
   }
+  if (type === "web_video") {
+    return "web_video";
+  }
   if (type === "rss_podcast") {
     return "podcast";
   }
@@ -54,7 +57,7 @@ export function sourceError(record: api.SourceRecord, status: SourceStatus) {
   if (typeof errorValue === "string" && errorValue.trim()) {
     return errorValue;
   }
-  return "Cerul could not poll this source. Check the path, feed URL, or channel settings.";
+  return "Cerul could not poll this source. Check the path, feed URL, channel, or video link.";
 }
 
 export function mapSourceRecord(record: api.SourceRecord, allItems: Item[]): Source {

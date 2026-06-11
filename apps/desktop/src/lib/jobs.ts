@@ -19,7 +19,7 @@ type CoarseStep = { key: string; stages: string[]; lo: number; hi: number };
 
 const COARSE_STEPS: Record<string, CoarseStep[]> = {
   index_video: [
-    { key: "prepare", stages: ["processing", "fetching", "extracting_audio", "sampling_frames"], lo: 0, hi: 0.2 },
+    { key: "prepare", stages: ["processing", "fetching", "downloading", "extracting_audio", "sampling_frames"], lo: 0, hi: 0.2 },
     { key: "transcribe", stages: ["transcribing", "chunking_transcript"], lo: 0.2, hi: 0.62 },
     { key: "embed_text", stages: ["ocr_frames", "writing_transcript", "embedding_text"], lo: 0.62, hi: 0.8 },
     { key: "embed_frames", stages: ["embedding_frames", "visual_failed"], lo: 0.8, hi: 0.92 },

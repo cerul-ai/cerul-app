@@ -21,7 +21,7 @@ export type SourceStatus = "active" | "paused" | "error";
 export type ItemStatus = "indexed" | "indexing" | "failed";
 export type VisualIndexStatus = "indexed" | "failed" | "pending" | null;
 export type EmbeddingIndexStatus = "indexed" | "failed" | "pending" | null;
-export type ItemSourceKind = "folder" | "youtube" | "podcast" | "unknown";
+export type ItemSourceKind = "folder" | "youtube" | "web_video" | "podcast" | "unknown";
 export type ApiStatus = "connecting" | "online" | "offline" | "error";
 export type ValidationStatus = "idle" | "validating" | "valid" | "error";
 
@@ -131,7 +131,7 @@ export type DetailIssue = {
 
 export type Source = {
   id: string;
-  type: "folder" | "file" | "youtube" | "podcast";
+  type: "folder" | "file" | "youtube" | "web_video" | "podcast";
   name: string;
   status: SourceStatus;
   items: number;

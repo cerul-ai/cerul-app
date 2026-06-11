@@ -1,0 +1,847 @@
+use anyhow::Context;
+use async_trait::async_trait;
+use cerul_models::{ContentType, DiscoveredItem};
+use reqwest::Url;
+use serde_json::{json, Value};
+use std::{
+    path::PathBuf,
+    process::{ExitStatus, Stdio},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    process::Command,
+};
+
+use crate::{
+    youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem},
+    FetchProgress, SourcePlugin,
+};
+
+static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
+
+#[derive(Debug, Clone)]
+pub struct WebVideo {
+    source_url: String,
+    classified: ClassifiedWebVideo,
+    max_videos: Option<usize>,
+    ytdlp_path: PathBuf,
+    cache_dir: PathBuf,
+    command_timeout: Option<Duration>,
+    clip_duration_sec: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebVideoPlatform {
+    YouTube,
+    Bilibili,
+}
+
+impl WebVideoPlatform {
+    fn as_str(self) -> &'static str {
+        match self {
+            WebVideoPlatform::YouTube => "youtube",
+            WebVideoPlatform::Bilibili => "bilibili",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebVideoSourceKind {
+    Single,
+    Author,
+}
+
+impl WebVideoSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            WebVideoSourceKind::Single => "single",
+            WebVideoSourceKind::Author => "author",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClassifiedWebVideo {
+    platform: WebVideoPlatform,
+    kind: WebVideoSourceKind,
+    canonical_url: String,
+}
+
+struct YtdlpRunOutput {
+    status: ExitStatus,
+    stderr: Vec<u8>,
+}
+
+impl WebVideo {
+    pub fn new(config: Value) -> anyhow::Result<Self> {
+        let source_url = config
+            .get("url")
+            .or_else(|| config.get("source_url"))
+            .and_then(|value| value.as_str())
+            .context("web_video requires config.url")?
+            .to_string();
+        let classified = classify_web_video_url(&source_url)?;
+
+        if let Some(source_kind) = config.get("source_kind").and_then(|value| value.as_str()) {
+            let requested = match source_kind {
+                "single" => WebVideoSourceKind::Single,
+                "author" | "channel" => WebVideoSourceKind::Author,
+                other => anyhow::bail!("unsupported web_video source_kind: {other}"),
+            };
+            anyhow::ensure!(
+                requested == classified.kind,
+                "web_video source_kind does not match URL shape"
+            );
+        }
+
+        if let Some(platform) = config.get("platform").and_then(|value| value.as_str()) {
+            anyhow::ensure!(
+                platform == classified.platform.as_str(),
+                "web_video platform does not match URL host"
+            );
+        }
+
+        let max_videos = config
+            .get("max_videos")
+            .or_else(|| config.get("max"))
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize);
+        let max_videos = match classified.kind {
+            WebVideoSourceKind::Single => Some(1),
+            WebVideoSourceKind::Author => match max_videos {
+                Some(0) | None => None,
+                Some(value) => Some(value),
+            },
+        };
+        let ytdlp_path = config
+            .get("ytdlp_path")
+            .and_then(|value| value.as_str())
+            .map(expand_path)
+            .unwrap_or_else(default_ytdlp_path);
+        let cache_dir = config
+            .get("cache_dir")
+            .and_then(|value| value.as_str())
+            .map(expand_path)
+            .unwrap_or_else(|| {
+                default_cache_dir()
+                    .join("web_video")
+                    .join(classified.platform.as_str())
+            });
+        let command_timeout = config
+            .get("timeout_sec")
+            .or_else(|| config.get("command_timeout_sec"))
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs);
+        let clip_duration_sec = config
+            .get("clip_duration_sec")
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0);
+
+        Ok(Self {
+            source_url,
+            classified,
+            max_videos,
+            ytdlp_path,
+            cache_dir,
+            command_timeout,
+            clip_duration_sec,
+        })
+    }
+
+    pub fn platform(&self) -> &'static str {
+        self.classified.platform.as_str()
+    }
+
+    pub fn source_kind(&self) -> &'static str {
+        self.classified.kind.as_str()
+    }
+
+    pub fn canonical_url(&self) -> &str {
+        &self.classified.canonical_url
+    }
+
+    pub fn max_videos(&self) -> Option<usize> {
+        self.max_videos
+    }
+
+    async fn discover_single(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        command
+            .arg(&self.classified.canonical_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = self.run_ytdlp(&mut command, "single discovery").await?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "yt-dlp single discovery failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        let metadata = parse_single_ytdlp_json(&output.stdout)?;
+        let item = self.item_from_metadata(metadata, WebVideoSourceKind::Single)?;
+        Ok(vec![item])
+    }
+
+    async fn discover_author(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--flat-playlist", "--dump-json"]);
+        if let Some(max_videos) = self.max_videos {
+            command.arg("--playlist-end").arg(max_videos.to_string());
+        }
+        command
+            .arg(&self.classified.canonical_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = self.run_ytdlp(&mut command, "author discovery").await?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "yt-dlp author discovery failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        let mut items = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let metadata: Value =
+                serde_json::from_str(line).context("yt-dlp emitted invalid JSON")?;
+            items.push(self.item_from_metadata(metadata, WebVideoSourceKind::Author)?);
+        }
+        Ok(items)
+    }
+
+    fn item_from_metadata(
+        &self,
+        metadata: Value,
+        source_kind: WebVideoSourceKind,
+    ) -> anyhow::Result<DiscoveredItem> {
+        let external_id = metadata
+            .get("id")
+            .and_then(|value| value.as_str())
+            .or_else(|| metadata.get("display_id").and_then(|value| value.as_str()))
+            .context("yt-dlp item is missing id")?
+            .to_string();
+        let title = metadata
+            .get("title")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
+        let duration_sec = metadata.get("duration").and_then(|value| value.as_f64());
+        let metadata = self.enrich_metadata(metadata, &external_id, source_kind);
+
+        Ok(DiscoveredItem {
+            external_id,
+            title,
+            duration_sec,
+            metadata,
+        })
+    }
+
+    fn enrich_metadata(
+        &self,
+        mut metadata: Value,
+        external_id: &str,
+        source_kind: WebVideoSourceKind,
+    ) -> Value {
+        if !metadata.is_object() {
+            metadata = json!({});
+        }
+        let object = metadata.as_object_mut().expect("metadata is object");
+        object
+            .entry("platform".to_string())
+            .or_insert_with(|| Value::String(self.classified.platform.as_str().to_string()));
+        object
+            .entry("source_kind".to_string())
+            .or_insert_with(|| Value::String(source_kind.as_str().to_string()));
+        object
+            .entry("source_url".to_string())
+            .or_insert_with(|| Value::String(self.source_url.clone()));
+        object
+            .entry("original_url".to_string())
+            .or_insert_with(|| Value::String(self.classified.canonical_url.clone()));
+        object
+            .entry("webpage_url".to_string())
+            .or_insert_with(|| Value::String(self.video_url_for_external_id(external_id)));
+        metadata
+    }
+
+    fn video_url_for_external_id(&self, external_id: &str) -> String {
+        match self.classified.platform {
+            WebVideoPlatform::YouTube => {
+                format!("https://www.youtube.com/watch?v={external_id}")
+            }
+            WebVideoPlatform::Bilibili => {
+                if external_id.starts_with("BV") || external_id.starts_with("av") {
+                    format!("https://www.bilibili.com/video/{external_id}")
+                } else {
+                    self.classified.canonical_url.clone()
+                }
+            }
+        }
+    }
+
+    fn fetch_url(&self, item: &DiscoveredItem) -> String {
+        metadata_string(&item.metadata, "webpage_url")
+            .or_else(|| metadata_string(&item.metadata, "original_url"))
+            .or_else(|| metadata_string(&item.metadata, "source_url"))
+            .or_else(|| metadata_string(&item.metadata, "url"))
+            .unwrap_or_else(|| self.video_url_for_external_id(&item.external_id))
+    }
+
+    fn output_path(&self, item: &DiscoveredItem) -> PathBuf {
+        self.cache_dir.join(format!(
+            "{}_{}.mp4",
+            self.classified.platform.as_str(),
+            safe_file_stem(&item.external_id)
+        ))
+    }
+
+    async fn run_ytdlp(
+        &self,
+        command: &mut Command,
+        phase: &str,
+    ) -> anyhow::Result<std::process::Output> {
+        command.kill_on_drop(true);
+        let output = match self.command_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, command.output())
+                .await
+                .with_context(|| {
+                    format!("yt-dlp {phase} timed out after {}s", timeout.as_secs())
+                })?,
+            None => command.output().await,
+        };
+
+        output.with_context(|| format!("failed to run {}", self.ytdlp_path.display()))
+    }
+
+    async fn run_ytdlp_with_progress(
+        &self,
+        command: &mut Command,
+        phase: &str,
+        progress: Option<FetchProgress>,
+    ) -> anyhow::Result<YtdlpRunOutput> {
+        command.kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("failed to run {}", self.ytdlp_path.display()))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_progress = progress.clone();
+        let stderr_progress = progress;
+        let stdout_task =
+            tokio::spawn(async move { collect_output(stdout, stdout_progress).await });
+        let stderr_task =
+            tokio::spawn(async move { collect_output(stderr, stderr_progress).await });
+
+        let wait = child.wait();
+        let status = match self.command_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, wait).await.with_context(|| {
+                format!("yt-dlp {phase} timed out after {}s", timeout.as_secs())
+            })?,
+            None => wait.await,
+        }
+        .with_context(|| format!("failed to wait for {}", self.ytdlp_path.display()))?;
+
+        stdout_task
+            .await
+            .context("failed to join yt-dlp stdout reader")?;
+        let stderr = stderr_task
+            .await
+            .context("failed to join yt-dlp stderr reader")?;
+
+        Ok(YtdlpRunOutput { status, stderr })
+    }
+}
+
+#[async_trait]
+impl SourcePlugin for WebVideo {
+    fn name(&self) -> &'static str {
+        "web_video"
+    }
+
+    fn content_types(&self) -> &[ContentType] {
+        &CONTENT_TYPES
+    }
+
+    async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
+        match self.classified.kind {
+            WebVideoSourceKind::Single => self.discover_single().await,
+            WebVideoSourceKind::Author => self.discover_author().await,
+        }
+    }
+
+    async fn fetch(&self, item: &DiscoveredItem) -> anyhow::Result<PathBuf> {
+        self.fetch_with_progress(item, None).await
+    }
+
+    async fn fetch_with_progress(
+        &self,
+        item: &DiscoveredItem,
+        progress: Option<FetchProgress>,
+    ) -> anyhow::Result<PathBuf> {
+        tokio::fs::create_dir_all(&self.cache_dir).await?;
+        let output_path = self.output_path(item);
+        if output_path.exists() {
+            emit_progress(&progress, 1.0, "Download complete");
+            return Ok(output_path);
+        }
+
+        emit_progress(&progress, 0.0, "Starting video download");
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args([
+            "--no-playlist",
+            "-f",
+            "best[height<=720]/best",
+            "--merge-output-format",
+            "mp4",
+            "--newline",
+            "--progress-template",
+            "download:CERUL_PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s %(progress.eta)s %(progress.speed)s",
+        ]);
+        if let Some(duration_sec) = self.clip_duration_sec {
+            command
+                .arg("--download-sections")
+                .arg(format!("*0-{duration_sec}"))
+                .arg("--force-keyframes-at-cuts");
+        }
+        command
+            .arg("-o")
+            .arg(&output_path)
+            .arg(self.fetch_url(item))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let output = self
+            .run_ytdlp_with_progress(&mut command, "fetch", progress.clone())
+            .await?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "yt-dlp fetch failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        emit_progress(&progress, 1.0, "Download complete");
+        Ok(output_path)
+    }
+}
+
+fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
+    let parsed = Url::parse(value.trim()).context("invalid web video URL")?;
+    anyhow::ensure!(
+        matches!(parsed.scheme(), "https" | "http"),
+        "web_video URL must be http or https"
+    );
+    let host = parsed
+        .host_str()
+        .map(|host| host.trim_start_matches("www.").to_ascii_lowercase())
+        .context("web_video URL is missing a host")?;
+    let path = parsed.path().trim_matches('/');
+    let path_parts = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    if host == "youtu.be" {
+        anyhow::ensure!(!path_parts.is_empty(), "YouTube URL is missing video id");
+        return Ok(ClassifiedWebVideo {
+            platform: WebVideoPlatform::YouTube,
+            kind: WebVideoSourceKind::Single,
+            canonical_url: parsed.to_string(),
+        });
+    }
+
+    if host == "youtube.com" || host.ends_with(".youtube.com") {
+        if path_parts.first() == Some(&"playlist")
+            || parsed.query_pairs().any(|(key, _)| key == "list")
+                && !parsed.query_pairs().any(|(key, _)| key == "v")
+        {
+            anyhow::bail!("YouTube playlists are not supported yet");
+        }
+        let first = path_parts.first().copied().unwrap_or_default();
+        if first == "watch"
+            && parsed
+                .query_pairs()
+                .any(|(key, value)| key == "v" && !value.is_empty())
+            || matches!(first, "shorts" | "live") && path_parts.len() >= 2
+        {
+            return Ok(ClassifiedWebVideo {
+                platform: WebVideoPlatform::YouTube,
+                kind: WebVideoSourceKind::Single,
+                canonical_url: parsed.to_string(),
+            });
+        }
+        if first.starts_with('@') || matches!(first, "channel" | "c" | "user") {
+            let canonical_url = ensure_path_suffix(parsed, "videos");
+            return Ok(ClassifiedWebVideo {
+                platform: WebVideoPlatform::YouTube,
+                kind: WebVideoSourceKind::Author,
+                canonical_url,
+            });
+        }
+        anyhow::bail!("unsupported YouTube URL; use a video URL or author homepage");
+    }
+
+    if host == "b23.tv" {
+        return Ok(ClassifiedWebVideo {
+            platform: WebVideoPlatform::Bilibili,
+            kind: WebVideoSourceKind::Single,
+            canonical_url: parsed.to_string(),
+        });
+    }
+
+    if host == "bilibili.com" || host.ends_with(".bilibili.com") {
+        if path_parts.first() == Some(&"video") && path_parts.len() >= 2 {
+            return Ok(ClassifiedWebVideo {
+                platform: WebVideoPlatform::Bilibili,
+                kind: WebVideoSourceKind::Single,
+                canonical_url: parsed.to_string(),
+            });
+        }
+        if host == "space.bilibili.com" && path_parts.first().is_some() {
+            let canonical_url = ensure_path_suffix(parsed, "video");
+            return Ok(ClassifiedWebVideo {
+                platform: WebVideoPlatform::Bilibili,
+                kind: WebVideoSourceKind::Author,
+                canonical_url,
+            });
+        }
+        anyhow::bail!("unsupported Bilibili URL; use a video URL or author homepage");
+    }
+
+    anyhow::bail!("unsupported video host; supported hosts are YouTube and Bilibili")
+}
+
+fn ensure_path_suffix(mut url: Url, suffix: &str) -> String {
+    let mut parts = url
+        .path()
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.last().copied() != Some(suffix) {
+        parts.push(suffix);
+    }
+    url.set_path(&format!("/{}", parts.join("/")));
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
+fn parse_single_ytdlp_json(stdout: &[u8]) -> anyhow::Result<Value> {
+    let text = String::from_utf8_lossy(stdout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("yt-dlp emitted no JSON");
+    }
+    serde_json::from_str(trimmed)
+        .or_else(|_| {
+            text.lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .context("yt-dlp emitted no JSON")
+                .and_then(|line| serde_json::from_str(line).context("yt-dlp emitted invalid JSON"))
+        })
+        .context("yt-dlp emitted invalid JSON")
+}
+
+fn metadata_string(metadata: &Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+async fn collect_output<R>(reader: Option<R>, progress: Option<FetchProgress>) -> Vec<u8>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(reader) = reader else {
+        return Vec::new();
+    };
+    let mut reader = BufReader::new(reader);
+    let mut output = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = match reader.read_until(b'\n', &mut line).await {
+            Ok(read) => read,
+            Err(_) => break,
+        };
+        if read == 0 {
+            break;
+        }
+        output.extend_from_slice(&line);
+        if let Some(update) = parse_progress_line(&String::from_utf8_lossy(&line)) {
+            emit_progress(&progress, update.0, &update.1);
+        }
+    }
+    output
+}
+
+fn emit_progress(progress: &Option<FetchProgress>, fraction: f64, message: &str) {
+    if let Some(progress) = progress {
+        progress(fraction.clamp(0.0, 1.0), message.to_string());
+    }
+}
+
+fn parse_progress_line(line: &str) -> Option<(f64, String)> {
+    let trimmed = line.trim();
+    if let Some(raw) = trimmed.strip_prefix("CERUL_PROGRESS ") {
+        let parts = raw.split_whitespace().collect::<Vec<_>>();
+        let downloaded = parts.first().and_then(|value| parse_optional_f64(value));
+        let total = parts
+            .get(1)
+            .and_then(|value| parse_optional_f64(value))
+            .or_else(|| parts.get(2).and_then(|value| parse_optional_f64(value)));
+        let eta = parts.get(3).and_then(|value| parse_optional_f64(value));
+        if let (Some(downloaded), Some(total)) = (downloaded, total) {
+            if total > 0.0 {
+                let fraction = (downloaded / total).clamp(0.0, 1.0);
+                return Some((fraction, download_message(fraction, eta)));
+            }
+        }
+    }
+
+    let percent = parse_bracket_download_percent(trimmed)?;
+    let fraction = (percent / 100.0).clamp(0.0, 1.0);
+    Some((fraction, download_message(fraction, None)))
+}
+
+fn parse_optional_f64(value: &str) -> Option<f64> {
+    if matches!(value, "NA" | "N/A" | "None" | "none" | "null") {
+        return None;
+    }
+    value.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+fn parse_bracket_download_percent(line: &str) -> Option<f64> {
+    if !line.contains("[download]") {
+        return None;
+    }
+    let percent_index = line.find('%')?;
+    let prefix = &line[..percent_index];
+    let raw = prefix
+        .split_whitespace()
+        .last()?
+        .trim_matches(|character: char| !character.is_ascii_digit() && character != '.');
+    raw.parse::<f64>().ok()
+}
+
+fn download_message(fraction: f64, eta: Option<f64>) -> String {
+    let pct = (fraction * 100.0).round() as u64;
+    match eta.and_then(|value| (value >= 0.0).then_some(value.round() as u64)) {
+        Some(eta) => format!("Downloading video · {pct}% · ETA {}", format_eta(eta)),
+        None => format!("Downloading video · {pct}%"),
+    }
+}
+
+fn format_eta(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes}:{secs:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[cfg(unix)]
+    fn fake_ytdlp(temp: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = temp.path().join("yt-dlp");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
+  printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
+  printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+elif printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
+  printf '{"id":"abc123","title":"Single video","duration":45,"webpage_url":"https://www.youtube.com/watch?v=abc123"}\n'
+else
+  out=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+    fi
+    shift
+  done
+  printf 'CERUL_PROGRESS 10 100 NA 9 1\n'
+  printf 'CERUL_PROGRESS 100 100 NA 0 1\n'
+  mkdir -p "$(dirname "$out")"
+  printf 'video' > "$out"
+fi
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
+    #[test]
+    fn classifies_supported_urls() {
+        let youtube_single =
+            classify_web_video_url("https://www.youtube.com/watch?v=abc123").unwrap();
+        assert_eq!(youtube_single.platform, WebVideoPlatform::YouTube);
+        assert_eq!(youtube_single.kind, WebVideoSourceKind::Single);
+
+        let youtube_author = classify_web_video_url("https://youtube.com/@cerul").unwrap();
+        assert_eq!(youtube_author.kind, WebVideoSourceKind::Author);
+        assert_eq!(
+            youtube_author.canonical_url,
+            "https://youtube.com/@cerul/videos"
+        );
+
+        let bili_single =
+            classify_web_video_url("https://www.bilibili.com/video/BV1aa411c7mD").unwrap();
+        assert_eq!(bili_single.platform, WebVideoPlatform::Bilibili);
+        assert_eq!(bili_single.kind, WebVideoSourceKind::Single);
+
+        let bili_author = classify_web_video_url("https://space.bilibili.com/12345").unwrap();
+        assert_eq!(bili_author.kind, WebVideoSourceKind::Author);
+        assert_eq!(
+            bili_author.canonical_url,
+            "https://space.bilibili.com/12345/video"
+        );
+    }
+
+    #[test]
+    fn rejects_youtube_playlists() {
+        let error = classify_web_video_url("https://youtube.com/playlist?list=abc")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("playlists"));
+    }
+
+    #[test]
+    fn zero_max_videos_means_unlimited_for_author() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://space.bilibili.com/12345",
+            "max_videos": 0,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        assert_eq!(source.platform(), "bilibili");
+        assert_eq!(source.source_kind(), "author");
+        assert_eq!(source.max_videos(), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovers_single_video() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "abc123");
+        assert_eq!(items[0].metadata["platform"].as_str(), Some("youtube"));
+        assert_eq!(items[0].metadata["source_kind"].as_str(), Some("single"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovers_author_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://space.bilibili.com/12345",
+            "max_videos": 2,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].external_id, "BV1aa411c7mD");
+        assert_eq!(
+            items[0].metadata["webpage_url"].as_str(),
+            Some("https://www.bilibili.com/video/BV1aa411c7mD")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fetch_reports_progress_and_downloads_to_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+        let item = DiscoveredItem {
+            external_id: "abc123".to_string(),
+            title: Some("Single video".to_string()),
+            duration_sec: Some(45.0),
+            metadata: json!({
+                "webpage_url": "https://www.youtube.com/watch?v=abc123",
+                "platform": "youtube",
+                "source_kind": "single"
+            }),
+        };
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let updates_for_callback = updates.clone();
+        let progress: FetchProgress = std::sync::Arc::new(move |fraction, message| {
+            updates_for_callback
+                .lock()
+                .unwrap()
+                .push((fraction, message));
+        });
+
+        let fetched = source
+            .fetch_with_progress(&item, Some(progress))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fetched,
+            temp.path().join("cache").join("youtube_abc123.mp4")
+        );
+        assert_eq!(std::fs::read_to_string(fetched).unwrap(), "video");
+        let updates = updates.lock().unwrap();
+        assert!(updates.iter().any(|(fraction, _)| *fraction > 0.0));
+        assert!(updates
+            .iter()
+            .any(|(fraction, _)| (*fraction - 1.0).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    fn parses_progress_template_and_legacy_download_lines() {
+        let structured = parse_progress_line("CERUL_PROGRESS 50 100 NA 5 1").unwrap();
+        assert_eq!(structured.0, 0.5);
+        assert!(structured.1.contains("ETA 0:05"));
+
+        let legacy =
+            parse_progress_line("[download]  23.4% of 10.00MiB at 1MiB/s ETA 00:07").unwrap();
+        assert!((legacy.0 - 0.234).abs() < 0.001);
+    }
+}

@@ -70,6 +70,7 @@ export function SourcesScreen({
 
   const groups = [
     { type: "folder" as const, label: t("sources.group.folder") },
+    { type: "web_video" as const, label: t("sources.group.webVideo") },
     { type: "youtube" as const, label: t("sources.group.youtube") },
     { type: "podcast" as const, label: t("sources.group.podcast") },
     { type: "file" as const, label: t("sources.group.file") },

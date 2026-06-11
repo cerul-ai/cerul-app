@@ -1441,6 +1441,7 @@ function AppWorkspace() {
       {showAddSource ? (
         <AddSourceDialog
           onClose={() => setShowAddSource(false)}
+          requestConfirm={requestConfirm}
           onAddSource={async (type, config) => {
             await api.addSource(type, config);
             await refreshCoreData();

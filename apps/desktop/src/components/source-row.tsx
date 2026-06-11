@@ -6,6 +6,7 @@
 import {
   AlertTriangle,
   ChevronRight,
+  Clapperboard,
   FileVideo,
   Folder,
   Library,
@@ -52,7 +53,9 @@ export function SourceRow({
         ? Folder
         : source.type === "youtube"
           ? Youtube
-          : Podcast;
+          : source.type === "web_video"
+            ? Clapperboard
+            : Podcast;
   const canRunAction = actionsEnabled && !isPending;
   const toggleLabel = source.status === "paused" ? t("sourceRow.resume") : t("sourceRow.pause");
   const statusLabel =
