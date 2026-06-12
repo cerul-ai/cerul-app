@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import * as api from "./lib/api";
 import { cleanMediaTitle, compactPathParent, errorMessage } from "./lib/formatters";
-import { useT } from "./lib/i18n";
+import { useI18n } from "./lib/i18n";
+import type { TFunction } from "./lib/i18n";
 import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
-
-type TFunction = ReturnType<typeof useT>;
 
 type OverlayResult = {
   id: string;
@@ -88,7 +87,7 @@ function isLikelyUrl(value: string): boolean {
 }
 
 export function OverlayApp() {
-  const t = useT();
+  const { lang, t } = useI18n();
   const visualFixtureMode = overlayFixtureModeEnabled();
   const [query, setQuery] = useState(visualFixtureMode ? "test-time compute" : "");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -281,7 +280,7 @@ export function OverlayApp() {
       setAskState("loading");
       setAskError(null);
       api
-        .askLibrary(trimmedQuery, 5)
+        .askLibrary(trimmedQuery, 5, lang)
         .then((answer) => {
           if (cancelled) {
             return;
@@ -303,7 +302,7 @@ export function OverlayApp() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [trimmedQuery, mode, visualFixtureMode]);
+  }, [trimmedQuery, mode, visualFixtureMode, lang]);
 
   function clearRetainedQueryTimer() {
     if (retainedQueryTimerRef.current !== null) {

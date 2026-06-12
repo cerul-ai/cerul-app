@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
@@ -178,6 +178,7 @@ pub struct CreateMomentRequest {
 pub struct AskRequest {
     pub q: String,
     pub limit: Option<usize>,
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -645,23 +646,48 @@ async fn ask_library(
         })
         .collect::<Vec<_>>();
 
+    let answer_in_english = req
+        .locale
+        .as_deref()
+        .is_some_and(|locale| locale.to_ascii_lowercase().starts_with("en"));
     let answer = if citations.is_empty() {
-        format!(
-            "没有在本地索引里找到和「{}」直接相关的片段。可以先换一个关键词，或等当前索引任务完成后再问。",
-            query
-        )
+        if answer_in_english {
+            format!(
+                "I couldn't find a directly related moment for \"{}\" in the local index. Try another keyword or wait for current indexing jobs to finish.",
+                query
+            )
+        } else {
+            format!(
+                "没有在本地索引里找到和「{}」直接相关的片段。可以先换一个关键词，或等当前索引任务完成后再问。",
+                query
+            )
+        }
     } else {
         let mut sentences = Vec::new();
         for citation in citations.iter().take(3) {
-            sentences.push(format!(
-                "在《{}》{} 附近，索引里提到：{}",
-                citation.title, citation.timestamp, citation.snippet
-            ));
+            if answer_in_english {
+                sentences.push(format!(
+                    "Around {} in \"{}\", the index says: {}",
+                    citation.timestamp, citation.title, citation.snippet
+                ));
+            } else {
+                sentences.push(format!(
+                    "在《{}》{} 附近，索引里提到：{}",
+                    citation.title, citation.timestamp, citation.snippet
+                ));
+            }
         }
-        format!(
-            "{} 这不是云端幻觉式回答；它只基于当前本地检索到的片段生成，下面每条引用都能跳回原始时刻。",
-            sentences.join(" ")
-        )
+        if answer_in_english {
+            format!(
+                "{} This answer is grounded only in the local search hits below, and each citation can jump back to the original moment.",
+                sentences.join(" ")
+            )
+        } else {
+            format!(
+                "{} 这不是云端幻觉式回答；它只基于当前本地检索到的片段生成，下面每条引用都能跳回原始时刻。",
+                sentences.join(" ")
+            )
+        }
     };
 
     Ok(Json(AskResponse { answer, citations }))
@@ -1538,7 +1564,22 @@ fn weekly_review_for_paths(paths: &AppPaths) -> anyhow::Result<WeeklyReviewRespo
     } else {
         0
     };
-    let topics = entity_summaries(&collect_entity_mentions(paths)?)
+    let current_week_item_ids = conn
+        .prepare(
+            r#"
+            SELECT id
+            FROM items
+            WHERE indexed_at IS NOT NULL
+              AND indexed_at >= ?1
+            "#,
+        )?
+        .query_map([week_start], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    let current_week_mentions = collect_entity_mentions(paths)?
+        .into_iter()
+        .filter(|mention| current_week_item_ids.contains(&mention.item_id))
+        .collect::<Vec<_>>();
+    let topics = entity_summaries(&current_week_mentions)
         .into_iter()
         .take(3)
         .map(|entity| WeeklyTopic {
@@ -1699,7 +1740,7 @@ fn entity_slug(label: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
     for ch in label.chars().flat_map(char::to_lowercase) {
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_alphanumeric() {
             slug.push(ch);
             last_dash = false;
         } else if !last_dash {
@@ -1847,7 +1888,7 @@ fn configured_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
     Ok(setting_string(paths, "inference_mode")?
         .as_deref()
         .map(normalize_inference_mode)
-        .unwrap_or_else(|| "remote".to_string()))
+        .unwrap_or_else(|| "auto".to_string()))
 }
 
 fn normalize_inference_mode(value: &str) -> String {
@@ -2496,7 +2537,7 @@ fn storage_category(key: &str, label: &str, bytes: u64) -> StorageUsageCategory 
 }
 
 fn file_size(path: &FsPath) -> anyhow::Result<u64> {
-    match fs::metadata(path) {
+    match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
         Ok(metadata) if metadata.is_dir() => path_size(path),
         Ok(_) => Ok(0),
@@ -2506,7 +2547,7 @@ fn file_size(path: &FsPath) -> anyhow::Result<u64> {
 }
 
 fn path_size(path: &FsPath) -> anyhow::Result<u64> {
-    match fs::metadata(path) {
+    match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => return Ok(metadata.len()),
         Ok(metadata) if !metadata.is_dir() => return Ok(0),
         Ok(_) => {}
@@ -2519,7 +2560,7 @@ fn path_size(path: &FsPath) -> anyhow::Result<u64> {
     while let Some(current) = stack.pop() {
         for entry in fs::read_dir(current)? {
             let entry = entry?;
-            let metadata = entry.metadata()?;
+            let metadata = fs::symlink_metadata(entry.path())?;
             if metadata.is_dir() {
                 stack.push(entry.path());
             } else if metadata.is_file() {
@@ -2773,6 +2814,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/weekly-review", &["get"]),
     ("/items", &["get"]),
     ("/items/{id}", &["get", "delete"]),
+    ("/items/{id}/playback", &["get", "patch"]),
     ("/items/{id}/reindex", &["post"]),
     ("/items/{id}/chunks", &["get"]),
     ("/items/{id}/understanding", &["get", "post"]),
@@ -2782,6 +2824,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/jobs", &["get"]),
     ("/usage/events", &["get"]),
     ("/usage/summary", &["get"]),
+    ("/storage/usage", &["get"]),
     ("/models/catalog", &["get"]),
     ("/models/whisper", &["get"]),
     ("/models/whisper/{id}/download", &["post"]),
@@ -2973,9 +3016,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn router_serves_model_catalog_with_default_profile() {
+    async fn router_serves_model_catalog_with_remote_profile() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('inference_mode', '"remote"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+        }
         let app = router_with_paths(paths);
 
         let response = app
@@ -3793,6 +3847,12 @@ mod tests {
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         let _ = cerul_storage::sqlite::open(&paths).unwrap();
         std::fs::write(paths.models.join("model.bin"), b"model").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            paths.models.join("model.bin"),
+            paths.models.join("snapshot.bin"),
+        )
+        .unwrap();
         std::fs::write(paths.cache.join("cache.bin"), b"cache-data").unwrap();
         std::fs::write(paths.qdrant.join("index.bin"), b"idx").unwrap();
         let app = router_with_paths(paths);

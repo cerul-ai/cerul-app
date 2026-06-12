@@ -168,6 +168,7 @@ import {
   itemSourceKind,
   itemSourceLabel,
   itemStatus,
+  isNearEndPosition,
   latestActiveJobForItem,
   mapItemRecord,
   normalizeJobProgress,
@@ -244,15 +245,27 @@ function recordLastOpened(itemId: string, timestamp?: string | null) {
   }
 }
 
-function readLastOpened(): { itemId: string; timestamp: string | null } | null {
+function forgetLastOpened(itemId: string) {
+  try {
+    const current = readLastOpened();
+    if (!current || current.itemId === itemId) {
+      window.localStorage.removeItem(lastOpenedStorageKey);
+    }
+  } catch {
+    // localStorage may be unavailable; continue-watching is best-effort.
+  }
+}
+
+function readLastOpened(): { itemId: string; timestamp: string | null; at: number } | null {
   try {
     const raw = window.localStorage.getItem(lastOpenedStorageKey);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { itemId?: unknown; timestamp?: unknown };
+    const parsed = JSON.parse(raw) as { itemId?: unknown; timestamp?: unknown; at?: unknown };
     if (parsed && typeof parsed.itemId === "string") {
       return {
         itemId: parsed.itemId,
         timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : null,
+        at: typeof parsed.at === "number" && Number.isFinite(parsed.at) ? parsed.at : 0,
       };
     }
   } catch {
@@ -295,12 +308,24 @@ function usePlaybackPositionPersistence({
     }
 
     let disposed = false;
+    const clearSavedPosition = () => {
+      forgetLastOpened(itemId);
+      void api
+        .updatePlaybackPosition(itemId, 0, null)
+        .catch((error) => console.warn("failed to clear playback position", error));
+    };
     const persist = (force: boolean) => {
       if (disposed) {
         return;
       }
       const positionSec = video.currentTime;
       if (!Number.isFinite(positionSec) || positionSec < 1) {
+        return;
+      }
+      if (isNearEndPosition(positionSec, video.duration)) {
+        if (force) {
+          clearSavedPosition();
+        }
         return;
       }
       const now = Date.now();
@@ -319,14 +344,14 @@ function usePlaybackPositionPersistence({
 
     video.addEventListener("timeupdate", persistThrottled);
     video.addEventListener("pause", persistForced);
-    video.addEventListener("ended", persistForced);
+    video.addEventListener("ended", clearSavedPosition);
     window.addEventListener("pagehide", persistForced);
     return () => {
       persistForced();
       disposed = true;
       video.removeEventListener("timeupdate", persistThrottled);
       video.removeEventListener("pause", persistForced);
-      video.removeEventListener("ended", persistForced);
+      video.removeEventListener("ended", clearSavedPosition);
       window.removeEventListener("pagehide", persistForced);
     };
   }, [enabled, itemId, videoRef]);
@@ -1859,10 +1884,22 @@ function HomeScreen({
     )[0];
   const lastOpened = readLastOpened();
   const fallbackContinueItem =
-    !serverContinueItem && lastOpened
+    lastOpened
       ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed")
       : undefined;
-  const continueItem = serverContinueItem ?? fallbackContinueItem;
+  const fallbackTimestampSec =
+    fallbackContinueItem && lastOpened?.timestamp
+      ? parseTimestampSeconds(lastOpened.timestamp)
+      : Number.NaN;
+  const fallbackIsUseful =
+    fallbackContinueItem &&
+    lastOpened &&
+    (!Number.isFinite(fallbackTimestampSec) ||
+      !isNearEndPosition(fallbackTimestampSec, fallbackContinueItem.durationSec));
+  const serverUpdatedAtMs = (serverContinueItem?.playbackPosition?.updated_at ?? 0) * 1000;
+  const preferFallbackContinue =
+    Boolean(fallbackIsUseful && lastOpened && (!serverContinueItem || lastOpened.at > serverUpdatedAtMs));
+  const continueItem = preferFallbackContinue ? fallbackContinueItem : serverContinueItem;
   const continueTimestamp =
     continueItem?.playbackPosition?.timestamp ??
     (continueItem && lastOpened && continueItem.id === lastOpened.itemId
@@ -5466,7 +5503,30 @@ function TranscriptionControl({
   async function selectProvider(providerId: string) {
     setDiscoveredModels([]);
     setDiscoveredProviderId(null);
-    await onSettingsChange({ asr_provider_id: providerId });
+    const provider = providers.find((candidate) => candidate.id === providerId) ?? null;
+    const patch: api.SettingsMap = { asr_provider_id: providerId };
+    if (provider && !asrModelCompatibleWithProvider(selectedModelId, provider)) {
+      patch.asr_model = preferredAsrModelForProvider(provider, mergedModels);
+    }
+    await onSettingsChange(patch);
+  }
+
+  function selectModel(modelId: string) {
+    const patch: api.SettingsMap = { asr_model: modelId };
+    const discoveredProvider = discoveredProviderId
+      ? providers.find((provider) => provider.id === discoveredProviderId) ?? null
+      : null;
+    const activeProvider = activeProviderId
+      ? providers.find((provider) => provider.id === activeProviderId) ?? null
+      : null;
+
+    if (discoveredProvider && (!activeProviderId || activeProviderId === discoveredProvider.id)) {
+      patch.asr_provider_id = discoveredProvider.id;
+    } else if (activeProvider && !asrModelCompatibleWithProvider(modelId, activeProvider)) {
+      patch.asr_provider_id = "";
+    }
+
+    void onSettingsChange(patch);
   }
 
   async function exploreProviderModels() {
@@ -5547,7 +5607,7 @@ function TranscriptionControl({
               }))}
               disabled={disabled}
               busy={action.status === "running"}
-              onSelect={(id) => void onSettingsChange({ asr_model: id })}
+              onSelect={selectModel}
               onExplore={() => void exploreProviderModels()}
               onOpen={() => {
                 if (
@@ -5584,6 +5644,33 @@ function mergeAsrModelOptions(base: AsrModelOption[], discovered: AsrModelOption
     merged.push(model);
   }
   return merged;
+}
+
+function isGeminiAsrModelId(modelId: string) {
+  return modelId.trim().toLowerCase().startsWith("gemini-");
+}
+
+function asrModelCompatibleWithProvider(modelId: string, provider: api.ProviderRecord) {
+  if (provider.type === "openai-compatible") {
+    return true;
+  }
+  if (provider.type === "gemini") {
+    return isGeminiAsrModelId(modelId);
+  }
+  if (provider.type === "openai") {
+    return !isGeminiAsrModelId(modelId);
+  }
+  return true;
+}
+
+function preferredAsrModelForProvider(provider: api.ProviderRecord, options: AsrModelOption[]) {
+  if (provider.type === "gemini") {
+    return options.find((model) => isGeminiAsrModelId(model.id))?.id ?? "gemini-2.5-flash";
+  }
+  if (provider.type === "openai") {
+    return options.find((model) => !isGeminiAsrModelId(model.id))?.id ?? "whisper-1";
+  }
+  return options[0]?.id ?? "whisper-1";
 }
 
 // Smart-processing selector. The three cards ARE the inference-mode switch:

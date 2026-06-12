@@ -92,12 +92,14 @@ pub(crate) fn selected_transcriber(paths: &AppPaths) -> anyhow::Result<ApiTransc
     let provider = if let Some(provider_id) =
         crate::setting_string(paths, "asr_provider_id")?.filter(|id| !id.is_empty())
     {
-        provider_by_id_for_type(
+        let provider = provider_by_id_for_type(
             paths,
             &provider_id,
             &["openai", "openai-compatible", "gemini"],
             "ASR",
-        )?
+        )?;
+        ensure_asr_model_matches_provider(&provider, &model)?;
+        provider
     } else if is_gemini_audio_model(&model) {
         provider_for_type(paths, "asr_provider_id", &["gemini"], "Gemini Audio ASR")?
     } else {
@@ -159,7 +161,8 @@ pub(crate) fn profiled_embedder(
 
 pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<QueryEmbedding> {
     if effective_query_inference_mode(paths)? == "local" {
-        let profile = cerul_storage::vectors::embedding_profile_for_inference_mode(paths, "local")?;
+        let profile =
+            cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(paths, "local")?;
         anyhow::ensure!(
             local_embedding_model_cached(paths)?,
             "Local embedding model is not prepared yet; using text search fallback"
@@ -682,6 +685,32 @@ fn provider_by_id_for_type(
     Ok(provider)
 }
 
+fn ensure_asr_model_matches_provider(
+    provider: &cerul_storage::providers::Provider,
+    model: &str,
+) -> anyhow::Result<()> {
+    let gemini_model = is_gemini_audio_model(model);
+    match provider.provider_type.as_str() {
+        "gemini" => anyhow::ensure!(
+            gemini_model,
+            "ASR provider {} is Gemini but selected model {} is not a Gemini audio model",
+            provider.label,
+            model
+        ),
+        "openai" => anyhow::ensure!(
+            !gemini_model,
+            "ASR provider {} is OpenAI but selected model {} requires a Gemini provider",
+            provider.label,
+            model
+        ),
+        // OpenAI-compatible gateways may intentionally expose provider-prefixed
+        // model ids behind the OpenAI transcription protocol.
+        "openai-compatible" => {}
+        _ => {}
+    }
+    Ok(())
+}
+
 fn missing_key_error(label: &str, capability: &str) -> anyhow::Error {
     anyhow::anyhow!("{capability} provider {label} has no API key configured")
 }
@@ -742,8 +771,8 @@ fn selected_inference_mode(paths: &AppPaths) -> String {
         .ok()
         .flatten()
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local" || value == "auto")
-        .unwrap_or_else(|| "remote".to_string())
+        .filter(|value| value == "remote" || value == "local" || value == "auto")
+        .unwrap_or_else(|| "auto".to_string())
 }
 
 fn estimate_text_tokens(text: &str) -> u64 {
@@ -1104,7 +1133,7 @@ fn image_mime_type(path: &Path) -> &'static str {
 }
 
 fn is_gemini_audio_model(model: &str) -> bool {
-    model.starts_with("gemini-")
+    model.trim().to_ascii_lowercase().starts_with("gemini-")
 }
 
 fn env_setting(name: &str) -> Option<String> {
@@ -1166,6 +1195,19 @@ mod tests {
         assert!(supports_openai_segment_timestamps("whisper-1"));
         assert!(supports_openai_segment_timestamps("whisper-large-v3-turbo"));
         assert!(!supports_openai_segment_timestamps("gpt-4o-transcribe"));
+    }
+
+    #[test]
+    fn asr_provider_model_validation_matches_provider_protocol() {
+        let openai = provider("openai");
+        let gemini = provider("gemini");
+        let gateway = provider("openai-compatible");
+
+        assert!(ensure_asr_model_matches_provider(&openai, "whisper-1").is_ok());
+        assert!(ensure_asr_model_matches_provider(&openai, "gemini-2.5-flash").is_err());
+        assert!(ensure_asr_model_matches_provider(&gemini, "gemini-2.5-flash").is_ok());
+        assert!(ensure_asr_model_matches_provider(&gemini, "whisper-1").is_err());
+        assert!(ensure_asr_model_matches_provider(&gateway, "gemini-2.5-flash").is_ok());
     }
 
     #[test]
@@ -1309,6 +1351,19 @@ mod tests {
             crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
             Some("auto".to_string())
         );
+    }
+
+    fn provider(provider_type: &str) -> cerul_storage::providers::Provider {
+        cerul_storage::providers::Provider {
+            id: format!("provider-{provider_type}"),
+            provider_type: provider_type.to_string(),
+            label: provider_type.to_string(),
+            base_url: None,
+            status: cerul_storage::providers::PROVIDER_STATUS_READY.to_string(),
+            last_error: None,
+            created_at: None,
+            updated_at: None,
+        }
     }
 
     #[test]

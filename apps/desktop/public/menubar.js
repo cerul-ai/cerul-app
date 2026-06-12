@@ -123,7 +123,7 @@ function statusOf(record) {
 }
 
 function activeJobOf(jobs) {
-  return jobs.find((job) => ["running", "processing", "active"].includes(statusOf(job))) || null;
+  return jobs.find((job) => ["queued", "running", "processing", "active"].includes(statusOf(job))) || null;
 }
 
 function failedCountOf(jobs) {

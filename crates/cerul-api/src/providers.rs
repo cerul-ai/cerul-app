@@ -377,6 +377,9 @@ fn provider_model_from_value(provider_type: &str, value: &Value) -> Option<Provi
     if id.is_empty() {
         return None;
     }
+    if !provider_model_is_usable_for_asr(provider_type, &id, value) {
+        return None;
+    }
     let label = value
         .get("display_name")
         .and_then(Value::as_str)
@@ -397,6 +400,32 @@ fn provider_model_from_value(provider_type: &str, value: &Value) -> Option<Provi
         .to_string();
 
     Some(ProviderModelRecord { id, label, source })
+}
+
+fn provider_model_is_usable_for_asr(provider_type: &str, id: &str, value: &Value) -> bool {
+    let normalized = id.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    match provider_type {
+        "gemini" => {
+            normalized.starts_with("gemini-")
+                && value
+                    .get("supportedGenerationMethods")
+                    .and_then(Value::as_array)
+                    .is_none_or(|methods| {
+                        methods
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|method| method == "generateContent")
+                    })
+        }
+        "openai" | "openai-compatible" => {
+            normalized.contains("whisper") || normalized.contains("transcribe")
+        }
+        _ => false,
+    }
 }
 
 fn provider_test_request(
@@ -839,7 +868,9 @@ mod tests {
                 "data": [
                     {"id": "whisper-large-v3-turbo", "owned_by": "groq"},
                     {"id": "whisper-large-v3-turbo", "owned_by": "groq"},
-                    {"id": "gpt-4o-mini-transcribe", "owned_by": "openai"}
+                    {"id": "gpt-4o-mini-transcribe", "owned_by": "openai"},
+                    {"id": "gpt-4.1", "owned_by": "openai"},
+                    {"id": "text-embedding-3-large", "owned_by": "openai"}
                 ]
             }),
         );
@@ -867,16 +898,21 @@ mod tests {
             "gemini",
             &json!({
                 "models": [
-                    {"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash"},
+                    {
+                        "name": "models/gemini-2.5-flash",
+                        "displayName": "Gemini 2.5 Flash",
+                        "supportedGenerationMethods": ["generateContent"]
+                    },
+                    {"name": "models/gemini-embedding-exp", "supportedGenerationMethods": ["embedContent"]},
                     {"name": "models/text-embedding-004"}
                 ]
             }),
         );
 
+        assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gemini-2.5-flash");
         assert_eq!(models[0].label, "Gemini 2.5 Flash");
         assert_eq!(models[0].source, "gemini");
-        assert_eq!(models[1].id, "text-embedding-004");
     }
 
     #[test]

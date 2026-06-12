@@ -504,14 +504,14 @@ fn configured_inference_mode(paths: &AppPaths) -> String {
         .ok()
         .flatten()
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local" || value == "auto")
-        .unwrap_or_else(|| "remote".to_string())
+        .filter(|value| value == "remote" || value == "local" || value == "auto")
+        .unwrap_or_else(|| "auto".to_string())
 }
 
 fn effective_indexing_inference_mode(paths: &AppPaths) -> String {
     let configured = configured_inference_mode(paths);
-    if configured != "local" {
-        return configured;
+    if configured == "remote" {
+        return "remote".to_string();
     }
 
     let runtime = crate::models::model_runtime_status(paths);

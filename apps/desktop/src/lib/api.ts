@@ -427,10 +427,10 @@ export async function deleteMoment(id: string) {
   });
 }
 
-export async function askLibrary(q: string, limit = 6) {
+export async function askLibrary(q: string, limit = 6, locale?: string) {
   return fetchJson<AskResponse>("/ask", {
     method: "POST",
-    body: JSON.stringify({ q, limit }),
+    body: JSON.stringify({ q, limit, locale }),
   });
 }
 

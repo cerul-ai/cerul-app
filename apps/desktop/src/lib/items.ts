@@ -185,7 +185,10 @@ export function itemPlaybackPosition(record: api.ItemRecord): api.PlaybackPositi
   }
   const position = raw as Record<string, unknown>;
   const positionSec = typeof position.position_sec === "number" ? position.position_sec : null;
-  if (positionSec === null || !Number.isFinite(positionSec) || positionSec < 0) {
+  if (positionSec === null || !Number.isFinite(positionSec) || positionSec < 1) {
+    return null;
+  }
+  if (isNearEndPosition(positionSec, record.duration_sec)) {
     return null;
   }
   const timestamp =
@@ -205,6 +208,14 @@ export function itemPlaybackPosition(record: api.ItemRecord): api.PlaybackPositi
     chunk_id: chunkId,
     updated_at: updatedAt,
   };
+}
+
+export function isNearEndPosition(positionSec: number, durationSec: number | null | undefined) {
+  if (!Number.isFinite(positionSec) || !durationSec || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return false;
+  }
+  const remainingSec = durationSec - positionSec;
+  return remainingSec <= 8 || positionSec / durationSec >= 0.98;
 }
 
 function formatPlaybackTimestamp(positionSec: number) {
@@ -237,6 +248,7 @@ export function mapItemRecord(
     source: itemSourceLabel(record, t),
     sourceKind: itemSourceKind(record, rawPath),
     duration: formatDuration(record.duration_sec, t),
+    durationSec: record.duration_sec,
     indexedAt: formatUnixTime(record.indexed_at, t),
     indexedAtEpoch: record.indexed_at,
     status,

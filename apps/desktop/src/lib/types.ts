@@ -105,6 +105,7 @@ export type Item = {
   source: string;
   sourceKind: ItemSourceKind;
   duration: string;
+  durationSec?: number | null;
   indexedAt: string;
   indexedAtEpoch: number | null;
   status: ItemStatus;
