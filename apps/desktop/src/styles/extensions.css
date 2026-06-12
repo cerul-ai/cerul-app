@@ -270,7 +270,10 @@
 .model-connections-shell {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-2);
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--line);
 }
 .provider-row,
 .provider-card {
@@ -3809,8 +3812,20 @@ body.overlay-body {
   gap: var(--sp-4);
 }
 .model-advanced-head__titles { min-width: 0; }
-.model-advanced-title { font-size: var(--fs-body); font-weight: 600; color: var(--text); margin: 0; }
-.model-advanced-subtitle { font-size: var(--fs-meta); color: var(--text-muted); margin: 3px 0 0; }
+.model-advanced-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0;
+}
+.model-advanced-subtitle {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin: 5px 0 0;
+  max-width: 62ch;
+  line-height: var(--lh-normal);
+}
 .model-advanced-toggle {
   flex: none;
   display: inline-flex;
@@ -3859,23 +3874,32 @@ body.overlay-body {
 .cap-list-shell {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
-  margin-top: var(--sp-3);
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
 }
+/* No overflow:hidden — it would clip the model-combobox popup on the last row.
+   Rounded corners come from rounding the first/last rows to match the card. */
 .cap-list {
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--surface);
-  overflow: hidden;
 }
 .cap-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 13px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--line);
 }
-.cap-row:last-child { border-bottom: 0; }
+.cap-row:first-child {
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+}
+.cap-row:last-child {
+  border-bottom: 0;
+  border-bottom-left-radius: var(--r-lg);
+  border-bottom-right-radius: var(--r-lg);
+}
 .cap-row__badge {
   flex: none;
   width: 30px;
@@ -4106,7 +4130,7 @@ body.overlay-body {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  z-index: 30;
+  z-index: 50;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   background: var(--surface);
