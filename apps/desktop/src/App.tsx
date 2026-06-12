@@ -5047,6 +5047,23 @@ function IndexingSettings({
   );
 }
 
+// One row of the unified capability list (转录 / 向量嵌入 / 视频理解). The
+// three are fixed; each carries its model + the connection/key it routes
+// through, handled together in a single list.
+type CapabilityRowModel = {
+  key: string;
+  badge: string;
+  name: string;
+  isLocal: boolean;
+  locked: boolean;
+  localLabel: string;
+  modelValue: string;
+  modelOptions: ModelComboOption[];
+  onSelectModel?: (id: string) => void;
+  provider: api.ProviderRecord | null;
+  note: string | null;
+};
+
 function ModelsSettings({
   settings,
   disabled,
@@ -5160,16 +5177,65 @@ function ModelsSettings({
   const localAsrLabel =
     asrModels.find((model) => model.tier === "local")?.label ??
     t("settings.models.localAsr.fallbackLabel");
-  const asrProviderOptions = providers.filter(
-    (provider) =>
-      provider.type === "openai" ||
-      provider.type === "openai-compatible" ||
-      provider.type === "gemini",
-  );
-  const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
-  const videoUnderstandingProviderOptions = providers.filter(
-    (provider) => provider.type === "gemini",
-  );
+  // Resolve the connection bound to each capability, falling back to the
+  // env-seeded default for that capability.
+  const providerFor = (id: string, fallbackId: string) =>
+    providers.find((provider) => provider.id === id) ??
+    providers.find((provider) => provider.id === fallbackId) ??
+    null;
+  const toComboOptions = (
+    list: { id: string; label: string; size_label?: string }[],
+  ): ModelComboOption[] => list.map((m) => ({ id: m.id, label: m.label, hint: m.size_label }));
+  const activeEmbeddingId =
+    embeddingModels.find(
+      (model) => model.id === activeProfile?.model_id || model.source === activeProfile?.model_id,
+    )?.id ??
+    embeddingModels[0]?.id ??
+    "";
+  const embeddingLabel =
+    embeddingModels.find((model) => model.id === activeEmbeddingId)?.label ||
+    activeEmbeddingId ||
+    t("settings.models.embedding.loadingOption");
+  const capabilities: CapabilityRowModel[] = [
+    {
+      key: "asr",
+      badge: t("settings.models.capability.asr.badge"),
+      name: t("settings.models.transcription.kicker"),
+      isLocal: effectiveLocalMode,
+      locked: false,
+      localLabel: localAsrLabel,
+      modelValue: activeRemoteAsr,
+      modelOptions: toComboOptions(remoteAsrOptions),
+      onSelectModel: (id) => void onSettingsChange({ asr_model: id }),
+      provider: providerFor(selectedAsrProvider, "env-asr"),
+      note: null,
+    },
+    {
+      key: "embedding",
+      badge: t("settings.models.capability.embedding.badge"),
+      name: t("settings.models.embedding.kicker"),
+      isLocal: effectiveLocalMode,
+      locked: true,
+      localLabel: embeddingLabel,
+      modelValue: embeddingLabel,
+      modelOptions: [],
+      provider: providerFor(selectedEmbeddingProvider, "env-embedding"),
+      note: t("settings.models.embedding.boundBadge"),
+    },
+    {
+      key: "video",
+      badge: t("settings.models.capability.video.badge"),
+      name: t("settings.models.video.kicker"),
+      isLocal: false,
+      locked: false,
+      localLabel: "",
+      modelValue: selectedVideoUnderstandingModel,
+      modelOptions: toComboOptions(videoUnderstandingModels),
+      onSelectModel: (id) => void onSettingsChange({ video_understanding_model: id }),
+      provider: providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
+      note: null,
+    },
+  ];
 
   return (
     <div className="models-settings-panel">
@@ -5202,52 +5268,14 @@ function ModelsSettings({
         </div>
 
         {advancedOpen ? (
-          <>
-            {/* The three capabilities Cerul always needs are FIXED cards — you
-                pick the model (and the service) for each; you never add or
-                remove a capability. */}
-            <div className="model-control-grid capability-grid">
-              <TranscriptionControl
-                isLocalMode={effectiveLocalMode}
-                localAsrLabel={localAsrLabel}
-                providers={asrProviderOptions}
-                selectedProviderId={selectedAsrProvider}
-                models={remoteAsrOptions}
-                selectedModelId={activeRemoteAsr}
-                disabled={disabled}
-                onSettingsChange={onSettingsChange}
-              />
-              <EmbeddingControl
-                models={embeddingModels}
-                activeProfile={activeProfile}
-                providers={embeddingProviderOptions}
-                selectedProviderId={selectedEmbeddingProvider}
-                localActive={effectiveLocalMode}
-                localRuntimeReady={localRuntimeReady}
-                localRuntimeIssue={localRuntimeIssue}
-                disabled={disabled}
-                onSettingsChange={onSettingsChange}
-              />
-              <VideoUnderstandingControl
-                models={videoUnderstandingModels}
-                providers={videoUnderstandingProviderOptions}
-                selectedProviderId={selectedVideoUnderstandingProvider}
-                selectedModelId={selectedVideoUnderstandingModel}
-                disabled={disabled}
-                onSettingsChange={onSettingsChange}
-              />
-            </div>
-
-            <ProviderConnections
-              providers={providers}
-              error={providersError}
-              disabled={disabled}
-              onRefresh={loadProviders}
-              requestConfirm={requestConfirm}
-            />
-
-            <p className="model-advanced-footnote">{t("settings.models.advanced.footnote")}</p>
-          </>
+          <ProviderConnections
+            capabilities={capabilities}
+            providers={providers}
+            error={providersError}
+            disabled={disabled}
+            onRefresh={loadProviders}
+            requestConfirm={requestConfirm}
+          />
         ) : null}
       </section>
     </div>
@@ -5910,12 +5938,14 @@ function ProviderConnectionRow({
 }
 
 function ProviderConnections({
+  capabilities,
   providers,
   error,
   disabled,
   onRefresh,
   requestConfirm,
 }: {
+  capabilities: CapabilityRowModel[];
   providers: api.ProviderRecord[];
   error: string | null;
   disabled: boolean;
@@ -6091,40 +6121,87 @@ function ProviderConnections({
   const activeType = providerTypeOptions.find((item) => item.value === form.type);
 
   return (
-    <section className="conn-pool">
-      <div className="conn-pool__head">
-        <div className="conn-pool__titles">
-          <h3 className="conn-pool__title">{t("settings.models.connections.title")}</h3>
-          <p className="conn-pool__hint">{t("settings.models.connections.hint")}</p>
-        </div>
-        <button
-          type="button"
-          className="btn btn-secondary sm"
-          disabled={disabled}
-          onClick={openCreate}
-        >
-          <Plus size={16} />
-          <span>{t("settings.models.providers.add")}</span>
-        </button>
-      </div>
-
+    <section className="cap-list-shell">
       {error ? <InlineNotice tone="error" message={error} /> : null}
 
-      <div className="provider-list">
-        {remoteProviders.length === 0 ? (
-          <p className="provider-empty">{t("settings.models.providers.empty")}</p>
-        ) : null}
-        {remoteProviders.map((provider) => (
-          <ProviderConnectionRow
-            key={provider.id}
-            provider={provider}
-            disabled={disabled}
-            typeLabel={typeLabel}
-            onEdit={() => openEdit(provider)}
-            onRemove={() => void removeConnection(provider)}
-          />
-        ))}
+      {/* One unified list: the three FIXED capabilities, each carrying its model
+          and the connection + key it routes through, handled together. */}
+      <div className="cap-list">
+        {capabilities.map((cap) => {
+          const provider = cap.provider;
+          const hasKey = provider?.has_key ?? false;
+          const ready = cap.isLocal || hasKey;
+          const host = provider?.base_url
+            ? provider.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
+            : "";
+          const serviceLine = cap.isLocal
+            ? t("settings.models.capability.localRuntime")
+            : [
+                provider ? typeLabel(provider.type) : null,
+                host || null,
+                hasKey
+                  ? t("settings.models.capability.hasKey")
+                  : t("settings.models.capability.needsKey"),
+              ]
+                .filter(Boolean)
+                .join(" · ");
+          return (
+            <article className="cap-row" key={cap.key}>
+              <span className="cap-row__badge" aria-hidden="true">
+                {cap.badge}
+              </span>
+              <div className="cap-row__main">
+                <span className="cap-row__name">{cap.name}</span>
+                <span className="cap-row__service">{serviceLine}</span>
+              </div>
+              <div className="cap-row__model">
+                {cap.locked ? (
+                  <span className="cap-row__locked">
+                    <Lock size={12} />
+                    <span className="cap-row__model-val">{cap.modelValue}</span>
+                    {cap.note ? <span className="chip neutral">{cap.note}</span> : null}
+                  </span>
+                ) : cap.isLocal ? (
+                  <span className="cap-row__locked">
+                    <span className="cap-row__model-val">{cap.localLabel}</span>
+                    <span className="chip neutral">{t("settings.models.capability.local")}</span>
+                  </span>
+                ) : (
+                  <ModelCombobox
+                    value={cap.modelValue}
+                    options={cap.modelOptions}
+                    disabled={disabled}
+                    onSelect={(id) => cap.onSelectModel?.(id)}
+                    ariaLabel={cap.name}
+                  />
+                )}
+              </div>
+              <span
+                className={ready ? "chip success cap-row__status" : "chip warn cap-row__status"}
+              >
+                <span className="dot" />
+                {ready
+                  ? t("settings.models.capability.ready")
+                  : t("settings.models.capability.needsKey")}
+              </span>
+              {cap.isLocal ? (
+                <span className="cap-row__edit-spacer" aria-hidden="true" />
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost sm cap-row__edit"
+                  disabled={disabled}
+                  onClick={() => (provider ? openEdit(provider) : openCreate())}
+                >
+                  {t("settings.models.capability.edit")}
+                </button>
+              )}
+            </article>
+          );
+        })}
       </div>
+
+      <p className="model-advanced-footnote">{t("settings.models.advanced.footnote")}</p>
 
       {mode ? (
         <div className="scrim" role="presentation" onMouseDown={closeForm}>
