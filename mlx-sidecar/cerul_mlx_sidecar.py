@@ -440,21 +440,35 @@ def normalize_segment(segment: Any) -> dict[str, Any]:
     }
 
 
-# The Qwen3 ForcedAligner emits one segment per spoken token — for Chinese that
-# is one *character*, so a raw transcript renders one glyph per row. These knobs
-# regroup those into readable phrase/sentence lines.
+# The Qwen3 ForcedAligner emits one segment per spoken token — one *character*
+# for CJK, one *word* for spaced scripts — so a raw transcript renders one token
+# per row. These knobs regroup tokens into readable subtitle-style lines.
+# Targets are display COLUMNS (a CJK glyph counts as 2, everything else as 1) so
+# one budget yields short CJK lines and sensibly word-wrapped Latin lines.
 _LINE_HARD_BREAKS = set("。！？!?；;…\n")  # sentence enders — always end a line
-# Also break at a comma/colon once a line has a few spoken characters, so the
-# transcript reads as short subtitle-style clauses instead of one long sentence
-# per row. Tiny leading clauses (e.g. "算了，") stay attached. The hard cap only
-# splits a runaway line that has no punctuation at all.
-_LINE_SOFT_BREAKS = set("，、：,:")
-_LINE_SOFT_MIN_CHARS = 6
-_LINE_MAX_CHARS = 16
+_LINE_SOFT_BREAKS = set("，、：,:")  # clause punctuation — break once long enough
+_LINE_SOFT_COLS = 12  # CJK ≈ 6 glyphs / Latin ≈ 12 cols before a comma may break
+_LINE_MAX_COLS = 32  # CJK ≈ 16 glyphs / Latin ≈ 32 cols, wrapped at word bounds
 
 
 def _is_punct_char(ch: str) -> bool:
     return ch.isspace() or unicodedata.category(ch).startswith("P")
+
+
+def _is_cjk_char(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+        or 0x3400 <= code <= 0x4DBF  # CJK Extension A
+        or 0x3040 <= code <= 0x30FF  # Hiragana + Katakana
+        or 0xAC00 <= code <= 0xD7A3  # Hangul syllables
+        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0xFF00 <= code <= 0xFFEF  # Fullwidth / halfwidth forms
+    )
+
+
+def _col_width(text: str) -> int:
+    return sum(2 if _is_cjk_char(ch) else 1 for ch in text)
 
 
 def _segment_spoken_len(seg_text: str) -> int:
@@ -465,15 +479,17 @@ def _segment_spoken_len(seg_text: str) -> int:
 def group_aligned_segments(
     text: str, segments: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Regroup per-token aligner segments into phrase/sentence lines.
+    """Regroup per-token aligner segments into readable subtitle-style lines.
 
     `text` is the fully punctuated transcript; `segments` are spoken tokens (no
     punctuation), in order. We expand the segments to per-spoken-character
-    timings (so 1-char CJK tokens and multi-char English words both work), then
-    walk the punctuated text and cut a line at sentence punctuation, at a comma
-    once the line has some length, or at a hard length cap. Each line keeps the
-    timing of its first/last spoken character. Falls back to the raw segments if
-    anything looks off, so we never lose the transcript.
+    timings, tokenise the text (CJK char / Latin word / punctuation / space),
+    then pack tokens into lines — ending a line at sentence punctuation, at a
+    comma once the line is long enough, or by wrapping at a word boundary near
+    the column cap so a word is never split mid-way. Each line keeps the timing
+    of its first/last spoken character. Works for Chinese and spaced scripts
+    alike; falls back to the raw segments if anything looks off so we never lose
+    the transcript.
     """
     if not segments or not text:
         return segments
@@ -489,15 +505,43 @@ def group_aligned_segments(
         return segments
     total = len(char_times)
 
+    # Tokenise: CJK chars and Latin words are the atoms timings attach to;
+    # punctuation and whitespace are separators that drive line breaks.
+    atoms: list[tuple[str, int, str]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            atoms.append((ch, 0, "space"))
+            i += 1
+        elif _is_punct_char(ch):
+            atoms.append((ch, 0, "punct"))
+            i += 1
+        elif _is_cjk_char(ch):
+            atoms.append((ch, 1, "cjk"))
+            i += 1
+        else:
+            j = i
+            while (
+                j < n
+                and not text[j].isspace()
+                and not _is_punct_char(text[j])
+                and not _is_cjk_char(text[j])
+            ):
+                j += 1
+            atoms.append((text[i:j], j - i, "word"))
+            i = j
+
     lines: list[dict[str, Any]] = []
     buf: list[str] = []
     line_start: int | None = None
     idx = 0
-    spoken = 0
+    cols = 0
     pending_break = False
 
     def flush(end_idx: int) -> None:
-        nonlocal buf, line_start, spoken, pending_break
+        nonlocal buf, line_start, cols, pending_break
         line_text = "".join(buf).strip()
         if line_text and line_start is not None and line_start < total:
             last = min(end_idx, total) - 1
@@ -506,28 +550,41 @@ def group_aligned_segments(
             lines.append({"start": start_sec, "end": end_sec, "text": line_text})
         buf = []
         line_start = None
-        spoken = 0
+        cols = 0
         pending_break = False
 
-    for ch in text:
-        if _is_punct_char(ch):
+    for k, (atom, spoken, kind) in enumerate(atoms):
+        if kind == "space":
+            if buf:  # never lead a line with whitespace
+                buf.append(atom)
+            continue
+        if kind == "punct":
             # An opening quote/bracket leads the next line, not the current one.
-            if pending_break and unicodedata.category(ch) in ("Ps", "Pi"):
+            if pending_break and unicodedata.category(atom) in ("Ps", "Pi"):
                 flush(idx)
-            buf.append(ch)
-            if ch in _LINE_HARD_BREAKS or (ch in _LINE_SOFT_BREAKS and spoken >= _LINE_SOFT_MIN_CHARS):
+            buf.append(atom)
+            nxt = atoms[k + 1] if k + 1 < len(atoms) else None
+            # ASCII "." ends a sentence only when followed by space/end, so we
+            # don't break decimals or initials.
+            sentence_period = atom == "." and (nxt is None or nxt[2] == "space")
+            if (
+                atom in _LINE_HARD_BREAKS
+                or sentence_period
+                or (atom in _LINE_SOFT_BREAKS and cols >= _LINE_SOFT_COLS)
+            ):
                 pending_break = True
             continue
+        # spoken atom (cjk glyph or whole word)
         if pending_break:
             flush(idx)
+        width = _col_width(atom)
+        if buf and cols + width > _LINE_MAX_COLS:
+            flush(idx)  # wrap before this word — never split it
         if line_start is None:
             line_start = idx
-        buf.append(ch)
-        if idx < total:
-            idx += 1
-        spoken += 1
-        if spoken >= _LINE_MAX_CHARS:
-            pending_break = True
+        buf.append(atom)
+        idx = min(idx + spoken, total)
+        cols += width
     flush(idx)
 
     return lines or segments
