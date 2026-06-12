@@ -152,12 +152,17 @@ class CerulMlxRuntime:
         self._clear_accelerator_cache()
 
     def release_transcription_runtime(self) -> None:
-        self._asr_model_obj = None
-        self._asr_aligner_obj = None
+        # Per-transcription cleanup: free scratch buffers but KEEP the quantized
+        # ASR + aligner objects warm, so indexing a queue of videos doesn't
+        # reload and re-quantize them on every file. Only an explicit
+        # release_models() drops the cached objects (see below).
         self._clear_accelerator_cache()
 
     def release_models(self, scope: str = "all") -> dict[str, Any]:
         normalized = scope.strip().lower()
+        if normalized in {"transcription", "asr", "aligner", "all"}:
+            self._asr_model_obj = None
+            self._asr_aligner_obj = None
         if normalized in {"embedding", "all"}:
             self.release_embedding()
         if normalized in {"ocr", "all"}:

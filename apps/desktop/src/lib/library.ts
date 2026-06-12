@@ -8,7 +8,10 @@ export function durationMinutes(duration: string) {
   if (parts.length >= 2 && parts.every((value) => Number.isFinite(value))) {
     const [hours, minutes, seconds] =
       parts.length === 3 ? parts : [0, parts[0], parts[1]];
-    return Math.round((hours * 3600 + minutes * 60 + seconds) / 60);
+    // Keep fractional minutes so sub-minute clips (e.g. "0:29") don't collapse to
+    // 0 — otherwise they'd contribute nothing to aggregate runtime and tie with
+    // unknown-duration items when sorting. Callers round only for display.
+    return (hours * 3600 + minutes * 60 + seconds) / 60;
   }
   // Legacy fallback: "Xh Ym" strings.
   const hours = Number(/(\d+)\s*h/.exec(duration)?.[1] ?? 0);

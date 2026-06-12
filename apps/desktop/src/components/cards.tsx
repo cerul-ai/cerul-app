@@ -41,10 +41,25 @@ function itemSearchability(
       tone: "warn",
     };
   }
-  const visualSearchable = item.contentType === "video" && item.visualIndexStatus !== "failed";
-  return visualSearchable
-    ? { label: t("library.itemCard.searchSpeechVisual"), tone: "accent" }
-    : { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
+  // A failed embedding index means semantic/vector search is incomplete even
+  // though the item is otherwise indexed — surface that, don't claim it's fully
+  // searchable.
+  if (item.embeddingIndexStatus === "failed") {
+    return { label: t("library.itemCard.partialIndex"), tone: "warn" };
+  }
+  // Visual search is real only once the visual index is actually indexed
+  // (pending/null is not searchable yet); images are inherently visual.
+  const hasVisual =
+    item.contentType === "image" ||
+    (item.contentType === "video" && item.visualIndexStatus === "indexed");
+  const hasSpeech = item.contentType === "video" || item.contentType === "audio";
+  if (hasVisual && hasSpeech) {
+    return { label: t("library.itemCard.searchSpeechVisual"), tone: "accent" };
+  }
+  if (hasVisual) {
+    return { label: t("library.itemCard.searchVisualOnly"), tone: "accent" };
+  }
+  return { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
 }
 
 export function ResultModalityIcon({

@@ -1869,7 +1869,9 @@ function HomeScreen({
   const activeJobs = jobs.filter(isActiveJob);
   const hasSources = sources.length > 0;
   const searchDisabled = hasSources && indexedCount === 0;
-  const runtimeMinutes = items.reduce((total, item) => total + durationMinutes(item.duration), 0);
+  const runtimeMinutes = Math.round(
+    items.reduce((total, item) => total + durationMinutes(item.duration), 0),
+  );
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = [...items]
@@ -5999,7 +6001,7 @@ function ProviderConnections({
             <label>
               <span>{t("settings.models.providers.form.apiKey")}</span>
               <input
-                type="text"
+                type="password"
                 autoComplete="off"
                 spellCheck={false}
                 value={form.api_key}
