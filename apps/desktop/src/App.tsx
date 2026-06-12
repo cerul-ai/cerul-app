@@ -5056,6 +5056,10 @@ type CapabilityRowModel = {
   name: string;
   isLocal: boolean;
   locked: boolean;
+  // Whether the model is user-selectable here (combobox) vs a fixed display.
+  // Embedding is locked; on-device ASR is the one bundled model; video lets you
+  // pick a local VLM or a remote model.
+  modelEditable: boolean;
   localLabel: string;
   modelValue: string;
   modelOptions: ModelComboOption[];
@@ -5099,9 +5103,6 @@ function ModelsSettings({
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
-  // The advanced section is collapsed by default — the 4 mode presets cover the
-  // common case; per-capability model/service config lives behind the toggle.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   async function loadProviders() {
     try {
@@ -5196,6 +5197,11 @@ function ModelsSettings({
     embeddingModels.find((model) => model.id === activeEmbeddingId)?.label ||
     activeEmbeddingId ||
     t("settings.models.embedding.loadingOption");
+  // Video understanding runs locally too when processing is on-device: prefer
+  // catalog-reported local vision models, else the bundled fallback list.
+  const catalogLocalVision = videoUnderstandingModels.filter((model) => model.tier === "local");
+  const videoLocalOptions =
+    catalogLocalVision.length > 0 ? toComboOptions(catalogLocalVision) : localVisionModels;
   const capabilities: CapabilityRowModel[] = [
     {
       key: "asr",
@@ -5203,6 +5209,7 @@ function ModelsSettings({
       name: t("settings.models.transcription.kicker"),
       isLocal: effectiveLocalMode,
       locked: false,
+      modelEditable: !effectiveLocalMode,
       localLabel: localAsrLabel,
       modelValue: activeRemoteAsr,
       modelOptions: toComboOptions(remoteAsrOptions),
@@ -5216,6 +5223,7 @@ function ModelsSettings({
       name: t("settings.models.embedding.kicker"),
       isLocal: effectiveLocalMode,
       locked: true,
+      modelEditable: false,
       localLabel: embeddingLabel,
       modelValue: embeddingLabel,
       modelOptions: [],
@@ -5226,13 +5234,22 @@ function ModelsSettings({
       key: "video",
       badge: t("settings.models.capability.video.badge"),
       name: t("settings.models.video.kicker"),
-      isLocal: false,
+      isLocal: effectiveLocalMode,
       locked: false,
+      modelEditable: true,
       localLabel: "",
-      modelValue: selectedVideoUnderstandingModel,
-      modelOptions: toComboOptions(videoUnderstandingModels),
+      modelValue:
+        effectiveLocalMode &&
+        !videoLocalOptions.some((option) => option.id === selectedVideoUnderstandingModel)
+          ? videoLocalOptions[0]?.id ?? selectedVideoUnderstandingModel
+          : selectedVideoUnderstandingModel,
+      modelOptions: effectiveLocalMode
+        ? videoLocalOptions
+        : toComboOptions(videoUnderstandingModels),
       onSelectModel: (id) => void onSettingsChange({ video_understanding_model: id }),
-      provider: providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
+      provider: effectiveLocalMode
+        ? null
+        : providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
       note: null,
     },
   ];
@@ -5252,31 +5269,16 @@ function ModelsSettings({
             <h2 className="model-advanced-title">{t("settings.models.advanced.title")}</h2>
             <p className="model-advanced-subtitle">{t("settings.models.advanced.subtitle")}</p>
           </div>
-          <button
-            type="button"
-            className="model-advanced-toggle"
-            aria-expanded={advancedOpen}
-            onClick={() => setAdvancedOpen((value) => !value)}
-          >
-            <span>
-              {advancedOpen
-                ? t("settings.models.advanced.collapse")
-                : t("settings.models.advanced.expand")}
-            </span>
-            <ChevronDown size={14} data-expanded={advancedOpen ? "true" : undefined} />
-          </button>
         </div>
 
-        {advancedOpen ? (
-          <ProviderConnections
-            capabilities={capabilities}
-            providers={providers}
-            error={providersError}
-            disabled={disabled}
-            onRefresh={loadProviders}
-            requestConfirm={requestConfirm}
-          />
-        ) : null}
+        <ProviderConnections
+          capabilities={capabilities}
+          providers={providers}
+          error={providersError}
+          disabled={disabled}
+          onRefresh={loadProviders}
+          requestConfirm={requestConfirm}
+        />
       </section>
     </div>
   );
@@ -5467,6 +5469,15 @@ const fallbackAsrModels: AsrModelOption[] = [
   { id: "whisper-1", label: "OpenAI Whisper", size_label: "usage-based" },
   { id: "gpt-4o-mini-transcribe", label: "OpenAI GPT-4o mini transcribe", size_label: "usage-based" },
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
+];
+
+// On-device video-understanding VLMs offered when processing runs locally.
+// Surfaced as fallback options when the catalog reports no local vision model;
+// the daemon must ship/serve these for selection to take effect.
+const localVisionModels: ModelComboOption[] = [
+  { id: "qwen3-vl-8b", label: "Qwen3-VL 8B", hint: "本地 · MLX" },
+  { id: "qwen3-vl-4b", label: "Qwen3-VL 4B", hint: "本地 · MLX · 更小" },
+  { id: "gemma-3-12b-it-qat", label: "Gemma 3 12B（量化）", hint: "本地 · MLX" },
 ];
 
 function TranscriptionControl({
@@ -6150,52 +6161,53 @@ function ProviderConnections({
               <span className="cap-row__badge" aria-hidden="true">
                 {cap.badge}
               </span>
-              <div className="cap-row__main">
-                <span className="cap-row__name">{cap.name}</span>
-                <span className="cap-row__service">{serviceLine}</span>
-              </div>
-              <div className="cap-row__model">
-                {cap.locked ? (
-                  <span className="cap-row__locked">
-                    <Lock size={12} />
-                    <span className="cap-row__model-val">{cap.modelValue}</span>
-                    {cap.note ? <span className="chip neutral">{cap.note}</span> : null}
+              <div className="cap-row__body">
+                <div className="cap-row__top">
+                  <span className="cap-row__name">{cap.name}</span>
+                  <span className="cap-row__actions">
+                    <span className={ready ? "chip success" : "chip warn"}>
+                      <span className="dot" />
+                      {ready
+                        ? t("settings.models.capability.ready")
+                        : t("settings.models.capability.needsKey")}
+                    </span>
+                    {cap.isLocal ? null : (
+                      <button
+                        type="button"
+                        className="btn btn-ghost sm cap-row__edit"
+                        disabled={disabled}
+                        onClick={() => (provider ? openEdit(provider) : openCreate())}
+                      >
+                        {t("settings.models.capability.edit")}
+                      </button>
+                    )}
                   </span>
-                ) : cap.isLocal ? (
-                  <span className="cap-row__locked">
-                    <span className="cap-row__model-val">{cap.localLabel}</span>
-                    <span className="chip neutral">{t("settings.models.capability.local")}</span>
-                  </span>
-                ) : (
-                  <ModelCombobox
-                    value={cap.modelValue}
-                    options={cap.modelOptions}
-                    disabled={disabled}
-                    onSelect={(id) => cap.onSelectModel?.(id)}
-                    ariaLabel={cap.name}
-                  />
-                )}
+                </div>
+                <div className="cap-row__bottom">
+                  <div className="cap-row__model">
+                    {cap.locked ? (
+                      <span className="cap-row__locked">
+                        <Lock size={12} />
+                        <span className="cap-row__model-val">{cap.modelValue}</span>
+                        {cap.note ? <span className="chip neutral">{cap.note}</span> : null}
+                      </span>
+                    ) : !cap.modelEditable ? (
+                      <span className="cap-row__model-val cap-row__model-fixed">
+                        {cap.localLabel}
+                      </span>
+                    ) : (
+                      <ModelCombobox
+                        value={cap.modelValue}
+                        options={cap.modelOptions}
+                        disabled={disabled}
+                        onSelect={(id) => cap.onSelectModel?.(id)}
+                        ariaLabel={cap.name}
+                      />
+                    )}
+                  </div>
+                  <span className="cap-row__service">{serviceLine}</span>
+                </div>
               </div>
-              <span
-                className={ready ? "chip success cap-row__status" : "chip warn cap-row__status"}
-              >
-                <span className="dot" />
-                {ready
-                  ? t("settings.models.capability.ready")
-                  : t("settings.models.capability.needsKey")}
-              </span>
-              {cap.isLocal ? (
-                <span className="cap-row__edit-spacer" aria-hidden="true" />
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-ghost sm cap-row__edit"
-                  disabled={disabled}
-                  onClick={() => (provider ? openEdit(provider) : openCreate())}
-                >
-                  {t("settings.models.capability.edit")}
-                </button>
-              )}
             </article>
           );
         })}

@@ -3870,10 +3870,9 @@ body.overlay-body {
 }
 .cap-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(200px, 0.95fr) auto auto;
-  align-items: center;
-  gap: 16px;
-  padding: 13px 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 13px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--line);
 }
 .cap-row:last-child { border-bottom: 0; }
@@ -3888,17 +3887,22 @@ body.overlay-body {
   color: var(--accent);
   font-size: 12px;
   font-weight: 700;
+  align-self: start;
+  margin-top: 1px;
 }
-.cap-row__main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.cap-row__name { font-size: var(--fs-body); font-weight: 600; color: var(--text); }
-.cap-row__service {
-  font-size: var(--fs-caption);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.cap-row__body { min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.cap-row__top { display: flex; align-items: center; gap: 12px; }
+.cap-row__name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text);
 }
-.cap-row__model { min-width: 0; }
+.cap-row__actions { flex: none; display: flex; align-items: center; gap: 10px; }
+.cap-row__bottom { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cap-row__model { flex: none; min-width: 0; }
+.cap-row__model .model-combobox { width: 280px; max-width: 100%; }
 .cap-row__locked {
   display: inline-flex;
   align-items: center;
@@ -3909,25 +3913,25 @@ body.overlay-body {
 }
 .cap-row__model-val {
   font-weight: 500;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cap-row__status { flex: none; white-space: nowrap; }
+.cap-row__model-fixed { font-size: var(--fs-meta); }
+.cap-row__service {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cap-row__edit { flex: none; }
-.cap-row__edit-spacer { width: 1px; }
-@media (max-width: 920px) {
-  .cap-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: "badge main edit" "badge model status";
-    row-gap: 8px;
-  }
-  .cap-row__badge { grid-area: badge; align-self: start; }
-  .cap-row__main { grid-area: main; }
-  .cap-row__model { grid-area: model; }
-  .cap-row__status { grid-area: status; justify-self: end; }
-  .cap-row__edit { grid-area: edit; justify-self: end; }
-  .cap-row__edit-spacer { display: none; }
+@media (max-width: 720px) {
+  .cap-row__bottom { flex-direction: column; align-items: stretch; gap: 6px; }
+  .cap-row__model .model-combobox { width: 100%; }
 }
 
 /* B2 · Connection row. Name-first; the endpoint URL is demoted to an elided
