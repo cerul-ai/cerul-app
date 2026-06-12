@@ -3,6 +3,7 @@ import {
   type AuthResponse,
   type CloudUser,
   type LoginInput,
+  type OAuthExchangeInput,
   type RegisterInput,
 } from "./types";
 
@@ -62,6 +63,9 @@ export const cloudClient = {
   },
   login(input: LoginInput) {
     return request<AuthResponse>("/v1/auth/login", { method: "POST", body: input });
+  },
+  exchangeOAuth(input: OAuthExchangeInput) {
+    return request<AuthResponse>("/v1/auth/oauth/exchange", { method: "POST", body: input });
   },
   logout(token: string) {
     return request<void>("/v1/auth/logout", { method: "POST", token });

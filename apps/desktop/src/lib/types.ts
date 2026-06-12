@@ -168,4 +168,8 @@ export type RouteState = {
   chunkId: string | null;
   timestamp: string | null;
   settingsSection: string | null;
+  oauthProvider: string | null;
+  oauthCode: string | null;
+  oauthState: string | null;
+  oauthError: string | null;
 };

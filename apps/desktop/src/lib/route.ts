@@ -33,6 +33,10 @@ export function readRouteState(): RouteState {
     chunkId: params.get("chunkId"),
     timestamp: params.get("t"),
     settingsSection: params.get("section"),
+    oauthProvider: params.get("provider"),
+    oauthCode: params.get("code"),
+    oauthState: params.get("state"),
+    oauthError: params.get("error"),
   };
 }
 

@@ -683,6 +683,15 @@ function routeDeepLink(url?: string) {
   } else if (parsed.hostname === "settings") {
     const section = parsed.searchParams.get("section");
     openMainRoute(section ? `settings?section=${encodeURIComponent(section)}` : "settings");
+  } else if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
+    const params = new URLSearchParams({ section: "Usage" });
+    for (const key of ["provider", "code", "state", "error"]) {
+      const value = parsed.searchParams.get(key);
+      if (value) {
+        params.set(key, value);
+      }
+    }
+    openMainRoute(`settings?${params.toString()}`);
   }
 }
 

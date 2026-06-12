@@ -974,6 +974,7 @@ export function App() {
 
 function AppWorkspace() {
   const t = useT();
+  const exchangeOAuthCode = useAuthStore((state) => state.exchangeOAuthCode);
   const initialRoute = readRouteState();
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(initialRoute.itemId);
@@ -1046,8 +1047,46 @@ function AppWorkspace() {
   const stepStarts = useStepStarts(visibleJobs);
 
   useEffect(() => {
+    function handleOAuthRoute(route: RouteState) {
+      if (!route.oauthProvider && !route.oauthCode && !route.oauthState && !route.oauthError) {
+        return false;
+      }
+      const settingsRoute = {
+        view: "settings" as const,
+        itemId: null,
+        chunkId: null,
+        timestamp: null,
+        settingsSection: "Usage",
+      };
+      setViewState(settingsRoute.view);
+      setSelectedItemId(null);
+      setSelectedChunkId(null);
+      setSelectedTimestamp(null);
+      setShowJobsSheet(false);
+      setShowAddSource(false);
+      setSettingsSection(settingsRoute.settingsSection);
+      window.history.replaceState(null, "", `#${routeHash("settings", { settingsSection: "Usage" })}`);
+      void persistLastRoute(settingsRoute);
+
+      if (route.oauthError) {
+        console.warn("OAuth login failed", route.oauthError);
+        return true;
+      }
+      if (!route.oauthCode || !route.oauthState) {
+        console.warn("OAuth login callback was missing code or state");
+        return true;
+      }
+      void exchangeOAuthCode({ code: route.oauthCode, state: route.oauthState }).catch((error) => {
+        console.warn("OAuth login exchange failed", error);
+      });
+      return true;
+    }
+
     function syncHashRoute() {
       const route = readRouteState();
+      if (handleOAuthRoute(route)) {
+        return;
+      }
       setViewState(route.view);
       setSelectedItemId(route.itemId);
       setSelectedChunkId(route.chunkId);
@@ -1064,9 +1103,12 @@ function AppWorkspace() {
       void persistLastRoute(normalizedRoute);
     }
 
+    if (window.location.hash) {
+      syncHashRoute();
+    }
     window.addEventListener("hashchange", syncHashRoute);
     return () => window.removeEventListener("hashchange", syncHashRoute);
-  }, []);
+  }, [exchangeOAuthCode]);
 
   useEffect(() => {
     let cancelled = false;

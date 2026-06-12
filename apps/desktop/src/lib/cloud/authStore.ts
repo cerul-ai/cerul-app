@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { cloudClient } from "./client";
-import { CloudApiError, type CloudUser, type LoginInput, type RegisterInput } from "./types";
+import { CloudApiError, type CloudUser, type LoginInput, type OAuthExchangeInput, type RegisterInput } from "./types";
 import { loadDesktopStore, type DesktopStore } from "../desktopHost";
 
 // Persistence mirrors lib/uiStore.ts: desktop shell store with a localStorage
@@ -62,6 +62,7 @@ interface AuthState {
   hydrate: () => Promise<void>;
   register: (input: RegisterInput) => Promise<void>;
   login: (input: LoginInput) => Promise<void>;
+  exchangeOAuthCode: (input: OAuthExchangeInput) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
   sendVerificationCode: () => Promise<void>;
@@ -107,6 +108,12 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   login: async (input) => {
     const res = await cloudClient.login(input);
+    await writePersisted({ accessToken: res.access_token, user: res.user });
+    set({ status: "signedIn", accessToken: res.access_token, user: res.user });
+  },
+
+  exchangeOAuthCode: async (input) => {
+    const res = await cloudClient.exchangeOAuth(input);
     await writePersisted({ accessToken: res.access_token, user: res.user });
     set({ status: "signedIn", accessToken: res.access_token, user: res.user });
   },
