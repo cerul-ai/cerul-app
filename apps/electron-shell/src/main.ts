@@ -10,6 +10,7 @@ import {
   nativeImage,
   net,
   protocol,
+  safeStorage,
   screen,
   shell,
 } from "electron";
@@ -60,6 +61,7 @@ let lastFailedJobCount: number | null = null;
 const loginItemCliCommand = firstLoginItemCliCommand(process.argv);
 const stores = new Map<string, Record<string, unknown>>();
 const dirtyStores = new Set<string>();
+const secureTokenStorePath = "secure-tokens.json";
 
 type GitHubRelease = {
   tag_name?: string;
@@ -1322,6 +1324,10 @@ function registerIpcHandlers() {
     dirtyStores.add(storePath);
   });
   ipcMain.handle("cerul:store-save", async (_event, storePath: string) => saveStore(storePath));
+  ipcMain.handle("cerul:secure-token-get", async (_event, key: string) => getSecureToken(key));
+  ipcMain.handle("cerul:secure-token-set", async (_event, key: string, value: string | null) => {
+    setSecureToken(key, value);
+  });
 }
 
 async function checkForGitHubReleaseUpdate(): Promise<DesktopUpdateInfo | null> {
@@ -1785,6 +1791,62 @@ function saveStore(storePath: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(loadStore(storePath), null, 2));
   dirtyStores.delete(storePath);
+}
+
+function getSecureToken(key: string) {
+  const tokenKey = normalizeSecureTokenKey(key);
+  const store = loadStore(secureTokenStorePath);
+  const record = store[tokenKey];
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+  const encrypted = (record as { scheme?: unknown; value?: unknown }).value;
+  const scheme = (record as { scheme?: unknown }).scheme;
+  if (scheme !== "safeStorage:v1" || typeof encrypted !== "string") {
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return undefined;
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+  } catch {
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return undefined;
+  }
+}
+
+function setSecureToken(key: string, value: string | null) {
+  const tokenKey = normalizeSecureTokenKey(key);
+  const store = loadStore(secureTokenStorePath);
+  if (!value) {
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return;
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn("secure token storage is unavailable; token will not be persisted");
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return;
+  }
+  store[tokenKey] = {
+    scheme: "safeStorage:v1",
+    value: safeStorage.encryptString(value).toString("base64"),
+  };
+  dirtyStores.add(secureTokenStorePath);
+  saveStore(secureTokenStorePath);
+}
+
+function normalizeSecureTokenKey(key: string) {
+  if (!/^[A-Za-z0-9_.-]{1,80}$/.test(key)) {
+    throw new Error("invalid secure token key");
+  }
+  return key;
 }
 
 function delay(ms: number) {

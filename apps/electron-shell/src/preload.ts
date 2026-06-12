@@ -16,4 +16,6 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
   storeSet: <T>(path: string, key: string, value: T) =>
     ipcRenderer.invoke("cerul:store-set", path, key, value),
   storeSave: (path: string) => ipcRenderer.invoke("cerul:store-save", path),
+  secureTokenGet: (key: string) => ipcRenderer.invoke("cerul:secure-token-get", key),
+  secureTokenSet: (key: string, value: string | null) => ipcRenderer.invoke("cerul:secure-token-set", key, value),
 });
