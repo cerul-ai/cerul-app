@@ -13,7 +13,7 @@ rg -qF "media?.addEventListener(\"change\", applyTheme)" apps/desktop/src
 rg -qF "values={[\"System\", \"Light\", \"Dark\"]}" apps/desktop/src
 rg -qF "[data-theme=\"light\"] {" apps/desktop/src/styles/tokens.css
 rg -qF "[data-theme=\"dark\"] {" apps/desktop/src/styles/tokens.css
-rg -qF -- "--accent:        #4d6fa6;" apps/desktop/src/styles/tokens.css
+rg -qF -- "--accent:        #3e6b9d;" apps/desktop/src/styles/tokens.css
 rg -qF -- "--accent:        #8fb0d8;" apps/desktop/src/styles/tokens.css
 rg -qF ".app {" apps/desktop/src/styles/app.css
 rg -qF ".rail {" apps/desktop/src/styles/app.css

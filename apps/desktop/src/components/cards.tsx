@@ -16,11 +16,51 @@ import {
   Play,
   Sparkles,
 } from "lucide-react";
-import { useT } from "../lib/i18n";
+import { useT, type TFunction } from "../lib/i18n";
 import { formatUsd } from "../lib/formatters";
+import { itemKindLabel } from "../lib/items";
 import { resultModality } from "../lib/results";
 import type { Item, Result } from "../lib/types";
-import { ProgressBar, StatusBadge, highlightSnippet } from "./transcript";
+import { ProgressBar, highlightSnippet } from "./transcript";
+
+// Single searchability chip summarising an item's state, mirroring the
+// redesign baseline (语音 + 画面可搜 / 仅语音可搜 / 索引中 · % / 处理失败).
+function itemSearchability(
+  item: Item,
+  t: TFunction,
+): { label: string; tone: "accent" | "warn" | "danger" } {
+  if (item.status === "failed") {
+    return { label: t("library.itemCard.failedClick"), tone: "danger" };
+  }
+  if (item.status === "indexing") {
+    const pct =
+      item.progressLabel ??
+      (item.progress !== null ? `${Math.round(item.progress * 100)}%` : null);
+    return {
+      label: pct ? t("library.itemCard.indexingPct", { pct }) : t("library.status.indexing"),
+      tone: "warn",
+    };
+  }
+  // A failed embedding index means semantic/vector search is incomplete even
+  // though the item is otherwise indexed — surface that, don't claim it's fully
+  // searchable.
+  if (item.embeddingIndexStatus === "failed") {
+    return { label: t("library.itemCard.partialIndex"), tone: "warn" };
+  }
+  // Visual search is real only once the visual index is actually indexed
+  // (pending/null is not searchable yet); images are inherently visual.
+  const hasVisual =
+    item.contentType === "image" ||
+    (item.contentType === "video" && item.visualIndexStatus === "indexed");
+  const hasSpeech = item.contentType === "video" || item.contentType === "audio";
+  if (hasVisual && hasSpeech) {
+    return { label: t("library.itemCard.searchSpeechVisual"), tone: "accent" };
+  }
+  if (hasVisual) {
+    return { label: t("library.itemCard.searchVisualOnly"), tone: "accent" };
+  }
+  return { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
+}
 
 export function ResultModalityIcon({
   result,
@@ -182,17 +222,32 @@ export function ItemCard({
   onOpen: () => void;
 }) {
   const t = useT();
-  const statusLabel =
-    item.status === "indexed"
-      ? t("library.status.indexed")
-      : item.status === "indexing"
-        ? t("library.status.indexing")
-        : t("library.status.failed");
+  const searchability = itemSearchability(item, t);
+  const metaLine = [
+    item.source,
+    item.indexedAtEpoch === null
+      ? t("library.itemCard.notIndexed")
+      : t("library.itemCard.indexedAt", { when: item.indexedAt }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const sourceLabel = `${itemKindLabel(item, t)} · ${item.source}`;
+  const indexedCell =
+    item.status === "indexing"
+      ? t("library.status.indexing")
+      : item.indexedAtEpoch === null
+        ? "—"
+        : item.indexedAt;
+  const searchabilityChip = (
+    <span className={`item-searchability chip ${searchability.tone}`}>
+      <span className="dot" />
+      {searchability.label}
+    </span>
+  );
   return (
     <article
-      className={
-        selected ? "item-card-shell lib-card selected" : "item-card-shell lib-card"
-      }
+      className={selected ? "item-card-shell lib-card selected" : "item-card-shell lib-card"}
+      data-view={viewMode}
     >
       {selectable ? (
         <label className="item-select sel-check">
@@ -209,62 +264,68 @@ export function ItemCard({
         type="button"
         onClick={onOpen}
       >
-        <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
-          {item.thumbnailUrl ? (
-            <img src={item.thumbnailUrl} alt="" loading="lazy" />
-          ) : (
-            <ItemModalityIcon item={item} size={22} />
-          )}
-          {item.status === "indexing" && item.progress !== null ? (
-            <span
-              className="item-progress-overlay"
-              aria-label={t("library.itemCard.progressAria", {
-                label: item.progressLabel ?? "",
-              }).trim()}
-            >
-              <ProgressBar value={Math.round(item.progress * 100)} animated />
-              <small className="mono">
-                {[item.progressLabel ?? t("library.itemCard.indexingFallback"), item.etaLabel]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </small>
+        {viewMode === "list" ? (
+          <>
+            <span className="item-list-title">
+              <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+                {item.thumbnailUrl ? (
+                  <img src={item.thumbnailUrl} alt="" loading="lazy" />
+                ) : (
+                  <ItemModalityIcon item={item} size={15} />
+                )}
+              </span>
+              <strong className="clamp1">{item.title}</strong>
             </span>
-          ) : null}
-        </span>
-        <span className="item-copy body">
-          <strong className="clamp2">{item.title}</strong>
-          <span className="muted">{item.source}</span>
-          <span className="muted">
-            {item.duration} ·{" "}
-            {item.indexedAtEpoch === null
-              ? t("library.itemCard.notIndexed")
-              : t("library.itemCard.indexedAt", { when: item.indexedAt })}
-          </span>
-          {item.usage.event_count > 0 ? (
-            <span className="item-usage mono muted">
-              {formatUsd(item.usage.estimated_usd)} ·{" "}
-              {t(
-                item.usage.event_count === 1
-                  ? "library.itemCard.usageEventOne"
-                  : "library.itemCard.usageEventOther",
-                { count: item.usage.event_count },
+            <span className="item-list-cell item-list-source clamp1">{sourceLabel}</span>
+            <span className="item-list-cell item-list-duration mono">{item.duration}</span>
+            <span className="item-list-cell item-list-indexed">{indexedCell}</span>
+            <span className="item-list-cell item-list-search">{searchabilityChip}</span>
+          </>
+        ) : (
+          <>
+            <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+              {item.thumbnailUrl ? (
+                <img src={item.thumbnailUrl} alt="" loading="lazy" />
+              ) : (
+                <ItemModalityIcon item={item} size={22} />
               )}
+              {item.contentType !== "image" && item.duration && item.status !== "indexing" ? (
+                <small className="thumb-duration mono">{item.duration}</small>
+              ) : null}
+              {item.status === "indexing" && item.progress !== null ? (
+                <span
+                  className="item-progress-overlay"
+                  aria-label={t("library.itemCard.progressAria", {
+                    label: item.progressLabel ?? "",
+                  }).trim()}
+                >
+                  <ProgressBar value={Math.round(item.progress * 100)} animated />
+                  <small className="mono">
+                    {[item.progressLabel ?? t("library.itemCard.indexingFallback"), item.etaLabel]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </small>
+                </span>
+              ) : null}
             </span>
-          ) : null}
-          {item.visualIndexStatus === "failed" ? (
-            <span className="item-warning chip warn">
-              <span className="dot" />
-              {t("library.itemCard.transcriptOnly")}
+            <span className="item-copy body">
+              <strong className="clamp2">{item.title}</strong>
+              <span className="item-card-meta muted clamp1">{metaLine}</span>
+              {item.usage.event_count > 0 ? (
+                <span className="item-usage mono muted">
+                  {formatUsd(item.usage.estimated_usd)} ·{" "}
+                  {t(
+                    item.usage.event_count === 1
+                      ? "library.itemCard.usageEventOne"
+                      : "library.itemCard.usageEventOther",
+                    { count: item.usage.event_count },
+                  )}
+                </span>
+              ) : null}
+              {searchabilityChip}
             </span>
-          ) : null}
-          {item.embeddingIndexStatus === "failed" ? (
-            <span className="item-warning chip warn">
-              <span className="dot" />
-              {t("library.itemCard.partialIndex")}
-            </span>
-          ) : null}
-        </span>
-        <StatusBadge status={item.status} label={statusLabel} />
+          </>
+        )}
       </button>
     </article>
   );

@@ -13,7 +13,7 @@
 .rail {
   width: 220px;
   background: var(--bg-sunken);
-  border-right: 1px solid var(--line);
+  border-right: 1px solid var(--line-strong);
   display: flex;
   flex-direction: column;
   padding: 10px 10px 12px;
@@ -21,8 +21,12 @@
   flex: none;
 }
 .rail[data-collapsed="true"] { width: 60px; }
-.rail-top { padding: 4px 4px 14px; display: flex; align-items: center; gap: 6px; }
-.rail-brand { display: flex; align-items: center; gap: 10px; background: none; border: 0; cursor: pointer; padding: 6px; border-radius: 8px; }
+.rail-top { padding: 6px 4px 16px; display: flex; align-items: center; gap: 6px; }
+.rail-brand { display: flex; align-items: center; gap: 9px; background: none; border: 0; cursor: pointer; padding: 4px 6px; border-radius: 9px; min-width: 0; }
+.rail-brand:hover { background: var(--surface-3); }
+.rail-brand .brand-mark { width: 24px; height: 24px; }
+.rail-wordmark { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+.rail[data-collapsed="true"] .rail-wordmark { display: none; }
 .rail-collapse { margin-left: auto; flex: none; }
 .rail[data-collapsed="true"] .rail-top { flex-direction: column; gap: 2px; padding: 4px 4px 10px; }
 .rail[data-collapsed="true"] .rail-collapse { margin-left: 0; }
@@ -56,13 +60,8 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .rail-item:hover { background: var(--surface-3); color: var(--text); }
-.rail-item.active { color: var(--text); background: var(--accent-soft); }
-.rail-item .rail-ind {
-  position: absolute; left: -10px; top: 50%; transform: translateY(-50%) scaleY(0);
-  width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: var(--accent);
-  transition: transform var(--dur) var(--ease);
-}
-.rail-item.active .rail-ind { transform: translateY(-50%) scaleY(1); }
+.rail-item.active { color: var(--accent); background: var(--surface); box-shadow: var(--shadow-1); }
+.rail-item .rail-ind { display: none; }
 .rail-item.active svg { color: var(--accent); }
 .rail-label { overflow: hidden; }
 .rail[data-collapsed="true"] .rail-item { justify-content: center; padding: 0; gap: 0; }
@@ -122,19 +121,23 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding-top: 14vh;
+  padding-top: 9vh;
 }
+.home-hero-mark { width: 54px; height: 54px; margin-bottom: 22px; }
+.home-hero-mark .brand-mark { width: 54px; height: 54px; }
 .home-search-stage h1 {
   margin: 0;
-  font-size: 32px;
-  line-height: 1.12;
-  font-weight: 600;
-  letter-spacing: -0.025em;
+  font-size: 31px;
+  line-height: 1.14;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
-.home-search-stage p {
-  margin: 10px 0 0;
+.home-search-stage p,
+.home-summary {
+  margin: 12px 0 0;
   font-size: 15px;
 }
+.home-hotkey { font-size: var(--fs-meta); }
 .home-mode-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -166,22 +169,42 @@
   margin-top: 16px;
   flex-wrap: wrap;
 }
+/* spinner utility (reuses the indexing-spin keyframe in extensions.css) */
+.spin { animation: indexing-spin 1s linear infinite; }
+
+/* amber "indexing" chip for the home status line */
+.chip.indexing {
+  background: var(--warn-tint);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+.chip.indexing svg { color: var(--warn); flex: none; }
+
+.home-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.home-block-head .section-label { margin: 0; }
+
 .home-continue-block {
-  margin-top: 40px;
+  margin-top: 38px;
 }
 .continue-card {
   display: flex;
-  gap: 16px;
+  gap: 18px;
   align-items: center;
   width: 100%;
   text-align: left;
-  padding: 12px;
+  padding: 14px;
   font-family: var(--font-sans);
 }
 .continue-card .continue-thumb {
   position: relative;
-  flex: 0 0 132px;
-  width: 132px;
+  flex: 0 0 232px;
+  width: 232px;
   aspect-ratio: 16 / 9;
   border-radius: var(--r-md);
   overflow: hidden;
@@ -195,30 +218,80 @@
   height: 100%;
   object-fit: cover;
 }
+.continue-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(18, 22, 28, 0.55);
+  color: #fff;
+  z-index: 2;
+  transition: background var(--dur-fast) var(--ease);
+}
+.continue-card:hover .continue-play { background: rgba(18, 22, 28, 0.74); }
+.continue-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(18, 22, 28, 0.28);
+  z-index: 2;
+}
+.continue-progress > span { display: block; height: 100%; background: var(--accent); }
+.continue-card .thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 9px;
+  z-index: 3;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 10.5px;
+}
 .continue-body {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
 }
+.continue-title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.continue-meta { font-size: var(--fs-meta); color: var(--text-muted); }
 .continue-cta {
   font-size: var(--fs-meta);
   color: var(--accent);
+  font-weight: 500;
 }
 .home-recent-block {
-  margin-top: 56px;
+  margin-top: 48px;
 }
 .home-recent-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
+  align-items: start;
 }
 .recent-indexed-card {
   appearance: none;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line);
   padding: 0;
   text-align: left;
   font-family: var(--font-sans);
+}
+/* Explicit flex column instead of relying on a default-inline <span class="body">
+   wrapping block children — that quirk left a large title↕meta gap at the 2-col
+   breakpoint. Now the body hugs its content and the text block stays tight. */
+.recent-indexed-card .body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 /* Uniform 16:9 thumb so every card is the same height whether it has an
    image (object-fit: cover) or falls back to a centered modality icon —
@@ -244,26 +317,24 @@
   letter-spacing: 0.01em;
 }
 .recent-indexed-card strong {
-  display: block;
-  min-height: 35px;
-  font-size: 12.5px;
-  line-height: 1.4;
-  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   overflow-wrap: anywhere;
 }
 .recent-card-meta {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-top: 8px;
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .recent-card-meta svg {
   flex: none;
   opacity: 0.75;
 }
 .recent-indexed-card .item-warning {
-  margin-top: 8px;
+  margin-top: 3px;
 }
 
 /* ---------------- Drawer ---------------- */
@@ -297,8 +368,8 @@
   overflow: hidden;
 }
 
-/* library grid */
-.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 16px; }
+/* library grid — larger cards with 16:9 thumbnails (完整版 baseline) */
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 18px; margin-top: 18px; }
 .lib-card { overflow: hidden; cursor: pointer; }
 .lib-card .body { padding: 12px 13px 13px; }
 

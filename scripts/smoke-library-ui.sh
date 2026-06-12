@@ -35,7 +35,7 @@ rg -qF "api.reindexItem(itemId)" apps/desktop/src
 rg -qF "const filteredItems = items" apps/desktop/src
 rg -qF "sortLibraryItems(a, b, sortKey)" apps/desktop/src
 rg -qF "function durationMinutes(duration: string)" apps/desktop/src
-rg -qF 'className={viewMode === "grid" ? "lib-grid" : "tbl"}' apps/desktop/src
+rg -qF 'className={viewMode === "grid" ? "lib-grid" : "tbl lib-table"}' apps/desktop/src
 rg -qF 'viewMode === "list" ? "item-card list" : "item-card"' apps/desktop/src
 rg -qF '"library.empty.filtered.title": "No matching items"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"library.batch.aria": "Selected library item actions"' apps/desktop/src/lib/i18n-catalog.ts

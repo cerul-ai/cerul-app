@@ -40,6 +40,21 @@ export function itemColor(contentType: string) {
   return "mint";
 }
 
+// Short localised label for an item's source kind (YouTube / 播客 / 网页视频 /
+// 本机). Used in the continue-watching meta line and the library list view.
+export function itemKindLabel(item: Item, t: TFunction): string {
+  switch (item.sourceKind) {
+    case "youtube":
+      return t("item.kind.youtube");
+    case "podcast":
+      return t("item.kind.podcast");
+    case "web_video":
+      return t("item.kind.web");
+    default:
+      return t("item.kind.local");
+  }
+}
+
 export function itemSourceLabel(record: api.ItemRecord, t: TFunction) {
   // Prefer descriptive metadata (channel / uploader / playlist / source)
   // and fall back to the raw_path basename. Never expose the raw source

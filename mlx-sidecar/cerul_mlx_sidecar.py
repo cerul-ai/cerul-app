@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
     parser.add_argument("--asr-model", default=DEFAULT_ASR_MODEL)
     parser.add_argument("--forced-aligner-model", default=DEFAULT_FORCED_ALIGNER_MODEL)
+    # In-memory quantization for the official ASR + forced-aligner weights.
+    # "4bit" is the smallest (~-70% RAM, ~+0.43 WER); "8bit" is near-lossless
+    # (~+0.04 WER); "none" keeps full fp16.
+    parser.add_argument("--asr-quantization", default="4bit", choices=["8bit", "4bit", "none"])
     parser.add_argument("--ocr-model", default=DEFAULT_OCR_MODEL)
     parser.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
     return parser.parse_args()
@@ -113,6 +118,10 @@ class CerulMlxRuntime:
         self.embedding_shims: list[str] = []
         self.ocr_model = None
         self.ocr_processor = None
+        # Lazily-loaded, in-memory-quantized ASR + forced-aligner objects. Held
+        # only while quantization is enabled (see _transcription_components).
+        self._asr_model_obj = None
+        self._asr_aligner_obj = None
         self.text_embed_batch_size = env_positive_int(
             "CERUL_MLX_TEXT_EMBED_BATCH_SIZE",
             DEFAULT_TEXT_EMBED_BATCH_SIZE,
@@ -143,10 +152,17 @@ class CerulMlxRuntime:
         self._clear_accelerator_cache()
 
     def release_transcription_runtime(self) -> None:
+        # Per-transcription cleanup: free scratch buffers but KEEP the quantized
+        # ASR + aligner objects warm, so indexing a queue of videos doesn't
+        # reload and re-quantize them on every file. Only an explicit
+        # release_models() drops the cached objects (see below).
         self._clear_accelerator_cache()
 
     def release_models(self, scope: str = "all") -> dict[str, Any]:
         normalized = scope.strip().lower()
+        if normalized in {"transcription", "asr", "aligner", "all"}:
+            self._asr_model_obj = None
+            self._asr_aligner_obj = None
         if normalized in {"embedding", "all"}:
             self.release_embedding()
         if normalized in {"ocr", "all"}:
@@ -161,8 +177,8 @@ class CerulMlxRuntime:
         return {
             "embedding": self.embedding_model is not None,
             "ocr": self.ocr_model is not None,
-            "asr": False,
-            "forced_aligner": False,
+            "asr": self._asr_model_obj is not None,
+            "forced_aligner": self._asr_aligner_obj is not None,
         }
 
     def status(self) -> dict[str, Any]:
@@ -192,6 +208,7 @@ class CerulMlxRuntime:
             "models": {
                 "embedding": self.args.embedding_model,
                 "asr": self.args.asr_model,
+                "asr_quantization": getattr(self.args, "asr_quantization", "none"),
                 "forced_aligner": self.args.forced_aligner_model,
                 "ocr": self.args.ocr_model,
             },
@@ -275,16 +292,62 @@ class CerulMlxRuntime:
             "compat_shims": self.embedding_shims,
         }
 
+    def _asr_quant_bits(self) -> int | None:
+        """Resolve the configured ASR/aligner quantization to a bit width.
+
+        Returns None for full precision (fp16), keeping the no-quant path
+        byte-for-byte identical to the previous behaviour.
+        """
+        value = (getattr(self.args, "asr_quantization", "none") or "none").strip().lower()
+        return {"8bit": 8, "4bit": 4}.get(value)
+
+    def _transcription_components(self, module: Any) -> tuple[Any, Any]:
+        """Resolve the (model, forced_aligner) arguments for transcribe().
+
+        Quantization off -> pass the HF repo ids; the library loads fp16 itself.
+        Quantization on  -> load the *official* weights once, quantize them
+        in-memory to N-bit, cache + reuse the objects, and hand those to
+        transcribe(). Same official weights, just smaller/faster. The aligner's
+        model lives on a lazily-built backend, so force it loaded before
+        quantizing; if anything there fails we keep the aligner at fp16 rather
+        than lose word-level timestamps.
+        """
+        bits = self._asr_quant_bits()
+        if bits is None:
+            return self.args.asr_model, self.args.forced_aligner_model
+
+        import mlx.core as mx
+        from mlx_qwen3_asr.convert import quantize_model
+
+        if self._asr_model_obj is None:
+            model, _config = module.load_model(self.args.asr_model, dtype=mx.float16)
+            quantize_model(model, bits=bits, group_size=64)
+            self._asr_model_obj = model
+            print(f"asr: loaded {self.args.asr_model} ({bits}-bit)", file=sys.stderr)
+
+        if self._asr_aligner_obj is None and self.args.forced_aligner_model:
+            aligner = module.ForcedAligner(self.args.forced_aligner_model, dtype=mx.float16)
+            try:
+                aligner._ensure_loaded()
+                quantize_model(aligner._backend.model, bits=bits, group_size=64)
+                print(f"asr: loaded forced aligner ({bits}-bit)", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - keep aligner at fp16 on failure
+                print(f"asr: forced-aligner quantization skipped ({exc})", file=sys.stderr)
+            self._asr_aligner_obj = aligner
+
+        return self._asr_model_obj, (self._asr_aligner_obj or self.args.forced_aligner_model)
+
     def transcribe(self, audio_path: str, language: str | None = None) -> dict[str, Any]:
         if self.args.asr_model == "whisper-large-v3-turbo":
             return self.transcribe_with_mlx_whisper(audio_path, language)
 
         try:
             module = __import__("mlx_qwen3_asr")
+            model_arg, aligner_arg = self._transcription_components(module)
             kwargs: dict[str, Any] = {
-                "model": self.args.asr_model,
+                "model": model_arg,
                 "return_timestamps": True,
-                "forced_aligner": self.args.forced_aligner_model,
+                "forced_aligner": aligner_arg,
             }
             if language and language != "auto":
                 kwargs["language"] = language
@@ -293,11 +356,19 @@ class CerulMlxRuntime:
             raw_segments = result.get("segments") if isinstance(result, dict) else getattr(result, "segments", [])
             segments = [normalize_segment(segment) for segment in raw_segments or []]
             segments = [segment for segment in segments if segment["text"]]
+            # The aligner returns one segment per spoken character; regroup into
+            # readable phrase/sentence lines so the transcript isn't one glyph
+            # per row.
+            try:
+                segments = group_aligned_segments(text or "", segments)
+            except Exception as exc:  # noqa: BLE001 - keep raw segments on failure
+                print(f"asr: line grouping skipped ({exc})", file=sys.stderr)
             return {
                 "text": text or " ".join(segment["text"] for segment in segments),
                 "segments": segments,
                 "model": self.args.asr_model,
                 "forced_aligner": self.args.forced_aligner_model,
+                "quantization": getattr(self.args, "asr_quantization", "none"),
             }
         finally:
             self.release_transcription_runtime()
@@ -372,6 +443,156 @@ def normalize_segment(segment: Any) -> dict[str, Any]:
         "end": float(end or start or 0.0),
         "text": str(text or "").strip(),
     }
+
+
+# The Qwen3 ForcedAligner emits one segment per spoken token — one *character*
+# for CJK, one *word* for spaced scripts — so a raw transcript renders one token
+# per row. These knobs regroup tokens into readable subtitle-style lines.
+# Targets are display COLUMNS (a CJK glyph counts as 2, everything else as 1) so
+# one budget yields short CJK lines and sensibly word-wrapped Latin lines.
+_LINE_HARD_BREAKS = set("。！？!?；;…\n")  # sentence enders — always end a line
+_LINE_SOFT_BREAKS = set("，、：,:")  # clause punctuation — break once long enough
+_LINE_SOFT_COLS = 12  # CJK ≈ 6 glyphs / Latin ≈ 12 cols before a comma may break
+_LINE_MAX_COLS = 32  # CJK ≈ 16 glyphs / Latin ≈ 32 cols, wrapped at word bounds
+
+
+def _is_punct_char(ch: str) -> bool:
+    return ch.isspace() or unicodedata.category(ch).startswith("P")
+
+
+def _is_cjk_char(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+        or 0x3400 <= code <= 0x4DBF  # CJK Extension A
+        or 0x3040 <= code <= 0x30FF  # Hiragana + Katakana
+        or 0xAC00 <= code <= 0xD7A3  # Hangul syllables
+        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0xFF00 <= code <= 0xFFEF  # Fullwidth / halfwidth forms
+    )
+
+
+def _col_width(text: str) -> int:
+    return sum(2 if _is_cjk_char(ch) else 1 for ch in text)
+
+
+def _segment_spoken_len(seg_text: str) -> int:
+    spoken = sum(1 for ch in seg_text if not _is_punct_char(ch))
+    return max(1, spoken)
+
+
+def group_aligned_segments(
+    text: str, segments: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Regroup per-token aligner segments into readable subtitle-style lines.
+
+    `text` is the fully punctuated transcript; `segments` are spoken tokens (no
+    punctuation), in order. We expand the segments to per-spoken-character
+    timings, tokenise the text (CJK char / Latin word / punctuation / space),
+    then pack tokens into lines — ending a line at sentence punctuation, at a
+    comma once the line is long enough, or by wrapping at a word boundary near
+    the column cap so a word is never split mid-way. Each line keeps the timing
+    of its first/last spoken character. Works for Chinese and spaced scripts
+    alike; falls back to the raw segments if anything looks off so we never lose
+    the transcript.
+    """
+    if not segments or not text:
+        return segments
+
+    char_times: list[tuple[float, float]] = []
+    for seg in segments:
+        start = seg.get("start") or 0.0
+        end = seg.get("end")
+        end = end if end is not None else start
+        for _ in range(_segment_spoken_len(seg.get("text") or "")):
+            char_times.append((float(start), float(end)))
+    if not char_times:
+        return segments
+    total = len(char_times)
+
+    # Tokenise: CJK chars and Latin words are the atoms timings attach to;
+    # punctuation and whitespace are separators that drive line breaks.
+    atoms: list[tuple[str, int, str]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            atoms.append((ch, 0, "space"))
+            i += 1
+        elif _is_punct_char(ch):
+            atoms.append((ch, 0, "punct"))
+            i += 1
+        elif _is_cjk_char(ch):
+            atoms.append((ch, 1, "cjk"))
+            i += 1
+        else:
+            j = i
+            while (
+                j < n
+                and not text[j].isspace()
+                and not _is_punct_char(text[j])
+                and not _is_cjk_char(text[j])
+            ):
+                j += 1
+            atoms.append((text[i:j], j - i, "word"))
+            i = j
+
+    lines: list[dict[str, Any]] = []
+    buf: list[str] = []
+    line_start: int | None = None
+    idx = 0
+    cols = 0
+    pending_break = False
+
+    def flush(end_idx: int) -> None:
+        nonlocal buf, line_start, cols, pending_break
+        line_text = "".join(buf).strip()
+        if line_text and line_start is not None and line_start < total:
+            last = min(end_idx, total) - 1
+            start_sec = char_times[line_start][0]
+            end_sec = char_times[last][1] if last >= line_start else char_times[line_start][1]
+            lines.append({"start": start_sec, "end": end_sec, "text": line_text})
+        buf = []
+        line_start = None
+        cols = 0
+        pending_break = False
+
+    for k, (atom, spoken, kind) in enumerate(atoms):
+        if kind == "space":
+            if buf:  # never lead a line with whitespace
+                buf.append(atom)
+            continue
+        if kind == "punct":
+            # An opening quote/bracket leads the next line, not the current one.
+            if pending_break and unicodedata.category(atom) in ("Ps", "Pi"):
+                flush(idx)
+            buf.append(atom)
+            nxt = atoms[k + 1] if k + 1 < len(atoms) else None
+            # ASCII "." ends a sentence only when followed by space/end, so we
+            # don't break decimals or initials.
+            sentence_period = atom == "." and (nxt is None or nxt[2] == "space")
+            if (
+                atom in _LINE_HARD_BREAKS
+                or sentence_period
+                or (atom in _LINE_SOFT_BREAKS and cols >= _LINE_SOFT_COLS)
+            ):
+                pending_break = True
+            continue
+        # spoken atom (cjk glyph or whole word)
+        if pending_break:
+            flush(idx)
+        width = _col_width(atom)
+        if buf and cols + width > _LINE_MAX_COLS:
+            flush(idx)  # wrap before this word — never split it
+        if line_start is None:
+            line_start = idx
+        buf.append(atom)
+        idx = min(idx + spoken, total)
+        cols += width
+    flush(idx)
+
+    return lines or segments
 
 
 def dispatch(runtime: CerulMlxRuntime, request: dict[str, Any]) -> Any:

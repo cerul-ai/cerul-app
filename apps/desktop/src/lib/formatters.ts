@@ -13,10 +13,13 @@ export function formatDuration(seconds: number | null, t?: TFunction) {
   const total = Math.round(seconds);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  // YouTube-style H:MM:SS / M:SS to match the redesign baseline.
   if (hours > 0) {
-    return `${hours} h ${minutes} m`;
+    return `${hours}:${pad(minutes)}:${pad(secs)}`;
   }
-  return `${Math.max(minutes, 1)} m`;
+  return `${minutes}:${pad(secs)}`;
 }
 
 export function basenameFromPath(path: string | null | undefined) {

@@ -163,6 +163,7 @@ import {
   isActiveJob,
   itemColor,
   itemDetailIssue,
+  itemKindLabel,
   itemOriginalUrl,
   itemProgressLabel,
   itemSourceKind,
@@ -575,12 +576,13 @@ const emptyUsageTotals: api.UsageTotals = {
 const items: Item[] = [
   {
     id: "item-1",
-    title: "Karpathy - Software Is Changing Again",
+    title: "Karpathy — Software Is Changing Again",
     sourceId: "source-2",
     contentType: "video",
     source: "Andrej Karpathy",
     sourceKind: "youtube",
-    duration: "1 h 18 m",
+    duration: "1:18:22",
+    durationSec: 4702,
     indexedAt: "今天",
     indexedAtEpoch: 1780444800,
     status: "indexed",
@@ -596,7 +598,13 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
-    playbackPosition: null,
+    playbackPosition: {
+      item_id: "item-1",
+      position_sec: 754,
+      timestamp: "12:34",
+      chunk_id: null,
+      updated_at: 1780448400,
+    },
     usage: emptyUsageTotals,
   },
   {
@@ -606,7 +614,8 @@ const items: Item[] = [
     contentType: "video",
     source: "Talks 2026",
     sourceKind: "folder",
-    duration: "49 m",
+    duration: "49:08",
+    durationSec: 2948,
     indexedAt: "昨天",
     indexedAtEpoch: 1780358400,
     status: "indexing",
@@ -632,7 +641,8 @@ const items: Item[] = [
     contentType: "audio",
     source: "Engineering Notes",
     sourceKind: "podcast",
-    duration: "56 m",
+    duration: "56:41",
+    durationSec: 3401,
     indexedAt: "5月12日",
     indexedAtEpoch: 1778544000,
     status: "indexed",
@@ -658,7 +668,8 @@ const items: Item[] = [
     contentType: "video",
     source: "Design Reviews",
     sourceKind: "folder",
-    duration: "23 m",
+    duration: "23:12",
+    durationSec: 1392,
     indexedAt: "5月11日",
     indexedAtEpoch: 1778457600,
     status: "failed",
@@ -684,7 +695,8 @@ const items: Item[] = [
     contentType: "video",
     source: "Andrej Karpathy",
     sourceKind: "youtube",
-    duration: "41 m",
+    duration: "41:05",
+    durationSec: 2465,
     indexedAt: "5月10日",
     indexedAtEpoch: 1778371200,
     status: "failed",
@@ -1471,6 +1483,7 @@ function AppWorkspace() {
             aria-label={t("shell.openHome")}
           >
             <BrandMark />
+            <span className="rail-wordmark rail-label">Cerul</span>
           </button>
           <button
             className="btn-icon sm rail-collapse"
@@ -1856,10 +1869,14 @@ function HomeScreen({
   const activeJobs = jobs.filter(isActiveJob);
   const hasSources = sources.length > 0;
   const searchDisabled = hasSources && indexedCount === 0;
-  const runtimeMinutes = items.reduce((total, item) => total + durationMinutes(item.duration), 0);
+  const runtimeMinutes = Math.round(
+    items.reduce((total, item) => total + durationMinutes(item.duration), 0),
+  );
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
-  const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const recentIndexed = [...items]
+    .sort((left, right) => (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0))
+    .slice(0, 4);
   const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
     visualFixtureModeEnabled()
       ? {
@@ -1876,7 +1893,9 @@ function HomeScreen({
         }
       : null,
   );
-  const [weeklyDismissed, setWeeklyDismissed] = useState(false);
+  // Weekly review is kept but lives off the default home (完整版 baseline has no
+  // weekly card) — surfaced on demand via the "本周回顾" toggle in the recent header.
+  const [showWeekly, setShowWeekly] = useState(false);
   const serverContinueItem = items
     .filter((item) => item.status === "indexed" && item.playbackPosition?.updated_at)
     .sort(
@@ -1968,10 +1987,13 @@ function HomeScreen({
   }
 
   return (
-    <div className="page home-page" style={{ maxWidth: 760 }}>
+    <div className="page home-page" style={{ maxWidth: 920 }}>
       <div className="home-search-stage">
+        <div className="home-hero-mark" aria-hidden="true">
+          <BrandMark variant="color" />
+        </div>
         <h1>{t("home.heading")}</h1>
-        <p className="muted">
+        <p className="muted home-summary">
           {t("home.summary", {
             count: indexedCount,
             runtime:
@@ -1985,7 +2007,7 @@ function HomeScreen({
         <form
           className={searchDisabled ? "search-wrap disabled" : "search-wrap"}
           onSubmit={handleSearchSubmit}
-          style={{ width: "100%", maxWidth: 600, marginTop: 30 }}
+          style={{ width: "100%", maxWidth: 720, marginTop: 28 }}
         >
           <Search size={18} />
           <input
@@ -2009,21 +2031,30 @@ function HomeScreen({
         ) : null}
 
         <div className="row gap-3 home-status-line">
-          <span className="chip neutral">
-            <span className="dot" />
-            {statusLabel}
-          </span>
-          <span className="faint">{t("home.hotkeyHint", { hotkey: globalHotkey })}</span>
-          <button className="btn btn-ghost sm" type="button" onClick={onOpenModelSettings}>
-            <Wrench size={14} />
-            <span>{t("home.metric.configure")}</span>
-          </button>
+          {activeJobs.length > 0 ? (
+            <span className="chip indexing">
+              <Loader2 size={13} className="spin" />
+              {statusLabel}
+            </span>
+          ) : (
+            <span className="chip neutral">
+              <span className="dot" />
+              {statusLabel}
+            </span>
+          )}
+          <span className="faint home-hotkey">{t("home.hotkeyHint", { hotkey: globalHotkey })}</span>
         </div>
       </div>
 
       {continueItem ? (
         <div className="home-continue-block">
-          <p className="section-label" style={{ marginBottom: 10 }}>{t("home.continueWatching")}</p>
+          <div className="home-block-head">
+            <p className="section-label">{t("home.continueWatching")}</p>
+            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+              <Plus size={14} />
+              <span>{t("home.addSource")}</span>
+            </button>
+          </div>
           <ContinueWatchingCard
             item={continueItem}
             timestamp={continueTimestamp}
@@ -2032,51 +2063,64 @@ function HomeScreen({
         </div>
       ) : null}
 
-      {weeklyReview && !weeklyDismissed ? (
-        <section className="weekly-card" aria-label={t("weekly.title")}>
-          <div>
-            <p className="section-label">{t("weekly.eyebrow")}</p>
-            <h2>{t("weekly.title")}</h2>
-            <p>
-              {t("weekly.body", {
-                items: weeklyReview.indexed_items,
-                hours: formatWeeklyHours(weeklyReview.indexed_seconds),
-                watched: weeklyReview.watched_percent,
-              })}
-            </p>
-            {weeklyReview.topics.length > 0 ? (
-              <div className="weekly-topics">
-                {weeklyReview.topics.map((topic) => (
-                  <span className="chip neutral" key={topic.id}>{topic.label}</span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            className="btn-icon sm"
-            aria-label={t("common.close")}
-            onClick={() => setWeeklyDismissed(true)}
-          >
-            <X size={15} />
-          </button>
-        </section>
-      ) : null}
-
       <div className="home-recent-block">
-        <div className="row" style={{ justifyContent: "space-between", marginBottom: 14 }}>
-          <p className="section-label" style={{ margin: 0 }}>{t("home.recentIndexed")}</p>
+        <div className="home-block-head">
+          <p className="section-label">{t("home.recentIndexed")}</p>
           <div className="row gap-2">
+            {weeklyReview ? (
+              <button
+                className={showWeekly ? "btn btn-ghost sm active" : "btn btn-ghost sm"}
+                type="button"
+                onClick={() => setShowWeekly((value) => !value)}
+              >
+                <Sparkles size={14} />
+                <span>{t("weekly.title")}</span>
+              </button>
+            ) : null}
             <button className="btn btn-ghost sm" type="button" onClick={onOpenLibrary}>
               <span>{t("home.browseLibrary")}</span>
               <ChevronRight size={14} />
             </button>
-            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
-              <Plus size={14} />
-              <span>{t("home.addSource")}</span>
-            </button>
+            {!continueItem ? (
+              <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+                <Plus size={14} />
+                <span>{t("home.addSource")}</span>
+              </button>
+            ) : null}
           </div>
         </div>
+
+        {showWeekly && weeklyReview ? (
+          <section className="weekly-card" aria-label={t("weekly.title")}>
+            <div>
+              <p className="section-label">{t("weekly.eyebrow")}</p>
+              <h2>{t("weekly.title")}</h2>
+              <p>
+                {t("weekly.body", {
+                  items: weeklyReview.indexed_items,
+                  hours: formatWeeklyHours(weeklyReview.indexed_seconds),
+                  watched: weeklyReview.watched_percent,
+                })}
+              </p>
+              {weeklyReview.topics.length > 0 ? (
+                <div className="weekly-topics">
+                  {weeklyReview.topics.map((topic) => (
+                    <span className="chip neutral" key={topic.id}>{topic.label}</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="btn-icon sm"
+              aria-label={t("common.close")}
+              onClick={() => setShowWeekly(false)}
+            >
+              <X size={15} />
+            </button>
+          </section>
+        ) : null}
+
         {recentIndexed.length > 0 ? (
           <div className="home-recent-grid">
             {recentIndexed.map((item) => (
@@ -2106,21 +2150,38 @@ function ContinueWatchingCard({
   onOpen: () => void;
 }) {
   const t = useT();
+  const positionSec = item.playbackPosition?.position_sec ?? null;
+  const progressPct =
+    positionSec != null && item.durationSec
+      ? Math.min(100, Math.max(2, (positionSec / item.durationSec) * 100))
+      : null;
+  const metaParts = [itemKindLabel(item, t), item.source].filter(Boolean);
+  if (timestamp) {
+    metaParts.push(t("home.continueAt", { at: timestamp, total: item.duration }));
+  }
   return (
     <button className="card hover continue-card" type="button" onClick={onOpen}>
-      <span className={`thumb continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+      <span className={`continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
         {item.thumbnailUrl ? (
           <img src={item.thumbnailUrl} alt="" loading="lazy" />
         ) : (
-          <ItemModalityIcon item={item} size={24} />
+          <ItemModalityIcon item={item} size={26} />
         )}
+        <span className="continue-play" aria-hidden="true">
+          <Play size={18} fill="currentColor" />
+        </span>
         {item.contentType !== "image" && item.duration ? (
           <small className="thumb-duration mono">{item.duration}</small>
         ) : null}
+        {progressPct != null ? (
+          <span className="continue-progress" aria-hidden="true">
+            <span style={{ width: `${progressPct}%` }} />
+          </span>
+        ) : null}
       </span>
       <span className="continue-body">
-        <strong className="clamp1">{item.title}</strong>
-        {timestamp ? <span className="mono faint">{timestamp}</span> : null}
+        <strong className="clamp1 continue-title">{item.title}</strong>
+        <span className="continue-meta clamp1">{metaParts.join(" · ")}</span>
         <span className="continue-cta">{t("home.continueResume")}</span>
       </span>
     </button>
@@ -3259,6 +3320,8 @@ function ResultDetail({
             ) : (
               <TranscriptList
                 lines={transcriptLines}
+                videoRef={videoRef}
+                videoReady={Boolean(playbackUrl)}
                 activeTime={currentTimestamp}
                 matchTime={startTimestamp}
                 onSeek={seekTo}
@@ -3950,27 +4013,35 @@ function LibraryScreen({
     <div className="page wide">
       <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
         <div>
-          <p className="page-eyebrow">{t("library.eyebrow")}</p>
           <h1 className="page-h1">{t("library.heading")}</h1>
+          <p className="page-sub" style={{ maxWidth: 520 }}>{t("library.sub")}</p>
         </div>
-        <div className="segmented" aria-label={t("library.view.aria")}>
-          <button
-            className={viewMode === "grid" ? "active" : ""}
-            type="button"
-            aria-label={t("library.view.grid")}
-            aria-pressed={viewMode === "grid"}
-            onClick={() => setViewMode("grid")}
-          >
-            <Library size={15} />
-          </button>
-          <button
-            className={viewMode === "list" ? "active" : ""}
-            type="button"
-            aria-label={t("library.view.list")}
-            aria-pressed={viewMode === "list"}
-            onClick={() => setViewMode("list")}
-          >
-            <ListFilter size={15} />
+        <div className="row gap-2" style={{ alignItems: "center" }}>
+          <div className="segmented" aria-label={t("library.view.aria")}>
+            <button
+              className={viewMode === "grid" ? "active" : ""}
+              type="button"
+              aria-label={t("library.view.grid")}
+              aria-pressed={viewMode === "grid"}
+              onClick={() => setViewMode("grid")}
+            >
+              <Library size={15} />
+              <span>{t("library.view.gridShort")}</span>
+            </button>
+            <button
+              className={viewMode === "list" ? "active" : ""}
+              type="button"
+              aria-label={t("library.view.list")}
+              aria-pressed={viewMode === "list"}
+              onClick={() => setViewMode("list")}
+            >
+              <ListFilter size={15} />
+              <span>{t("library.view.listShort")}</span>
+            </button>
+          </div>
+          <button className="btn btn-primary" type="button" onClick={onAddSource}>
+            <Plus size={16} />
+            <span>{t("home.addSource")}</span>
           </button>
         </div>
       </div>
@@ -4091,9 +4162,18 @@ function LibraryScreen({
           </button>
         </div>
       ) : null}
-      <div className={viewMode === "grid" ? "lib-grid" : "tbl"} style={{ marginTop: 16 }}>
-        {items.length > 0 && filteredItems.length > 0
-          ? filteredItems.map((item) => (
+      {items.length > 0 && filteredItems.length > 0 ? (
+        <div className={viewMode === "grid" ? "lib-grid" : "tbl lib-table"}>
+          {viewMode === "list" ? (
+            <div className="lib-table-head" aria-hidden="true">
+              <span>{t("library.col.title")}</span>
+              <span>{t("library.col.source")}</span>
+              <span>{t("library.col.duration")}</span>
+              <span>{t("library.col.indexed")}</span>
+              <span>{t("library.col.searchability")}</span>
+            </div>
+          ) : null}
+          {filteredItems.map((item) => (
             <ItemCard
               key={item.id}
               item={item}
@@ -4103,25 +4183,25 @@ function LibraryScreen({
               onSelect={(selected) => toggleItemSelection(item.id, selected)}
               onOpen={() => onOpenItem(item)}
             />
-          ))
-          : null}
-        {items.length === 0 ? (
-          <EmptyState
-            title={t("library.empty.none.title")}
-            body={t("library.empty.none.body")}
-            actionLabel={t("library.empty.addSource")}
-            onAction={onAddSource}
-          />
-        ) : null}
-        {items.length > 0 && filteredItems.length === 0 ? (
-          <EmptyState
-            title={t("library.empty.filtered.title")}
-            body={t("library.empty.filtered.body")}
-            actionLabel={t("common.clearFilters")}
-            onAction={clearLibraryFilters}
-          />
-        ) : null}
-      </div>
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        // Empty state lives outside the grid so it centers across the full
+        // width instead of being trapped in the first 360px grid cell.
+        <EmptyState
+          title={t("library.empty.none.title")}
+          body={t("library.empty.none.body")}
+          actionLabel={t("library.empty.addSource")}
+          onAction={onAddSource}
+        />
+      ) : (
+        <EmptyState
+          title={t("library.empty.filtered.title")}
+          body={t("library.empty.filtered.body")}
+          actionLabel={t("common.clearFilters")}
+          onAction={clearLibraryFilters}
+        />
+      )}
     </div>
   );
 }
@@ -4538,6 +4618,8 @@ function ItemDetail({
           {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
             <TranscriptList
               lines={transcriptLines}
+              videoRef={videoRef}
+              videoReady={Boolean(itemPlaybackUrl)}
               activeTime={currentTimestamp}
               onSeek={seekTo}
               renderAction={(line) => {
@@ -4971,6 +5053,27 @@ function IndexingSettings({
   );
 }
 
+// One row of the unified capability list (转录 / 向量嵌入 / 视频理解). The
+// three are fixed; each carries its model + the connection/key it routes
+// through, handled together in a single list.
+type CapabilityRowModel = {
+  key: string;
+  badge: string;
+  name: string;
+  isLocal: boolean;
+  locked: boolean;
+  // Whether the model is user-selectable here (combobox) vs a fixed display.
+  // Embedding is locked; on-device ASR is the one bundled model; video lets you
+  // pick a local VLM or a remote model.
+  modelEditable: boolean;
+  localLabel: string;
+  modelValue: string;
+  modelOptions: ModelComboOption[];
+  onSelectModel?: (id: string) => void;
+  provider: api.ProviderRecord | null;
+  note: string | null;
+};
+
 function ModelsSettings({
   settings,
   disabled,
@@ -4983,19 +5086,26 @@ function ModelsSettings({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
+  const inferenceMode = settingString(settings, "inference_mode", "remote");
+  const processingMode = settingString(
+    settings,
+    "processing_mode",
+    inferenceToProcessing(inferenceMode),
+  );
   const selectedAsr = settingString(settings, "asr_model", "whisper-1");
   const selectedAsrProvider = settingString(settings, "asr_provider_id", "");
   const selectedEmbeddingProvider = settingString(settings, "embedding_provider_id", "");
-  const selectedVideoUnderstandingProvider = settingString(settings, "video_understanding_provider_id", "");
+  const selectedVideoUnderstandingProvider = settingString(
+    settings,
+    "video_understanding_provider_id",
+    "",
+  );
   const selectedVideoUnderstandingModel = settingString(
     settings,
     "video_understanding_model",
     "gemini-3.5-flash",
   );
-  const inferenceMode = settingString(settings, "inference_mode", "auto");
   const [catalog, setCatalog] = useState<api.ModelCatalogResponse | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [modelTab, setModelTab] = useState<"setup" | "catalog">("setup");
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
@@ -5011,28 +5121,27 @@ function ModelsSettings({
   }
 
   useEffect(() => {
+    void loadProviders();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     async function tick() {
       try {
         const nextCatalog = await api.getModelCatalog();
         if (!cancelled) {
           setCatalog(nextCatalog);
-          setCatalogError(null);
         }
-      } catch (error) {
-        if (!cancelled) setCatalogError(errorMessage(error));
+      } catch {
+        /* catalog is best-effort; capability cards fall back to defaults */
       }
     }
     void tick();
-    const interval = window.setInterval(() => void tick(), 2000);
+    const interval = window.setInterval(() => void tick(), 4000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
-
-  useEffect(() => {
-    void loadProviders();
   }, []);
 
   useEffect(() => {
@@ -5057,6 +5166,7 @@ function ModelsSettings({
     };
   }, []);
 
+  // ---- Per-capability model / provider options (drive the 3 fixed cards) ----
   const asrModels = catalog?.models.filter((model) => model.capability === "asr") ?? [];
   const remoteAsrModels = asrModels.filter((model) => model.tier !== "local");
   const remoteAsrOptions = remoteAsrModels.length > 0 ? remoteAsrModels : fallbackAsrModels;
@@ -5065,225 +5175,120 @@ function ModelsSettings({
     catalog?.models.filter((model) => model.capability === "multimodal_embedding") ?? [];
   const videoUnderstandingModels =
     catalog?.models.filter((model) => model.capability === "video_understanding") ?? [];
-  const coreModels = catalog?.models.filter((model) => model.required_for_first_search) ?? [];
-  const recommendedModels = catalog?.models.filter((model) => model.recommended && !model.required_for_first_search) ?? [];
-  const optionalModels = catalog?.models.filter((model) => !model.recommended && !model.required_for_first_search) ?? [];
   const activeProfile = catalog?.active_embedding_profile;
-  const runtimeReady = catalog?.runtime.api_runtime_ready ?? false;
-  const runtimeIssue = catalog?.runtime.last_error ?? null;
   const localRuntimeReady = catalog?.runtime.local_runtime_ready ?? false;
   const localRuntimeIssue = catalog?.runtime.local_runtime_error ?? null;
-  // The runtime banner reflects the selected mode. Remote provider readiness is
-  // still used for remote model blockers in the catalog tab.
   const isAutoMode = inferenceMode === "auto";
   const isLocalMode = inferenceMode === "local";
   const effectiveLocalMode = isLocalMode || (isAutoMode && localRuntimeReady);
   const localAsrLabel =
-    asrModels.find((model) => model.tier === "local")?.label ?? t("settings.models.localAsr.fallbackLabel");
-  const bannerReady = isLocalMode ? localRuntimeReady : isAutoMode ? localRuntimeReady || runtimeReady : runtimeReady;
-  const bannerBadge = effectiveLocalMode
-    ? localRuntimeReady
-      ? t("settings.models.runtime.badge.localReady")
-      : t("settings.models.runtime.badge.runtimeNeeded")
-    : runtimeReady
-      ? t("settings.models.runtime.badge.apiReady")
-      : t("settings.models.runtime.badge.connectionNeeded");
-  const bannerMessage = effectiveLocalMode
-    ? localRuntimeReady
-      ? t("settings.models.runtime.msg.localReady")
-      : localRuntimeIssue ?? t("settings.models.runtime.msg.localChecking")
-    : runtimeIssue ??
-      t("settings.models.runtime.msg.remoteReady");
-  const asrProviderOptions = providers.filter(
-    (provider) =>
-      provider.type === "openai" ||
-      provider.type === "openai-compatible" ||
-      provider.type === "gemini",
-  );
-  const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
-  const videoUnderstandingProviderOptions = providers.filter((provider) => provider.type === "gemini");
-  const modelGroups = [
+    asrModels.find((model) => model.tier === "local")?.label ??
+    t("settings.models.localAsr.fallbackLabel");
+  // Resolve the connection bound to each capability, falling back to the
+  // env-seeded default for that capability.
+  const providerFor = (id: string, fallbackId: string) =>
+    providers.find((provider) => provider.id === id) ??
+    providers.find((provider) => provider.id === fallbackId) ??
+    null;
+  const toComboOptions = (
+    list: { id: string; label: string; size_label?: string }[],
+  ): ModelComboOption[] => list.map((m) => ({ id: m.id, label: m.label, hint: m.size_label }));
+  // Embedding is mode-dependent: cloud uses the Gemini embedding, on-device uses
+  // the bundled Qwen3-VL embedding. Show the one that matches the current mode
+  // (not whatever a stale index profile was bound to).
+  const embeddingLabel = effectiveLocalMode
+    ? embeddingModels.find((model) => model.tier === "local")?.label ??
+      activeProfile?.model_id ??
+      "Qwen3-VL Embedding local"
+    : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
+  // Video understanding runs locally too when processing is on-device: prefer
+  // catalog-reported local vision models, else the bundled fallback list.
+  const catalogLocalVision = videoUnderstandingModels.filter((model) => model.tier === "local");
+  const videoLocalOptions =
+    catalogLocalVision.length > 0 ? toComboOptions(catalogLocalVision) : localVisionModels;
+  const capabilities: CapabilityRowModel[] = [
     {
-      id: "core",
-      title: t("settings.models.group.core.title"),
-      body: t("settings.models.group.core.body"),
-      models: coreModels,
-      empty: t("settings.models.group.core.empty"),
+      key: "asr",
+      badge: t("settings.models.capability.asr.badge"),
+      name: t("settings.models.transcription.kicker"),
+      isLocal: effectiveLocalMode,
+      locked: false,
+      modelEditable: !effectiveLocalMode,
+      localLabel: localAsrLabel,
+      modelValue: activeRemoteAsr,
+      modelOptions: toComboOptions(remoteAsrOptions),
+      onSelectModel: (id) => void onSettingsChange({ asr_model: id }),
+      provider: providerFor(selectedAsrProvider, "env-asr"),
+      note: null,
     },
     {
-      id: "recommended",
-      title: t("settings.models.group.recommended.title"),
-      body: t("settings.models.group.recommended.body"),
-      models: recommendedModels,
-      empty: t("settings.models.group.recommended.empty"),
+      key: "embedding",
+      badge: t("settings.models.capability.embedding.badge"),
+      name: t("settings.models.embedding.kicker"),
+      isLocal: effectiveLocalMode,
+      locked: true,
+      modelEditable: false,
+      localLabel: embeddingLabel,
+      modelValue: embeddingLabel,
+      modelOptions: [],
+      provider: providerFor(selectedEmbeddingProvider, "env-embedding"),
+      note: t("settings.models.embedding.boundBadge"),
     },
     {
-      id: "optional",
-      title: t("settings.models.group.optional.title"),
-      body: t("settings.models.group.optional.body"),
-      models: optionalModels,
-      empty: t("settings.models.group.optional.empty"),
+      key: "video",
+      badge: t("settings.models.capability.video.badge"),
+      name: t("settings.models.video.kicker"),
+      isLocal: effectiveLocalMode,
+      locked: false,
+      modelEditable: true,
+      localLabel: "",
+      modelValue:
+        effectiveLocalMode &&
+        !videoLocalOptions.some((option) => option.id === selectedVideoUnderstandingModel)
+          ? videoLocalOptions[0]?.id ?? selectedVideoUnderstandingModel
+          : selectedVideoUnderstandingModel,
+      modelOptions: effectiveLocalMode
+        ? videoLocalOptions
+        : toComboOptions(videoUnderstandingModels),
+      onSelectModel: (id) => void onSettingsChange({ video_understanding_model: id }),
+      provider: effectiveLocalMode
+        ? null
+        : providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
+      note: null,
     },
   ];
 
   return (
     <div className="models-settings-panel">
-      {catalogError ? <InlineNotice tone="error" message={catalogError} /> : null}
-
-      {/* P2 · The always-on "Runtime · macOS · Apple Silicon · ready" banner was
-          pure noise when nothing was wrong. Readiness now lives as a pill on the
-          local mode card; this strip only appears when there's an actual blocker
-          (runtime needed / connection needed / error) the user must act on. */}
-      {bannerReady ? null : (
-        <div className="model-runtime-alert" role="status">
-          <span className="chip warn">
-            <span className="dot" />
-            {bannerBadge}
-          </span>
-          <p className="model-runtime-alert__note">{bannerMessage}</p>
-        </div>
-      )}
-
-      <nav className="seg-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={modelTab === "setup"}
-          className={modelTab === "setup" ? "active" : ""}
-          onClick={() => setModelTab("setup")}
-        >
-          {t("settings.models.tab.setup")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={modelTab === "catalog"}
-          className={modelTab === "catalog" ? "active" : ""}
-          onClick={() => setModelTab("catalog")}
-        >
-          {t("settings.models.tab.catalog")}
-        </button>
-      </nav>
-
-      {modelTab === "setup" && (
-        <>
       <InferenceModeSelector
-        inferenceMode={inferenceMode}
+        processingMode={processingMode}
         usageSummary={usageSummary}
-        localRuntimeReady={localRuntimeReady}
-        platformLabel={humanizeRuntimePlatform(catalog?.runtime.platform, t)}
         disabled={disabled}
         onSettingsChange={onSettingsChange}
       />
 
-      <ProviderConnections
-        providers={providers}
-        error={providersError}
-        disabled={disabled}
-        onRefresh={loadProviders}
-        requestConfirm={requestConfirm}
-      />
-
-      <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
-        <TranscriptionControl
-          isLocalMode={effectiveLocalMode}
-          localAsrLabel={localAsrLabel}
-          providers={asrProviderOptions}
-          selectedProviderId={selectedAsrProvider}
-          models={remoteAsrOptions}
-          selectedModelId={activeRemoteAsr}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-
-        <EmbeddingControl
-          models={embeddingModels}
-          activeProfile={activeProfile}
-          providers={embeddingProviderOptions}
-          selectedProviderId={selectedEmbeddingProvider}
-          localActive={effectiveLocalMode}
-          localRuntimeReady={localRuntimeReady}
-          localRuntimeIssue={localRuntimeIssue}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-
-        <VideoUnderstandingControl
-          models={videoUnderstandingModels}
-          providers={videoUnderstandingProviderOptions}
-          selectedProviderId={selectedVideoUnderstandingProvider}
-          selectedModelId={selectedVideoUnderstandingModel}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-      </section>
-        </>
-      )}
-
-      {modelTab === "catalog" && (
-      <section className="model-catalog-shell">
-        <div className="model-catalog-heading">
-          <div>
-            <p className="model-section-kicker">{t("settings.models.catalog.kicker")}</p>
-            <h2>{t("settings.models.catalog.title")}</h2>
+      <section className="model-connections-shell">
+        <div className="model-advanced-head">
+          <div className="model-advanced-head__titles">
+            <h2 className="model-advanced-title">{t("settings.models.advanced.title")}</h2>
+            <p className="model-advanced-subtitle">{t("settings.models.advanced.subtitle")}</p>
           </div>
-          <span className={runtimeReady ? "chip success" : "chip warn"}>
-            <span className="dot" />
-            {runtimeReady ? t("settings.models.catalog.statusReady") : t("settings.models.catalog.statusSetup")}
-          </span>
         </div>
 
-        {modelGroups.map((group) => (
-          <section className="model-section" key={group.id}>
-            <div className="model-section-label">
-              <strong>{group.title}</strong>
-              <p>{group.body}</p>
-            </div>
-            <ModelCatalogList models={group.models} empty={group.empty} runtimeIssue={runtimeIssue} />
-          </section>
-        ))}
+        <ProviderConnections
+          capabilities={capabilities}
+          providers={providers}
+          error={providersError}
+          disabled={disabled}
+          onRefresh={loadProviders}
+          requestConfirm={requestConfirm}
+        />
       </section>
-      )}
-
     </div>
   );
 }
 
 type AsrModelOption = Pick<api.ModelCatalogRecord, "id" | "label" | "size_label">;
-
-// Env-bootstrapped default connections are seeded with English labels in the
-// backend (providers.rs) and persisted, so we can't localise them at the
-// source. Map their stable ids to localised display names instead; user-named
-// connections fall through unchanged. (Redesign B6.)
-function providerDisplayLabel(provider: api.ProviderRecord, t: TFunction): string {
-  switch (provider.id) {
-    case "env-asr":
-      return t("settings.models.providers.defaults.asr");
-    case "env-embedding":
-      return t("settings.models.providers.defaults.embedding");
-    case "env-video-understanding":
-      return t("settings.models.providers.defaults.video");
-    default:
-      return provider.label;
-  }
-}
-
-// The backend reports the runtime as a target triple (e.g. "macos-aarch64").
-// Surface a human label for known platforms; keep the raw value as a tooltip
-// for anyone who needs it. (Redesign A1.)
-function humanizeRuntimePlatform(platform: string | undefined, t: TFunction): string {
-  if (!platform) {
-    return t("settings.models.runtime.checkingPlatform");
-  }
-  const normalized = platform.toLowerCase();
-  if (normalized.includes("aarch64") || normalized.includes("arm64")) {
-    return t("settings.models.runtime.platform.appleSilicon");
-  }
-  if (normalized.startsWith("macos")) {
-    return t("settings.models.runtime.platform.macIntel");
-  }
-  return platform;
-}
 
 // Strip protocol + path so a connection's endpoint reads as a short host in the
 // row sub-line ("https://api.groq.com/openai/v1" -> "api.groq.com"). (B2.)
@@ -5453,278 +5458,81 @@ const fallbackAsrModels: AsrModelOption[] = [
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
 ];
 
-function TranscriptionControl({
-  isLocalMode,
-  localAsrLabel,
-  providers,
-  selectedProviderId,
-  models,
-  selectedModelId,
-  disabled,
-  onSettingsChange,
-}: {
-  isLocalMode: boolean;
-  localAsrLabel: string;
-  providers: api.ProviderRecord[];
-  selectedProviderId: string;
-  models: AsrModelOption[];
-  selectedModelId: string;
-  disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
-}) {
-  const t = useT();
-  const [discoveredModels, setDiscoveredModels] = useState<api.ProviderModelRecord[]>([]);
-  const [discoveredProviderId, setDiscoveredProviderId] = useState<string | null>(null);
-  const [action, setAction] = useState<{
-    status: "idle" | "running" | "done" | "error";
-    message: string | null;
-  }>({ status: "idle", message: null });
-
-  useEffect(() => {
-    setDiscoveredModels([]);
-    setDiscoveredProviderId(null);
-    setAction({ status: "idle", message: null });
-  }, [selectedProviderId]);
-
-  const activeProviderId = providers.some((provider) => provider.id === selectedProviderId)
-    ? selectedProviderId
-    : "";
-  const providerForDiscovery =
-    providers.find((provider) => provider.id === activeProviderId) ??
-    providers.find((provider) => provider.has_key) ??
-    providers[0] ??
-    null;
-  const discoveredOptions = discoveredModels.map((model) => ({
-    id: model.id,
-    label: model.label || model.id,
-    size_label: model.source || "provider",
-  }));
-  const mergedModels = mergeAsrModelOptions(models, discoveredOptions);
-
-  async function selectProvider(providerId: string) {
-    setDiscoveredModels([]);
-    setDiscoveredProviderId(null);
-    const provider = providers.find((candidate) => candidate.id === providerId) ?? null;
-    const patch: api.SettingsMap = { asr_provider_id: providerId };
-    if (provider && !asrModelCompatibleWithProvider(selectedModelId, provider)) {
-      patch.asr_model = preferredAsrModelForProvider(provider, mergedModels);
-    }
-    await onSettingsChange(patch);
-  }
-
-  function selectModel(modelId: string) {
-    const patch: api.SettingsMap = { asr_model: modelId };
-    const discoveredProvider = discoveredProviderId
-      ? providers.find((provider) => provider.id === discoveredProviderId) ?? null
-      : null;
-    const activeProvider = activeProviderId
-      ? providers.find((provider) => provider.id === activeProviderId) ?? null
-      : null;
-
-    if (discoveredProvider && (!activeProviderId || activeProviderId === discoveredProvider.id)) {
-      patch.asr_provider_id = discoveredProvider.id;
-    } else if (activeProvider && !asrModelCompatibleWithProvider(modelId, activeProvider)) {
-      patch.asr_provider_id = "";
-    }
-
-    void onSettingsChange(patch);
-  }
-
-  async function exploreProviderModels() {
-    if (!providerForDiscovery) {
-      setAction({ status: "error", message: t("settings.models.transcription.error.noProvider") });
-      return;
-    }
-    if (!providerForDiscovery.has_key) {
-      setAction({ status: "error", message: t("settings.models.transcription.error.noKey") });
-      return;
-    }
-    setAction({
-      status: "running",
-      message: t("settings.models.transcription.status.exploring", {
-        provider: providerForDiscovery.label,
-      }),
-    });
-    try {
-      const models = await api.discoverProviderModels(providerForDiscovery.id);
-      setDiscoveredModels(models);
-      setDiscoveredProviderId(providerForDiscovery.id);
-      setAction({
-        status: "done",
-        message:
-          models.length > 0
-            ? t("settings.models.transcription.status.explored", {
-                count: models.length,
-                provider: providerForDiscovery.label,
-              })
-            : t("settings.models.transcription.status.exploredEmpty", {
-                provider: providerForDiscovery.label,
-              }),
-      });
-    } catch (err) {
-      setAction({ status: "error", message: errorMessage(err) });
-    }
-  }
-
-  return (
-    <article className="model-control-card">
-      <p className="model-section-kicker">{t("settings.models.transcription.kicker")}</p>
-      {isLocalMode ? (
-        <>
-          <div className="model-readonly-row">
-            <span className="model-readonly-row__value">{localAsrLabel}</span>
-          </div>
-          <p className="settings-help">
-            {t("settings.models.transcription.localHelp", { model: localAsrLabel })}
-          </p>
-        </>
-      ) : (
-        <>
-          <div className="model-field">
-            <span className="model-field__label">{t("settings.models.field.connection")}</span>
-            <select
-              className="select"
-              value={activeProviderId}
-              disabled={disabled || providers.length === 0}
-              onChange={(event) => void selectProvider(event.currentTarget.value)}
-            >
-              <option value="">{t("settings.models.transcription.autoProvider")}</option>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {providerDisplayLabel(provider, t)}
-                  {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="model-field">
-            <span className="model-field__label">{t("settings.models.field.model")}</span>
-            <ModelCombobox
-              value={selectedModelId}
-              options={mergedModels.map((model) => ({
-                id: model.id,
-                label: model.label,
-                hint: model.size_label,
-              }))}
-              disabled={disabled}
-              busy={action.status === "running"}
-              onSelect={selectModel}
-              onExplore={() => void exploreProviderModels()}
-              onOpen={() => {
-                if (
-                  providerForDiscovery?.has_key &&
-                  discoveredProviderId !== providerForDiscovery.id &&
-                  action.status !== "running"
-                ) {
-                  void exploreProviderModels();
-                }
-              }}
-            />
-          </div>
-          <p className="settings-help">{t("settings.models.transcription.remoteHelp")}</p>
-          {action.message ? (
-            <InlineNotice
-              tone={action.status === "error" ? "error" : "muted"}
-              message={action.message}
-            />
-          ) : null}
-        </>
-      )}
-    </article>
-  );
-}
-
-function mergeAsrModelOptions(base: AsrModelOption[], discovered: AsrModelOption[]) {
-  const seen = new Set<string>();
-  const merged: AsrModelOption[] = [];
-  for (const model of [...base, ...discovered]) {
-    if (!model.id || seen.has(model.id)) {
-      continue;
-    }
-    seen.add(model.id);
-    merged.push(model);
-  }
-  return merged;
-}
+// On-device video-understanding VLMs offered when processing runs locally
+// (mlx-community Qwen3-VL collection + Gemma 4). All Instruct + quantized for
+// practical on-device use. The first entry is the default; Qwen3-VL options
+// run small -> large below it. The daemon must ship/serve these for a
+// selection to take effect.
+const localVisionModels: ModelComboOption[] = [
+  { id: "gemma-4-12B-it-qat-4bit", label: "Gemma 4 12B", hint: "本地 · MLX · QAT 量化 · 默认" },
+  { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit · 轻量" },
+  { id: "Qwen3-VL-2B-Instruct-4bit", label: "Qwen3-VL 2B", hint: "本地 · MLX · 4-bit · 最省资源" },
+  { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit · 更准确" },
+  {
+    id: "Qwen3-VL-30B-A3B-Instruct-4bit",
+    label: "Qwen3-VL 30B (MoE)",
+    hint: "本地 · MLX · 4-bit · 强 · 30B 总 / 3B 激活",
+  },
+  { id: "Qwen3-VL-32B-Instruct-4bit", label: "Qwen3-VL 32B", hint: "本地 · MLX · 4-bit · 最强 · 占用大" },
+];
 
 function isGeminiAsrModelId(modelId: string) {
   return modelId.trim().toLowerCase().startsWith("gemini-");
 }
 
-function asrModelCompatibleWithProvider(modelId: string, provider: api.ProviderRecord) {
-  if (provider.type === "openai-compatible") {
-    return true;
-  }
-  if (provider.type === "gemini") {
-    return isGeminiAsrModelId(modelId);
-  }
-  if (provider.type === "openai") {
-    return !isGeminiAsrModelId(modelId);
-  }
-  return true;
+// Maps the 4 UI processing presets (完整版 baseline) onto the 3 backend
+// inference modes. `processing_mode` is persisted so the right card stays
+// highlighted; `inference_mode` is what the daemon actually consumes. Two
+// presets (auto/speed) share the balanced "auto" path — that's intentional:
+// the cards are UX intents, not a 1:1 mirror of the backend's 3 modes.
+const PROCESSING_TO_INFERENCE: Record<string, string> = {
+  cloud: "remote",
+  local: "local",
+};
+function inferenceToProcessing(inferenceMode: string): string {
+  // Two presets only: 云端 API (default) vs 本地. Remote/auto map to cloud.
+  return inferenceMode === "local" ? "local" : "cloud";
 }
 
-function preferredAsrModelForProvider(provider: api.ProviderRecord, options: AsrModelOption[]) {
-  if (provider.type === "gemini") {
-    return options.find((model) => isGeminiAsrModelId(model.id))?.id ?? "gemini-2.5-flash";
-  }
-  if (provider.type === "openai") {
-    return options.find((model) => !isGeminiAsrModelId(model.id))?.id ?? "whisper-1";
-  }
-  return options[0]?.id ?? "whisper-1";
-}
-
-// Smart-processing selector. The three cards ARE the inference-mode switch:
-// clicking one applies it. Each carries its own one-line explanation, and the
-// local card carries the Apple-Silicon constraint as a badge — replacing the
-// read-only overview + a detached segmented control + one floating help
-// paragraph. (Redesign A2/A4/A5.)
+// Smart-processing selector — two selectable presets (云端 API / 仅在本机) plus a
+// monthly-usage summary card. The cards ARE the switch.
 function InferenceModeSelector({
-  inferenceMode,
+  processingMode,
   usageSummary,
-  localRuntimeReady,
-  platformLabel,
   disabled,
   onSettingsChange,
 }: {
-  inferenceMode: string;
+  processingMode: string;
   usageSummary: api.UsageSummary | null;
-  localRuntimeReady: boolean;
-  platformLabel: string;
   disabled: boolean;
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  // Share of processing that ran on-device (free). Drives the usage strip that
-  // replaced the old runtime banner's prime real estate.
+  // Share of processing that ran on-device (free).
   const localShare =
     usageSummary && usageSummary.total.event_count > 0
       ? Math.round((usageSummary.local.event_count / usageSummary.total.event_count) * 100)
       : 0;
-  const modes = [
+  const modes: {
+    id: string;
+    label: string;
+    desc: string;
+    badge: string | null;
+    badgeTone: string;
+  }[] = [
     {
-      id: "auto",
-      label: t("settings.models.inferenceMode.auto"),
-      desc: t("settings.models.inferenceMode.auto.desc"),
-      badge: null as string | null,
-      cost: usageSummary?.total.estimated_usd ?? 0,
-      events: usageSummary?.total.event_count ?? 0,
+      id: "cloud",
+      label: t("settings.models.processing.cloud"),
+      desc: t("settings.models.processing.cloud.desc"),
+      badge: t("settings.models.processing.cloud.badge"),
+      badgeTone: "accent",
     },
     {
       id: "local",
-      label: t("settings.models.inferenceMode.local"),
-      desc: t("settings.models.inferenceMode.local.desc"),
-      badge: t("settings.models.inferenceMode.local.badge"),
-      cost: usageSummary?.local.estimated_usd ?? 0,
-      events: usageSummary?.local.event_count ?? 0,
-    },
-    {
-      id: "remote",
-      label: t("settings.models.inferenceMode.remote"),
-      desc: t("settings.models.inferenceMode.remote.desc"),
-      badge: null as string | null,
-      cost: usageSummary?.remote.estimated_usd ?? 0,
-      events: usageSummary?.remote.event_count ?? 0,
+      label: t("settings.models.processing.local"),
+      desc: t("settings.models.processing.local.desc"),
+      badge: t("settings.models.processing.local.badge"),
+      badgeTone: "success",
     },
   ];
 
@@ -5736,78 +5544,70 @@ function InferenceModeSelector({
       </div>
       <div className="imode-grid">
         {modes.map((mode) => {
-          const selected = inferenceMode === mode.id;
+          const selected = processingMode === mode.id;
           return (
             <button
               type="button"
               key={mode.id}
-              className="imode-card"
+              className={selected ? "imode-card selected" : "imode-card"}
               aria-pressed={selected}
+              aria-label={`${mode.label}${selected ? ` · ${t("settings.models.processing.selectedAria")}` : ""}`}
               disabled={disabled}
               onClick={() => {
                 if (!selected) {
-                  void onSettingsChange({ inference_mode: mode.id });
+                  void onSettingsChange({
+                    processing_mode: mode.id,
+                    inference_mode: PROCESSING_TO_INFERENCE[mode.id] ?? "auto",
+                  });
                 }
               }}
             >
               <div className="imode-card__top">
+                <span className="imode-card__radio" aria-hidden="true">
+                  {selected ? <span className="imode-card__radio-dot" /> : null}
+                </span>
                 <span className="imode-card__name">{mode.label}</span>
-                {selected ? (
-                  <span
-                    className="imode-card__check"
-                    aria-label={t("settings.models.inferenceMode.selectedAria")}
-                  >
-                    <Check size={12} />
-                  </span>
+                {mode.badge ? (
+                  <span className={`imode-card__badge ${mode.badgeTone}`}>{mode.badge}</span>
                 ) : null}
               </div>
               <p className="imode-card__desc">{mode.desc}</p>
-              {mode.id === "local" ? (
-                <span
-                  className={localRuntimeReady ? "imode-card__badge ready" : "imode-card__badge"}
-                  title={platformLabel}
-                >
-                  <Cpu size={11} />
-                  {localRuntimeReady ? t("settings.models.localCard.ready") : mode.badge}
-                </span>
-              ) : mode.badge ? (
-                <span className="imode-card__badge">
-                  <Cpu size={11} />
-                  {mode.badge}
-                </span>
-              ) : null}
-              <dl className="imode-card__stats">
-                <div className="imode-card__stat">
-                  <dt>{t("settings.models.overview.estimatedCost")}</dt>
-                  <dd>{formatUsd(mode.cost)}</dd>
-                </div>
-                <div className="imode-card__stat">
-                  <dt>{t("settings.models.overview.usageEvents")}</dt>
-                  <dd>{mode.events}</dd>
-                </div>
-              </dl>
             </button>
           );
         })}
       </div>
-      {usageSummary && usageSummary.total.event_count > 0 ? (
-        <div className="imode-usage-strip">
-          <span className="imode-usage-strip__metric mono">
-            {t("settings.models.usage.strip.spent", {
-              cost: formatUsd(usageSummary.total.estimated_usd),
-              events: usageSummary.total.event_count,
-            })}
-          </span>
-          <div className="imode-usage-strip__bar" aria-hidden="true">
+      <div className="imode-usage-card">
+        <div className="imode-usage-card__stat">
+          <span className="imode-usage-card__label">{t("settings.models.usage.card.cost")}</span>
+          <strong className="imode-usage-card__value">
+            {formatUsd(usageSummary?.total.estimated_usd ?? 0)}
+          </strong>
+        </div>
+        <div className="imode-usage-card__stat">
+          <span className="imode-usage-card__label">{t("settings.models.usage.card.events")}</span>
+          <strong className="imode-usage-card__value">{usageSummary?.total.event_count ?? 0}</strong>
+        </div>
+        <div className="imode-usage-card__share">
+          <span className="imode-usage-card__label">{t("settings.models.usage.card.localShare")}</span>
+          <div className="imode-usage-card__bar" aria-hidden="true">
             <div style={{ width: `${localShare}%` }} />
           </div>
-          <span className="imode-usage-strip__metric mono">
-            {t("settings.models.usage.strip.localShare", { pct: localShare })}
-          </span>
+          <span className="imode-usage-card__pct mono">{localShare}%</span>
         </div>
-      ) : null}
+      </div>
     </section>
   );
+}
+
+// Merge the curated model options with models discovered from the provider's
+// /models endpoint, de-duped by id (curated first).
+function mergeComboOptions(
+  base: ModelComboOption[],
+  extra?: ModelComboOption[],
+): ModelComboOption[] {
+  if (!extra || extra.length === 0) return base;
+  const seen = new Set(base.map((option) => option.id));
+  return [...base, ...extra.filter((option) => !seen.has(option.id))];
 }
 
 type RemoteProviderType = Exclude<api.ProviderType, "local">;
@@ -5830,103 +5630,15 @@ const providerTypeOptions: { value: RemoteProviderType; label: string; placehold
   },
 ];
 
-// B2 · A saved connection row. Name-first; the endpoint is demoted to an
-// elided sub-line; status sits in its own slot; edit/delete live in an
-// overflow menu so delete isn't a permanent red target on every row.
-function ProviderConnectionRow({
-  provider,
-  disabled,
-  typeLabel,
-  onEdit,
-  onRemove,
-}: {
-  provider: api.ProviderRecord;
-  disabled: boolean;
-  typeLabel: (type: api.ProviderType) => string;
-  onEdit: () => void;
-  onRemove: () => void;
-}) {
-  const t = useT();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const actionsRef = useRef<HTMLDivElement | null>(null);
-  useEscapeToClose(() => setMenuOpen(false), menuOpen);
-  useClickOutside(actionsRef, () => setMenuOpen(false), menuOpen);
-
-  const name = providerDisplayLabel(provider, t);
-  const sub = [
-    typeLabel(provider.type),
-    shortenEndpoint(provider.base_url),
-    provider.has_key
-      ? t("settings.models.providers.keySaved")
-      : t("settings.models.providers.noKey"),
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  function runAndClose(action: () => void) {
-    setMenuOpen(false);
-    action();
-  }
-
-  return (
-    <article className="provider-conn-row">
-      <span className="provider-conn-row__avatar" aria-hidden="true">
-        {name.slice(0, 1)}
-      </span>
-      <div className="provider-conn-row__body">
-        <span className="provider-conn-row__name">{name}</span>
-        <span className="provider-conn-row__sub" title={provider.base_url ?? undefined}>
-          {sub}
-        </span>
-        {provider.last_error ? (
-          <span className="provider-conn-row__error" title={provider.last_error}>
-            {provider.last_error}
-          </span>
-        ) : null}
-      </div>
-      <span className={`model-state ${provider.status}`}>
-        {providerStatusLabel(provider.status, t)}
-      </span>
-      <div className="row-actions" ref={actionsRef}>
-        <button
-          className="btn-icon"
-          type="button"
-          aria-label={t("settings.models.providers.moreActionsAria")}
-          aria-expanded={menuOpen}
-          disabled={disabled}
-          onClick={() => setMenuOpen((open) => !open)}
-        >
-          <MoreHorizontal size={16} />
-        </button>
-        {menuOpen ? (
-          <div className="menu row-menu">
-            <button type="button" disabled={disabled} onClick={() => runAndClose(onEdit)}>
-              <SlidersHorizontal size={15} />
-              <span>{t("settings.models.providers.edit")}</span>
-            </button>
-            <button
-              className="danger"
-              type="button"
-              disabled={disabled}
-              onClick={() => runAndClose(onRemove)}
-            >
-              <Trash2 size={15} />
-              <span>{t("settings.models.providers.delete")}</span>
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </article>
-  );
-}
-
 function ProviderConnections({
+  capabilities,
   providers,
   error,
   disabled,
   onRefresh,
   requestConfirm,
 }: {
+  capabilities: CapabilityRowModel[];
   providers: api.ProviderRecord[];
   error: string | null;
   disabled: boolean;
@@ -5954,11 +5666,36 @@ function ProviderConnections({
     status: "idle" | "running" | "done" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
+  // Models discovered from a provider's /models endpoint, keyed by capability,
+  // merged into that row's combobox options so users can pick a real model id.
+  const [discovered, setDiscovered] = useState<Record<string, ModelComboOption[]>>({});
+  const [discovering, setDiscovering] = useState<string | null>(null);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+
+  async function exploreModels(cap: CapabilityRowModel) {
+    if (!cap.provider) return;
+    setDiscovering(cap.key);
+    setDiscoverError(null);
+    try {
+      const models = await api.discoverProviderModels(cap.provider.id);
+      setDiscovered((prev) => ({
+        ...prev,
+        [cap.key]: models.map((m) => ({ id: m.id, label: m.label || m.id, hint: m.source })),
+      }));
+    } catch (err) {
+      setDiscoverError(errorMessage(err));
+    } finally {
+      setDiscovering(null);
+    }
+  }
 
   // The bundled local runtime ("Local on this Mac") is surfaced by the runtime
   // and Local model cards above — it is not a remote API key, so it does not
   // belong in this list. Show only genuinely remote provider connections here.
   const remoteProviders = providers.filter((provider) => provider.type !== "local");
+  const editingProvider = editingId
+    ? providers.find((provider) => provider.id === editingId) ?? null
+    : null;
 
   // P3 · The connection editor is a focused modal now, so Esc dismisses it.
   useEscapeToClose(closeForm, mode !== null);
@@ -6102,40 +5839,102 @@ function ProviderConnections({
   const activeType = providerTypeOptions.find((item) => item.value === form.type);
 
   return (
-    <section className="model-connections-shell">
-      <div className="model-catalog-heading">
-        <div>
-          <p className="model-section-kicker">{t("settings.models.providers.kicker")}</p>
-          <h2>{t("settings.models.providers.title")}</h2>
-        </div>
-        <button
-          type="button"
-          className="btn btn-secondary sm"
-          disabled={disabled}
-          onClick={openCreate}
-        >
-          <Plus size={16} />
-          <span>{t("settings.models.providers.add")}</span>
-        </button>
-      </div>
-
+    <section className="cap-list-shell">
       {error ? <InlineNotice tone="error" message={error} /> : null}
+      {discoverError ? <InlineNotice tone="error" message={discoverError} /> : null}
 
-      <div className="provider-list">
-        {remoteProviders.length === 0 ? (
-          <p className="provider-empty">{t("settings.models.providers.empty")}</p>
-        ) : null}
-        {remoteProviders.map((provider) => (
-          <ProviderConnectionRow
-            key={provider.id}
-            provider={provider}
-            disabled={disabled}
-            typeLabel={typeLabel}
-            onEdit={() => openEdit(provider)}
-            onRemove={() => void removeConnection(provider)}
-          />
-        ))}
+      {/* One unified list: the three FIXED capabilities, each carrying its model
+          and the connection + key it routes through, handled together. */}
+      <div className="cap-list">
+        {capabilities.map((cap) => {
+          const provider = cap.provider;
+          const hasKey = provider?.has_key ?? false;
+          // A saved key whose last connection test failed (backend persists
+          // status "error" + last_error) is not actually ready — don't show it
+          // as a green success row.
+          const failed = !cap.isLocal && provider?.status === "error";
+          const ready = cap.isLocal || (hasKey && !failed);
+          const host = provider?.base_url
+            ? provider.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
+            : "";
+          const serviceLine = cap.isLocal
+            ? t("settings.models.capability.localRuntime")
+            : [
+                provider ? typeLabel(provider.type) : null,
+                host || null,
+                hasKey
+                  ? t("settings.models.capability.hasKey")
+                  : t("settings.models.capability.needsKey"),
+              ]
+                .filter(Boolean)
+                .join(" · ");
+          return (
+            <article className="cap-row" key={cap.key}>
+              <span className="cap-row__badge" aria-hidden="true">
+                {cap.badge}
+              </span>
+              <div className="cap-row__body">
+                <div className="cap-row__top">
+                  <span className="cap-row__name">{cap.name}</span>
+                  <span className="cap-row__actions">
+                    <span
+                      className={failed ? "chip danger" : ready ? "chip success" : "chip warn"}
+                      title={failed ? provider?.last_error ?? undefined : undefined}
+                    >
+                      <span className="dot" />
+                      {failed
+                        ? t("settings.models.capability.failed")
+                        : ready
+                          ? t("settings.models.capability.ready")
+                          : t("settings.models.capability.needsKey")}
+                    </span>
+                    {cap.isLocal ? null : (
+                      <button
+                        type="button"
+                        className="btn btn-ghost sm cap-row__edit"
+                        disabled={disabled}
+                        onClick={() => (provider ? openEdit(provider) : openCreate())}
+                      >
+                        {t("settings.models.capability.edit")}
+                      </button>
+                    )}
+                  </span>
+                </div>
+                <div className="cap-row__bottom">
+                  <div className="cap-row__model">
+                    {cap.locked ? (
+                      <span className="cap-row__locked">
+                        <Lock size={12} />
+                        <span className="cap-row__model-val">{cap.modelValue}</span>
+                        {cap.note ? <span className="chip neutral">{cap.note}</span> : null}
+                      </span>
+                    ) : !cap.modelEditable ? (
+                      <span className="cap-row__model-val cap-row__model-fixed">
+                        {cap.localLabel}
+                      </span>
+                    ) : (
+                      <ModelCombobox
+                        value={cap.modelValue}
+                        options={mergeComboOptions(cap.modelOptions, discovered[cap.key])}
+                        disabled={disabled}
+                        busy={discovering === cap.key}
+                        onSelect={(id) => cap.onSelectModel?.(id)}
+                        onExplore={
+                          cap.provider && !cap.isLocal ? () => void exploreModels(cap) : undefined
+                        }
+                        ariaLabel={cap.name}
+                      />
+                    )}
+                  </div>
+                  <span className="cap-row__service">{serviceLine}</span>
+                </div>
+              </div>
+            </article>
+          );
+        })}
       </div>
+
+      <p className="model-advanced-footnote">{t("settings.models.advanced.footnote")}</p>
 
       {mode ? (
         <div className="scrim" role="presentation" onMouseDown={closeForm}>
@@ -6212,11 +6011,20 @@ function ProviderConnections({
               <span>{t("settings.models.providers.form.apiKey")}</span>
               <input
                 type="password"
+                autoComplete="off"
+                spellCheck={false}
                 value={form.api_key}
                 disabled={disabled}
                 placeholder={mode === "edit" ? t("settings.models.providers.form.apiKeyPlaceholder") : ""}
                 onChange={(event) => setForm((current) => ({ ...current, api_key: event.currentTarget.value }))}
               />
+              {mode === "edit" && editingProvider?.key_preview ? (
+                <small className="field-hint">
+                  {t("settings.models.providers.form.currentKey", {
+                    preview: editingProvider.key_preview,
+                  })}
+                </small>
+              ) : null}
             </label>
           </div>
           {action.message ? (
@@ -6263,311 +6071,6 @@ function providerStatusLabel(status: api.ProviderRecord["status"], t: TFunction)
     return t("settings.models.providers.status.error");
   }
   return t("settings.models.providers.status.unconfigured");
-}
-
-function modelStatusLabel(model: api.ModelCatalogRecord, t: TFunction) {
-  if (model.selected) {
-    return t("settings.models.catalog.status.selected");
-  }
-  if (model.installed) {
-    return t("settings.models.catalog.status.installed");
-  }
-  return t("settings.models.catalog.status.notInstalled");
-}
-
-function modelStatusClass(model: api.ModelCatalogRecord) {
-  if (model.selected) {
-    return "selected";
-  }
-  if (model.installed) {
-    return "installed";
-  }
-  return "missing";
-}
-
-function compactModelBlocker(model: api.ModelCatalogRecord, runtimeIssue: string | null) {
-  if (!model.blocked_reason) {
-    return null;
-  }
-  if (runtimeIssue && model.blocked_reason === runtimeIssue) {
-    return null;
-  }
-  return model.blocked_reason;
-}
-
-function ModelCatalogList({
-  models,
-  empty,
-  runtimeIssue,
-}: {
-  models: api.ModelCatalogRecord[];
-  empty: string;
-  runtimeIssue: string | null;
-}) {
-  const t = useT();
-  if (models.length === 0) {
-    return <span className="settings-help">{empty}</span>;
-  }
-  return (
-    <div className="model-catalog-list">
-      {models.map((model) => {
-        const blocker = compactModelBlocker(model, runtimeIssue);
-        return (
-          <article key={model.id} className="model-catalog-row">
-            <div className="model-card-main">
-              <div>
-                <strong>{model.label}</strong>
-                <p className="settings-help">
-                  {model.capability} · {model.format} · {model.size_label}
-                </p>
-              </div>
-              <span className={`model-state ${modelStatusClass(model)}`}>
-                {modelStatusLabel(model, t)}
-              </span>
-            </div>
-            <div className="model-card-meta">
-              <code>{model.id}</code>
-              <span>{model.tier}</span>
-              {blocker ? <em>{blocker}</em> : null}
-            </div>
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function EmbeddingControl({
-  models,
-  activeProfile,
-  providers,
-  selectedProviderId,
-  localActive,
-  localRuntimeReady,
-  localRuntimeIssue,
-  disabled,
-  onSettingsChange,
-}: {
-  models: api.ModelCatalogRecord[];
-  activeProfile: api.EmbeddingProfile | null | undefined;
-  providers: api.ProviderRecord[];
-  selectedProviderId: string;
-  localActive: boolean;
-  localRuntimeReady: boolean;
-  localRuntimeIssue: string | null;
-  disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
-}) {
-  const t = useT();
-  const [info, setInfo] = useState<api.EmbeddingStatus | null>(null);
-  const [statusError, setStatusError] = useState<string | null>(null);
-  const [triggerError, setTriggerError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function tick() {
-      try {
-        const next = await api.getEmbeddingStatus();
-        if (!cancelled) {
-          setInfo(next);
-          setStatusError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setStatusError(errorMessage(err));
-      }
-    }
-    void tick();
-    const interval = window.setInterval(() => void tick(), 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
-
-  async function prepareNow() {
-    setTriggerError(null);
-    try {
-      const next = await api.prepareEmbeddingModels();
-      setInfo(next);
-    } catch (err) {
-      setTriggerError(errorMessage(err));
-    }
-  }
-
-  // Local profiles store the MLX model string (e.g. mlx-community/...), which
-  // matches the catalog entry's `source`, not its `id`. Match either so the
-  // active local embedding model stays selected instead of falling back.
-  const activeModelId =
-    models.find(
-      (model) =>
-        model.id === activeProfile?.model_id || model.source === activeProfile?.model_id,
-    )?.id ??
-    models[0]?.id ??
-    "";
-  const dimensions = activeProfile?.output_dimension ?? 3072;
-
-  // In local mode the embedder is the bundled MLX model, so the Gemini-only
-  // readiness poll below doesn't apply — describe the local model instead of
-  // telling the user to connect a Gemini provider.
-  let statusText: string;
-  if (localActive) {
-    statusText = localRuntimeReady
-      ? t("settings.models.embedding.status.localReady", { dimensions })
-      : t("settings.models.embedding.status.localUnavailable", {
-          issue: localRuntimeIssue ?? t("settings.models.embedding.status.checkingRuntime"),
-        });
-  } else if (statusError) {
-    statusText = t("settings.models.embedding.status.unavailable", { error: statusError });
-  } else if (!info) {
-    statusText = t("settings.models.embedding.status.checking");
-  } else if (info.preparing) {
-    statusText = t("settings.models.embedding.status.testing");
-  } else if (info.ready) {
-    statusText = t("settings.models.embedding.status.remoteReady", { dimensions });
-  } else {
-    statusText = t("settings.models.embedding.status.connectProvider");
-  }
-
-  const showPrepare = !localActive && Boolean(info && !info.ready && !info.preparing);
-  const activeModelLabel =
-    models.find((model) => model.id === activeModelId)?.label ||
-    (models.length > 0 ? activeModelId : t("settings.models.embedding.loadingOption"));
-  // Distinguish an actual connection failure (loud inline error + retry) from
-  // informational status (quiet line). The raw exception is tucked behind a
-  // "details" toggle so the headline stays human-readable. (Redesign B3.)
-  const remoteError = localActive ? null : statusError ?? info?.last_error ?? null;
-
-  return (
-    <article className="model-control-card">
-      <p className="model-section-kicker">{t("settings.models.embedding.kicker")}</p>
-      {localActive ? null : (
-        <div className="model-field">
-          <span className="model-field__label">{t("settings.models.field.connection")}</span>
-          <select
-            className="select"
-            value={selectedProviderId}
-            disabled={disabled || providers.length === 0}
-            onChange={(event) =>
-              void onSettingsChange({ embedding_provider_id: event.currentTarget.value })
-            }
-          >
-            <option value="">{t("settings.models.embedding.autoProvider")}</option>
-            {providers.map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {providerDisplayLabel(provider, t)}
-                {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      <div className="model-field">
-        <span className="model-field__label">{t("settings.models.field.model")}</span>
-        {/* Read-only by design: the embedding model is bound to the existing
-            index, so it's a locked fact, not a disabled <select> that reads as
-            broken. Changing it requires a full re-index. */}
-        <div className="model-readonly-row">
-          <span className="model-readonly-row__value">{activeModelLabel}</span>
-          <span className="chip neutral">
-            <Lock size={12} />
-            {t("settings.models.embedding.boundBadge")}
-          </span>
-        </div>
-      </div>
-      {models.length > 0 ? (
-        <p className="settings-help">{t("settings.models.embedding.lockedHelp")}</p>
-      ) : null}
-      {remoteError ? (
-        <InlineNotice
-          tone="error"
-          message={t("settings.models.embedding.error.connect")}
-          detail={remoteError}
-          detailLabel={t("common.details")}
-          action={{ label: t("common.retry"), onClick: () => void prepareNow() }}
-        />
-      ) : (
-        <>
-          <p className="settings-help">{statusText}</p>
-          {showPrepare ? (
-            <button
-              type="button"
-              className="model-inline-action"
-              onClick={() => void prepareNow()}
-            >
-              {t("settings.models.embedding.testButton")}
-            </button>
-          ) : null}
-        </>
-      )}
-      {triggerError ? (
-        <InlineNotice
-          tone="error"
-          message={t("settings.models.embedding.error.connect")}
-          detail={triggerError}
-          detailLabel={t("common.details")}
-          action={{ label: t("common.retry"), onClick: () => void prepareNow() }}
-        />
-      ) : null}
-    </article>
-  );
-}
-
-function VideoUnderstandingControl({
-  models,
-  providers,
-  selectedProviderId,
-  selectedModelId,
-  disabled,
-  onSettingsChange,
-}: {
-  models: api.ModelCatalogRecord[];
-  providers: api.ProviderRecord[];
-  selectedProviderId: string;
-  selectedModelId: string;
-  disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
-}) {
-  const t = useT();
-  const modelOptions = models.map((model) => ({
-    id: model.id,
-    label: model.label,
-    hint: model.size_label,
-  }));
-
-  return (
-    <article className="model-control-card">
-      <p className="model-section-kicker">{t("settings.models.video.kicker")}</p>
-      <div className="model-field">
-        <span className="model-field__label">{t("settings.models.field.connection")}</span>
-        <select
-          className="select"
-          value={selectedProviderId}
-          disabled={disabled || providers.length === 0}
-          onChange={(event) =>
-            void onSettingsChange({ video_understanding_provider_id: event.currentTarget.value })
-          }
-        >
-          <option value="">{t("settings.models.video.autoProvider")}</option>
-          {providers.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {providerDisplayLabel(provider, t)}
-              {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="model-field">
-        <span className="model-field__label">{t("settings.models.field.model")}</span>
-        <ModelCombobox
-          value={selectedModelId}
-          options={modelOptions}
-          disabled={disabled}
-          onSelect={(id) => void onSettingsChange({ video_understanding_model: id })}
-        />
-      </div>
-      <p className="settings-help">{t("settings.models.video.help")}</p>
-    </article>
-  );
 }
 
 function asrModelLabel(modelId: string) {

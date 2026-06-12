@@ -332,6 +332,7 @@ export type ProviderRecord = {
   status: "ready" | "unconfigured" | "error";
   last_error: string | null;
   has_key: boolean;
+  key_preview: string | null;
   created_at: number | null;
   updated_at: number | null;
 };

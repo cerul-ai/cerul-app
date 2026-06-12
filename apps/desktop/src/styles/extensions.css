@@ -270,7 +270,10 @@
 .model-connections-shell {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-2);
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--line);
 }
 .provider-row,
 .provider-card {
@@ -1280,7 +1283,7 @@ body.overlay-body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 13px 10px 43px;
+  padding: 13px 13px 11px 43px;
   border-bottom: 1px solid var(--line);
 }
 .overlay-tabs button {
@@ -2130,10 +2133,10 @@ body.overlay-body {
    while it happens, and "$0.00 · on-device" reinforces the local-first story. */
 .jobs-cost-card {
   margin-bottom: var(--sp-3);
-  padding: 12px 14px;
-  border: 1px solid var(--line);
+  padding: 13px 15px;
+  border: 1px solid var(--accent-line);
   border-radius: var(--r-md);
-  background: var(--surface-2);
+  background: var(--accent-tint);
 }
 .jobs-cost-main {
   display: flex;
@@ -2518,44 +2521,113 @@ body.overlay-body {
 .item-card {
   appearance: none;
   width: 100%;
-  min-height: 250px;
   border: 0;
   background: transparent;
   color: var(--text);
   display: grid;
-  grid-template-rows: 132px 1fr auto;
+  grid-template-rows: auto 1fr;
   gap: 0;
   padding: 0;
   text-align: left;
   font-family: var(--font-sans);
   cursor: pointer;
 }
-.item-card.list {
-  min-height: 104px;
-  grid-template-columns: 124px minmax(0, 1fr) auto;
-  grid-template-rows: none;
-  align-items: center;
-}
 .item-thumb {
+  position: relative;
   display: grid;
   place-items: center;
-  min-height: 132px;
+  aspect-ratio: 16 / 9;
   border-radius: 0;
+  background: var(--surface-3);
   color: var(--text-muted);
 }
+
+/* ---- Library list view = clean table (完整版 baseline) ---- */
+.lib-table {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+  /* shared 5-column grid template for the header and every row */
+  --lib-cols: minmax(0, 2.4fr) minmax(0, 1.4fr) 88px 104px 152px;
+}
+.lib-table-head {
+  display: grid;
+  grid-template-columns: var(--lib-cols);
+  align-items: center;
+  gap: 16px;
+  padding: 11px 18px 11px 46px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-faint);
+}
+/* Each row is flat (no individual card chrome) with a hairline divider. */
+.lib-table .item-card-shell {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  border-bottom: 1px solid var(--line);
+}
+.lib-table .item-card-shell:last-child { border-bottom: 0; }
+.lib-table .item-card-shell:hover { background: var(--surface-2); box-shadow: none; }
+.lib-table .item-card-shell.selected { background: var(--accent-tint); box-shadow: none; }
+/* Checkbox sits in a fixed left gutter, always visible in the table. */
+.lib-table .item-select {
+  opacity: 1;
+  top: 50%;
+  left: 16px;
+  transform: translateY(-50%);
+}
+.item-card.list {
+  grid-template-columns: var(--lib-cols);
+  grid-template-rows: none;
+  align-items: center;
+  gap: 16px;
+  min-height: 0;
+  padding: 9px 18px 9px 46px;
+}
+.item-list-title { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.item-list-title strong { font-size: var(--fs-meta); font-weight: 600; color: var(--text); }
 .item-card.list .item-thumb {
-  min-height: 86px;
+  aspect-ratio: 16 / 9;
+  width: 46px;
+  flex: none;
+  min-height: 0;
+  border-radius: 5px;
+}
+.item-list-cell { font-size: var(--fs-meta); color: var(--text-muted); min-width: 0; }
+.item-list-search { display: flex; }
+.item-list-search .item-searchability { margin: 0; }
+.item-thumb .thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
 }
 .item-copy {
-  padding: 12px 13px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px 14px;
 }
 .item-copy .muted {
   font-size: var(--fs-meta);
 }
-.item-card > .chip {
+.item-card-meta {
+  font-size: var(--fs-meta);
+}
+.item-searchability {
   width: max-content;
-  max-width: calc(100% - 24px);
-  margin: 0 12px 12px;
+  max-width: 100%;
+  margin-top: 6px;
 }
 .item-select {
   position: absolute;
@@ -2858,17 +2930,29 @@ body.overlay-body {
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .item-card,
-  .item-card.list {
+  .item-card {
     grid-template-columns: 104px minmax(0, 1fr);
     grid-template-rows: none;
     min-height: 104px;
   }
-  .item-thumb,
-  .item-card.list .item-thumb {
+  .item-card:not(.list) .item-thumb {
     min-height: 104px;
   }
   .item-card > .chip {
+    display: none;
+  }
+  /* Library list view: the header was 5 columns while rows collapsed to 2, so
+     they misaligned on a narrow window. Drop the duration + indexed columns
+     (still shown in grid view / detail) so the header and rows share one fitting
+     title / source / searchability layout. */
+  .lib-table-head,
+  .item-card.list {
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.3fr) 104px;
+  }
+  .lib-table-head span:nth-child(3),
+  .lib-table-head span:nth-child(4),
+  .item-card.list .item-list-duration,
+  .item-card.list .item-list-indexed {
     display: none;
   }
   .source-list .source-row {
@@ -3457,18 +3541,18 @@ body.overlay-body {
   margin-top: 14px;
   padding: 11px 14px;
   text-align: left;
-  border: 1px solid var(--accent-line);
+  border: 1px solid var(--warn-line);
   border-radius: var(--r-lg);
-  background: var(--accent-soft);
+  background: var(--warn-tint);
   color: var(--text);
   cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.indexing-strip:hover { background: var(--accent-soft-2); }
-.indexing-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.indexing-strip:hover { background: color-mix(in srgb, var(--warn-tint) 84%, var(--warn) 16%); }
+.indexing-strip:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
 .indexing-strip__spin {
   flex: none;
-  color: var(--accent);
+  color: var(--warn);
   animation: indexing-spin 1s linear infinite;
 }
 @keyframes indexing-spin { to { transform: rotate(360deg); } }
@@ -3494,11 +3578,22 @@ body.overlay-body {
   padding: 1px 7px;
   border-radius: var(--r-pill);
   background: var(--surface);
-  border: 1px solid var(--accent-line);
-  color: var(--accent);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
   font-family: var(--font-mono);
   font-size: 11px;
   font-feature-settings: "tnum" 1;
+}
+/* amber progress fill inside the indexing strip (matches 完整版 baseline) */
+.indexing-strip .progress .bar,
+.indexing-strip .progress.animated .bar {
+  background: var(--warn);
+  background-image: linear-gradient(
+    90deg,
+    var(--warn) 0%,
+    color-mix(in srgb, var(--warn) 55%, white) 50%,
+    var(--warn) 100%
+  );
 }
 .indexing-strip__meta { font-size: var(--fs-meta); }
 .indexing-strip__body .progress { margin-top: 1px; }
@@ -3605,142 +3700,274 @@ body.overlay-body {
   margin: 0;
   max-width: 62ch;
 }
+/* Smart-processing: 2×2 selectable preset cards (完整版 baseline). */
 .imode-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(218px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-3);
   margin-top: var(--sp-3);
 }
 .imode-card {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: 7px;
   padding: var(--sp-4);
   text-align: left;
   font: inherit;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-1);
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
-    background var(--dur-fast) var(--ease);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.imode-card:hover {
-  border-color: var(--line-strong);
-}
-.imode-card[aria-pressed="true"] {
+.imode-card:hover { border-color: var(--line-strong); }
+.imode-card.selected {
   border-color: var(--accent);
-  background: var(--accent-soft);
   box-shadow: 0 0 0 1px var(--accent);
 }
-.imode-card:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.imode-card:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
+.imode-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.imode-card:disabled { cursor: not-allowed; opacity: 0.6; }
 .imode-card__top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--sp-2);
+}
+.imode-card__radio {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1.5px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.imode-card.selected .imode-card__radio { border-color: var(--accent); }
+.imode-card__radio-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 .imode-card__name {
   font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text);
 }
-.imode-card__check {
+.imode-card__badge {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--text-on-accent);
-  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
 }
+.imode-card__badge.accent { color: var(--accent); background: var(--accent-soft); }
+.imode-card__badge.success { color: var(--success); background: var(--success-tint); }
 .imode-card__desc {
   font-size: var(--fs-caption);
   color: var(--text-muted);
   line-height: var(--lh-normal);
-}
-.imode-card__badge {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-muted);
-  background: var(--surface-3);
-  padding: 2px 8px;
-  border-radius: var(--r-pill);
-}
-/* P2 · "This Mac can run on-device" — green only as a success signal. */
-.imode-card__badge.ready {
-  color: var(--success);
-  background: var(--success-soft);
-}
-/* P2 · Usage summary strip — replaces the old runtime banner's slot with
-   something actionable: spend, run count, and the on-device (free) share. */
-.imode-usage-strip {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  margin-top: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-  flex-wrap: wrap;
-}
-.imode-usage-strip__metric {
-  font-size: var(--fs-caption);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.imode-usage-strip__bar {
-  flex: 1;
-  min-width: 80px;
-  height: 4px;
-  border-radius: var(--r-pill);
-  background: var(--line);
-  overflow: hidden;
-}
-.imode-usage-strip__bar > div {
-  height: 100%;
-  background: var(--accent);
-  border-radius: var(--r-pill);
-}
-.imode-card__stats {
-  display: flex;
-  gap: var(--sp-6);
-  margin-top: auto;
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--line);
-}
-.imode-card[aria-pressed="true"] .imode-card__stats {
-  border-top-color: var(--accent-line);
-}
-.imode-card__stat {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.imode-card__stat dt {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-.imode-card__stat dd {
   margin: 0;
-  font-size: var(--fs-meta);
-  font-weight: 600;
+  padding-left: 26px;
+}
+/* Usage summary card — 本月处理花费 / 处理事件 / 本机完成 %. */
+.imode-usage-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-top: var(--sp-3);
+  padding: var(--sp-4) var(--sp-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.imode-usage-card__stat { display: flex; flex-direction: column; gap: 3px; flex: none; }
+.imode-usage-card__label { font-size: var(--fs-caption); color: var(--text-faint); }
+.imode-usage-card__value {
+  font-size: 22px;
+  font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.imode-usage-card__share {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 160px;
+}
+.imode-usage-card__share .imode-usage-card__label { grid-column: 1 / -1; }
+.imode-usage-card__bar {
+  grid-column: 1;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.imode-usage-card__bar > div { height: 100%; background: var(--accent); border-radius: var(--r-pill); }
+.imode-usage-card__pct {
+  grid-column: 2;
+  font-size: var(--fs-meta);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* 高级 · 连接 — collapsible advanced section header + footnote. */
+.model-advanced-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+.model-advanced-head__titles { min-width: 0; }
+.model-advanced-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0;
+}
+.model-advanced-subtitle {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin: 5px 0 0;
+  max-width: 62ch;
+  line-height: var(--lh-normal);
+}
+.model-advanced-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+}
+.model-advanced-toggle:hover { color: var(--text); }
+.model-advanced-toggle svg { transition: transform var(--dur-fast) var(--ease); }
+.model-advanced-toggle svg[data-expanded="true"] { transform: rotate(180deg); }
+.model-advanced-footnote {
+  font-size: var(--fs-caption);
+  color: var(--text-faint);
+  line-height: var(--lh-normal);
+  margin: var(--sp-3) 0 0;
+}
+.provider-add-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 13px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.provider-add-card:hover { border-color: var(--accent); color: var(--accent); }
+.provider-add-card:disabled { cursor: not-allowed; opacity: 0.6; }
+
+/* 高级·连接: ONE unified list — the 3 FIXED capabilities (转录/向量嵌入/视频理解),
+   each row carrying its model + the connection/key it routes through. */
+.cap-list-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+}
+/* No overflow:hidden — it would clip the model-combobox popup on the last row.
+   Rounded corners come from rounding the first/last rows to match the card. */
+.cap-list {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.cap-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 13px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.cap-row:first-child {
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+}
+.cap-row:last-child {
+  border-bottom: 0;
+  border-bottom-left-radius: var(--r-lg);
+  border-bottom-right-radius: var(--r-lg);
+}
+.cap-row__badge {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  align-self: start;
+  margin-top: 1px;
+}
+.cap-row__body { min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.cap-row__top { display: flex; align-items: center; gap: 12px; }
+.cap-row__name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text);
+}
+.cap-row__actions { flex: none; display: flex; align-items: center; gap: 10px; }
+.cap-row__bottom { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cap-row__model { flex: none; min-width: 0; }
+.cap-row__model .model-combobox { width: 280px; max-width: 100%; }
+.cap-row__locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text);
+}
+.cap-row__model-val {
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-row__model-fixed { font-size: var(--fs-meta); }
+.cap-row__service {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-row__edit { flex: none; }
+@media (max-width: 720px) {
+  .cap-row__bottom { flex-direction: column; align-items: stretch; gap: 6px; }
+  .cap-row__model .model-combobox { width: 100%; }
 }
 
 /* B2 · Connection row. Name-first; the endpoint URL is demoted to an elided
@@ -3915,7 +4142,7 @@ body.overlay-body {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  z-index: 30;
+  z-index: 50;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   background: var(--surface);
