@@ -5849,7 +5849,11 @@ function ProviderConnections({
         {capabilities.map((cap) => {
           const provider = cap.provider;
           const hasKey = provider?.has_key ?? false;
-          const ready = cap.isLocal || hasKey;
+          // A saved key whose last connection test failed (backend persists
+          // status "error" + last_error) is not actually ready — don't show it
+          // as a green success row.
+          const failed = !cap.isLocal && provider?.status === "error";
+          const ready = cap.isLocal || (hasKey && !failed);
           const host = provider?.base_url
             ? provider.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
             : "";
@@ -5873,11 +5877,16 @@ function ProviderConnections({
                 <div className="cap-row__top">
                   <span className="cap-row__name">{cap.name}</span>
                   <span className="cap-row__actions">
-                    <span className={ready ? "chip success" : "chip warn"}>
+                    <span
+                      className={failed ? "chip danger" : ready ? "chip success" : "chip warn"}
+                      title={failed ? provider?.last_error ?? undefined : undefined}
+                    >
                       <span className="dot" />
-                      {ready
-                        ? t("settings.models.capability.ready")
-                        : t("settings.models.capability.needsKey")}
+                      {failed
+                        ? t("settings.models.capability.failed")
+                        : ready
+                          ? t("settings.models.capability.ready")
+                          : t("settings.models.capability.needsKey")}
                     </span>
                     {cap.isLocal ? null : (
                       <button

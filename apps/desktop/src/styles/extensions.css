@@ -2930,17 +2930,29 @@ body.overlay-body {
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .item-card,
-  .item-card.list {
+  .item-card {
     grid-template-columns: 104px minmax(0, 1fr);
     grid-template-rows: none;
     min-height: 104px;
   }
-  .item-thumb,
-  .item-card.list .item-thumb {
+  .item-card:not(.list) .item-thumb {
     min-height: 104px;
   }
   .item-card > .chip {
+    display: none;
+  }
+  /* Library list view: the header was 5 columns while rows collapsed to 2, so
+     they misaligned on a narrow window. Drop the duration + indexed columns
+     (still shown in grid view / detail) so the header and rows share one fitting
+     title / source / searchability layout. */
+  .lib-table-head,
+  .item-card.list {
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.3fr) 104px;
+  }
+  .lib-table-head span:nth-child(3),
+  .lib-table-head span:nth-child(4),
+  .item-card.list .item-list-duration,
+  .item-card.list .item-list-indexed {
     display: none;
   }
   .source-list .source-row {

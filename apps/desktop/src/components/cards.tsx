@@ -277,8 +277,8 @@ export function ItemCard({
               <strong className="clamp1">{item.title}</strong>
             </span>
             <span className="item-list-cell item-list-source clamp1">{sourceLabel}</span>
-            <span className="item-list-cell mono">{item.duration}</span>
-            <span className="item-list-cell">{indexedCell}</span>
+            <span className="item-list-cell item-list-duration mono">{item.duration}</span>
+            <span className="item-list-cell item-list-indexed">{indexedCell}</span>
             <span className="item-list-cell item-list-search">{searchabilityChip}</span>
           </>
         ) : (
