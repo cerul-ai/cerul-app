@@ -30,6 +30,9 @@ pub const DEFAULT_ASR_MODEL: &str = "Qwen/Qwen3-ASR-0.6B";
 pub const DEFAULT_FORCED_ALIGNER_MODEL: &str = "Qwen/Qwen3-ForcedAligner-0.6B";
 pub const DEFAULT_OCR_MODEL: &str = "mlx-community/Qwen3-VL-2B-Instruct-4bit";
 pub const DEFAULT_WHISPER_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
+/// In-memory quantization for the official Qwen3-ASR + ForcedAligner weights.
+/// "8bit" is near-lossless and roughly halves their RAM; "none" keeps fp16.
+pub const DEFAULT_ASR_QUANTIZATION: &str = "8bit";
 
 /// Restart the sidecar if it emits no output at all for this long. The Python
 /// side sends heartbeats every few seconds while it is genuinely working, so
@@ -85,6 +88,7 @@ pub struct MlxSidecarConfig {
     pub embedding_model: String,
     pub asr_model: String,
     pub forced_aligner_model: String,
+    pub asr_quantization: String,
     pub ocr_model: String,
     pub whisper_model: String,
 }
@@ -118,6 +122,8 @@ impl MlxSidecarConfig {
                 .unwrap_or_else(|_| DEFAULT_ASR_MODEL.to_string()),
             forced_aligner_model: env::var("CERUL_MLX_FORCED_ALIGNER_MODEL")
                 .unwrap_or_else(|_| DEFAULT_FORCED_ALIGNER_MODEL.to_string()),
+            asr_quantization: env::var("CERUL_MLX_ASR_QUANTIZATION")
+                .unwrap_or_else(|_| DEFAULT_ASR_QUANTIZATION.to_string()),
             ocr_model: env::var("CERUL_MLX_OCR_MODEL")
                 .unwrap_or_else(|_| DEFAULT_OCR_MODEL.to_string()),
             whisper_model: env::var("CERUL_MLX_WHISPER_MODEL")
@@ -543,6 +549,8 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         .arg(&config.asr_model)
         .arg("--forced-aligner-model")
         .arg(&config.forced_aligner_model)
+        .arg("--asr-quantization")
+        .arg(&config.asr_quantization)
         .arg("--ocr-model")
         .arg(&config.ocr_model)
         .arg("--whisper-model")
