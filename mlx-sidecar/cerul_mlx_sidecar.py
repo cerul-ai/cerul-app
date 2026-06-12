@@ -444,12 +444,13 @@ def normalize_segment(segment: Any) -> dict[str, Any]:
 # is one *character*, so a raw transcript renders one glyph per row. These knobs
 # regroup those into readable phrase/sentence lines.
 _LINE_HARD_BREAKS = set("。！？!?；;…\n")  # sentence enders — always end a line
-# Commas/colons only break a line that has already run long, so a normal
-# sentence stays whole — matching the cloud Whisper path's segment granularity
-# (break on sentence punctuation, not on every comma).
+# Also break at a comma/colon once a line has a few spoken characters, so the
+# transcript reads as short subtitle-style clauses instead of one long sentence
+# per row. Tiny leading clauses (e.g. "算了，") stay attached. The hard cap only
+# splits a runaway line that has no punctuation at all.
 _LINE_SOFT_BREAKS = set("，、：,:")
-_LINE_SOFT_MIN_CHARS = 30
-_LINE_MAX_CHARS = 48
+_LINE_SOFT_MIN_CHARS = 6
+_LINE_MAX_CHARS = 16
 
 
 def _is_punct_char(ch: str) -> bool:
