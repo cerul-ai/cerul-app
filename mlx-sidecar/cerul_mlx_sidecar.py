@@ -443,10 +443,13 @@ def normalize_segment(segment: Any) -> dict[str, Any]:
 # The Qwen3 ForcedAligner emits one segment per spoken token — for Chinese that
 # is one *character*, so a raw transcript renders one glyph per row. These knobs
 # regroup those into readable phrase/sentence lines.
-_LINE_HARD_BREAKS = set("。！？!?；;…\n")  # always end a line
-_LINE_SOFT_BREAKS = set("，、：,:")  # end a line only once it is long enough
-_LINE_SOFT_MIN_CHARS = 6
-_LINE_MAX_CHARS = 24
+_LINE_HARD_BREAKS = set("。！？!?；;…\n")  # sentence enders — always end a line
+# Commas/colons only break a line that has already run long, so a normal
+# sentence stays whole — matching the cloud Whisper path's segment granularity
+# (break on sentence punctuation, not on every comma).
+_LINE_SOFT_BREAKS = set("，、：,:")
+_LINE_SOFT_MIN_CHARS = 30
+_LINE_MAX_CHARS = 48
 
 
 def _is_punct_char(ch: str) -> bool:
