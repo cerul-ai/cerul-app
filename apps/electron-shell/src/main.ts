@@ -16,6 +16,7 @@ import {
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -62,6 +63,10 @@ const loginItemCliCommand = firstLoginItemCliCommand(process.argv);
 const stores = new Map<string, Record<string, unknown>>();
 const dirtyStores = new Set<string>();
 const secureTokenStorePath = "secure-tokens.json";
+let oauthCallbackServer: Server | null = null;
+let oauthCallbackPort: number | null = null;
+
+type OAuthProvider = "google" | "github";
 
 type GitHubRelease = {
   tag_name?: string;
@@ -159,6 +164,7 @@ app.on("before-quit", () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  stopOAuthCallbackServer();
   stopStatusMonitor();
   stopRustCore();
 });
@@ -695,6 +701,96 @@ function routeDeepLink(url?: string) {
     }
     openMainRoute(`settings?${params.toString()}`);
   }
+}
+
+async function startOAuthLogin(provider: OAuthProvider) {
+  if (provider !== "google" && provider !== "github") {
+    throw new Error("unsupported OAuth provider");
+  }
+  const redirectUri = await ensureOAuthCallbackServer();
+  const startUrl = new URL(`/v1/auth/oauth/${provider}/start`, cloudAccountOrigin);
+  startUrl.searchParams.set("redirect_uri", redirectUri);
+  await shell.openExternal(startUrl.toString());
+}
+
+async function ensureOAuthCallbackServer() {
+  if (oauthCallbackServer && oauthCallbackPort) {
+    return oauthCallbackRedirectUri(oauthCallbackPort);
+  }
+  const server = http.createServer((request, response) => {
+    handleOAuthCallbackRequest(request.url ?? "/", response);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      oauthCallbackServer = null;
+      oauthCallbackPort = null;
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("OAuth callback server did not bind a TCP port"));
+        return;
+      }
+      oauthCallbackServer = server;
+      oauthCallbackPort = address.port;
+      resolve();
+    });
+  });
+  return oauthCallbackRedirectUri(oauthCallbackPort!);
+}
+
+function handleOAuthCallbackRequest(rawUrl: string, response: http.ServerResponse) {
+  let url: URL;
+  try {
+    url = new URL(rawUrl, "http://127.0.0.1");
+  } catch {
+    writeOAuthCallbackResponse(response, 400, "Invalid OAuth callback URL.");
+    return;
+  }
+  if (url.pathname !== "/auth/callback") {
+    writeOAuthCallbackResponse(response, 404, "Not found.");
+    return;
+  }
+  const params = new URLSearchParams({ section: "Usage" });
+  for (const key of ["provider", "code", "state", "error"]) {
+    const value = url.searchParams.get(key);
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  openMainRoute(`settings?${params.toString()}`);
+  focusMainWindow();
+  writeOAuthCallbackResponse(response, 200, "Cerul sign-in is complete. You can return to the app.");
+}
+
+function writeOAuthCallbackResponse(response: http.ServerResponse, statusCode: number, message: string) {
+  response.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(`<!doctype html><meta charset="utf-8"><title>Cerul</title><p>${escapeHtml(message)}</p>`);
+}
+
+function oauthCallbackRedirectUri(port: number) {
+  return `http://127.0.0.1:${port}/auth/callback`;
+}
+
+function stopOAuthCallbackServer() {
+  oauthCallbackServer?.close();
+  oauthCallbackServer = null;
+  oauthCallbackPort = null;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function maybeRunRendererVideoSmoke() {
@@ -1327,6 +1423,9 @@ function registerIpcHandlers() {
   ipcMain.handle("cerul:secure-token-get", async (_event, key: string) => getSecureToken(key));
   ipcMain.handle("cerul:secure-token-set", async (_event, key: string, value: string | null) => {
     setSecureToken(key, value);
+  });
+  ipcMain.handle("cerul:oauth-start", async (_event, provider: OAuthProvider) => {
+    await startOAuthLogin(provider);
   });
 }
 

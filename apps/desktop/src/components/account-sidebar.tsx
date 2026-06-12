@@ -17,6 +17,7 @@ import { BrandMark } from "./brand";
 import { useAuthStore } from "../lib/cloud/authStore";
 import { cloudClient } from "../lib/cloud/client";
 import { CloudApiError } from "../lib/cloud/types";
+import { startDesktopOAuth } from "../lib/desktopHost";
 
 type AuthMode = "signin" | "register";
 
@@ -158,8 +159,16 @@ function AccountAuthForm() {
     }
   };
 
-  const startOAuth = (provider: "google" | "github") => {
+  const startOAuth = async (provider: "google" | "github") => {
     setError(null);
+    try {
+      if (await startDesktopOAuth(provider)) {
+        return;
+      }
+    } catch {
+      setError(t("settings.account.error.network"));
+      return;
+    }
     const opened = window.open(cloudClient.oauthStartUrl(provider), "_blank", "noopener,noreferrer");
     if (!opened) {
       setError(t("settings.account.oauthPopupBlocked"));
@@ -227,11 +236,11 @@ function AccountAuthForm() {
       </form>
       <div className="account-or">{t("settings.account.or")}</div>
       <div className="account-oauth">
-        <button type="button" className="btn btn-secondary block" disabled={busy} onClick={() => startOAuth("google")}>
+        <button type="button" className="btn btn-secondary block" disabled={busy} onClick={() => void startOAuth("google")}>
           <GoogleMark />
           <span>{t("settings.account.continueGoogle")}</span>
         </button>
-        <button type="button" className="btn btn-secondary block" disabled={busy} onClick={() => startOAuth("github")}>
+        <button type="button" className="btn btn-secondary block" disabled={busy} onClick={() => void startOAuth("github")}>
           <Github size={16} />
           <span>{t("settings.account.continueGithub")}</span>
         </button>
