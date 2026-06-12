@@ -5454,14 +5454,22 @@ const fallbackAsrModels: AsrModelOption[] = [
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
 ];
 
-// On-device video-understanding VLMs offered when processing runs locally.
-// All quantized for practical on-device use (MLX 4-bit / Gemma QAT). Surfaced
-// as fallback options when the catalog reports no local vision model; the
-// daemon must ship/serve these for selection to take effect.
+// On-device video-understanding VLMs offered when processing runs locally
+// (mlx-community Qwen3-VL collection + Gemma 4). All Instruct + quantized for
+// practical on-device use; the list runs small -> large so the default
+// (first entry) stays light on memory. The daemon must ship/serve these for a
+// selection to take effect.
 const localVisionModels: ModelComboOption[] = [
-  { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit 量化" },
-  { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit 量化 · 更小" },
-  { id: "gemma-4-12B-it-qat-4bit", label: "Gemma 4 12B", hint: "本地 · MLX · QAT 量化" },
+  { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit · 默认 · 轻量" },
+  { id: "Qwen3-VL-2B-Instruct-4bit", label: "Qwen3-VL 2B", hint: "本地 · MLX · 4-bit · 最省资源" },
+  { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit · 更准确" },
+  {
+    id: "Qwen3-VL-30B-A3B-Instruct-4bit",
+    label: "Qwen3-VL 30B (MoE)",
+    hint: "本地 · MLX · 4-bit · 强 · 30B 总 / 3B 激活",
+  },
+  { id: "Qwen3-VL-32B-Instruct-4bit", label: "Qwen3-VL 32B", hint: "本地 · MLX · 4-bit · 最强 · 占用大" },
+  { id: "gemma-4-12B-it-qat-4bit", label: "Gemma 4 12B", hint: "本地 · MLX · QAT 量化 · 备选" },
 ];
 
 function isGeminiAsrModelId(modelId: string) {
