@@ -11,7 +11,12 @@ trap cleanup EXIT
 
 cd "$ROOT"
 
-cargo test -q -p cerul-api chunk_frame_endpoint_serves_source_image_content_types
+cargo build -q -p cerul-cli
+target_dir="${CARGO_TARGET_DIR:-$ROOT/target}"
+cerul_cli="$target_dir/debug/cerul-cli"
+if [ ! -x "$cerul_cli" ] && [ -x "$target_dir/debug/cerul-cli.exe" ]; then
+  cerul_cli="$target_dir/debug/cerul-cli.exe"
+fi
 
 AUDIO_DIR="$TMP_DIR/audio"
 IMAGE_DIR="$TMP_DIR/images"
@@ -27,7 +32,7 @@ printf 'image-two' >"$IMAGE_DIR/photo-2.PNG"
 printf 'not-image' >"$IMAGE_DIR/notes.txt"
 
 audio_list="$(
-  cargo run -q -p cerul-cli -- \
+  "$cerul_cli" \
     list-source folder_audio \
     --path "$AUDIO_DIR"
 )"
@@ -39,7 +44,7 @@ if [ "$audio_count" -ne 2 ]; then
 fi
 
 image_list="$(
-  cargo run -q -p cerul-cli -- \
+  "$cerul_cli" \
     list-source folder_image \
     --path "$IMAGE_DIR"
 )"
@@ -51,7 +56,7 @@ if [ "$image_count" -ne 2 ]; then
 fi
 
 audio_add="$(
-  cargo run -q -p cerul-cli -- \
+  "$cerul_cli" \
     --data-dir "$DATA_DIR" \
     add-source folder_audio \
     --path "$AUDIO_DIR"
@@ -68,7 +73,7 @@ if ! printf '%s\n' "$audio_add" | grep -q $'^jobs\t2$'; then
 fi
 
 image_add="$(
-  cargo run -q -p cerul-cli -- \
+  "$cerul_cli" \
     --data-dir "$DATA_DIR" \
     add-source folder_image \
     --path "$IMAGE_DIR"
@@ -83,5 +88,7 @@ if ! printf '%s\n' "$image_add" | grep -q $'^jobs\t2$'; then
   printf '%s\n' "$image_add" >&2
   exit 1
 fi
+
+cargo test -q -p cerul-api chunk_frame_endpoint_serves_source_image_content_types
 
 echo "audio_image_sources_smoke audio_discovered=2 audio_queued=2 image_discovered=2 image_queued=2 frame_mime=extension_aware"
