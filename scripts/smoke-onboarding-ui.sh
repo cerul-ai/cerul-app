@@ -19,10 +19,10 @@ rg -qF 'onboarding.final.addingOne' apps/desktop/src
 rg -qF 'onboarding.final.addingOther' apps/desktop/src
 rg -qF 'asr_model: "whisper-1"' apps/desktop/src
 rg -qF 'active_embedding_profile: "gemini-embedding-2-3072"' apps/desktop/src
-rg -qF '"onboarding.step0.kicker": "Cerul can index with remote APIs or a local model runtime."' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"onboarding.model.asrDesc": "OpenAI whisper-1 by default, with GPT-4o transcribe options available."' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"onboarding.model.embeddingDesc": "Gemini Embedding 2 creates one 3072-dimensional profile for text, images, audio, video, and documents."' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"onboarding.model.connectionsDesc": "Add OpenAI and Gemini keys in Settings, or switch Models to local mode when the MLX runtime is ready."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"onboarding.step0.kicker": "Cerul indexes your videos and podcasts into searchable memory — processed on-device by default."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"onboarding.model.asrDesc": "On-device when it can, online only when higher quality is needed — Cerul handles the details."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF "\"onboarding.model.embeddingDesc\": \"People, topics, spoken words, and what's on screen — all searchable the moment you add a source.\"" apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"onboarding.model.connectionsDesc": "Adjust later in Settings → Smart processing, or connect your own OpenAI-compatible service."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF ".onboarding-picker" apps/desktop/src/styles/extensions.css
 rg -qF ".youtube-channel-card" apps/desktop/src/styles/extensions.css
 
