@@ -7,7 +7,6 @@ import { getSecureToken, loadDesktopStore, setSecureToken, type DesktopStore } f
 // fallback so it degrades outside the desktop shell.
 const authStorePath = "cloud-auth.json";
 const fallbackKey = "cerul.cloudAuth.v1";
-const fallbackUserKey = "cerul.cloudUser.v1";
 const accessTokenKey = "cerul.cloud.accessToken";
 
 interface PersistedAuth {
@@ -42,12 +41,10 @@ async function readPersisted(): Promise<PersistedAuth> {
   }
   try {
     window.localStorage.removeItem(fallbackKey);
-    const raw = window.localStorage.getItem(fallbackUserKey);
-    const user = raw ? (JSON.parse(raw) as CloudUser) : fallbackAuth.user;
-    return { accessToken: fallbackAuth.accessToken, user };
   } catch {
-    return fallbackAuth;
+    // ignore fallback cleanup failure
   }
+  return fallbackAuth;
 }
 
 async function writePersisted(value: PersistedAuth) {
@@ -62,11 +59,6 @@ async function writePersisted(value: PersistedAuth) {
   fallbackAuth = value;
   try {
     window.localStorage.removeItem(fallbackKey);
-    if (value.user) {
-      window.localStorage.setItem(fallbackUserKey, JSON.stringify(value.user));
-    } else {
-      window.localStorage.removeItem(fallbackUserKey);
-    }
   } catch {
     // best-effort; the in-memory session still works for this run
   }
