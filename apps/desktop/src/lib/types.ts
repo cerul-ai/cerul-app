@@ -9,6 +9,7 @@ import type * as api from "./api";
 
 export type View =
   | "onboarding"
+  | "search"
   | "home"
   | "results"
   | "result-detail"

@@ -1,5 +1,4 @@
-// Add Source modal dialog with 4 tabs (Folder / File / YouTube /
-// Podcast RSS). Extracted from App.tsx (B13 Phase D).
+// Add Source modal dialog. Extracted from App.tsx (B13 Phase D).
 //
 // The dialog owns its own form state and validation, but every cross-
 // component action runs through the host-supplied onAddSource so the
@@ -33,15 +32,19 @@ import { SourcePreview } from "../components/source-preview";
 import { openDialog } from "../lib/desktopHost";
 import { useEscapeToClose } from "../lib/use-dismissable";
 
+type SourceTabId = "folder" | "file" | "youtube" | "podcast";
+type SourceMode = "local" | "network";
+
 const sourceTabs: {
-  id: "folder" | "file" | "youtube" | "podcast";
+  id: SourceTabId;
+  mode: SourceMode;
   icon: LucideIcon;
   labelKey: string;
 }[] = [
-  { id: "folder", icon: Folder, labelKey: "addSource.tab.folder" },
-  { id: "file", icon: FileVideo, labelKey: "addSource.tab.file" },
-  { id: "youtube", icon: Clapperboard, labelKey: "addSource.tab.youtube" },
-  { id: "podcast", icon: Podcast, labelKey: "addSource.tab.podcast" },
+  { id: "folder", mode: "local", icon: Folder, labelKey: "addSource.tab.folder" },
+  { id: "file", mode: "local", icon: FileVideo, labelKey: "addSource.tab.file" },
+  { id: "youtube", mode: "network", icon: Clapperboard, labelKey: "addSource.tab.youtube" },
+  { id: "podcast", mode: "network", icon: Podcast, labelKey: "addSource.tab.podcast" },
 ];
 
 export function AddSourceDialog({
@@ -54,7 +57,8 @@ export function AddSourceDialog({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
-  const [tab, setTab] = useState<"folder" | "file" | "youtube" | "podcast">("folder");
+  const [mode, setMode] = useState<SourceMode>("local");
+  const [tab, setTab] = useState<SourceTabId>("folder");
   const [folderPath, setFolderPath] = useState("");
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -73,6 +77,17 @@ export function AddSourceDialog({
     message: null,
   });
   useEscapeToClose(onClose);
+  const visibleTabs = sourceTabs.filter((item) => item.mode === mode);
+
+  function chooseMode(nextMode: SourceMode) {
+    setMode(nextMode);
+    if (nextMode === "local" && (tab === "youtube" || tab === "podcast")) {
+      setTab("folder");
+    }
+    if (nextMode === "network" && (tab === "folder" || tab === "file")) {
+      setTab("youtube");
+    }
+  }
 
   async function chooseFolder() {
     const selected = await openDialog({ directory: true, multiple: false }).catch(() => null);
@@ -226,7 +241,7 @@ export function AddSourceDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-source-title"
-        style={{ maxWidth: 480 }}
+        style={{ maxWidth: 560 }}
       >
         <header className="dhead">
           <div>
@@ -245,8 +260,23 @@ export function AddSourceDialog({
           </button>
         </header>
         <div className="dbody">
+          <div className="source-mode-tabs" role="tablist" aria-label={t("addSource.mode.aria")}>
+            {(["local", "network"] as const).map((modeId) => (
+              <button
+                key={modeId}
+                type="button"
+                role="tab"
+                aria-selected={mode === modeId}
+                className={mode === modeId ? "selected" : ""}
+                onClick={() => chooseMode(modeId)}
+              >
+                <span>{t(`addSource.mode.${modeId}`)}</span>
+                <small>{t(`addSource.mode.${modeId}.desc`)}</small>
+              </button>
+            ))}
+          </div>
           <div className="type-grid" role="tablist">
-            {sourceTabs.map(({ id, icon: TabIcon, labelKey }) => {
+            {visibleTabs.map(({ id, icon: TabIcon, labelKey }) => {
               return (
                 <button
                   key={id}

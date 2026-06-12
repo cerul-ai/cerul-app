@@ -11,7 +11,7 @@
 
 /* ---------------- Rail ---------------- */
 .rail {
-  width: 220px;
+  width: 236px;
   background: var(--bg-sunken);
   border-right: 1px solid var(--line);
   display: flex;
@@ -21,11 +21,60 @@
   flex: none;
 }
 .rail[data-collapsed="true"] { width: 60px; }
-.rail-top { padding: 4px 4px 14px; display: flex; align-items: center; gap: 6px; }
+.rail-top {
+  padding: 4px 4px 14px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.window-dots {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  padding: 2px 2px 4px;
+}
+.window-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+}
 .rail-brand { display: flex; align-items: center; gap: 10px; background: none; border: 0; cursor: pointer; padding: 6px; border-radius: 8px; }
+.rail-update-pill {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 118px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+}
+.rail-update-pill:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.rail-update-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rail-collapse { margin-left: auto; flex: none; }
-.rail[data-collapsed="true"] .rail-top { flex-direction: column; gap: 2px; padding: 4px 4px 10px; }
+.rail[data-collapsed="true"] .rail-top { display: flex; flex-direction: column; gap: 2px; padding: 4px 4px 10px; }
 .rail[data-collapsed="true"] .rail-collapse { margin-left: 0; }
+.rail[data-collapsed="true"] .window-dots,
+.rail[data-collapsed="true"] .rail-update-pill {
+  display: none;
+}
 .brandmark { color: var(--accent); display: inline-grid; place-items: center; }
 /* BrandMark / BrandLogo render a brand asset sized at 100%×100%, so the wrapper must
    carry a definite size in every context (rail, empty states, overlay). Without
@@ -117,6 +166,9 @@
 
 /* ---------------- Home search entry ---------------- */
 .home-page { min-height: 100%; }
+.search-discovery-page {
+  max-width: 980px;
+}
 .home-search-stage {
   display: flex;
   flex-direction: column;
@@ -165,6 +217,15 @@
   justify-content: center;
   margin-top: 16px;
   flex-wrap: wrap;
+}
+.search-results-stage {
+  margin-top: 34px;
+}
+.results-embedded {
+  width: 100%;
+}
+.results-embedded .results-filter-row {
+  padding-top: 0;
 }
 .home-continue-block {
   margin-top: 40px;
@@ -320,12 +381,53 @@
 .tbl-row:last-child { border-bottom: 0; }
 
 /* settings */
+.settings-redesign-page {
+  max-width: 1180px;
+}
+.settings-page-head {
+  align-items: flex-end;
+  justify-content: space-between;
+}
 .settings-wrap { display: grid; grid-template-columns: 200px 1fr; gap: 40px; align-items: start; }
 .settings-nav { position: sticky; top: 78px; display: flex; flex-direction: column; gap: 1px; }
 .settings-nav button { display: flex; align-items: center; gap: 10px; text-align: left; font-family: var(--font-sans); font-size: var(--fs-meta); font-weight: 500; color: var(--text-muted); background: transparent; border: 0; height: 34px; padding: 0 11px; border-radius: var(--r-md); cursor: pointer; transition: all var(--dur-fast) var(--ease); }
 .settings-nav button:hover { color: var(--text); background: var(--surface-2); }
 .settings-nav button.active { color: var(--accent); background: var(--accent-soft); }
 .settings-nav button svg { color: currentColor; }
+.settings-anchor-nav {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.settings-single-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 42px;
+}
+.settings-section-block {
+  scroll-margin-top: 86px;
+}
+.settings-section-head {
+  margin-bottom: 18px;
+}
+.settings-section-head .section-label {
+  margin-bottom: 5px;
+}
+.settings-section-head h2 {
+  margin: 0;
+  font-size: var(--fs-title);
+  line-height: var(--lh-tight);
+}
+.settings-section-head p {
+  margin: 6px 0 0;
+  max-width: 62ch;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+.settings-section-block .usage-settings {
+  margin-top: 24px;
+}
 .set-group { margin-bottom: 34px; }
 .set-group-title { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 4px; }
 .set-row { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -373,6 +475,15 @@
    instead of having its bottom pinned off-screen. */
 .detail-media { position: sticky; top: 78px; max-height: calc(100vh - 98px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .detail-transcript { min-width: 0; padding-bottom: 20px; }
+.detail-transcript-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
 .transcript-reading { max-width: 64ch; margin: 0 auto; padding: 4px 2px 24px; }
 .transcript-reading .reading-title { font-size: var(--fs-title); font-weight: var(--fw-semibold); margin: 0 0 16px; line-height: var(--lh-tight); }
 .transcript-reading .reading-para { font-size: var(--fs-body); line-height: var(--lh-relax); margin: 0 0 14px; color: var(--text); }
@@ -388,6 +499,7 @@
 @media (max-width: 920px) {
   .detail-split { grid-template-columns: 1fr; gap: 24px; }
   .detail-media { position: static; max-height: none; overflow: visible; padding-right: 0; }
+  .detail-transcript-toolbar { flex-direction: column; }
 }
 
 /* ============================================================
@@ -409,7 +521,8 @@
 @media (max-width: 1000px) {
   .rail { width: 60px; }
   .rail .rail-label { display: none; }
-  .rail .rail-top { flex-direction: column; gap: 2px; }
+  .rail .rail-top { display: flex; flex-direction: column; gap: 2px; }
+  .rail .window-dots, .rail .rail-update-pill { display: none; }
   .rail .rail-collapse { display: none; }
   .rail .rail-item { justify-content: center; padding: 0; gap: 0; }
   .rail:not([data-collapsed]) .tip::after, .rail .tip::after { display: block; }

@@ -10,6 +10,7 @@ import type { RouteState, View } from "./types";
 // All valid View ids — broader than the sidebar so persisted routes for
 // sub-pages (result-detail, item-detail) and onboarding rehydrate.
 const VIEW_IDS: View[] = [
+  "search",
   "home",
   "results",
   "result-detail",
@@ -27,8 +28,16 @@ export function readRouteState(): RouteState {
   const [id, queryString = ""] = raw.split("?");
   const params = new URLSearchParams(queryString);
 
+  const rawView = VIEW_IDS.includes(id as View) ? (id as View) : "search";
+  const view =
+    rawView === "result-detail"
+      ? "item-detail"
+      : rawView === "home" || rawView === "results"
+        ? "search"
+      : rawView;
+
   return {
-    view: VIEW_IDS.includes(id as View) ? (id as View) : "home",
+    view,
     itemId: params.get("itemId"),
     chunkId: params.get("chunkId"),
     timestamp: params.get("t"),

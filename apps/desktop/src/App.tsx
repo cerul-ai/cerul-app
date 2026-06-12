@@ -210,6 +210,7 @@ import type { DesktopUpdate } from "./lib/desktopHost";
 // All valid View ids — broader than the sidebar so persisted routes for
 // sub-pages (result-detail, item-detail) and onboarding still rehydrate.
 const viewIds: View[] = [
+  "search",
   "home",
   "results",
   "result-detail",
@@ -225,8 +226,9 @@ const viewIds: View[] = [
 // Mapping from sub-pages to their sidebar parent so the sidebar still
 // highlights the right top-level item when a sub-page is active.
 const sidebarParentFor: Partial<Record<View, View>> = {
-  "results": "home",
-  "result-detail": "home",
+  "home": "search",
+  "results": "search",
+  "result-detail": "search",
   "entity-detail": "library",
   "item-detail": "library",
 };
@@ -916,12 +918,15 @@ const transcript: TranscriptLine[] = [
   },
 ];
 
-const settingsSections = ["Models", "Usage", "General", "Indexing", "Storage", "Advanced", "About"] as const;
+const settingsSections = ["Models", "General", "Indexing", "Storage", "About"] as const;
 type SettingsSection = (typeof settingsSections)[number];
 
 function normalizeSettingsSection(section?: string | null): SettingsSection {
-  if (section === "Cerul Cloud") {
+  if (section === "Cerul Cloud" || section === "Usage") {
     return "Models";
+  }
+  if (section === "Advanced") {
+    return "About";
   }
   if (settingsSections.includes(section as SettingsSection)) {
     return section as SettingsSection;
@@ -939,13 +944,20 @@ function viewChromeLabel(view: View, settingsSection: string) {
   if (view === "onboarding") {
     return "Welcome";
   }
-  return view[0].toUpperCase() + view.slice(1);
+  return view === "search" ? "Search" : view[0].toUpperCase() + view.slice(1);
 }
 
 function visualFixtureModeEnabled() {
   const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
   const params = new URLSearchParams(queryString);
   return params.get("fixture") === "design";
+}
+
+function preserveFixtureParam(hash: string) {
+  const [view, queryString = ""] = hash.split("?");
+  const params = new URLSearchParams(queryString);
+  params.set("fixture", "design");
+  return `${view}?${params.toString()}`;
 }
 
 // Tracks, per running job, the wall-clock second its current coarse step began.
@@ -1081,7 +1093,7 @@ function AppWorkspace() {
         itemId: null,
         chunkId: null,
         timestamp: null,
-        settingsSection: "Usage",
+        settingsSection: "Models",
       };
       setViewState(settingsRoute.view);
       setSelectedItemId(null);
@@ -1090,7 +1102,7 @@ function AppWorkspace() {
       setShowJobsSheet(false);
       setShowAddSource(false);
       setSettingsSection(settingsRoute.settingsSection);
-      window.history.replaceState(null, "", `#${routeHash("settings", { settingsSection: "Usage" })}`);
+      window.history.replaceState(null, "", `#${routeHash("settings", { settingsSection: "Models" })}`);
       void persistLastRoute(settingsRoute);
 
       if (route.oauthError) {
@@ -1123,7 +1135,7 @@ function AppWorkspace() {
           ? { ...route, settingsSection: normalizeSettingsSection(route.settingsSection) }
           : route;
       if (normalizedRoute.view === "settings") {
-        setSettingsSection(normalizedRoute.settingsSection ?? "General");
+        setSettingsSection(normalizedRoute.settingsSection ?? "Models");
       }
       void persistLastRoute(normalizedRoute);
     }
@@ -1289,7 +1301,7 @@ function AppWorkspace() {
       setSettingsSection(routeParams.settingsSection);
     }
     setViewState(nextView);
-    const hash = routeHash(nextView, routeParams);
+    const hash = visualFixtureMode ? preserveFixtureParam(routeHash(nextView, routeParams)) : routeHash(nextView, routeParams);
     window.location.hash = hash;
     if ((nextView === "item-detail" || nextView === "result-detail") && routeParams.itemId) {
       recordLastOpened(routeParams.itemId, routeParams.timestamp ?? null);
@@ -1308,7 +1320,12 @@ function AppWorkspace() {
       return;
     }
 
-    const restoredView = route.view as View;
+    const restoredView =
+      route.view === "result-detail"
+        ? "item-detail"
+        : route.view === "home" || route.view === "results"
+          ? "search"
+        : (route.view as View);
     setSelectedItemId(route.itemId ?? null);
     setSelectedChunkId(route.chunkId ?? null);
     setSelectedTimestamp(route.timestamp ?? null);
@@ -1317,7 +1334,7 @@ function AppWorkspace() {
         ? { ...route, settingsSection: normalizeSettingsSection(route.settingsSection) }
         : route;
     if (restoredView === "settings") {
-      setSettingsSection(restoredRoute.settingsSection ?? "General");
+      setSettingsSection(restoredRoute.settingsSection ?? "Models");
     }
     setViewState(restoredView);
     window.location.hash = routeHash(restoredView, restoredRoute);
@@ -1350,7 +1367,7 @@ function AppWorkspace() {
       event.currentTarget.querySelector<HTMLInputElement>("input")?.value ??
       query;
     setQuery(submittedQuery);
-    navigate("results");
+    navigate("search");
     void runSearch(submittedQuery);
   }
 
@@ -1360,7 +1377,7 @@ function AppWorkspace() {
       setQuery(trimmed || value);
       setLiveResults(results);
       setSearchError(null);
-      navigate("results", {});
+      navigate("search", {});
       return;
     }
     if (!trimmed) {
@@ -1440,17 +1457,17 @@ function AppWorkspace() {
       await installDaemon();
       await refreshCoreData();
       setModelDownloadState({ status: "idle", error: null });
-      navigate("home");
+      navigate("search");
     } catch (error) {
       setModelDownloadState({ status: "error", error: errorMessage(error) });
     }
   }
 
-  const sidebarActiveView = sidebarParentFor[view] ?? view;
+  const sidebarActiveView =
+    view === "item-detail" && selectedChunkId ? "search" : sidebarParentFor[view] ?? view;
   const railItems: { id: View; labelKey: string; icon: LucideIcon }[] = [
-    { id: "home", labelKey: "nav.home", icon: Search },
+    { id: "search", labelKey: "nav.home", icon: Search },
     { id: "library", labelKey: "nav.library", icon: Library },
-    { id: "moments", labelKey: "nav.moments", icon: Star },
     { id: "sources", labelKey: "nav.sources", icon: Database },
   ];
   const mobileNavItems = [
@@ -1464,13 +1481,27 @@ function AppWorkspace() {
     <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
       <aside className="rail" data-collapsed={sidebarCollapsed ? "true" : undefined}>
         <div className="rail-top">
+          <div className="window-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
           <button
             className="rail-brand"
             type="button"
-            onClick={() => navigate("home")}
+            onClick={() => navigate("search")}
             aria-label={t("shell.openHome")}
           >
             <BrandMark />
+          </button>
+          <button
+            className="rail-update-pill"
+            type="button"
+            onClick={() => navigate("settings", { settingsSection: "About" })}
+            title={t("settings.about.checkUpdates")}
+          >
+            <RefreshCcw size={12} />
+            <span>{t("settings.about.checkUpdates")}</span>
           </button>
           <button
             className="btn-icon sm rail-collapse"
@@ -1548,7 +1579,7 @@ function AppWorkspace() {
         <button
           className="rail-brand"
           type="button"
-          onClick={() => navigate("home")}
+          onClick={() => navigate("search")}
           aria-label={t("shell.openHome")}
         >
           <BrandMark />
@@ -1592,7 +1623,7 @@ function AppWorkspace() {
             onDone={startIndexingFromOnboarding}
           />
         ) : null}
-        {view === "home" ? (
+        {view === "search" || view === "home" || view === "results" ? (
           <HomeScreen
             query={query}
             setQuery={setQuery}
@@ -1601,53 +1632,23 @@ function AppWorkspace() {
             onOpenItem={(item, timestamp) =>
               navigate("item-detail", { itemId: item.id, timestamp })
             }
-            onOpenLibrary={() => navigate("library")}
-            items={visibleItems}
-            sources={visibleSources}
-            jobs={visibleJobs}
-            apiStatus={screenApiStatus}
-            onOpenModelSettings={() => navigate("settings", { settingsSection: "Models" })}
-            globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
-          />
-        ) : null}
-        {view === "results" ? (
-          <ResultsScreen
-            query={query}
-            setQuery={setQuery}
-            onSubmit={submitSearch}
-            onBack={() => navigate("home")}
-            onOpen={(result) =>
-              navigate("result-detail", {
+            onOpenResult={(result) =>
+              navigate("item-detail", {
                 itemId: result.itemId,
                 chunkId: result.id,
                 timestamp: result.timestamp,
               })
             }
+            onOpenLibrary={() => navigate("library")}
+            items={visibleItems}
+            sources={visibleSources}
+            jobs={visibleJobs}
             results={visibleResults}
             isSearching={isSearching}
-            error={searchError}
+            searchError={searchError}
             apiStatus={screenApiStatus}
-            hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
-            hasActiveJobs={visibleJobs.some(isActiveJob)}
-          />
-        ) : null}
-        {view === "result-detail" ? (
-          <ResultDetail
-            item={currentItem}
-            startChunkId={selectedChunkId}
-            startTimestamp={selectedTimestamp ?? "00:00"}
-            actionsEnabled={screenApiStatus === "online"}
-            onLibrary={() => navigate("results")}
-            onDeleteItem={async (itemToDelete) => {
-              await api.deleteItem(itemToDelete.id);
-              await refreshCoreData();
-              navigate("library");
-            }}
-            onReindexItem={async (itemToReindex) => {
-              await api.reindexItem(itemToReindex.id);
-              await refreshCoreData();
-            }}
-            requestConfirm={requestConfirm}
+            onOpenModelSettings={() => navigate("settings", { settingsSection: "Models" })}
+            globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
           />
         ) : null}
         {view === "library" ? (
@@ -1703,7 +1704,8 @@ function AppWorkspace() {
             apiStatus={screenApiStatus}
             actionsEnabled={screenApiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
-            onBack={() => navigate("library")}
+            backLabel={selectedChunkId ? t("nav.home") : t("library.heading")}
+            onBack={() => navigate(selectedChunkId ? "search" : "library")}
             modelLabel={asrModelLabel(settingString(data.settings, "asr_model", "whisper-1"))}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
@@ -1829,10 +1831,14 @@ function HomeScreen({
   onSubmit,
   onAddSource,
   onOpenItem,
+  onOpenResult,
   onOpenLibrary,
   items,
   sources,
   jobs,
+  results,
+  isSearching,
+  searchError,
   apiStatus,
   onOpenModelSettings,
   globalHotkey,
@@ -1842,10 +1848,14 @@ function HomeScreen({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAddSource: () => void;
   onOpenItem: (item: Item, timestamp?: string | null) => void;
+  onOpenResult: (result: Result) => void;
   onOpenLibrary: () => void;
   items: Item[];
   sources: Source[];
   jobs: api.JobRecord[];
+  results: Result[];
+  isSearching: boolean;
+  searchError: string | null;
   apiStatus: ApiStatus;
   onOpenModelSettings: () => void;
   globalHotkey: string;
@@ -1860,6 +1870,8 @@ function HomeScreen({
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const shouldShowResults =
+    query.trim().length > 0 || results.length > 0 || isSearching || Boolean(searchError);
   const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
     visualFixtureModeEnabled()
       ? {
@@ -1968,7 +1980,7 @@ function HomeScreen({
   }
 
   return (
-    <div className="page home-page" style={{ maxWidth: 760 }}>
+    <div className="page home-page search-discovery-page">
       <div className="home-search-stage">
         <h1>{t("home.heading")}</h1>
         <p className="muted">
@@ -2020,6 +2032,25 @@ function HomeScreen({
           </button>
         </div>
       </div>
+
+      {shouldShowResults ? (
+        <section className="search-results-stage" aria-label={t("results.list.aria")}>
+          <ResultsScreen
+            embedded
+            query={query}
+            setQuery={setQuery}
+            onSubmit={onSubmit}
+            onBack={() => undefined}
+            onOpen={onOpenResult}
+            results={results}
+            isSearching={isSearching}
+            error={searchError}
+            apiStatus={apiStatus}
+            hasIndexedItems={indexedCount > 0}
+            hasActiveJobs={activeJobs.length > 0}
+          />
+        </section>
+      ) : null}
 
       {continueItem ? (
         <div className="home-continue-block">
@@ -2169,6 +2200,7 @@ function RecentIndexedCard({ item, onOpen }: { item: Item; onOpen: () => void })
 }
 
 function ResultsScreen({
+  embedded = false,
   query,
   setQuery,
   onSubmit,
@@ -2181,6 +2213,7 @@ function ResultsScreen({
   hasIndexedItems,
   hasActiveJobs,
 }: {
+  embedded?: boolean;
   query: string;
   setQuery: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -2275,6 +2308,7 @@ function ResultsScreen({
 
   return (
     <>
+      {embedded ? null : (
       <div className="topbar">
         <div className="tb-inner">
           <button className="btn-icon" type="button" onClick={onBack} aria-label={t("results.backHome")}>
@@ -2298,8 +2332,9 @@ function ResultsScreen({
           </span>
         </div>
       </div>
+      )}
 
-      <div className="page">
+      <div className={embedded ? "results-embedded" : "page"}>
         <div className="row results-filter-row">
           <div className="segmented" aria-label={t("results.modeTabs.aria")}>
             <button
@@ -4131,6 +4166,7 @@ function ItemDetail({
   apiStatus,
   actionsEnabled,
   startTimestamp,
+  backLabel,
   modelLabel,
   onBack,
   onDeleteItem,
@@ -4141,6 +4177,7 @@ function ItemDetail({
   apiStatus: ApiStatus;
   actionsEnabled: boolean;
   startTimestamp: string;
+  backLabel: string;
   modelLabel: string;
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
@@ -4172,6 +4209,7 @@ function ItemDetail({
     status: "idle" | "locating" | "reindexing" | "deleting" | "queued" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
+  const [readingMode, setReadingMode] = useState(false);
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
     apiStatus === "online" && chunkState.status !== "idle" ? chunkState.lines : transcript;
@@ -4424,7 +4462,7 @@ function ItemDetail({
       <div className="page-head">
         <button className="btn btn-ghost sm" type="button" onClick={onBack}>
           <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
-          <span>{t("library.heading")}</span>
+          <span>{backLabel}</span>
         </button>
         <h1 className="page-h1" style={{ marginTop: 12 }}>{item.title}</h1>
         <p className="page-sub">
@@ -4503,56 +4541,82 @@ function ItemDetail({
           </div>
         </div>
         <div className="detail-transcript">
-          <VideoUnderstandingPanel
-            item={item}
-            enabled={actionsEnabled}
-            onSeek={seekTo}
-            requestConfirm={requestConfirm}
-            onChapters={handleUnderstandingChapters}
-            fixtureRecord={visualFixtureMode ? demoVideoUnderstanding : null}
-          />
-          {itemAction.message ? (
-            <p
-              className={itemAction.status === "error" ? "field-error" : "field-hint"}
-              role="status"
-            >
-              {itemAction.message}
-            </p>
-          ) : null}
-          {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
-          {chunkState.status === "loading" ? <TranscriptSkeleton /> : null}
-          {chunkState.status === "error" && chunkState.message ? (
-            <InlineNotice tone="error" message={chunkState.message} />
-          ) : null}
-          {chunkState.status === "loaded" &&
-          transcriptLines.length === 0 &&
-          item.status === "indexing" ? (
-            <InlineNotice tone="muted" message={t("detail.stillProcessing")} />
-          ) : null}
-          {item.visualIndexMessage ? (
-            <InlineNotice tone="muted" message={item.visualIndexMessage} />
-          ) : null}
-          {item.embeddingIndexMessage ? (
-            <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
-          ) : null}
-          {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
-            <TranscriptList
-              lines={transcriptLines}
-              activeTime={currentTimestamp}
-              onSeek={seekTo}
-              renderAction={(line) => {
-                const saved = Boolean(momentActions.momentForLine(line));
-                return (
-                  <MomentLineAction
-                    saved={saved}
-                    pending={momentActions.pendingLineId === line.id}
-                    disabled={!actionsEnabled}
-                    onToggle={() => void momentActions.toggle(line)}
-                  />
-                );
-              }}
-            />
-          ) : null}
+          <div className="detail-transcript-toolbar">
+            <div>
+              <p className="section-label" style={{ marginBottom: 2 }}>{t("detail.transcript.eyebrow")}</p>
+              <span className="faint mono" style={{ fontSize: 12 }}>
+                {t("detail.transcript.chunkCount", { count: transcriptLines.length })}
+              </span>
+            </div>
+            <div className="row gap-2" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <TranscriptExportButtons title={item.title} lines={transcriptLines} />
+              <button
+                type="button"
+                className="btn btn-ghost sm"
+                aria-pressed={readingMode}
+                onClick={() => setReadingMode((on) => !on)}
+              >
+                <ReceiptText size={15} />
+                <span>{readingMode ? t("detail.transcriptMode") : t("detail.readingMode")}</span>
+              </button>
+            </div>
+          </div>
+          {readingMode ? (
+            <TranscriptReadingView title={item.title} lines={transcriptLines} onSeek={seekTo} />
+          ) : (
+            <>
+              <VideoUnderstandingPanel
+                item={item}
+                enabled={actionsEnabled}
+                onSeek={seekTo}
+                requestConfirm={requestConfirm}
+                onChapters={handleUnderstandingChapters}
+                fixtureRecord={visualFixtureMode ? demoVideoUnderstanding : null}
+              />
+              {itemAction.message ? (
+                <p
+                  className={itemAction.status === "error" ? "field-error" : "field-hint"}
+                  role="status"
+                >
+                  {itemAction.message}
+                </p>
+              ) : null}
+              {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
+              {chunkState.status === "loading" ? <TranscriptSkeleton /> : null}
+              {chunkState.status === "error" && chunkState.message ? (
+                <InlineNotice tone="error" message={chunkState.message} />
+              ) : null}
+              {chunkState.status === "loaded" &&
+              transcriptLines.length === 0 &&
+              item.status === "indexing" ? (
+                <InlineNotice tone="muted" message={t("detail.stillProcessing")} />
+              ) : null}
+              {item.visualIndexMessage ? (
+                <InlineNotice tone="muted" message={item.visualIndexMessage} />
+              ) : null}
+              {item.embeddingIndexMessage ? (
+                <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
+              ) : null}
+              {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
+                <TranscriptList
+                  lines={transcriptLines}
+                  activeTime={currentTimestamp}
+                  onSeek={seekTo}
+                  renderAction={(line) => {
+                    const saved = Boolean(momentActions.momentForLine(line));
+                    return (
+                      <MomentLineAction
+                        saved={saved}
+                        pending={momentActions.pendingLineId === line.id}
+                        disabled={!actionsEnabled}
+                        onToggle={() => void momentActions.toggle(line)}
+                      />
+                    );
+                  }}
+                />
+              ) : null}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -4581,20 +4645,16 @@ function SettingsScreen({
   const t = useT();
   const sectionIcons: Record<string, LucideIcon> = {
     General: SlidersHorizontal,
-    Models: Cpu,
-    Usage: Wallet,
+    Models: Sparkles,
     Indexing: ListChecks,
     Storage: HardDrive,
-    Advanced: Wrench,
     About: Info,
   };
   const sectionLabels: Record<string, string> = {
     General: t("settings.section.general"),
     Models: t("settings.section.models"),
-    Usage: t("settings.section.usage"),
     Indexing: t("settings.section.indexing"),
     Storage: t("settings.section.storage"),
-    Advanced: t("settings.section.advanced"),
     About: t("settings.section.about"),
   };
   const controlsDisabled = apiStatus !== "online";
@@ -4685,13 +4745,27 @@ function SettingsScreen({
         : saveState.status === "saving"
           ? "chip neutral"
           : "chip neutral";
+  const sectionIds: Record<SettingsSection, string> = {
+    Models: "settings-smart-processing",
+    General: "settings-general",
+    Indexing: "settings-indexing",
+    Storage: "settings-storage",
+    About: "settings-about",
+  };
+
+  function jumpToSection(item: SettingsSection) {
+    setSection(item);
+    window.requestAnimationFrame(() => {
+      document.getElementById(sectionIds[item])?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }
 
   return (
-    <div className="page">
-      <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
+    <div className="page settings-redesign-page">
+      <div className="page-head row settings-page-head">
         <div>
           <p className="page-eyebrow">{t("settings.eyebrow")}</p>
-          <h1 className="page-h1">{sectionLabels[activeSection] ?? activeSection}</h1>
+          <h1 className="page-h1">{t("settings.eyebrow")}</h1>
         </div>
         <span className={saveChipClass} role="status" aria-live="polite">
           {saveState.status === "saving" ? <Loader2 size={13} /> : <Check size={13} />}
@@ -4700,7 +4774,7 @@ function SettingsScreen({
       </div>
 
       <div className="settings-wrap">
-        <nav className="settings-nav" aria-label={t("settings.nav.aria")}>
+        <nav className="settings-nav settings-anchor-nav" aria-label={t("settings.nav.aria")}>
           {settingsSections.map((item) => {
             const Icon = sectionIcons[item];
             return (
@@ -4708,7 +4782,7 @@ function SettingsScreen({
                 key={item}
                 type="button"
                 className={item === activeSection ? "active" : ""}
-                onClick={() => setSection(item)}
+                onClick={() => jumpToSection(item)}
               >
                 {Icon ? <Icon size={16} /> : null}
                 <span>{sectionLabels[item] ?? item}</span>
@@ -4716,11 +4790,25 @@ function SettingsScreen({
             );
           })}
         </nav>
-        <div className="settings-panel">
+        <div className="settings-panel settings-single-panel">
           {apiStatus !== "online" ? (
             <p className="field-hint" style={{ marginBottom: 18 }}>{t("settings.offlineNotice")}</p>
           ) : null}
-          {activeSection === "General" ? (
+          <section id={sectionIds.Models} className="settings-section-block">
+            <ModelsSettings
+              settings={settings}
+              disabled={controlsDisabled}
+              onSettingsChange={saveSettings}
+              requestConfirm={requestConfirm}
+            />
+            <UsageSettings />
+          </section>
+
+          <section id={sectionIds.General} className="settings-section-block">
+            <div className="settings-section-head">
+              <p className="section-label">{sectionLabels.General}</p>
+              <h2>{sectionLabels.General}</h2>
+            </div>
             <GeneralSettings
               settings={settings}
               daemonStatus={daemonStatus}
@@ -4729,32 +4817,40 @@ function SettingsScreen({
               onStartAtLoginChange={saveStartAtLogin}
               onHotkeyChange={saveGlobalHotkey}
             />
-          ) : null}
-          {activeSection === "Indexing" ? (
+          </section>
+
+          <section id={sectionIds.Indexing} className="settings-section-block">
+            <div className="settings-section-head">
+              <p className="section-label">{sectionLabels.Indexing}</p>
+              <h2>{sectionLabels.Indexing}</h2>
+            </div>
             <IndexingSettings
               settings={settings}
               disabled={controlsDisabled}
               onSettingsChange={saveSettings}
             />
-          ) : null}
-          {activeSection === "Models" ? (
-            <ModelsSettings
-              settings={settings}
-              disabled={controlsDisabled}
-              onSettingsChange={saveSettings}
-              requestConfirm={requestConfirm}
-            />
-          ) : null}
-          {activeSection === "Usage" ? <UsageSettings /> : null}
-          {activeSection === "Storage" ? <StorageSettings disabled={controlsDisabled} /> : null}
-          {activeSection === "Advanced" ? (
+          </section>
+
+          <section id={sectionIds.Storage} className="settings-section-block">
+            <div className="settings-section-head">
+              <p className="section-label">{sectionLabels.Storage}</p>
+              <h2>{sectionLabels.Storage}</h2>
+            </div>
+            <StorageSettings disabled={controlsDisabled} />
+          </section>
+
+          <section id={sectionIds.About} className="settings-section-block">
+            <div className="settings-section-head">
+              <p className="section-label">{sectionLabels.About}</p>
+              <h2>{sectionLabels.About}</h2>
+            </div>
+            <AboutSettings version={version} />
             <AdvancedSettings
               settings={settings}
               disabled={controlsDisabled}
               onSettingsChange={saveSettings}
             />
-          ) : null}
-          {activeSection === "About" ? <AboutSettings version={version} /> : null}
+          </section>
         </div>
       </div>
     </div>
@@ -4983,6 +5079,7 @@ function ModelsSettings({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
   const selectedAsr = settingString(settings, "asr_model", "whisper-1");
   const selectedAsrProvider = settingString(settings, "asr_provider_id", "");
   const selectedEmbeddingProvider = settingString(settings, "embedding_provider_id", "");
@@ -4998,7 +5095,9 @@ function ModelsSettings({
   const [modelTab, setModelTab] = useState<"setup" | "catalog">("setup");
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
-  const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
+  const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(() =>
+    visualFixtureMode ? demoUsageSummary : null,
+  );
 
   async function loadProviders() {
     try {
@@ -5011,6 +5110,10 @@ function ModelsSettings({
   }
 
   useEffect(() => {
+    if (visualFixtureMode) {
+      setUsageSummary(demoUsageSummary);
+      return;
+    }
     let cancelled = false;
     async function tick() {
       try {
@@ -5029,7 +5132,7 @@ function ModelsSettings({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [visualFixtureMode]);
 
   useEffect(() => {
     void loadProviders();
@@ -5075,12 +5178,18 @@ function ModelsSettings({
   const localRuntimeIssue = catalog?.runtime.local_runtime_error ?? null;
   // The runtime banner reflects the selected mode. Remote provider readiness is
   // still used for remote model blockers in the catalog tab.
-  const isAutoMode = inferenceMode === "auto";
+  const isAutoMode = inferenceMode !== "local";
   const isLocalMode = inferenceMode === "local";
   const effectiveLocalMode = isLocalMode || (isAutoMode && localRuntimeReady);
   const localAsrLabel =
     asrModels.find((model) => model.tier === "local")?.label ?? t("settings.models.localAsr.fallbackLabel");
-  const bannerReady = isLocalMode ? localRuntimeReady : isAutoMode ? localRuntimeReady || runtimeReady : runtimeReady;
+  const bannerReady = visualFixtureMode
+    ? true
+    : isLocalMode
+      ? localRuntimeReady
+      : isAutoMode
+        ? localRuntimeReady || runtimeReady
+        : runtimeReady;
   const bannerBadge = effectiveLocalMode
     ? localRuntimeReady
       ? t("settings.models.runtime.badge.localReady")
@@ -5144,27 +5253,6 @@ function ModelsSettings({
         </div>
       )}
 
-      <nav className="seg-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={modelTab === "setup"}
-          className={modelTab === "setup" ? "active" : ""}
-          onClick={() => setModelTab("setup")}
-        >
-          {t("settings.models.tab.setup")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={modelTab === "catalog"}
-          className={modelTab === "catalog" ? "active" : ""}
-          onClick={() => setModelTab("catalog")}
-        >
-          {t("settings.models.tab.catalog")}
-        </button>
-      </nav>
-
       {modelTab === "setup" && (
         <>
       <InferenceModeSelector
@@ -5184,39 +5272,45 @@ function ModelsSettings({
         requestConfirm={requestConfirm}
       />
 
-      <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
-        <TranscriptionControl
-          isLocalMode={effectiveLocalMode}
-          localAsrLabel={localAsrLabel}
-          providers={asrProviderOptions}
-          selectedProviderId={selectedAsrProvider}
-          models={remoteAsrOptions}
-          selectedModelId={activeRemoteAsr}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
+      <details className="advanced-processing-details">
+        <summary>
+          <Wrench size={15} />
+          <span>{t("settings.section.advanced")} · {t("settings.models.controlGrid.aria")}</span>
+        </summary>
+        <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
+          <TranscriptionControl
+            isLocalMode={effectiveLocalMode}
+            localAsrLabel={localAsrLabel}
+            providers={asrProviderOptions}
+            selectedProviderId={selectedAsrProvider}
+            models={remoteAsrOptions}
+            selectedModelId={activeRemoteAsr}
+            disabled={disabled}
+            onSettingsChange={onSettingsChange}
+          />
 
-        <EmbeddingControl
-          models={embeddingModels}
-          activeProfile={activeProfile}
-          providers={embeddingProviderOptions}
-          selectedProviderId={selectedEmbeddingProvider}
-          localActive={effectiveLocalMode}
-          localRuntimeReady={localRuntimeReady}
-          localRuntimeIssue={localRuntimeIssue}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
+          <EmbeddingControl
+            models={embeddingModels}
+            activeProfile={activeProfile}
+            providers={embeddingProviderOptions}
+            selectedProviderId={selectedEmbeddingProvider}
+            localActive={effectiveLocalMode}
+            localRuntimeReady={localRuntimeReady}
+            localRuntimeIssue={localRuntimeIssue}
+            disabled={disabled}
+            onSettingsChange={onSettingsChange}
+          />
 
-        <VideoUnderstandingControl
-          models={videoUnderstandingModels}
-          providers={videoUnderstandingProviderOptions}
-          selectedProviderId={selectedVideoUnderstandingProvider}
-          selectedModelId={selectedVideoUnderstandingModel}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-      </section>
+          <VideoUnderstandingControl
+            models={videoUnderstandingModels}
+            providers={videoUnderstandingProviderOptions}
+            selectedProviderId={selectedVideoUnderstandingProvider}
+            selectedModelId={selectedVideoUnderstandingModel}
+            disabled={disabled}
+            onSettingsChange={onSettingsChange}
+          />
+        </section>
+      </details>
         </>
       )}
 
@@ -5674,7 +5768,7 @@ function preferredAsrModelForProvider(provider: api.ProviderRecord, options: Asr
   return options[0]?.id ?? "whisper-1";
 }
 
-// Smart-processing selector. The three cards ARE the inference-mode switch:
+// Smart-processing selector. The two cards ARE the inference-mode switch:
 // clicking one applies it. Each carries its own one-line explanation, and the
 // local card carries the Apple-Silicon constraint as a badge — replacing the
 // read-only overview + a detached segmented control + one floating help
@@ -5701,6 +5795,7 @@ function InferenceModeSelector({
     usageSummary && usageSummary.total.event_count > 0
       ? Math.round((usageSummary.local.event_count / usageSummary.total.event_count) * 100)
       : 0;
+  const normalizedMode = inferenceMode === "local" ? "local" : "auto";
   const modes = [
     {
       id: "auto",
@@ -5718,14 +5813,6 @@ function InferenceModeSelector({
       cost: usageSummary?.local.estimated_usd ?? 0,
       events: usageSummary?.local.event_count ?? 0,
     },
-    {
-      id: "remote",
-      label: t("settings.models.inferenceMode.remote"),
-      desc: t("settings.models.inferenceMode.remote.desc"),
-      badge: null as string | null,
-      cost: usageSummary?.remote.estimated_usd ?? 0,
-      events: usageSummary?.remote.event_count ?? 0,
-    },
   ];
 
   return (
@@ -5736,7 +5823,7 @@ function InferenceModeSelector({
       </div>
       <div className="imode-grid">
         {modes.map((mode) => {
-          const selected = inferenceMode === mode.id;
+          const selected = normalizedMode === mode.id;
           return (
             <button
               type="button"
