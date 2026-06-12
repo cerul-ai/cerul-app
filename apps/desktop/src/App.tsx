@@ -575,12 +575,13 @@ const emptyUsageTotals: api.UsageTotals = {
 const items: Item[] = [
   {
     id: "item-1",
-    title: "Karpathy - Software Is Changing Again",
+    title: "Karpathy — Software Is Changing Again",
     sourceId: "source-2",
     contentType: "video",
     source: "Andrej Karpathy",
     sourceKind: "youtube",
-    duration: "1 h 18 m",
+    duration: "1:18:22",
+    durationSec: 4702,
     indexedAt: "今天",
     indexedAtEpoch: 1780444800,
     status: "indexed",
@@ -596,7 +597,13 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
-    playbackPosition: null,
+    playbackPosition: {
+      item_id: "item-1",
+      position_sec: 754,
+      timestamp: "12:34",
+      chunk_id: null,
+      updated_at: 1780448400,
+    },
     usage: emptyUsageTotals,
   },
   {
@@ -606,7 +613,8 @@ const items: Item[] = [
     contentType: "video",
     source: "Talks 2026",
     sourceKind: "folder",
-    duration: "49 m",
+    duration: "49:08",
+    durationSec: 2948,
     indexedAt: "昨天",
     indexedAtEpoch: 1780358400,
     status: "indexing",
@@ -632,7 +640,8 @@ const items: Item[] = [
     contentType: "audio",
     source: "Engineering Notes",
     sourceKind: "podcast",
-    duration: "56 m",
+    duration: "56:41",
+    durationSec: 3401,
     indexedAt: "5月12日",
     indexedAtEpoch: 1778544000,
     status: "indexed",
@@ -658,7 +667,8 @@ const items: Item[] = [
     contentType: "video",
     source: "Design Reviews",
     sourceKind: "folder",
-    duration: "23 m",
+    duration: "23:12",
+    durationSec: 1392,
     indexedAt: "5月11日",
     indexedAtEpoch: 1778457600,
     status: "failed",
@@ -684,7 +694,8 @@ const items: Item[] = [
     contentType: "video",
     source: "Andrej Karpathy",
     sourceKind: "youtube",
-    duration: "41 m",
+    duration: "41:05",
+    durationSec: 2465,
     indexedAt: "5月10日",
     indexedAtEpoch: 1778371200,
     status: "failed",
@@ -1471,6 +1482,7 @@ function AppWorkspace() {
             aria-label={t("shell.openHome")}
           >
             <BrandMark />
+            <span className="rail-wordmark rail-label">Cerul</span>
           </button>
           <button
             className="btn-icon sm rail-collapse"
@@ -1859,7 +1871,9 @@ function HomeScreen({
   const runtimeMinutes = items.reduce((total, item) => total + durationMinutes(item.duration), 0);
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
-  const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const recentIndexed = [...items]
+    .sort((left, right) => (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0))
+    .slice(0, 4);
   const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
     visualFixtureModeEnabled()
       ? {
@@ -1876,7 +1890,9 @@ function HomeScreen({
         }
       : null,
   );
-  const [weeklyDismissed, setWeeklyDismissed] = useState(false);
+  // Weekly review is kept but lives off the default home (完整版 baseline has no
+  // weekly card) — surfaced on demand via the "本周回顾" toggle in the recent header.
+  const [showWeekly, setShowWeekly] = useState(false);
   const serverContinueItem = items
     .filter((item) => item.status === "indexed" && item.playbackPosition?.updated_at)
     .sort(
@@ -1968,10 +1984,13 @@ function HomeScreen({
   }
 
   return (
-    <div className="page home-page" style={{ maxWidth: 760 }}>
+    <div className="page home-page" style={{ maxWidth: 920 }}>
       <div className="home-search-stage">
+        <div className="home-hero-mark" aria-hidden="true">
+          <BrandMark variant="color" />
+        </div>
         <h1>{t("home.heading")}</h1>
-        <p className="muted">
+        <p className="muted home-summary">
           {t("home.summary", {
             count: indexedCount,
             runtime:
@@ -1985,7 +2004,7 @@ function HomeScreen({
         <form
           className={searchDisabled ? "search-wrap disabled" : "search-wrap"}
           onSubmit={handleSearchSubmit}
-          style={{ width: "100%", maxWidth: 600, marginTop: 30 }}
+          style={{ width: "100%", maxWidth: 720, marginTop: 28 }}
         >
           <Search size={18} />
           <input
@@ -2009,21 +2028,30 @@ function HomeScreen({
         ) : null}
 
         <div className="row gap-3 home-status-line">
-          <span className="chip neutral">
-            <span className="dot" />
-            {statusLabel}
-          </span>
-          <span className="faint">{t("home.hotkeyHint", { hotkey: globalHotkey })}</span>
-          <button className="btn btn-ghost sm" type="button" onClick={onOpenModelSettings}>
-            <Wrench size={14} />
-            <span>{t("home.metric.configure")}</span>
-          </button>
+          {activeJobs.length > 0 ? (
+            <span className="chip indexing">
+              <Loader2 size={13} className="spin" />
+              {statusLabel}
+            </span>
+          ) : (
+            <span className="chip neutral">
+              <span className="dot" />
+              {statusLabel}
+            </span>
+          )}
+          <span className="faint home-hotkey">{t("home.hotkeyHint", { hotkey: globalHotkey })}</span>
         </div>
       </div>
 
       {continueItem ? (
         <div className="home-continue-block">
-          <p className="section-label" style={{ marginBottom: 10 }}>{t("home.continueWatching")}</p>
+          <div className="home-block-head">
+            <p className="section-label">{t("home.continueWatching")}</p>
+            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+              <Plus size={14} />
+              <span>{t("home.addSource")}</span>
+            </button>
+          </div>
           <ContinueWatchingCard
             item={continueItem}
             timestamp={continueTimestamp}
@@ -2032,51 +2060,64 @@ function HomeScreen({
         </div>
       ) : null}
 
-      {weeklyReview && !weeklyDismissed ? (
-        <section className="weekly-card" aria-label={t("weekly.title")}>
-          <div>
-            <p className="section-label">{t("weekly.eyebrow")}</p>
-            <h2>{t("weekly.title")}</h2>
-            <p>
-              {t("weekly.body", {
-                items: weeklyReview.indexed_items,
-                hours: formatWeeklyHours(weeklyReview.indexed_seconds),
-                watched: weeklyReview.watched_percent,
-              })}
-            </p>
-            {weeklyReview.topics.length > 0 ? (
-              <div className="weekly-topics">
-                {weeklyReview.topics.map((topic) => (
-                  <span className="chip neutral" key={topic.id}>{topic.label}</span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            className="btn-icon sm"
-            aria-label={t("common.close")}
-            onClick={() => setWeeklyDismissed(true)}
-          >
-            <X size={15} />
-          </button>
-        </section>
-      ) : null}
-
       <div className="home-recent-block">
-        <div className="row" style={{ justifyContent: "space-between", marginBottom: 14 }}>
-          <p className="section-label" style={{ margin: 0 }}>{t("home.recentIndexed")}</p>
+        <div className="home-block-head">
+          <p className="section-label">{t("home.recentIndexed")}</p>
           <div className="row gap-2">
+            {weeklyReview ? (
+              <button
+                className={showWeekly ? "btn btn-ghost sm active" : "btn btn-ghost sm"}
+                type="button"
+                onClick={() => setShowWeekly((value) => !value)}
+              >
+                <Sparkles size={14} />
+                <span>{t("weekly.title")}</span>
+              </button>
+            ) : null}
             <button className="btn btn-ghost sm" type="button" onClick={onOpenLibrary}>
               <span>{t("home.browseLibrary")}</span>
               <ChevronRight size={14} />
             </button>
-            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
-              <Plus size={14} />
-              <span>{t("home.addSource")}</span>
-            </button>
+            {!continueItem ? (
+              <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+                <Plus size={14} />
+                <span>{t("home.addSource")}</span>
+              </button>
+            ) : null}
           </div>
         </div>
+
+        {showWeekly && weeklyReview ? (
+          <section className="weekly-card" aria-label={t("weekly.title")}>
+            <div>
+              <p className="section-label">{t("weekly.eyebrow")}</p>
+              <h2>{t("weekly.title")}</h2>
+              <p>
+                {t("weekly.body", {
+                  items: weeklyReview.indexed_items,
+                  hours: formatWeeklyHours(weeklyReview.indexed_seconds),
+                  watched: weeklyReview.watched_percent,
+                })}
+              </p>
+              {weeklyReview.topics.length > 0 ? (
+                <div className="weekly-topics">
+                  {weeklyReview.topics.map((topic) => (
+                    <span className="chip neutral" key={topic.id}>{topic.label}</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="btn-icon sm"
+              aria-label={t("common.close")}
+              onClick={() => setShowWeekly(false)}
+            >
+              <X size={15} />
+            </button>
+          </section>
+        ) : null}
+
         {recentIndexed.length > 0 ? (
           <div className="home-recent-grid">
             {recentIndexed.map((item) => (
@@ -2096,6 +2137,19 @@ function HomeScreen({
   );
 }
 
+function itemKindLabel(item: Item, t: TFunction): string {
+  switch (item.sourceKind) {
+    case "youtube":
+      return t("item.kind.youtube");
+    case "podcast":
+      return t("item.kind.podcast");
+    case "web_video":
+      return t("item.kind.web");
+    default:
+      return t("item.kind.local");
+  }
+}
+
 function ContinueWatchingCard({
   item,
   timestamp,
@@ -2106,21 +2160,38 @@ function ContinueWatchingCard({
   onOpen: () => void;
 }) {
   const t = useT();
+  const positionSec = item.playbackPosition?.position_sec ?? null;
+  const progressPct =
+    positionSec != null && item.durationSec
+      ? Math.min(100, Math.max(2, (positionSec / item.durationSec) * 100))
+      : null;
+  const metaParts = [itemKindLabel(item, t), item.source].filter(Boolean);
+  if (timestamp) {
+    metaParts.push(t("home.continueAt", { at: timestamp, total: item.duration }));
+  }
   return (
     <button className="card hover continue-card" type="button" onClick={onOpen}>
-      <span className={`thumb continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+      <span className={`continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
         {item.thumbnailUrl ? (
           <img src={item.thumbnailUrl} alt="" loading="lazy" />
         ) : (
-          <ItemModalityIcon item={item} size={24} />
+          <ItemModalityIcon item={item} size={26} />
         )}
+        <span className="continue-play" aria-hidden="true">
+          <Play size={18} fill="currentColor" />
+        </span>
         {item.contentType !== "image" && item.duration ? (
           <small className="thumb-duration mono">{item.duration}</small>
         ) : null}
+        {progressPct != null ? (
+          <span className="continue-progress" aria-hidden="true">
+            <span style={{ width: `${progressPct}%` }} />
+          </span>
+        ) : null}
       </span>
       <span className="continue-body">
-        <strong className="clamp1">{item.title}</strong>
-        {timestamp ? <span className="mono faint">{timestamp}</span> : null}
+        <strong className="clamp1 continue-title">{item.title}</strong>
+        <span className="continue-meta clamp1">{metaParts.join(" · ")}</span>
         <span className="continue-cta">{t("home.continueResume")}</span>
       </span>
     </button>
@@ -3950,27 +4021,35 @@ function LibraryScreen({
     <div className="page wide">
       <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
         <div>
-          <p className="page-eyebrow">{t("library.eyebrow")}</p>
           <h1 className="page-h1">{t("library.heading")}</h1>
+          <p className="page-sub" style={{ maxWidth: 520 }}>{t("library.sub")}</p>
         </div>
-        <div className="segmented" aria-label={t("library.view.aria")}>
-          <button
-            className={viewMode === "grid" ? "active" : ""}
-            type="button"
-            aria-label={t("library.view.grid")}
-            aria-pressed={viewMode === "grid"}
-            onClick={() => setViewMode("grid")}
-          >
-            <Library size={15} />
-          </button>
-          <button
-            className={viewMode === "list" ? "active" : ""}
-            type="button"
-            aria-label={t("library.view.list")}
-            aria-pressed={viewMode === "list"}
-            onClick={() => setViewMode("list")}
-          >
-            <ListFilter size={15} />
+        <div className="row gap-2" style={{ alignItems: "center" }}>
+          <div className="segmented" aria-label={t("library.view.aria")}>
+            <button
+              className={viewMode === "grid" ? "active" : ""}
+              type="button"
+              aria-label={t("library.view.grid")}
+              aria-pressed={viewMode === "grid"}
+              onClick={() => setViewMode("grid")}
+            >
+              <Library size={15} />
+              <span>{t("library.view.gridShort")}</span>
+            </button>
+            <button
+              className={viewMode === "list" ? "active" : ""}
+              type="button"
+              aria-label={t("library.view.list")}
+              aria-pressed={viewMode === "list"}
+              onClick={() => setViewMode("list")}
+            >
+              <ListFilter size={15} />
+              <span>{t("library.view.listShort")}</span>
+            </button>
+          </div>
+          <button className="btn btn-primary" type="button" onClick={onAddSource}>
+            <Plus size={16} />
+            <span>{t("home.addSource")}</span>
           </button>
         </div>
       </div>

@@ -4,13 +4,18 @@
    One token set; light/dark share structure, only lightness changes.
    ============================================================ */
 
-/* ---- Typography families (font A/B switched via [data-font]) ---- */
+/* ---- Typography families ----
+   System-native stack to match the redesign baseline (完整版 prototype).
+   The [data-font] hook is kept for the settings picker but both options
+   resolve to the system stack so the native look is never overridden. */
 :root {
-  --font-sans: "Space Grotesk", "Hanken Grotesk", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: -apple-system, system-ui, "PingFang SC", "Hiragino Sans GB",
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 [data-font="neutral"] {
-  --font-sans: "Hanken Grotesk", system-ui, sans-serif;
+  --font-sans: -apple-system, system-ui, "PingFang SC", "Hiragino Sans GB",
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 /* ---- Type scale (px) ---- */
@@ -40,9 +45,10 @@
   --sp-12: 48px;
 
   /* ---- Radius ---- */
-  --r-sm: 6px;
-  --r-md: 8px;
-  --r-lg: 12px;
+  --r-sm: 7px;
+  --r-md: 9px;   /* nav pills, buttons, chips */
+  --r-lg: 12px;  /* cards, panels */
+  --r-xl: 16px;  /* large floating cards, drawers */
   --r-pill: 999px;
 
   /* ---- Motion ---- */
@@ -62,52 +68,59 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  /* Surfaces */
-  --bg-app:      #ffffff;
-  --bg-sunken:   #fafafa;   /* page wells, rail */
-  --surface:     #ffffff;   /* cards */
-  --surface-2:   #fafafa;   /* secondary surface */
-  --surface-3:   #f4f4f5;   /* hover / pressed fills */
+  /* Surfaces — cool desktop gray with white cards floating on it */
+  --bg-app:      #e9ebee;   /* desktop / content well */
+  --bg-sunken:   #e9ebee;   /* rail shares the app gray, split by a border */
+  --surface:     #ffffff;   /* cards, panels, popovers */
+  --surface-2:   #f4f6f8;   /* inset fields, secondary surface */
+  --surface-3:   #eaeef2;   /* hover / pressed fills */
 
   /* Hairlines */
-  --line:        #e7e8ea;
-  --line-strong: #d5d7da;
+  --line:        #e2e6eb;   /* card / panel hairlines */
+  --line-strong: #d5dae0;   /* rail divider, stronger separators */
 
   /* Text — cool metal neutrals */
-  --text:        #1f2228;
-  --text-muted:  #6a727d;
-  --text-faint:  #9aa2ad;
+  --text:        #1c2229;
+  --text-muted:  #525d6b;
+  --text-faint:  #8a93a0;
   --text-on-accent: #ffffff;
 
   /* Accent (steel) */
-  --accent:        #4d6fa6;
-  --accent-hover:  #44639a; /* slightly darker for hover on light */
-  --accent-press:  #3c5a8c;
-  --accent-soft:   rgba(77, 111, 166, 0.12); /* tint fill */
-  --accent-soft-2: rgba(77, 111, 166, 0.18);
-  --accent-line:   rgba(77, 111, 166, 0.40);
-  --accent-2:      #a06f39; /* warm copper — podcast modality only */
+  --accent:        #3e6b9d;
+  --accent-hover:  #365f8c;
+  --accent-press:  #2f5478;
+  --accent-soft:   rgba(62, 107, 157, 0.10); /* tint fill */
+  --accent-soft-2: rgba(62, 107, 157, 0.16);
+  --accent-line:   rgba(62, 107, 157, 0.40);
+  --accent-tint:   #eef4fb;  /* solid steel tint — selected rows / active line */
+  --accent-2:      #a06f39;  /* warm copper — podcast modality only */
 
-  /* Status (low-saturation) */
-  --success:      #1f8d4a;
-  --success-soft: rgba(31, 141, 74, 0.12);
-  --warn:         #b1791f;
-  --warn-soft:    rgba(177, 121, 31, 0.13);
-  --danger:       #c2503f;
-  --danger-soft:  rgba(194, 80, 63, 0.12);
+  /* Status — pills use tint + line + text together */
+  --success:      #2e7d56;
+  --success-soft: rgba(46, 125, 86, 0.12);
+  --success-tint: #e7f4ed;
+  --success-line: #c8e6d6;
+  --warn:         #8a5a12;
+  --warn-soft:    rgba(176, 120, 31, 0.13);
+  --warn-tint:    #fbf0d9;
+  --warn-line:    #efd9ab;
+  --danger:       #b8443a;
+  --danger-soft:  rgba(184, 68, 58, 0.12);
+  --danger-tint:  #fbe9e4;
+  --danger-line:  #f1c8c0;
 
-  /* Neutral tint (was warm cream; metal system is cool-neutral) */
+  /* Neutral tint */
   --cream:        #f3f5f7;
 
   /* Elevation — light uses a whisper of shadow */
-  --shadow-1: 0 1px 2px rgba(20, 20, 24, 0.04), 0 1px 1px rgba(20, 20, 24, 0.03);
-  --shadow-2: 0 4px 12px rgba(20, 20, 24, 0.07), 0 1px 2px rgba(20, 20, 24, 0.04);
-  --shadow-pop: 0 8px 28px rgba(20, 20, 24, 0.12), 0 2px 6px rgba(20, 20, 24, 0.06);
+  --shadow-1: 0 1px 2px rgba(20, 30, 45, 0.04);
+  --shadow-2: 0 1px 3px rgba(20, 30, 45, 0.07), 0 1px 2px rgba(20, 30, 45, 0.04);
+  --shadow-pop: 0 8px 28px rgba(20, 30, 45, 0.14), 0 2px 6px rgba(20, 30, 45, 0.08);
 
-  --scrim: rgba(24, 24, 27, 0.32);
+  --scrim: rgba(20, 28, 40, 0.28);
 
   /* Focus ring (soft, steel) */
-  --focus-ring: 0 0 0 3px rgba(77, 111, 166, 0.28);
+  --focus-ring: 0 0 0 3px rgba(62, 107, 157, 0.20);
 }
 
 /* ============================================================
@@ -136,14 +149,21 @@
   --accent-soft:   rgba(143, 176, 216, 0.16);
   --accent-soft-2: rgba(143, 176, 216, 0.24);
   --accent-line:   rgba(143, 176, 216, 0.45);
+  --accent-tint:   rgba(143, 176, 216, 0.14);
   --accent-2:      #caa066; /* warm copper — podcast modality only */
 
   --success:      #45d59f;
   --success-soft: rgba(69, 213, 159, 0.14);
+  --success-tint: rgba(69, 213, 159, 0.14);
+  --success-line: rgba(69, 213, 159, 0.30);
   --warn:         #e5b84a;
   --warn-soft:    rgba(229, 184, 74, 0.14);
+  --warn-tint:    rgba(229, 184, 74, 0.14);
+  --warn-line:    rgba(229, 184, 74, 0.30);
   --danger:       #f06f62;
   --danger-soft:  rgba(240, 111, 98, 0.14);
+  --danger-tint:  rgba(240, 111, 98, 0.14);
+  --danger-line:  rgba(240, 111, 98, 0.30);
 
   --cream:        #181b20;
 

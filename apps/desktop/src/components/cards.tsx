@@ -16,11 +16,35 @@ import {
   Play,
   Sparkles,
 } from "lucide-react";
-import { useT } from "../lib/i18n";
+import { useT, type TFunction } from "../lib/i18n";
 import { formatUsd } from "../lib/formatters";
 import { resultModality } from "../lib/results";
 import type { Item, Result } from "../lib/types";
-import { ProgressBar, StatusBadge, highlightSnippet } from "./transcript";
+import { ProgressBar, highlightSnippet } from "./transcript";
+
+// Single searchability chip summarising an item's state, mirroring the
+// redesign baseline (语音 + 画面可搜 / 仅语音可搜 / 索引中 · % / 处理失败).
+function itemSearchability(
+  item: Item,
+  t: TFunction,
+): { label: string; tone: "accent" | "warn" | "danger" } {
+  if (item.status === "failed") {
+    return { label: t("library.itemCard.failedClick"), tone: "danger" };
+  }
+  if (item.status === "indexing") {
+    const pct =
+      item.progressLabel ??
+      (item.progress !== null ? `${Math.round(item.progress * 100)}%` : null);
+    return {
+      label: pct ? t("library.itemCard.indexingPct", { pct }) : t("library.status.indexing"),
+      tone: "warn",
+    };
+  }
+  const visualSearchable = item.contentType === "video" && item.visualIndexStatus !== "failed";
+  return visualSearchable
+    ? { label: t("library.itemCard.searchSpeechVisual"), tone: "accent" }
+    : { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
+}
 
 export function ResultModalityIcon({
   result,
@@ -182,12 +206,15 @@ export function ItemCard({
   onOpen: () => void;
 }) {
   const t = useT();
-  const statusLabel =
-    item.status === "indexed"
-      ? t("library.status.indexed")
-      : item.status === "indexing"
-        ? t("library.status.indexing")
-        : t("library.status.failed");
+  const searchability = itemSearchability(item, t);
+  const metaLine = [
+    item.source,
+    item.indexedAtEpoch === null
+      ? t("library.itemCard.notIndexed")
+      : t("library.itemCard.indexedAt", { when: item.indexedAt }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <article
       className={
@@ -215,6 +242,9 @@ export function ItemCard({
           ) : (
             <ItemModalityIcon item={item} size={22} />
           )}
+          {item.contentType !== "image" && item.duration && item.status !== "indexing" ? (
+            <small className="thumb-duration mono">{item.duration}</small>
+          ) : null}
           {item.status === "indexing" && item.progress !== null ? (
             <span
               className="item-progress-overlay"
@@ -233,13 +263,7 @@ export function ItemCard({
         </span>
         <span className="item-copy body">
           <strong className="clamp2">{item.title}</strong>
-          <span className="muted">{item.source}</span>
-          <span className="muted">
-            {item.duration} ·{" "}
-            {item.indexedAtEpoch === null
-              ? t("library.itemCard.notIndexed")
-              : t("library.itemCard.indexedAt", { when: item.indexedAt })}
-          </span>
+          <span className="item-card-meta muted clamp1">{metaLine}</span>
           {item.usage.event_count > 0 ? (
             <span className="item-usage mono muted">
               {formatUsd(item.usage.estimated_usd)} ·{" "}
@@ -251,20 +275,11 @@ export function ItemCard({
               )}
             </span>
           ) : null}
-          {item.visualIndexStatus === "failed" ? (
-            <span className="item-warning chip warn">
-              <span className="dot" />
-              {t("library.itemCard.transcriptOnly")}
-            </span>
-          ) : null}
-          {item.embeddingIndexStatus === "failed" ? (
-            <span className="item-warning chip warn">
-              <span className="dot" />
-              {t("library.itemCard.partialIndex")}
-            </span>
-          ) : null}
+          <span className={`item-searchability chip ${searchability.tone}`}>
+            <span className="dot" />
+            {searchability.label}
+          </span>
         </span>
-        <StatusBadge status={item.status} label={statusLabel} />
       </button>
     </article>
   );

@@ -2130,10 +2130,10 @@ body.overlay-body {
    while it happens, and "$0.00 · on-device" reinforces the local-first story. */
 .jobs-cost-card {
   margin-bottom: var(--sp-3);
-  padding: 12px 14px;
-  border: 1px solid var(--line);
+  padding: 13px 15px;
+  border: 1px solid var(--accent-line);
   border-radius: var(--r-md);
-  background: var(--surface-2);
+  background: var(--accent-tint);
 }
 .jobs-cost-main {
   display: flex;
@@ -2518,12 +2518,11 @@ body.overlay-body {
 .item-card {
   appearance: none;
   width: 100%;
-  min-height: 250px;
   border: 0;
   background: transparent;
   color: var(--text);
   display: grid;
-  grid-template-rows: 132px 1fr auto;
+  grid-template-rows: auto 1fr;
   gap: 0;
   padding: 0;
   text-align: left;
@@ -2531,31 +2530,53 @@ body.overlay-body {
   cursor: pointer;
 }
 .item-card.list {
-  min-height: 104px;
-  grid-template-columns: 124px minmax(0, 1fr) auto;
+  min-height: 96px;
+  grid-template-columns: 150px minmax(0, 1fr);
   grid-template-rows: none;
   align-items: center;
 }
 .item-thumb {
+  position: relative;
   display: grid;
   place-items: center;
-  min-height: 132px;
+  aspect-ratio: 16 / 9;
   border-radius: 0;
+  background: var(--surface-3);
   color: var(--text-muted);
 }
 .item-card.list .item-thumb {
+  aspect-ratio: auto;
+  align-self: stretch;
   min-height: 86px;
 }
+.item-thumb .thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 62%);
+  color: #fff;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
 .item-copy {
-  padding: 12px 13px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px 14px;
 }
 .item-copy .muted {
   font-size: var(--fs-meta);
 }
-.item-card > .chip {
+.item-card-meta {
+  font-size: var(--fs-meta);
+}
+.item-searchability {
   width: max-content;
-  max-width: calc(100% - 24px);
-  margin: 0 12px 12px;
+  max-width: 100%;
+  margin-top: 6px;
 }
 .item-select {
   position: absolute;
@@ -3457,18 +3478,18 @@ body.overlay-body {
   margin-top: 14px;
   padding: 11px 14px;
   text-align: left;
-  border: 1px solid var(--accent-line);
+  border: 1px solid var(--warn-line);
   border-radius: var(--r-lg);
-  background: var(--accent-soft);
+  background: var(--warn-tint);
   color: var(--text);
   cursor: pointer;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.indexing-strip:hover { background: var(--accent-soft-2); }
-.indexing-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.indexing-strip:hover { background: color-mix(in srgb, var(--warn-tint) 84%, var(--warn) 16%); }
+.indexing-strip:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
 .indexing-strip__spin {
   flex: none;
-  color: var(--accent);
+  color: var(--warn);
   animation: indexing-spin 1s linear infinite;
 }
 @keyframes indexing-spin { to { transform: rotate(360deg); } }
@@ -3494,11 +3515,22 @@ body.overlay-body {
   padding: 1px 7px;
   border-radius: var(--r-pill);
   background: var(--surface);
-  border: 1px solid var(--accent-line);
-  color: var(--accent);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
   font-family: var(--font-mono);
   font-size: 11px;
   font-feature-settings: "tnum" 1;
+}
+/* amber progress fill inside the indexing strip (matches 完整版 baseline) */
+.indexing-strip .progress .bar,
+.indexing-strip .progress.animated .bar {
+  background: var(--warn);
+  background-image: linear-gradient(
+    90deg,
+    var(--warn) 0%,
+    color-mix(in srgb, var(--warn) 55%, white) 50%,
+    var(--warn) 100%
+  );
 }
 .indexing-strip__meta { font-size: var(--fs-meta); }
 .indexing-strip__body .progress { margin-top: 1px; }
