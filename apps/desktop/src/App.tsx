@@ -4158,18 +4158,18 @@ function LibraryScreen({
           </button>
         </div>
       ) : null}
-      <div className={viewMode === "grid" ? "lib-grid" : "tbl lib-table"}>
-        {viewMode === "list" && items.length > 0 && filteredItems.length > 0 ? (
-          <div className="lib-table-head" aria-hidden="true">
-            <span>{t("library.col.title")}</span>
-            <span>{t("library.col.source")}</span>
-            <span>{t("library.col.duration")}</span>
-            <span>{t("library.col.indexed")}</span>
-            <span>{t("library.col.searchability")}</span>
-          </div>
-        ) : null}
-        {items.length > 0 && filteredItems.length > 0
-          ? filteredItems.map((item) => (
+      {items.length > 0 && filteredItems.length > 0 ? (
+        <div className={viewMode === "grid" ? "lib-grid" : "tbl lib-table"}>
+          {viewMode === "list" ? (
+            <div className="lib-table-head" aria-hidden="true">
+              <span>{t("library.col.title")}</span>
+              <span>{t("library.col.source")}</span>
+              <span>{t("library.col.duration")}</span>
+              <span>{t("library.col.indexed")}</span>
+              <span>{t("library.col.searchability")}</span>
+            </div>
+          ) : null}
+          {filteredItems.map((item) => (
             <ItemCard
               key={item.id}
               item={item}
@@ -4179,25 +4179,25 @@ function LibraryScreen({
               onSelect={(selected) => toggleItemSelection(item.id, selected)}
               onOpen={() => onOpenItem(item)}
             />
-          ))
-          : null}
-        {items.length === 0 ? (
-          <EmptyState
-            title={t("library.empty.none.title")}
-            body={t("library.empty.none.body")}
-            actionLabel={t("library.empty.addSource")}
-            onAction={onAddSource}
-          />
-        ) : null}
-        {items.length > 0 && filteredItems.length === 0 ? (
-          <EmptyState
-            title={t("library.empty.filtered.title")}
-            body={t("library.empty.filtered.body")}
-            actionLabel={t("common.clearFilters")}
-            onAction={clearLibraryFilters}
-          />
-        ) : null}
-      </div>
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        // Empty state lives outside the grid so it centers across the full
+        // width instead of being trapped in the first 360px grid cell.
+        <EmptyState
+          title={t("library.empty.none.title")}
+          body={t("library.empty.none.body")}
+          actionLabel={t("library.empty.addSource")}
+          onAction={onAddSource}
+        />
+      ) : (
+        <EmptyState
+          title={t("library.empty.filtered.title")}
+          body={t("library.empty.filtered.body")}
+          actionLabel={t("common.clearFilters")}
+          onAction={clearLibraryFilters}
+        />
+      )}
     </div>
   );
 }
