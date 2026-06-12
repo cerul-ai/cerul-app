@@ -5461,7 +5461,7 @@ const fallbackAsrModels: AsrModelOption[] = [
 const localVisionModels: ModelComboOption[] = [
   { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit 量化" },
   { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit 量化 · 更小" },
-  { id: "gemma-3-12b-it-qat-4bit", label: "Gemma 3 12B", hint: "本地 · MLX · QAT 量化" },
+  { id: "gemma-4-12B-it-qat-4bit", label: "Gemma 4 12B", hint: "本地 · MLX · QAT 量化" },
 ];
 
 function isGeminiAsrModelId(modelId: string) {
