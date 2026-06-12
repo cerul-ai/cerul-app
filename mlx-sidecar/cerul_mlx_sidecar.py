@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -350,6 +351,13 @@ class CerulMlxRuntime:
             raw_segments = result.get("segments") if isinstance(result, dict) else getattr(result, "segments", [])
             segments = [normalize_segment(segment) for segment in raw_segments or []]
             segments = [segment for segment in segments if segment["text"]]
+            # The aligner returns one segment per spoken character; regroup into
+            # readable phrase/sentence lines so the transcript isn't one glyph
+            # per row.
+            try:
+                segments = group_aligned_segments(text or "", segments)
+            except Exception as exc:  # noqa: BLE001 - keep raw segments on failure
+                print(f"asr: line grouping skipped ({exc})", file=sys.stderr)
             return {
                 "text": text or " ".join(segment["text"] for segment in segments),
                 "segments": segments,
@@ -430,6 +438,95 @@ def normalize_segment(segment: Any) -> dict[str, Any]:
         "end": float(end or start or 0.0),
         "text": str(text or "").strip(),
     }
+
+
+# The Qwen3 ForcedAligner emits one segment per spoken token — for Chinese that
+# is one *character*, so a raw transcript renders one glyph per row. These knobs
+# regroup those into readable phrase/sentence lines.
+_LINE_HARD_BREAKS = set("。！？!?；;…\n")  # always end a line
+_LINE_SOFT_BREAKS = set("，、：,:")  # end a line only once it is long enough
+_LINE_SOFT_MIN_CHARS = 6
+_LINE_MAX_CHARS = 24
+
+
+def _is_punct_char(ch: str) -> bool:
+    return ch.isspace() or unicodedata.category(ch).startswith("P")
+
+
+def _segment_spoken_len(seg_text: str) -> int:
+    spoken = sum(1 for ch in seg_text if not _is_punct_char(ch))
+    return max(1, spoken)
+
+
+def group_aligned_segments(
+    text: str, segments: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Regroup per-token aligner segments into phrase/sentence lines.
+
+    `text` is the fully punctuated transcript; `segments` are spoken tokens (no
+    punctuation), in order. We expand the segments to per-spoken-character
+    timings (so 1-char CJK tokens and multi-char English words both work), then
+    walk the punctuated text and cut a line at sentence punctuation, at a comma
+    once the line has some length, or at a hard length cap. Each line keeps the
+    timing of its first/last spoken character. Falls back to the raw segments if
+    anything looks off, so we never lose the transcript.
+    """
+    if not segments or not text:
+        return segments
+
+    char_times: list[tuple[float, float]] = []
+    for seg in segments:
+        start = seg.get("start") or 0.0
+        end = seg.get("end")
+        end = end if end is not None else start
+        for _ in range(_segment_spoken_len(seg.get("text") or "")):
+            char_times.append((float(start), float(end)))
+    if not char_times:
+        return segments
+    total = len(char_times)
+
+    lines: list[dict[str, Any]] = []
+    buf: list[str] = []
+    line_start: int | None = None
+    idx = 0
+    spoken = 0
+    pending_break = False
+
+    def flush(end_idx: int) -> None:
+        nonlocal buf, line_start, spoken, pending_break
+        line_text = "".join(buf).strip()
+        if line_text and line_start is not None and line_start < total:
+            last = min(end_idx, total) - 1
+            start_sec = char_times[line_start][0]
+            end_sec = char_times[last][1] if last >= line_start else char_times[line_start][1]
+            lines.append({"start": start_sec, "end": end_sec, "text": line_text})
+        buf = []
+        line_start = None
+        spoken = 0
+        pending_break = False
+
+    for ch in text:
+        if _is_punct_char(ch):
+            # An opening quote/bracket leads the next line, not the current one.
+            if pending_break and unicodedata.category(ch) in ("Ps", "Pi"):
+                flush(idx)
+            buf.append(ch)
+            if ch in _LINE_HARD_BREAKS or (ch in _LINE_SOFT_BREAKS and spoken >= _LINE_SOFT_MIN_CHARS):
+                pending_break = True
+            continue
+        if pending_break:
+            flush(idx)
+        if line_start is None:
+            line_start = idx
+        buf.append(ch)
+        if idx < total:
+            idx += 1
+        spoken += 1
+        if spoken >= _LINE_MAX_CHARS:
+            pending_break = True
+    flush(idx)
+
+    return lines or segments
 
 
 def dispatch(runtime: CerulMlxRuntime, request: dict[str, Any]) -> Any:
