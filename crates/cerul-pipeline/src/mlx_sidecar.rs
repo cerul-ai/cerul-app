@@ -31,8 +31,8 @@ pub const DEFAULT_FORCED_ALIGNER_MODEL: &str = "Qwen/Qwen3-ForcedAligner-0.6B";
 pub const DEFAULT_OCR_MODEL: &str = "mlx-community/Qwen3-VL-2B-Instruct-4bit";
 pub const DEFAULT_WHISPER_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
 /// In-memory quantization for the official Qwen3-ASR + ForcedAligner weights.
-/// "8bit" is near-lossless and roughly halves their RAM; "none" keeps fp16.
-pub const DEFAULT_ASR_QUANTIZATION: &str = "8bit";
+/// "4bit" minimises RAM (~-70%); "8bit" is near-lossless; "none" keeps fp16.
+pub const DEFAULT_ASR_QUANTIZATION: &str = "4bit";
 
 /// Restart the sidecar if it emits no output at all for this long. The Python
 /// side sends heartbeats every few seconds while it is genuinely working, so

@@ -53,9 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asr-model", default=DEFAULT_ASR_MODEL)
     parser.add_argument("--forced-aligner-model", default=DEFAULT_FORCED_ALIGNER_MODEL)
     # In-memory quantization for the official ASR + forced-aligner weights.
-    # "8bit" is near-lossless (~+0.04 WER) and roughly halves their footprint;
-    # "none" keeps full fp16.
-    parser.add_argument("--asr-quantization", default="8bit", choices=["8bit", "4bit", "none"])
+    # "4bit" is the smallest (~-70% RAM, ~+0.43 WER); "8bit" is near-lossless
+    # (~+0.04 WER); "none" keeps full fp16.
+    parser.add_argument("--asr-quantization", default="4bit", choices=["8bit", "4bit", "none"])
     parser.add_argument("--ocr-model", default=DEFAULT_OCR_MODEL)
     parser.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
     return parser.parse_args()
