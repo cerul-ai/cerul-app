@@ -32,6 +32,9 @@ pub struct ProviderRecord {
     pub status: String,
     pub last_error: Option<String>,
     pub has_key: bool,
+    /// Masked preview of the stored key (first/last few chars) so the UI can
+    /// confirm which key is set without exposing the full secret.
+    pub key_preview: Option<String>,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
 }
@@ -467,6 +470,15 @@ fn provider_record(
 ) -> ProviderRecord {
     let has_key = provider.id != cerul_storage::providers::LOCAL_PROVIDER_ID
         && has_provider_key_for_provider(paths, &provider);
+    let key_preview = if has_key {
+        get_provider_key_for_provider(paths, &provider)
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(mask_api_key)
+    } else {
+        None
+    };
     let status = if has_key && is_env_provider_id(&provider.id) && provider.status == "unconfigured"
     {
         cerul_storage::providers::PROVIDER_STATUS_READY.to_string()
@@ -475,6 +487,7 @@ fn provider_record(
     };
     ProviderRecord {
         has_key,
+        key_preview,
         id: provider.id,
         provider_type: provider.provider_type,
         label: provider.label,
@@ -484,6 +497,23 @@ fn provider_record(
         created_at: provider.created_at,
         updated_at: provider.updated_at,
     }
+}
+
+// Mask a secret to a "first4…last4" preview (or "first1…" for very short keys)
+// so the UI can confirm which key is set without revealing the full value.
+fn mask_api_key(key: &str) -> String {
+    let key = key.trim();
+    let len = key.chars().count();
+    if len == 0 {
+        return String::new();
+    }
+    if len <= 8 {
+        let head: String = key.chars().take(1).collect();
+        return format!("{head}…");
+    }
+    let head: String = key.chars().take(4).collect();
+    let tail: String = key.chars().skip(len - 4).collect();
+    format!("{head}…{tail}")
 }
 
 fn is_env_provider_id(provider_id: &str) -> bool {

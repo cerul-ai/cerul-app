@@ -5187,16 +5187,14 @@ function ModelsSettings({
   const toComboOptions = (
     list: { id: string; label: string; size_label?: string }[],
   ): ModelComboOption[] => list.map((m) => ({ id: m.id, label: m.label, hint: m.size_label }));
-  const activeEmbeddingId =
-    embeddingModels.find(
-      (model) => model.id === activeProfile?.model_id || model.source === activeProfile?.model_id,
-    )?.id ??
-    embeddingModels[0]?.id ??
-    "";
-  const embeddingLabel =
-    embeddingModels.find((model) => model.id === activeEmbeddingId)?.label ||
-    activeEmbeddingId ||
-    t("settings.models.embedding.loadingOption");
+  // Embedding is mode-dependent: cloud uses the Gemini embedding, on-device uses
+  // the bundled Qwen3-VL embedding. Show the one that matches the current mode
+  // (not whatever a stale index profile was bound to).
+  const embeddingLabel = effectiveLocalMode
+    ? embeddingModels.find((model) => model.tier === "local")?.label ??
+      activeProfile?.model_id ??
+      "Qwen3-VL Embedding local"
+    : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
   // Video understanding runs locally too when processing is on-device: prefer
   // catalog-reported local vision models, else the bundled fallback list.
   const catalogLocalVision = videoUnderstandingModels.filter((model) => model.tier === "local");
@@ -5595,6 +5593,17 @@ function InferenceModeSelector({
   );
 }
 
+// Merge the curated model options with models discovered from the provider's
+// /models endpoint, de-duped by id (curated first).
+function mergeComboOptions(
+  base: ModelComboOption[],
+  extra?: ModelComboOption[],
+): ModelComboOption[] {
+  if (!extra || extra.length === 0) return base;
+  const seen = new Set(base.map((option) => option.id));
+  return [...base, ...extra.filter((option) => !seen.has(option.id))];
+}
+
 type RemoteProviderType = Exclude<api.ProviderType, "local">;
 
 const providerTypeOptions: { value: RemoteProviderType; label: string; placeholder: string }[] = [
@@ -5651,11 +5660,36 @@ function ProviderConnections({
     status: "idle" | "running" | "done" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
+  // Models discovered from a provider's /models endpoint, keyed by capability,
+  // merged into that row's combobox options so users can pick a real model id.
+  const [discovered, setDiscovered] = useState<Record<string, ModelComboOption[]>>({});
+  const [discovering, setDiscovering] = useState<string | null>(null);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+
+  async function exploreModels(cap: CapabilityRowModel) {
+    if (!cap.provider) return;
+    setDiscovering(cap.key);
+    setDiscoverError(null);
+    try {
+      const models = await api.discoverProviderModels(cap.provider.id);
+      setDiscovered((prev) => ({
+        ...prev,
+        [cap.key]: models.map((m) => ({ id: m.id, label: m.label || m.id, hint: m.source })),
+      }));
+    } catch (err) {
+      setDiscoverError(errorMessage(err));
+    } finally {
+      setDiscovering(null);
+    }
+  }
 
   // The bundled local runtime ("Local on this Mac") is surfaced by the runtime
   // and Local model cards above — it is not a remote API key, so it does not
   // belong in this list. Show only genuinely remote provider connections here.
   const remoteProviders = providers.filter((provider) => provider.type !== "local");
+  const editingProvider = editingId
+    ? providers.find((provider) => provider.id === editingId) ?? null
+    : null;
 
   // P3 · The connection editor is a focused modal now, so Esc dismisses it.
   useEscapeToClose(closeForm, mode !== null);
@@ -5801,6 +5835,7 @@ function ProviderConnections({
   return (
     <section className="cap-list-shell">
       {error ? <InlineNotice tone="error" message={error} /> : null}
+      {discoverError ? <InlineNotice tone="error" message={discoverError} /> : null}
 
       {/* One unified list: the three FIXED capabilities, each carrying its model
           and the connection + key it routes through, handled together. */}
@@ -5865,9 +5900,13 @@ function ProviderConnections({
                     ) : (
                       <ModelCombobox
                         value={cap.modelValue}
-                        options={cap.modelOptions}
+                        options={mergeComboOptions(cap.modelOptions, discovered[cap.key])}
                         disabled={disabled}
+                        busy={discovering === cap.key}
                         onSelect={(id) => cap.onSelectModel?.(id)}
+                        onExplore={
+                          cap.provider && !cap.isLocal ? () => void exploreModels(cap) : undefined
+                        }
                         ariaLabel={cap.name}
                       />
                     )}
@@ -5956,12 +5995,21 @@ function ProviderConnections({
             <label>
               <span>{t("settings.models.providers.form.apiKey")}</span>
               <input
-                type="password"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
                 value={form.api_key}
                 disabled={disabled}
                 placeholder={mode === "edit" ? t("settings.models.providers.form.apiKeyPlaceholder") : ""}
                 onChange={(event) => setForm((current) => ({ ...current, api_key: event.currentTarget.value }))}
               />
+              {mode === "edit" && editingProvider?.key_preview ? (
+                <small className="field-hint">
+                  {t("settings.models.providers.form.currentKey", {
+                    preview: editingProvider.key_preview,
+                  })}
+                </small>
+              ) : null}
             </label>
           </div>
           {action.message ? (
