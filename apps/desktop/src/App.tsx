@@ -5455,12 +5455,13 @@ const fallbackAsrModels: AsrModelOption[] = [
 ];
 
 // On-device video-understanding VLMs offered when processing runs locally.
-// Surfaced as fallback options when the catalog reports no local vision model;
-// the daemon must ship/serve these for selection to take effect.
+// All quantized for practical on-device use (MLX 4-bit / Gemma QAT). Surfaced
+// as fallback options when the catalog reports no local vision model; the
+// daemon must ship/serve these for selection to take effect.
 const localVisionModels: ModelComboOption[] = [
-  { id: "qwen3-vl-8b", label: "Qwen3-VL 8B", hint: "本地 · MLX" },
-  { id: "qwen3-vl-4b", label: "Qwen3-VL 4B", hint: "本地 · MLX · 更小" },
-  { id: "gemma-3-12b-it-qat", label: "Gemma 3 12B（量化）", hint: "本地 · MLX" },
+  { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit 量化" },
+  { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit 量化 · 更小" },
+  { id: "gemma-3-12b-it-qat-4bit", label: "Gemma 3 12B", hint: "本地 · MLX · QAT 量化" },
 ];
 
 function isGeminiAsrModelId(modelId: string) {
