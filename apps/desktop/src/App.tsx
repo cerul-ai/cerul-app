@@ -5080,7 +5080,7 @@ function ModelsSettings({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
-  const inferenceMode = settingString(settings, "inference_mode", "auto");
+  const inferenceMode = settingString(settings, "inference_mode", "remote");
   const processingMode = settingString(
     settings,
     "processing_mode",
@@ -5482,20 +5482,16 @@ function isGeminiAsrModelId(modelId: string) {
 // presets (auto/speed) share the balanced "auto" path — that's intentional:
 // the cards are UX intents, not a 1:1 mirror of the backend's 3 modes.
 const PROCESSING_TO_INFERENCE: Record<string, string> = {
-  auto: "auto",
-  quality: "remote",
-  speed: "auto",
+  cloud: "remote",
   local: "local",
 };
 function inferenceToProcessing(inferenceMode: string): string {
-  if (inferenceMode === "remote") return "quality";
-  if (inferenceMode === "local") return "local";
-  return "auto";
+  // Two presets only: 云端 API (default) vs 本地. Remote/auto map to cloud.
+  return inferenceMode === "local" ? "local" : "cloud";
 }
 
-// Smart-processing selector — four selectable preset cards (自动 / 优先质量 /
-// 优先速度 / 仅在本机) plus a monthly-usage summary card. The cards ARE the
-// switch. (完整版 baseline.)
+// Smart-processing selector — two selectable presets (云端 API / 仅在本机) plus a
+// monthly-usage summary card. The cards ARE the switch.
 function InferenceModeSelector({
   processingMode,
   usageSummary,
@@ -5521,24 +5517,10 @@ function InferenceModeSelector({
     badgeTone: string;
   }[] = [
     {
-      id: "auto",
-      label: t("settings.models.processing.auto"),
-      desc: t("settings.models.processing.auto.desc"),
-      badge: t("settings.models.processing.auto.badge"),
-      badgeTone: "accent",
-    },
-    {
-      id: "quality",
-      label: t("settings.models.processing.quality"),
-      desc: t("settings.models.processing.quality.desc"),
-      badge: null,
-      badgeTone: "accent",
-    },
-    {
-      id: "speed",
-      label: t("settings.models.processing.speed"),
-      desc: t("settings.models.processing.speed.desc"),
-      badge: null,
+      id: "cloud",
+      label: t("settings.models.processing.cloud"),
+      desc: t("settings.models.processing.cloud.desc"),
+      badge: t("settings.models.processing.cloud.badge"),
       badgeTone: "accent",
     },
     {
