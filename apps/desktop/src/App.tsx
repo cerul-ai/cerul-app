@@ -5065,9 +5065,26 @@ function ModelsSettings({
     "processing_mode",
     inferenceToProcessing(inferenceMode),
   );
+  const selectedAsr = settingString(settings, "asr_model", "whisper-1");
+  const selectedAsrProvider = settingString(settings, "asr_provider_id", "");
+  const selectedEmbeddingProvider = settingString(settings, "embedding_provider_id", "");
+  const selectedVideoUnderstandingProvider = settingString(
+    settings,
+    "video_understanding_provider_id",
+    "",
+  );
+  const selectedVideoUnderstandingModel = settingString(
+    settings,
+    "video_understanding_model",
+    "gemini-3.5-flash",
+  );
+  const [catalog, setCatalog] = useState<api.ModelCatalogResponse | null>(null);
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
+  // The advanced section is collapsed by default — the 4 mode presets cover the
+  // common case; per-capability model/service config lives behind the toggle.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   async function loadProviders() {
     try {
@@ -5081,6 +5098,26 @@ function ModelsSettings({
 
   useEffect(() => {
     void loadProviders();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function tick() {
+      try {
+        const nextCatalog = await api.getModelCatalog();
+        if (!cancelled) {
+          setCatalog(nextCatalog);
+        }
+      } catch {
+        /* catalog is best-effort; capability cards fall back to defaults */
+      }
+    }
+    void tick();
+    const interval = window.setInterval(() => void tick(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -5105,6 +5142,35 @@ function ModelsSettings({
     };
   }, []);
 
+  // ---- Per-capability model / provider options (drive the 3 fixed cards) ----
+  const asrModels = catalog?.models.filter((model) => model.capability === "asr") ?? [];
+  const remoteAsrModels = asrModels.filter((model) => model.tier !== "local");
+  const remoteAsrOptions = remoteAsrModels.length > 0 ? remoteAsrModels : fallbackAsrModels;
+  const activeRemoteAsr = selectedAsr.trim() || (remoteAsrOptions[0]?.id ?? "");
+  const embeddingModels =
+    catalog?.models.filter((model) => model.capability === "multimodal_embedding") ?? [];
+  const videoUnderstandingModels =
+    catalog?.models.filter((model) => model.capability === "video_understanding") ?? [];
+  const activeProfile = catalog?.active_embedding_profile;
+  const localRuntimeReady = catalog?.runtime.local_runtime_ready ?? false;
+  const localRuntimeIssue = catalog?.runtime.local_runtime_error ?? null;
+  const isAutoMode = inferenceMode === "auto";
+  const isLocalMode = inferenceMode === "local";
+  const effectiveLocalMode = isLocalMode || (isAutoMode && localRuntimeReady);
+  const localAsrLabel =
+    asrModels.find((model) => model.tier === "local")?.label ??
+    t("settings.models.localAsr.fallbackLabel");
+  const asrProviderOptions = providers.filter(
+    (provider) =>
+      provider.type === "openai" ||
+      provider.type === "openai-compatible" ||
+      provider.type === "gemini",
+  );
+  const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
+  const videoUnderstandingProviderOptions = providers.filter(
+    (provider) => provider.type === "gemini",
+  );
+
   return (
     <div className="models-settings-panel">
       <InferenceModeSelector
@@ -5114,13 +5180,76 @@ function ModelsSettings({
         onSettingsChange={onSettingsChange}
       />
 
-      <ProviderConnections
-        providers={providers}
-        error={providersError}
-        disabled={disabled}
-        onRefresh={loadProviders}
-        requestConfirm={requestConfirm}
-      />
+      <section className="model-connections-shell">
+        <div className="model-advanced-head">
+          <div className="model-advanced-head__titles">
+            <h2 className="model-advanced-title">{t("settings.models.advanced.title")}</h2>
+            <p className="model-advanced-subtitle">{t("settings.models.advanced.subtitle")}</p>
+          </div>
+          <button
+            type="button"
+            className="model-advanced-toggle"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((value) => !value)}
+          >
+            <span>
+              {advancedOpen
+                ? t("settings.models.advanced.collapse")
+                : t("settings.models.advanced.expand")}
+            </span>
+            <ChevronDown size={14} data-expanded={advancedOpen ? "true" : undefined} />
+          </button>
+        </div>
+
+        {advancedOpen ? (
+          <>
+            {/* The three capabilities Cerul always needs are FIXED cards — you
+                pick the model (and the service) for each; you never add or
+                remove a capability. */}
+            <div className="model-control-grid capability-grid">
+              <TranscriptionControl
+                isLocalMode={effectiveLocalMode}
+                localAsrLabel={localAsrLabel}
+                providers={asrProviderOptions}
+                selectedProviderId={selectedAsrProvider}
+                models={remoteAsrOptions}
+                selectedModelId={activeRemoteAsr}
+                disabled={disabled}
+                onSettingsChange={onSettingsChange}
+              />
+              <EmbeddingControl
+                models={embeddingModels}
+                activeProfile={activeProfile}
+                providers={embeddingProviderOptions}
+                selectedProviderId={selectedEmbeddingProvider}
+                localActive={effectiveLocalMode}
+                localRuntimeReady={localRuntimeReady}
+                localRuntimeIssue={localRuntimeIssue}
+                disabled={disabled}
+                onSettingsChange={onSettingsChange}
+              />
+              <VideoUnderstandingControl
+                models={videoUnderstandingModels}
+                providers={videoUnderstandingProviderOptions}
+                selectedProviderId={selectedVideoUnderstandingProvider}
+                selectedModelId={selectedVideoUnderstandingModel}
+                disabled={disabled}
+                onSettingsChange={onSettingsChange}
+              />
+            </div>
+
+            <ProviderConnections
+              providers={providers}
+              error={providersError}
+              disabled={disabled}
+              onRefresh={loadProviders}
+              requestConfirm={requestConfirm}
+            />
+
+            <p className="model-advanced-footnote">{t("settings.models.advanced.footnote")}</p>
+          </>
+        ) : null}
+      </section>
     </div>
   );
 }
@@ -5142,23 +5271,6 @@ function providerDisplayLabel(provider: api.ProviderRecord, t: TFunction): strin
     default:
       return provider.label;
   }
-}
-
-// The backend reports the runtime as a target triple (e.g. "macos-aarch64").
-// Surface a human label for known platforms; keep the raw value as a tooltip
-// for anyone who needs it. (Redesign A1.)
-function humanizeRuntimePlatform(platform: string | undefined, t: TFunction): string {
-  if (!platform) {
-    return t("settings.models.runtime.checkingPlatform");
-  }
-  const normalized = platform.toLowerCase();
-  if (normalized.includes("aarch64") || normalized.includes("arm64")) {
-    return t("settings.models.runtime.platform.appleSilicon");
-  }
-  if (normalized.startsWith("macos")) {
-    return t("settings.models.runtime.platform.macIntel");
-  }
-  return platform;
 }
 
 // Strip protocol + path so a connection's endpoint reads as a short host in the
@@ -5819,7 +5931,6 @@ function ProviderConnections({
         : type === "openai-compatible"
           ? t("settings.models.providers.type.openaiCompatible")
           : type;
-  const [expanded, setExpanded] = useState(true);
   const [mode, setMode] = useState<"create" | "edit" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -5980,56 +6091,40 @@ function ProviderConnections({
   const activeType = providerTypeOptions.find((item) => item.value === form.type);
 
   return (
-    <section className="model-connections-shell">
-      <div className="model-advanced-head">
-        <div className="model-advanced-head__titles">
-          <h2 className="model-advanced-title">{t("settings.models.advanced.title")}</h2>
-          <p className="model-advanced-subtitle">{t("settings.models.advanced.subtitle")}</p>
+    <section className="conn-pool">
+      <div className="conn-pool__head">
+        <div className="conn-pool__titles">
+          <h3 className="conn-pool__title">{t("settings.models.connections.title")}</h3>
+          <p className="conn-pool__hint">{t("settings.models.connections.hint")}</p>
         </div>
         <button
           type="button"
-          className="model-advanced-toggle"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
+          className="btn btn-secondary sm"
+          disabled={disabled}
+          onClick={openCreate}
         >
-          <span>
-            {expanded
-              ? t("settings.models.advanced.collapse")
-              : t("settings.models.advanced.expand")}
-          </span>
-          <ChevronDown size={14} data-expanded={expanded ? "true" : undefined} />
+          <Plus size={16} />
+          <span>{t("settings.models.providers.add")}</span>
         </button>
       </div>
 
-      {expanded ? (
-        <>
-          {error ? <InlineNotice tone="error" message={error} /> : null}
+      {error ? <InlineNotice tone="error" message={error} /> : null}
 
-          <div className="provider-list">
-            {remoteProviders.map((provider) => (
-              <ProviderConnectionRow
-                key={provider.id}
-                provider={provider}
-                disabled={disabled}
-                typeLabel={typeLabel}
-                onEdit={() => openEdit(provider)}
-                onRemove={() => void removeConnection(provider)}
-              />
-            ))}
-            <button
-              type="button"
-              className="provider-add-card"
-              disabled={disabled}
-              onClick={openCreate}
-            >
-              <Plus size={16} />
-              <span>{t("settings.models.providers.add")}</span>
-            </button>
-          </div>
-
-          <p className="model-advanced-footnote">{t("settings.models.advanced.footnote")}</p>
-        </>
-      ) : null}
+      <div className="provider-list">
+        {remoteProviders.length === 0 ? (
+          <p className="provider-empty">{t("settings.models.providers.empty")}</p>
+        ) : null}
+        {remoteProviders.map((provider) => (
+          <ProviderConnectionRow
+            key={provider.id}
+            provider={provider}
+            disabled={disabled}
+            typeLabel={typeLabel}
+            onEdit={() => openEdit(provider)}
+            onRemove={() => void removeConnection(provider)}
+          />
+        ))}
+      </div>
 
       {mode ? (
         <div className="scrim" role="presentation" onMouseDown={closeForm}>
