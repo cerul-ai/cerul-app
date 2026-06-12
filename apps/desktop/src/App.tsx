@@ -163,6 +163,7 @@ import {
   isActiveJob,
   itemColor,
   itemDetailIssue,
+  itemKindLabel,
   itemOriginalUrl,
   itemProgressLabel,
   itemSourceKind,
@@ -2135,19 +2136,6 @@ function HomeScreen({
       </div>
     </div>
   );
-}
-
-function itemKindLabel(item: Item, t: TFunction): string {
-  switch (item.sourceKind) {
-    case "youtube":
-      return t("item.kind.youtube");
-    case "podcast":
-      return t("item.kind.podcast");
-    case "web_video":
-      return t("item.kind.web");
-    default:
-      return t("item.kind.local");
-  }
 }
 
 function ContinueWatchingCard({
@@ -4170,7 +4158,16 @@ function LibraryScreen({
           </button>
         </div>
       ) : null}
-      <div className={viewMode === "grid" ? "lib-grid" : "tbl"} style={{ marginTop: 16 }}>
+      <div className={viewMode === "grid" ? "lib-grid" : "tbl lib-table"}>
+        {viewMode === "list" && items.length > 0 && filteredItems.length > 0 ? (
+          <div className="lib-table-head" aria-hidden="true">
+            <span>{t("library.col.title")}</span>
+            <span>{t("library.col.source")}</span>
+            <span>{t("library.col.duration")}</span>
+            <span>{t("library.col.indexed")}</span>
+            <span>{t("library.col.searchability")}</span>
+          </div>
+        ) : null}
         {items.length > 0 && filteredItems.length > 0
           ? filteredItems.map((item) => (
             <ItemCard
@@ -5062,19 +5059,12 @@ function ModelsSettings({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
-  const selectedAsr = settingString(settings, "asr_model", "whisper-1");
-  const selectedAsrProvider = settingString(settings, "asr_provider_id", "");
-  const selectedEmbeddingProvider = settingString(settings, "embedding_provider_id", "");
-  const selectedVideoUnderstandingProvider = settingString(settings, "video_understanding_provider_id", "");
-  const selectedVideoUnderstandingModel = settingString(
-    settings,
-    "video_understanding_model",
-    "gemini-3.5-flash",
-  );
   const inferenceMode = settingString(settings, "inference_mode", "auto");
-  const [catalog, setCatalog] = useState<api.ModelCatalogResponse | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [modelTab, setModelTab] = useState<"setup" | "catalog">("setup");
+  const processingMode = settingString(
+    settings,
+    "processing_mode",
+    inferenceToProcessing(inferenceMode),
+  );
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
@@ -5088,27 +5078,6 @@ function ModelsSettings({
       setProvidersError(errorMessage(error));
     }
   }
-
-  useEffect(() => {
-    let cancelled = false;
-    async function tick() {
-      try {
-        const nextCatalog = await api.getModelCatalog();
-        if (!cancelled) {
-          setCatalog(nextCatalog);
-          setCatalogError(null);
-        }
-      } catch (error) {
-        if (!cancelled) setCatalogError(errorMessage(error));
-      }
-    }
-    void tick();
-    const interval = window.setInterval(() => void tick(), 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
 
   useEffect(() => {
     void loadProviders();
@@ -5136,121 +5105,11 @@ function ModelsSettings({
     };
   }, []);
 
-  const asrModels = catalog?.models.filter((model) => model.capability === "asr") ?? [];
-  const remoteAsrModels = asrModels.filter((model) => model.tier !== "local");
-  const remoteAsrOptions = remoteAsrModels.length > 0 ? remoteAsrModels : fallbackAsrModels;
-  const activeRemoteAsr = selectedAsr.trim() || (remoteAsrOptions[0]?.id ?? "");
-  const embeddingModels =
-    catalog?.models.filter((model) => model.capability === "multimodal_embedding") ?? [];
-  const videoUnderstandingModels =
-    catalog?.models.filter((model) => model.capability === "video_understanding") ?? [];
-  const coreModels = catalog?.models.filter((model) => model.required_for_first_search) ?? [];
-  const recommendedModels = catalog?.models.filter((model) => model.recommended && !model.required_for_first_search) ?? [];
-  const optionalModels = catalog?.models.filter((model) => !model.recommended && !model.required_for_first_search) ?? [];
-  const activeProfile = catalog?.active_embedding_profile;
-  const runtimeReady = catalog?.runtime.api_runtime_ready ?? false;
-  const runtimeIssue = catalog?.runtime.last_error ?? null;
-  const localRuntimeReady = catalog?.runtime.local_runtime_ready ?? false;
-  const localRuntimeIssue = catalog?.runtime.local_runtime_error ?? null;
-  // The runtime banner reflects the selected mode. Remote provider readiness is
-  // still used for remote model blockers in the catalog tab.
-  const isAutoMode = inferenceMode === "auto";
-  const isLocalMode = inferenceMode === "local";
-  const effectiveLocalMode = isLocalMode || (isAutoMode && localRuntimeReady);
-  const localAsrLabel =
-    asrModels.find((model) => model.tier === "local")?.label ?? t("settings.models.localAsr.fallbackLabel");
-  const bannerReady = isLocalMode ? localRuntimeReady : isAutoMode ? localRuntimeReady || runtimeReady : runtimeReady;
-  const bannerBadge = effectiveLocalMode
-    ? localRuntimeReady
-      ? t("settings.models.runtime.badge.localReady")
-      : t("settings.models.runtime.badge.runtimeNeeded")
-    : runtimeReady
-      ? t("settings.models.runtime.badge.apiReady")
-      : t("settings.models.runtime.badge.connectionNeeded");
-  const bannerMessage = effectiveLocalMode
-    ? localRuntimeReady
-      ? t("settings.models.runtime.msg.localReady")
-      : localRuntimeIssue ?? t("settings.models.runtime.msg.localChecking")
-    : runtimeIssue ??
-      t("settings.models.runtime.msg.remoteReady");
-  const asrProviderOptions = providers.filter(
-    (provider) =>
-      provider.type === "openai" ||
-      provider.type === "openai-compatible" ||
-      provider.type === "gemini",
-  );
-  const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
-  const videoUnderstandingProviderOptions = providers.filter((provider) => provider.type === "gemini");
-  const modelGroups = [
-    {
-      id: "core",
-      title: t("settings.models.group.core.title"),
-      body: t("settings.models.group.core.body"),
-      models: coreModels,
-      empty: t("settings.models.group.core.empty"),
-    },
-    {
-      id: "recommended",
-      title: t("settings.models.group.recommended.title"),
-      body: t("settings.models.group.recommended.body"),
-      models: recommendedModels,
-      empty: t("settings.models.group.recommended.empty"),
-    },
-    {
-      id: "optional",
-      title: t("settings.models.group.optional.title"),
-      body: t("settings.models.group.optional.body"),
-      models: optionalModels,
-      empty: t("settings.models.group.optional.empty"),
-    },
-  ];
-
   return (
     <div className="models-settings-panel">
-      {catalogError ? <InlineNotice tone="error" message={catalogError} /> : null}
-
-      {/* P2 · The always-on "Runtime · macOS · Apple Silicon · ready" banner was
-          pure noise when nothing was wrong. Readiness now lives as a pill on the
-          local mode card; this strip only appears when there's an actual blocker
-          (runtime needed / connection needed / error) the user must act on. */}
-      {bannerReady ? null : (
-        <div className="model-runtime-alert" role="status">
-          <span className="chip warn">
-            <span className="dot" />
-            {bannerBadge}
-          </span>
-          <p className="model-runtime-alert__note">{bannerMessage}</p>
-        </div>
-      )}
-
-      <nav className="seg-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={modelTab === "setup"}
-          className={modelTab === "setup" ? "active" : ""}
-          onClick={() => setModelTab("setup")}
-        >
-          {t("settings.models.tab.setup")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={modelTab === "catalog"}
-          className={modelTab === "catalog" ? "active" : ""}
-          onClick={() => setModelTab("catalog")}
-        >
-          {t("settings.models.tab.catalog")}
-        </button>
-      </nav>
-
-      {modelTab === "setup" && (
-        <>
       <InferenceModeSelector
-        inferenceMode={inferenceMode}
+        processingMode={processingMode}
         usageSummary={usageSummary}
-        localRuntimeReady={localRuntimeReady}
-        platformLabel={humanizeRuntimePlatform(catalog?.runtime.platform, t)}
         disabled={disabled}
         onSettingsChange={onSettingsChange}
       />
@@ -5262,68 +5121,6 @@ function ModelsSettings({
         onRefresh={loadProviders}
         requestConfirm={requestConfirm}
       />
-
-      <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
-        <TranscriptionControl
-          isLocalMode={effectiveLocalMode}
-          localAsrLabel={localAsrLabel}
-          providers={asrProviderOptions}
-          selectedProviderId={selectedAsrProvider}
-          models={remoteAsrOptions}
-          selectedModelId={activeRemoteAsr}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-
-        <EmbeddingControl
-          models={embeddingModels}
-          activeProfile={activeProfile}
-          providers={embeddingProviderOptions}
-          selectedProviderId={selectedEmbeddingProvider}
-          localActive={effectiveLocalMode}
-          localRuntimeReady={localRuntimeReady}
-          localRuntimeIssue={localRuntimeIssue}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-
-        <VideoUnderstandingControl
-          models={videoUnderstandingModels}
-          providers={videoUnderstandingProviderOptions}
-          selectedProviderId={selectedVideoUnderstandingProvider}
-          selectedModelId={selectedVideoUnderstandingModel}
-          disabled={disabled}
-          onSettingsChange={onSettingsChange}
-        />
-      </section>
-        </>
-      )}
-
-      {modelTab === "catalog" && (
-      <section className="model-catalog-shell">
-        <div className="model-catalog-heading">
-          <div>
-            <p className="model-section-kicker">{t("settings.models.catalog.kicker")}</p>
-            <h2>{t("settings.models.catalog.title")}</h2>
-          </div>
-          <span className={runtimeReady ? "chip success" : "chip warn"}>
-            <span className="dot" />
-            {runtimeReady ? t("settings.models.catalog.statusReady") : t("settings.models.catalog.statusSetup")}
-          </span>
-        </div>
-
-        {modelGroups.map((group) => (
-          <section className="model-section" key={group.id}>
-            <div className="model-section-label">
-              <strong>{group.title}</strong>
-              <p>{group.body}</p>
-            </div>
-            <ModelCatalogList models={group.models} empty={group.empty} runtimeIssue={runtimeIssue} />
-          </section>
-        ))}
-      </section>
-      )}
-
     </div>
   );
 }
@@ -5753,57 +5550,77 @@ function preferredAsrModelForProvider(provider: api.ProviderRecord, options: Asr
   return options[0]?.id ?? "whisper-1";
 }
 
-// Smart-processing selector. The three cards ARE the inference-mode switch:
-// clicking one applies it. Each carries its own one-line explanation, and the
-// local card carries the Apple-Silicon constraint as a badge — replacing the
-// read-only overview + a detached segmented control + one floating help
-// paragraph. (Redesign A2/A4/A5.)
+// Maps the 4 UI processing presets (完整版 baseline) onto the 3 backend
+// inference modes. `processing_mode` is persisted so the right card stays
+// highlighted; `inference_mode` is what the daemon actually consumes. Two
+// presets (auto/speed) share the balanced "auto" path — that's intentional:
+// the cards are UX intents, not a 1:1 mirror of the backend's 3 modes.
+const PROCESSING_TO_INFERENCE: Record<string, string> = {
+  auto: "auto",
+  quality: "remote",
+  speed: "auto",
+  local: "local",
+};
+function inferenceToProcessing(inferenceMode: string): string {
+  if (inferenceMode === "remote") return "quality";
+  if (inferenceMode === "local") return "local";
+  return "auto";
+}
+
+// Smart-processing selector — four selectable preset cards (自动 / 优先质量 /
+// 优先速度 / 仅在本机) plus a monthly-usage summary card. The cards ARE the
+// switch. (完整版 baseline.)
 function InferenceModeSelector({
-  inferenceMode,
+  processingMode,
   usageSummary,
-  localRuntimeReady,
-  platformLabel,
   disabled,
   onSettingsChange,
 }: {
-  inferenceMode: string;
+  processingMode: string;
   usageSummary: api.UsageSummary | null;
-  localRuntimeReady: boolean;
-  platformLabel: string;
   disabled: boolean;
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  // Share of processing that ran on-device (free). Drives the usage strip that
-  // replaced the old runtime banner's prime real estate.
+  // Share of processing that ran on-device (free).
   const localShare =
     usageSummary && usageSummary.total.event_count > 0
       ? Math.round((usageSummary.local.event_count / usageSummary.total.event_count) * 100)
       : 0;
-  const modes = [
+  const modes: {
+    id: string;
+    label: string;
+    desc: string;
+    badge: string | null;
+    badgeTone: string;
+  }[] = [
     {
       id: "auto",
-      label: t("settings.models.inferenceMode.auto"),
-      desc: t("settings.models.inferenceMode.auto.desc"),
-      badge: null as string | null,
-      cost: usageSummary?.total.estimated_usd ?? 0,
-      events: usageSummary?.total.event_count ?? 0,
+      label: t("settings.models.processing.auto"),
+      desc: t("settings.models.processing.auto.desc"),
+      badge: t("settings.models.processing.auto.badge"),
+      badgeTone: "accent",
+    },
+    {
+      id: "quality",
+      label: t("settings.models.processing.quality"),
+      desc: t("settings.models.processing.quality.desc"),
+      badge: null,
+      badgeTone: "accent",
+    },
+    {
+      id: "speed",
+      label: t("settings.models.processing.speed"),
+      desc: t("settings.models.processing.speed.desc"),
+      badge: null,
+      badgeTone: "accent",
     },
     {
       id: "local",
-      label: t("settings.models.inferenceMode.local"),
-      desc: t("settings.models.inferenceMode.local.desc"),
-      badge: t("settings.models.inferenceMode.local.badge"),
-      cost: usageSummary?.local.estimated_usd ?? 0,
-      events: usageSummary?.local.event_count ?? 0,
-    },
-    {
-      id: "remote",
-      label: t("settings.models.inferenceMode.remote"),
-      desc: t("settings.models.inferenceMode.remote.desc"),
-      badge: null as string | null,
-      cost: usageSummary?.remote.estimated_usd ?? 0,
-      events: usageSummary?.remote.event_count ?? 0,
+      label: t("settings.models.processing.local"),
+      desc: t("settings.models.processing.local.desc"),
+      badge: t("settings.models.processing.local.badge"),
+      badgeTone: "success",
     },
   ];
 
@@ -5815,76 +5632,57 @@ function InferenceModeSelector({
       </div>
       <div className="imode-grid">
         {modes.map((mode) => {
-          const selected = inferenceMode === mode.id;
+          const selected = processingMode === mode.id;
           return (
             <button
               type="button"
               key={mode.id}
-              className="imode-card"
+              className={selected ? "imode-card selected" : "imode-card"}
               aria-pressed={selected}
+              aria-label={`${mode.label}${selected ? ` · ${t("settings.models.processing.selectedAria")}` : ""}`}
               disabled={disabled}
               onClick={() => {
                 if (!selected) {
-                  void onSettingsChange({ inference_mode: mode.id });
+                  void onSettingsChange({
+                    processing_mode: mode.id,
+                    inference_mode: PROCESSING_TO_INFERENCE[mode.id] ?? "auto",
+                  });
                 }
               }}
             >
               <div className="imode-card__top">
+                <span className="imode-card__radio" aria-hidden="true">
+                  {selected ? <span className="imode-card__radio-dot" /> : null}
+                </span>
                 <span className="imode-card__name">{mode.label}</span>
-                {selected ? (
-                  <span
-                    className="imode-card__check"
-                    aria-label={t("settings.models.inferenceMode.selectedAria")}
-                  >
-                    <Check size={12} />
-                  </span>
+                {mode.badge ? (
+                  <span className={`imode-card__badge ${mode.badgeTone}`}>{mode.badge}</span>
                 ) : null}
               </div>
               <p className="imode-card__desc">{mode.desc}</p>
-              {mode.id === "local" ? (
-                <span
-                  className={localRuntimeReady ? "imode-card__badge ready" : "imode-card__badge"}
-                  title={platformLabel}
-                >
-                  <Cpu size={11} />
-                  {localRuntimeReady ? t("settings.models.localCard.ready") : mode.badge}
-                </span>
-              ) : mode.badge ? (
-                <span className="imode-card__badge">
-                  <Cpu size={11} />
-                  {mode.badge}
-                </span>
-              ) : null}
-              <dl className="imode-card__stats">
-                <div className="imode-card__stat">
-                  <dt>{t("settings.models.overview.estimatedCost")}</dt>
-                  <dd>{formatUsd(mode.cost)}</dd>
-                </div>
-                <div className="imode-card__stat">
-                  <dt>{t("settings.models.overview.usageEvents")}</dt>
-                  <dd>{mode.events}</dd>
-                </div>
-              </dl>
             </button>
           );
         })}
       </div>
-      {usageSummary && usageSummary.total.event_count > 0 ? (
-        <div className="imode-usage-strip">
-          <span className="imode-usage-strip__metric mono">
-            {t("settings.models.usage.strip.spent", {
-              cost: formatUsd(usageSummary.total.estimated_usd),
-              events: usageSummary.total.event_count,
-            })}
-          </span>
-          <div className="imode-usage-strip__bar" aria-hidden="true">
+      <div className="imode-usage-card">
+        <div className="imode-usage-card__stat">
+          <span className="imode-usage-card__label">{t("settings.models.usage.card.cost")}</span>
+          <strong className="imode-usage-card__value">
+            {formatUsd(usageSummary?.total.estimated_usd ?? 0)}
+          </strong>
+        </div>
+        <div className="imode-usage-card__stat">
+          <span className="imode-usage-card__label">{t("settings.models.usage.card.events")}</span>
+          <strong className="imode-usage-card__value">{usageSummary?.total.event_count ?? 0}</strong>
+        </div>
+        <div className="imode-usage-card__share">
+          <span className="imode-usage-card__label">{t("settings.models.usage.card.localShare")}</span>
+          <div className="imode-usage-card__bar" aria-hidden="true">
             <div style={{ width: `${localShare}%` }} />
           </div>
-          <span className="imode-usage-strip__metric mono">
-            {t("settings.models.usage.strip.localShare", { pct: localShare })}
-          </span>
+          <span className="imode-usage-card__pct mono">{localShare}%</span>
         </div>
-      ) : null}
+      </div>
     </section>
   );
 }
@@ -6021,6 +5819,7 @@ function ProviderConnections({
         : type === "openai-compatible"
           ? t("settings.models.providers.type.openaiCompatible")
           : type;
+  const [expanded, setExpanded] = useState(true);
   const [mode, setMode] = useState<"create" | "edit" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -6182,39 +5981,55 @@ function ProviderConnections({
 
   return (
     <section className="model-connections-shell">
-      <div className="model-catalog-heading">
-        <div>
-          <p className="model-section-kicker">{t("settings.models.providers.kicker")}</p>
-          <h2>{t("settings.models.providers.title")}</h2>
+      <div className="model-advanced-head">
+        <div className="model-advanced-head__titles">
+          <h2 className="model-advanced-title">{t("settings.models.advanced.title")}</h2>
+          <p className="model-advanced-subtitle">{t("settings.models.advanced.subtitle")}</p>
         </div>
         <button
           type="button"
-          className="btn btn-secondary sm"
-          disabled={disabled}
-          onClick={openCreate}
+          className="model-advanced-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
         >
-          <Plus size={16} />
-          <span>{t("settings.models.providers.add")}</span>
+          <span>
+            {expanded
+              ? t("settings.models.advanced.collapse")
+              : t("settings.models.advanced.expand")}
+          </span>
+          <ChevronDown size={14} data-expanded={expanded ? "true" : undefined} />
         </button>
       </div>
 
-      {error ? <InlineNotice tone="error" message={error} /> : null}
+      {expanded ? (
+        <>
+          {error ? <InlineNotice tone="error" message={error} /> : null}
 
-      <div className="provider-list">
-        {remoteProviders.length === 0 ? (
-          <p className="provider-empty">{t("settings.models.providers.empty")}</p>
-        ) : null}
-        {remoteProviders.map((provider) => (
-          <ProviderConnectionRow
-            key={provider.id}
-            provider={provider}
-            disabled={disabled}
-            typeLabel={typeLabel}
-            onEdit={() => openEdit(provider)}
-            onRemove={() => void removeConnection(provider)}
-          />
-        ))}
-      </div>
+          <div className="provider-list">
+            {remoteProviders.map((provider) => (
+              <ProviderConnectionRow
+                key={provider.id}
+                provider={provider}
+                disabled={disabled}
+                typeLabel={typeLabel}
+                onEdit={() => openEdit(provider)}
+                onRemove={() => void removeConnection(provider)}
+              />
+            ))}
+            <button
+              type="button"
+              className="provider-add-card"
+              disabled={disabled}
+              onClick={openCreate}
+            >
+              <Plus size={16} />
+              <span>{t("settings.models.providers.add")}</span>
+            </button>
+          </div>
+
+          <p className="model-advanced-footnote">{t("settings.models.advanced.footnote")}</p>
+        </>
+      ) : null}
 
       {mode ? (
         <div className="scrim" role="presentation" onMouseDown={closeForm}>

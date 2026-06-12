@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
 import { formatUsd } from "../lib/formatters";
+import { itemKindLabel } from "../lib/items";
 import { resultModality } from "../lib/results";
 import type { Item, Result } from "../lib/types";
 import { ProgressBar, highlightSnippet } from "./transcript";
@@ -215,11 +216,23 @@ export function ItemCard({
   ]
     .filter(Boolean)
     .join(" · ");
+  const sourceLabel = `${itemKindLabel(item, t)} · ${item.source}`;
+  const indexedCell =
+    item.status === "indexing"
+      ? t("library.status.indexing")
+      : item.indexedAtEpoch === null
+        ? "—"
+        : item.indexedAt;
+  const searchabilityChip = (
+    <span className={`item-searchability chip ${searchability.tone}`}>
+      <span className="dot" />
+      {searchability.label}
+    </span>
+  );
   return (
     <article
-      className={
-        selected ? "item-card-shell lib-card selected" : "item-card-shell lib-card"
-      }
+      className={selected ? "item-card-shell lib-card selected" : "item-card-shell lib-card"}
+      data-view={viewMode}
     >
       {selectable ? (
         <label className="item-select sel-check">
@@ -236,50 +249,68 @@ export function ItemCard({
         type="button"
         onClick={onOpen}
       >
-        <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
-          {item.thumbnailUrl ? (
-            <img src={item.thumbnailUrl} alt="" loading="lazy" />
-          ) : (
-            <ItemModalityIcon item={item} size={22} />
-          )}
-          {item.contentType !== "image" && item.duration && item.status !== "indexing" ? (
-            <small className="thumb-duration mono">{item.duration}</small>
-          ) : null}
-          {item.status === "indexing" && item.progress !== null ? (
-            <span
-              className="item-progress-overlay"
-              aria-label={t("library.itemCard.progressAria", {
-                label: item.progressLabel ?? "",
-              }).trim()}
-            >
-              <ProgressBar value={Math.round(item.progress * 100)} animated />
-              <small className="mono">
-                {[item.progressLabel ?? t("library.itemCard.indexingFallback"), item.etaLabel]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </small>
+        {viewMode === "list" ? (
+          <>
+            <span className="item-list-title">
+              <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+                {item.thumbnailUrl ? (
+                  <img src={item.thumbnailUrl} alt="" loading="lazy" />
+                ) : (
+                  <ItemModalityIcon item={item} size={15} />
+                )}
+              </span>
+              <strong className="clamp1">{item.title}</strong>
             </span>
-          ) : null}
-        </span>
-        <span className="item-copy body">
-          <strong className="clamp2">{item.title}</strong>
-          <span className="item-card-meta muted clamp1">{metaLine}</span>
-          {item.usage.event_count > 0 ? (
-            <span className="item-usage mono muted">
-              {formatUsd(item.usage.estimated_usd)} ·{" "}
-              {t(
-                item.usage.event_count === 1
-                  ? "library.itemCard.usageEventOne"
-                  : "library.itemCard.usageEventOther",
-                { count: item.usage.event_count },
+            <span className="item-list-cell item-list-source clamp1">{sourceLabel}</span>
+            <span className="item-list-cell mono">{item.duration}</span>
+            <span className="item-list-cell">{indexedCell}</span>
+            <span className="item-list-cell item-list-search">{searchabilityChip}</span>
+          </>
+        ) : (
+          <>
+            <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+              {item.thumbnailUrl ? (
+                <img src={item.thumbnailUrl} alt="" loading="lazy" />
+              ) : (
+                <ItemModalityIcon item={item} size={22} />
               )}
+              {item.contentType !== "image" && item.duration && item.status !== "indexing" ? (
+                <small className="thumb-duration mono">{item.duration}</small>
+              ) : null}
+              {item.status === "indexing" && item.progress !== null ? (
+                <span
+                  className="item-progress-overlay"
+                  aria-label={t("library.itemCard.progressAria", {
+                    label: item.progressLabel ?? "",
+                  }).trim()}
+                >
+                  <ProgressBar value={Math.round(item.progress * 100)} animated />
+                  <small className="mono">
+                    {[item.progressLabel ?? t("library.itemCard.indexingFallback"), item.etaLabel]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </small>
+                </span>
+              ) : null}
             </span>
-          ) : null}
-          <span className={`item-searchability chip ${searchability.tone}`}>
-            <span className="dot" />
-            {searchability.label}
-          </span>
-        </span>
+            <span className="item-copy body">
+              <strong className="clamp2">{item.title}</strong>
+              <span className="item-card-meta muted clamp1">{metaLine}</span>
+              {item.usage.event_count > 0 ? (
+                <span className="item-usage mono muted">
+                  {formatUsd(item.usage.estimated_usd)} ·{" "}
+                  {t(
+                    item.usage.event_count === 1
+                      ? "library.itemCard.usageEventOne"
+                      : "library.itemCard.usageEventOther",
+                    { count: item.usage.event_count },
+                  )}
+                </span>
+              ) : null}
+              {searchabilityChip}
+            </span>
+          </>
+        )}
       </button>
     </article>
   );

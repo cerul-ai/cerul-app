@@ -2529,12 +2529,6 @@ body.overlay-body {
   font-family: var(--font-sans);
   cursor: pointer;
 }
-.item-card.list {
-  min-height: 96px;
-  grid-template-columns: 150px minmax(0, 1fr);
-  grid-template-rows: none;
-  align-items: center;
-}
 .item-thumb {
   position: relative;
   display: grid;
@@ -2544,11 +2538,65 @@ body.overlay-body {
   background: var(--surface-3);
   color: var(--text-muted);
 }
-.item-card.list .item-thumb {
-  aspect-ratio: auto;
-  align-self: stretch;
-  min-height: 86px;
+
+/* ---- Library list view = clean table (完整版 baseline) ---- */
+.lib-table {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+  /* shared 5-column grid template for the header and every row */
+  --lib-cols: minmax(0, 2.4fr) minmax(0, 1.4fr) 88px 104px 152px;
 }
+.lib-table-head {
+  display: grid;
+  grid-template-columns: var(--lib-cols);
+  align-items: center;
+  gap: 16px;
+  padding: 11px 18px 11px 46px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-faint);
+}
+/* Each row is flat (no individual card chrome) with a hairline divider. */
+.lib-table .item-card-shell {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  border-bottom: 1px solid var(--line);
+}
+.lib-table .item-card-shell:last-child { border-bottom: 0; }
+.lib-table .item-card-shell:hover { background: var(--surface-2); box-shadow: none; }
+.lib-table .item-card-shell.selected { background: var(--accent-tint); box-shadow: none; }
+/* Checkbox sits in a fixed left gutter, always visible in the table. */
+.lib-table .item-select {
+  opacity: 1;
+  top: 50%;
+  left: 16px;
+  transform: translateY(-50%);
+}
+.item-card.list {
+  grid-template-columns: var(--lib-cols);
+  grid-template-rows: none;
+  align-items: center;
+  gap: 16px;
+  min-height: 0;
+  padding: 9px 18px 9px 46px;
+}
+.item-list-title { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.item-list-title strong { font-size: var(--fs-meta); font-weight: 600; color: var(--text); }
+.item-card.list .item-thumb {
+  aspect-ratio: 16 / 9;
+  width: 46px;
+  flex: none;
+  min-height: 0;
+  border-radius: 5px;
+}
+.item-list-cell { font-size: var(--fs-meta); color: var(--text-muted); min-width: 0; }
+.item-list-search { display: flex; }
+.item-list-search .item-searchability { margin: 0; }
 .item-thumb .thumb-duration {
   position: absolute;
   right: 6px;
@@ -3637,143 +3685,174 @@ body.overlay-body {
   margin: 0;
   max-width: 62ch;
 }
+/* Smart-processing: 2×2 selectable preset cards (完整版 baseline). */
 .imode-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(218px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-3);
   margin-top: var(--sp-3);
 }
 .imode-card {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: 7px;
   padding: var(--sp-4);
   text-align: left;
   font: inherit;
   cursor: pointer;
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-1);
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
-    background var(--dur-fast) var(--ease);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.imode-card:hover {
-  border-color: var(--line-strong);
-}
-.imode-card[aria-pressed="true"] {
+.imode-card:hover { border-color: var(--line-strong); }
+.imode-card.selected {
   border-color: var(--accent);
-  background: var(--accent-soft);
   box-shadow: 0 0 0 1px var(--accent);
 }
-.imode-card:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.imode-card:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
+.imode-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.imode-card:disabled { cursor: not-allowed; opacity: 0.6; }
 .imode-card__top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--sp-2);
+}
+.imode-card__radio {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1.5px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.imode-card.selected .imode-card__radio { border-color: var(--accent); }
+.imode-card__radio-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 .imode-card__name {
   font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text);
 }
-.imode-card__check {
+.imode-card__badge {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--text-on-accent);
-  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
 }
+.imode-card__badge.accent { color: var(--accent); background: var(--accent-soft); }
+.imode-card__badge.success { color: var(--success); background: var(--success-tint); }
 .imode-card__desc {
   font-size: var(--fs-caption);
   color: var(--text-muted);
   line-height: var(--lh-normal);
-}
-.imode-card__badge {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-muted);
-  background: var(--surface-3);
-  padding: 2px 8px;
-  border-radius: var(--r-pill);
-}
-/* P2 · "This Mac can run on-device" — green only as a success signal. */
-.imode-card__badge.ready {
-  color: var(--success);
-  background: var(--success-soft);
-}
-/* P2 · Usage summary strip — replaces the old runtime banner's slot with
-   something actionable: spend, run count, and the on-device (free) share. */
-.imode-usage-strip {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  margin-top: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-  flex-wrap: wrap;
-}
-.imode-usage-strip__metric {
-  font-size: var(--fs-caption);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.imode-usage-strip__bar {
-  flex: 1;
-  min-width: 80px;
-  height: 4px;
-  border-radius: var(--r-pill);
-  background: var(--line);
-  overflow: hidden;
-}
-.imode-usage-strip__bar > div {
-  height: 100%;
-  background: var(--accent);
-  border-radius: var(--r-pill);
-}
-.imode-card__stats {
-  display: flex;
-  gap: var(--sp-6);
-  margin-top: auto;
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--line);
-}
-.imode-card[aria-pressed="true"] .imode-card__stats {
-  border-top-color: var(--accent-line);
-}
-.imode-card__stat {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.imode-card__stat dt {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-.imode-card__stat dd {
   margin: 0;
-  font-size: var(--fs-meta);
-  font-weight: 600;
+  padding-left: 26px;
+}
+/* Usage summary card — 本月处理花费 / 处理事件 / 本机完成 %. */
+.imode-usage-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-top: var(--sp-3);
+  padding: var(--sp-4) var(--sp-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.imode-usage-card__stat { display: flex; flex-direction: column; gap: 3px; flex: none; }
+.imode-usage-card__label { font-size: var(--fs-caption); color: var(--text-faint); }
+.imode-usage-card__value {
+  font-size: 22px;
+  font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
+.imode-usage-card__share {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 160px;
+}
+.imode-usage-card__share .imode-usage-card__label { grid-column: 1 / -1; }
+.imode-usage-card__bar {
+  grid-column: 1;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.imode-usage-card__bar > div { height: 100%; background: var(--accent); border-radius: var(--r-pill); }
+.imode-usage-card__pct {
+  grid-column: 2;
+  font-size: var(--fs-meta);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* 高级 · 连接 — collapsible advanced section header + footnote. */
+.model-advanced-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+.model-advanced-head__titles { min-width: 0; }
+.model-advanced-title { font-size: var(--fs-body); font-weight: 600; color: var(--text); margin: 0; }
+.model-advanced-subtitle { font-size: var(--fs-meta); color: var(--text-muted); margin: 3px 0 0; }
+.model-advanced-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+}
+.model-advanced-toggle:hover { color: var(--text); }
+.model-advanced-toggle svg { transition: transform var(--dur-fast) var(--ease); }
+.model-advanced-toggle svg[data-expanded="true"] { transform: rotate(180deg); }
+.model-advanced-footnote {
+  font-size: var(--fs-caption);
+  color: var(--text-faint);
+  line-height: var(--lh-normal);
+  margin: var(--sp-3) 0 0;
+}
+.provider-add-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 13px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.provider-add-card:hover { border-color: var(--accent); color: var(--accent); }
+.provider-add-card:disabled { cursor: not-allowed; opacity: 0.6; }
 
 /* B2 · Connection row. Name-first; the endpoint URL is demoted to an elided
    sub-line; status sits in a fixed slot so every row aligns; edit/delete move
