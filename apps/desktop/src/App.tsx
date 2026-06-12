@@ -3318,6 +3318,8 @@ function ResultDetail({
             ) : (
               <TranscriptList
                 lines={transcriptLines}
+                videoRef={videoRef}
+                videoReady={Boolean(playbackUrl)}
                 activeTime={currentTimestamp}
                 matchTime={startTimestamp}
                 onSeek={seekTo}
@@ -4614,6 +4616,8 @@ function ItemDetail({
           {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
             <TranscriptList
               lines={transcriptLines}
+              videoRef={videoRef}
+              videoReady={Boolean(itemPlaybackUrl)}
               activeTime={currentTimestamp}
               onSeek={seekTo}
               renderAction={(line) => {
