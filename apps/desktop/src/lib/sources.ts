@@ -12,6 +12,9 @@ export function sourceType(type: string): Source["type"] {
   if (type === "youtube") {
     return "youtube";
   }
+  if (type === "web_video") {
+    return "web_video";
+  }
   if (type === "rss_podcast") {
     return "podcast";
   }

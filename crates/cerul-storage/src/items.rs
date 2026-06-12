@@ -1,5 +1,6 @@
 use cerul_models::DiscoveredItem;
 use rusqlite::params;
+use std::path::Path;
 
 use crate::{sqlite, AppPaths};
 
@@ -120,6 +121,24 @@ pub fn set_item_duration(paths: &AppPaths, item_id: &str, duration_sec: f64) -> 
 
     anyhow::ensure!(updated == 1, "item not found: {item_id}");
     Ok(())
+}
+
+pub fn set_item_raw_path(paths: &AppPaths, item_id: &str, raw_path: &Path) -> anyhow::Result<()> {
+    let raw_path = raw_path.to_string_lossy().into_owned();
+    let conn = sqlite::open(paths)?;
+    let updated = conn.execute(
+        "UPDATE items SET raw_path = ?2 WHERE id = ?1",
+        params![item_id, raw_path],
+    )?;
+
+    anyhow::ensure!(updated == 1, "item not found: {item_id}");
+    drop(conn);
+    update_item_metadata(paths, item_id, |metadata| {
+        metadata.insert(
+            "raw_path".to_string(),
+            serde_json::Value::String(raw_path.clone()),
+        );
+    })
 }
 
 pub fn item_ids_for_source(paths: &AppPaths, source_id: &str) -> anyhow::Result<Vec<String>> {

@@ -334,7 +334,20 @@ impl VideoPipeline {
                 item.source_config.clone(),
             ),
         )?;
-        let video_path = source.fetch(&item.as_discovered_item()).await?;
+        let fetch_progress = {
+            let progress = Arc::clone(&self.progress);
+            let item_id = item_id.to_string();
+            Arc::new(move |download_fraction: f64, message: String| {
+                let progress_fraction = 0.05 + download_fraction.clamp(0.0, 1.0) * 0.06;
+                progress.update(&item_id, "downloading", progress_fraction, &message);
+            }) as cerul_sources::FetchProgress
+        };
+        let video_path = source
+            .fetch_with_progress(&item.as_discovered_item(), Some(fetch_progress))
+            .await?;
+        if item.source_type == "web_video" && item.raw_path.as_deref() != video_path.to_str() {
+            cerul_storage::set_item_raw_path(&self.paths, item_id, &video_path)?;
+        }
         update_item_duration_from_media(&self.paths, item_id, &video_path).await;
         let cache_key = cache_key(item.discovery_id());
         let audio_path = self
@@ -1317,7 +1330,7 @@ fn source_config_with_app_cache(
     source_type: &str,
     config: serde_json::Value,
 ) -> serde_json::Value {
-    if !matches!(source_type, "youtube" | "rss_podcast") {
+    if !matches!(source_type, "youtube" | "web_video" | "rss_podcast") {
         return config;
     }
 
@@ -1532,16 +1545,21 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
 
-        let config =
-            source_config_with_app_cache(&paths, "youtube", serde_json::json!({ "url": "u" }));
-        let expected = paths
-            .cache
-            .join("sources")
-            .join("youtube")
-            .to_string_lossy()
-            .into_owned();
+        for source_type in ["youtube", "web_video"] {
+            let config = source_config_with_app_cache(
+                &paths,
+                source_type,
+                serde_json::json!({ "url": "u" }),
+            );
+            let expected = paths
+                .cache
+                .join("sources")
+                .join(source_type)
+                .to_string_lossy()
+                .into_owned();
 
-        assert_eq!(config["cache_dir"].as_str(), Some(expected.as_str()));
+            assert_eq!(config["cache_dir"].as_str(), Some(expected.as_str()));
+        }
     }
 
     #[test]

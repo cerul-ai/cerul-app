@@ -884,10 +884,12 @@ function overlaySourceName(source: api.SourceRecord, t: TFunction) {
     return path ? compactPathLabel(path) : t("overlay.source.localFolder");
   }
 
-  if (source.type === "youtube") {
+  if (source.type === "youtube" || source.type === "web_video") {
     const url =
       sourceConfigString(source.config, "channel_url") ?? sourceConfigString(source.config, "url");
-    return url ? compactUrlLabel(url, t("overlay.source.youtube")) : t("overlay.source.youtube");
+    const label =
+      source.type === "web_video" ? t("overlay.source.webVideo") : t("overlay.source.youtube");
+    return url ? compactUrlLabel(url, label) : label;
   }
 
   if (source.type === "rss_podcast") {

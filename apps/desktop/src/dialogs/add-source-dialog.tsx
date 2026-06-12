@@ -8,22 +8,24 @@
 import {
   AlertCircle,
   Check,
+  Clapperboard,
   FileVideo,
   Folder,
   Loader2,
   Plus,
   Podcast,
   X,
-  Youtube,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 import * as api from "../lib/api";
 import { errorMessage, uniqueStrings } from "../lib/formatters";
 import { useT } from "../lib/i18n";
-import type { ValidationState } from "../lib/types";
+import type { RequestConfirm, ValidationState } from "../lib/types";
 import {
   addSourceDisabled,
+  classifyWebVideoUrl,
+  type WebVideoClassification,
   validateHttpUrl,
   waitForValidationFrame,
 } from "../lib/validation";
@@ -38,24 +40,25 @@ const sourceTabs: {
 }[] = [
   { id: "folder", icon: Folder, labelKey: "addSource.tab.folder" },
   { id: "file", icon: FileVideo, labelKey: "addSource.tab.file" },
-  { id: "youtube", icon: Youtube, labelKey: "addSource.tab.youtube" },
+  { id: "youtube", icon: Clapperboard, labelKey: "addSource.tab.youtube" },
   { id: "podcast", icon: Podcast, labelKey: "addSource.tab.podcast" },
 ];
 
 export function AddSourceDialog({
   onClose,
   onAddSource,
+  requestConfirm,
 }: {
   onClose: () => void;
   onAddSource: (type: string, config: Record<string, unknown>) => Promise<void>;
+  requestConfirm: RequestConfirm;
 }) {
   const t = useT();
   const [tab, setTab] = useState<"folder" | "file" | "youtube" | "podcast">("folder");
   const [folderPath, setFolderPath] = useState("");
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [youtubeMax, setYoutubeMax] = useState(50);
-  const [youtubeUnlimited, setYoutubeUnlimited] = useState(false);
+  const [webVideoPreview, setWebVideoPreview] = useState<WebVideoClassification | null>(null);
   const [rssUrl, setRssUrl] = useState("");
   const [rssMax, setRssMax] = useState(25);
   const [rssPreview, setRssPreview] = useState<api.RssSourcePreview | null>(null);
@@ -103,6 +106,7 @@ export function AddSourceDialog({
   function updateYoutubeUrl(value: string) {
     setYoutubeUrl(value);
     setYoutubeValidation({ status: "idle", message: null });
+    setWebVideoPreview(null);
   }
 
   function updateRssUrl(value: string) {
@@ -113,19 +117,24 @@ export function AddSourceDialog({
 
   async function validateYoutubeUrl(value = youtubeUrl) {
     setYoutubeValidation({ status: "validating", message: null });
+    setWebVideoPreview(null);
     await waitForValidationFrame();
 
-    const result = validateHttpUrl(value, t, ["youtube.com", "youtu.be"]);
+    const result = classifyWebVideoUrl(value, t);
     if (!result.ok) {
       setYoutubeValidation({ status: "error", message: result.message });
-      return false;
+      return null;
     }
 
+    setWebVideoPreview(result);
     setYoutubeValidation({
       status: "valid",
-      message: t("addSource.youtube.validMessage", { hostname: result.hostname }),
+      message: t("addSource.youtube.validMessage", {
+        hostname: result.hostname,
+        platform: t(`addSource.webVideo.platform.${result.platform}`),
+      }),
     });
-    return true;
+    return result;
   }
 
   async function validateRssUrl(value = rssUrl) {
@@ -173,12 +182,28 @@ export function AddSourceDialog({
           await onAddSource("file_video", { path });
         }
       } else if (tab === "youtube") {
-        if (!(await validateYoutubeUrl())) {
+        const preview = await validateYoutubeUrl();
+        if (!preview) {
           return;
         }
-        await onAddSource("youtube", {
-          url: youtubeUrl,
-          max_videos: youtubeUnlimited ? 0 : youtubeMax,
+        if (preview.sourceKind === "author") {
+          const confirmed = await requestConfirm({
+            title: t("addSource.webVideo.confirmAuthor.title"),
+            body: t("addSource.webVideo.confirmAuthor.body", {
+              platform: t(`addSource.webVideo.platform.${preview.platform}`),
+              hostname: preview.hostname,
+            }),
+            confirmLabel: t("addSource.webVideo.confirmAuthor.confirm"),
+          });
+          if (!confirmed) {
+            return;
+          }
+        }
+        await onAddSource("web_video", {
+          url: preview.url,
+          platform: preview.platform,
+          source_kind: preview.sourceKind,
+          max_videos: preview.sourceKind === "author" ? 0 : 1,
         });
       } else {
         if (!(await validateRssUrl())) {
@@ -247,10 +272,7 @@ export function AddSourceDialog({
             <YoutubeTab
               url={youtubeUrl}
               setUrl={updateYoutubeUrl}
-              max={youtubeMax}
-              setMax={setYoutubeMax}
-              unlimited={youtubeUnlimited}
-              setUnlimited={setYoutubeUnlimited}
+              preview={webVideoPreview}
               validation={youtubeValidation}
               onValidate={() => void validateYoutubeUrl()}
             />
@@ -377,23 +399,22 @@ function FileTab({
 function YoutubeTab({
   url,
   setUrl,
-  max,
-  setMax,
-  unlimited,
-  setUnlimited,
+  preview,
   validation,
   onValidate,
 }: {
   url: string;
   setUrl: (url: string) => void;
-  max: number;
-  setMax: (max: number) => void;
-  unlimited: boolean;
-  setUnlimited: (unlimited: boolean) => void;
+  preview: WebVideoClassification | null;
   validation: ValidationState;
   onValidate: () => void;
 }) {
   const t = useT();
+  const initials = preview?.platform === "bilibili" ? "BI" : "YT";
+  const validDetail =
+    preview?.sourceKind === "author"
+      ? t("addSource.webVideo.validDetailAuthor")
+      : t("addSource.webVideo.validDetailSingle");
   return (
     <div className="col gap-3">
       <label className="field-label">
@@ -419,37 +440,14 @@ function YoutubeTab({
         </span>
       </button>
       <SourcePreview
-        icon={<Youtube size={19} />}
-        initials="YT"
-        title={t("source.preview.youtubeTitle")}
+        icon={<Clapperboard size={19} />}
+        initials={initials}
+        title={t("source.preview.webVideoTitle")}
         validation={validation}
-        idleMessage={t("source.preview.youtubeIdle")}
-        validDetail={
-          unlimited
-            ? t("addSource.youtube.validDetailAll")
-            : t("addSource.youtube.validDetailMax", { max })
-        }
+        idleMessage={t("source.preview.webVideoIdle")}
+        validDetail={validDetail}
       />
       <p className="field-hint">{t("addSource.youtube.helper")}</p>
-      <label className="field-label inline-field">
-        {t("addSource.youtube.maxLabel")}
-        <input
-          className="input"
-          type="number"
-          min={1}
-          disabled={unlimited}
-          value={max}
-          onChange={(event) => setMax(Math.max(1, Number(event.currentTarget.value) || 1))}
-        />
-      </label>
-      <label className="inline-toggle">
-        <input
-          type="checkbox"
-          checked={unlimited}
-          onChange={(event) => setUnlimited(event.currentTarget.checked)}
-        />
-        <span>{t("addSource.youtube.keepAll")}</span>
-      </label>
     </div>
   );
 }

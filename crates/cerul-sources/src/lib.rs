@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 use cerul_models::{ContentType, DiscoveredItem};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 pub mod file_video;
 pub mod folder_audio;
 pub mod folder_image;
 pub mod folder_video;
 pub mod rss_podcast;
+pub mod web_video;
 pub mod youtube;
 
 pub const REGISTERED_PLUGIN_TYPES: &[&str] = &[
@@ -15,8 +16,11 @@ pub const REGISTERED_PLUGIN_TYPES: &[&str] = &[
     "folder_image",
     "file_video",
     "youtube",
+    "web_video",
     "rss_podcast",
 ];
+
+pub type FetchProgress = Arc<dyn Fn(f64, String) + Send + Sync + 'static>;
 
 #[async_trait]
 pub trait SourcePlugin: Send + Sync {
@@ -25,6 +29,14 @@ pub trait SourcePlugin: Send + Sync {
 
     async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>>;
     async fn fetch(&self, item: &DiscoveredItem) -> anyhow::Result<PathBuf>;
+
+    async fn fetch_with_progress(
+        &self,
+        item: &DiscoveredItem,
+        _progress: Option<FetchProgress>,
+    ) -> anyhow::Result<PathBuf> {
+        self.fetch(item).await
+    }
 
     async fn cleanup(&self, _item: &DiscoveredItem) -> anyhow::Result<()> {
         Ok(())
@@ -41,6 +53,7 @@ pub fn build(
         "folder_image" => Ok(Box::new(folder_image::FolderImage::new(config)?)),
         "file_video" => Ok(Box::new(file_video::FileVideo::new(config)?)),
         "youtube" => Ok(Box::new(youtube::YouTube::new(config)?)),
+        "web_video" => Ok(Box::new(web_video::WebVideo::new(config)?)),
         "rss_podcast" => Ok(Box::new(rss_podcast::RssPodcast::new(config)?)),
         _ => anyhow::bail!("unknown source plugin: {plugin_type}"),
     }
@@ -89,6 +102,12 @@ mod tests {
                 "youtube",
                 json!({ "url": "https://www.youtube.com/@cerul" }),
                 "youtube",
+                &[ContentType::Video][..],
+            ),
+            (
+                "web_video",
+                json!({ "url": "https://www.youtube.com/watch?v=abc123" }),
+                "web_video",
                 &[ContentType::Video][..],
             ),
             (

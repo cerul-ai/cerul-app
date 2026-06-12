@@ -1070,7 +1070,13 @@ async fn cleanup_item_artifacts(
     paths: &AppPaths,
     item: &cerul_storage::StoredItem,
 ) -> anyhow::Result<()> {
-    cerul_storage::vectors::delete_item_embeddings(paths, &item.id).await?;
+    if let Err(error) = cerul_storage::vectors::delete_item_embeddings(paths, &item.id).await {
+        tracing::warn!(
+            item_id = %item.id,
+            %error,
+            "failed to delete item embeddings; continuing item cleanup"
+        );
+    }
     let cache_key = cerul_pipeline::run::cache_key_for_discovery_id(item.discovery_id());
     remove_file_if_exists(
         paths
@@ -3715,8 +3721,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(reindex.status(), StatusCode::OK);
+        let reindex_status = reindex.status();
         let reindex = response_json(reindex).await;
+        assert_eq!(reindex_status, StatusCode::OK, "reindex failed: {reindex}");
         assert_eq!(reindex["status"], "queued");
         assert_eq!(reindex["queued_job"], true);
 
@@ -3750,7 +3757,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(delete.status(), StatusCode::OK);
+        let delete_status = delete.status();
+        let delete = response_json(delete).await;
+        assert_eq!(delete_status, StatusCode::OK, "delete failed: {delete}");
 
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
         for table in ["items", "chunks", "jobs"] {

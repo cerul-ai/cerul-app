@@ -80,19 +80,38 @@ export function itemSourceKind(
   rawPath: string | null,
 ): ItemSourceKind {
   const url = itemOriginalUrl(record);
-  if (rawPath) {
-    return "folder";
-  }
-  if (url && (url.includes("youtube.com") || url.includes("youtu.be"))) {
+  const platform = metadataString(record.metadata, "platform");
+  if (url && urlHostMatches(url, ["youtube.com", "youtu.be"])) {
     return "youtube";
+  }
+  if (
+    platform === "youtube" ||
+    record.source_id.toLowerCase().includes("youtube")
+  ) {
+    return "youtube";
+  }
+  if (
+    platform === "bilibili" ||
+    (url && urlHostMatches(url, ["bilibili.com", "b23.tv"]))
+  ) {
+    return "web_video";
   }
   if (metadataString(record.metadata, "feed_url") || metadataString(record.metadata, "episode_url")) {
     return "podcast";
   }
-  if (record.source_id.toLowerCase().includes("youtube")) {
-    return "youtube";
+  if (rawPath) {
+    return "folder";
   }
   return "unknown";
+}
+
+function urlHostMatches(value: string, hosts: string[]) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^www\./, "").toLowerCase();
+    return hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+  } catch {
+    return false;
+  }
 }
 
 export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
@@ -120,6 +139,16 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
       kind: "source-unavailable",
       title: t("item.issue.youtube.title"),
       message: error || t("item.issue.youtube.message"),
+      primaryAction: "open-original",
+      removeLabel: t("item.issue.removeLabel"),
+    };
+  }
+
+  if (item.sourceKind === "web_video") {
+    return {
+      kind: "source-unavailable",
+      title: t("item.issue.webVideo.title"),
+      message: error || t("item.issue.webVideo.message"),
       primaryAction: "open-original",
       removeLabel: t("item.issue.removeLabel"),
     };

@@ -17,8 +17,8 @@ pub use chunks::{
     StorageWriteSummary,
 };
 pub use items::{
-    get_item, item_ids_for_source, mark_indexed, set_item_duration, set_video_index_status,
-    set_video_multimodal_index_status, update_item_metadata, StoredItem,
+    get_item, item_ids_for_source, mark_indexed, set_item_duration, set_item_raw_path,
+    set_video_index_status, set_video_multimodal_index_status, update_item_metadata, StoredItem,
 };
 pub use paths::AppPaths;
 pub use usage::{

@@ -210,7 +210,7 @@ impl SourcePlugin for YouTube {
     }
 }
 
-fn default_ytdlp_path() -> PathBuf {
+pub(crate) fn default_ytdlp_path() -> PathBuf {
     if let Ok(path) = std::env::var("CERUL_YTDLP_PATH") {
         return PathBuf::from(path);
     }
@@ -284,7 +284,7 @@ fn bundled_target_dir() -> String {
     }
 }
 
-fn default_cache_dir() -> PathBuf {
+pub(crate) fn default_cache_dir() -> PathBuf {
     if let Ok(path) = std::env::var("CERUL_CACHE_DIR") {
         PathBuf::from(path)
     } else {
@@ -292,11 +292,11 @@ fn default_cache_dir() -> PathBuf {
     }
 }
 
-fn expand_path(path: &str) -> PathBuf {
+pub(crate) fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(shellexpand::tilde(path).into_owned())
 }
 
-fn safe_file_stem(value: &str) -> String {
+pub(crate) fn safe_file_stem(value: &str) -> String {
     value
         .chars()
         .map(|character| {
