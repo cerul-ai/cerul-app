@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cerul</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: rgba(250, 251, 252, 0.97);
+        --ink: #1f2228;
+        --muted: #6a727d;
+        --faint: #9aa2ad;
+        --hairline: rgba(31, 34, 40, 0.1);
+        --accent: #4d6fa6;
+        --accent-ink: #3c5a8c;
+        --accent-soft: rgba(77, 111, 166, 0.12);
+        --success: #2e7d56;
+        --success-ring: #e7f4ed;
+        --amber-ink: #8a5d10;
+        --amber-bg: #fcf6e8;
+        --amber-line: rgba(154, 91, 6, 0.16);
+        --amber-track: rgba(154, 91, 6, 0.12);
+        --amber-bar-a: #c9a35c;
+        --amber-bar-b: #9a5b06;
+        --failed: #b03524;
+        --failed-ring: rgba(176, 53, 36, 0.12);
+        --field: rgba(31, 34, 40, 0.045);
+        --field-hover: rgba(31, 34, 40, 0.075);
+        --ring: 0 0 0 3px rgba(77, 111, 166, 0.18);
+        --mono: "SF Mono", ui-monospace, Menlo, monospace;
+        font-family:
+          -apple-system,
+          BlinkMacSystemFont,
+          "PingFang SC",
+          "Hiragino Sans GB",
+          "Segoe UI",
+          sans-serif;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: rgba(24, 28, 35, 0.94);
+          --ink: #eef0f4;
+          --muted: #9aa3b0;
+          --faint: #6f7884;
+          --hairline: rgba(255, 255, 255, 0.12);
+          --accent: #8fb0d8;
+          --accent-ink: #8fb0d8;
+          --accent-soft: rgba(143, 176, 216, 0.14);
+          --success: #5cb88c;
+          --success-ring: rgba(92, 184, 140, 0.18);
+          --amber-ink: #d9a84e;
+          --amber-bg: rgba(217, 168, 78, 0.1);
+          --amber-line: rgba(217, 168, 78, 0.24);
+          --amber-track: rgba(217, 168, 78, 0.16);
+          --amber-bar-a: #d9a84e;
+          --amber-bar-b: #a87a28;
+          --failed: #d8705f;
+          --failed-ring: rgba(216, 112, 95, 0.18);
+          --field: rgba(255, 255, 255, 0.06);
+          --field-hover: rgba(255, 255, 255, 0.1);
+          --ring: 0 0 0 3px rgba(143, 176, 216, 0.22);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+
+      body {
+        min-height: 100vh;
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+      }
+
+      button:focus-visible {
+        outline: none;
+        box-shadow: var(--ring);
+      }
+
+      .panel {
+        display: flex;
+        flex-direction: column;
+        width: 100vw;
+        height: 100vh;
+        padding: 12px 12px 10px;
+        background: var(--bg);
+        -webkit-backdrop-filter: blur(22px) saturate(140%);
+        backdrop-filter: blur(22px) saturate(140%);
+        border: 1px solid var(--hairline);
+        border-radius: 13px;
+        overflow: hidden;
+      }
+
+      /* ---- Header -------------------------------------------------- */
+
+      .topbar {
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        height: 28px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+      }
+
+      .mark {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        margin: 0 2px;
+        border-radius: 3px;
+        transform: rotate(45deg);
+        background: linear-gradient(135deg, #5b86b8, #2c4d77);
+      }
+
+      .brand-name {
+        font-size: 12.5px;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .open-main {
+        height: 26px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--accent-ink);
+        font-size: 11.5px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .open-main:hover {
+        background: var(--accent-soft);
+      }
+
+      .open-main:active {
+        background: var(--accent-soft);
+        opacity: 0.7;
+      }
+
+      .close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+      }
+
+      .close:hover {
+        background: var(--field-hover);
+        color: var(--ink);
+      }
+
+      .close:active {
+        background: var(--field-hover);
+        opacity: 0.7;
+      }
+
+      /* ---- Search -------------------------------------------------- */
+
+      .search {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 34px;
+        margin-top: 10px;
+        padding: 0 10px;
+        border: 1px solid var(--hairline);
+        border-radius: 9px;
+        background: var(--field);
+        color: var(--faint);
+        text-align: left;
+        transition: background-color 120ms ease, color 120ms ease;
+      }
+
+      .search:hover {
+        background: var(--field-hover);
+        color: var(--muted);
+      }
+
+      .search:active {
+        opacity: 0.75;
+      }
+
+      .search:focus-visible {
+        box-shadow: var(--ring);
+      }
+
+      .search-icon {
+        flex: none;
+      }
+
+      .search-text {
+        flex: 1;
+        min-width: 0;
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* ---- Body (card / recent / state) ----------------------------- */
+
+      .body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .card {
+        flex: none;
+        padding: 9px 10px;
+        border: 1px solid var(--amber-line);
+        border-radius: 9px;
+        background: var(--amber-bg);
+      }
+
+      .card-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .card-stage {
+        min-width: 0;
+        color: var(--amber-ink);
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .card-pct {
+        flex: none;
+        color: var(--amber-ink);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .bar {
+        height: 4px;
+        margin-top: 8px;
+        border-radius: 999px;
+        background: var(--amber-track);
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--amber-bar-a), var(--amber-bar-b));
+        transition: width 180ms ease;
+      }
+
+      .recent {
+        flex: none;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .recent-label {
+        margin: 0 0 4px;
+        color: var(--faint);
+        font-size: 10.5px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .recent-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .recent-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 30px;
+      }
+
+      .dot {
+        flex: none;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+      }
+
+      .dot.done {
+        background: var(--success);
+        box-shadow: 0 0 0 3px var(--success-ring);
+      }
+
+      .dot.failed {
+        background: var(--failed);
+        box-shadow: 0 0 0 3px var(--failed-ring);
+      }
+
+      .recent-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 12px;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .recent-meta {
+        flex: none;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 10px;
+      }
+
+      .recent-meta.failed {
+        color: var(--failed);
+        font-family: inherit;
+        font-weight: 600;
+      }
+
+      /* ---- Empty / offline / connecting states ---------------------- */
+
+      .state {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        padding: 8px 14px;
+        text-align: center;
+      }
+
+      .state-dot {
+        width: 8px;
+        height: 8px;
+        margin-bottom: 4px;
+        border-radius: 50%;
+        background: var(--faint);
+      }
+
+      .state-dot.pulse {
+        background: var(--accent);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+
+      .state-title {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12.5px;
+        font-weight: 600;
+        line-height: 1.4;
+      }
+
+      .state-hint {
+        margin: 0;
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      /* ---- Footer ---------------------------------------------------- */
+
+      .footer {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 10px;
+        padding-top: 9px;
+        border-top: 1px solid var(--hairline);
+      }
+
+      .kbd {
+        padding: 2px 5px;
+        border: 1px solid var(--hairline);
+        border-bottom-width: 2px;
+        border-radius: 5px;
+        background: var(--field);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1.3;
+      }
+
+      .footer-label {
+        color: var(--faint);
+        font-size: 11px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .state-dot.pulse {
+          animation: none;
+        }
+        .bar-fill,
+        .search {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="brand-name">Cerul</span>
+        </div>
+        <div class="top-actions">
+          <button class="open-main" type="button" id="openMain" data-command="open_main_window"></button>
+          <button class="close" type="button" id="closeButton" data-command="hide_menubar" aria-label="关闭">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <button class="search" type="button" id="searchButton" data-command="show_search_overlay">
+        <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.8-3.8" />
+        </svg>
+        <span class="search-text" id="searchText"></span>
+      </button>
+
+      <section class="body">
+        <div class="card" id="card" hidden>
+          <div class="card-row">
+            <span class="card-stage" id="cardStage"></span>
+            <span class="card-pct" id="cardPercent"></span>
+          </div>
+          <div class="bar" aria-hidden="true">
+            <div class="bar-fill" id="barFill"></div>
+          </div>
+        </div>
+
+        <div class="recent" id="recent" hidden>
+          <h2 class="recent-label" id="recentLabel"></h2>
+          <ul class="recent-list" id="recentList"></ul>
+        </div>
+
+        <div class="state" id="state" aria-live="polite" hidden>
+          <span class="state-dot" id="stateDot" aria-hidden="true"></span>
+          <p class="state-title" id="stateTitle"></p>
+          <p class="state-hint" id="stateHint" hidden></p>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <kbd class="kbd" id="kbdHint">⌥ Space</kbd>
+        <span class="footer-label" id="footerLabel"></span>
+      </footer>
+    </main>
+    <script type="module" src="/menubar.js"></script>
+  </body>
+</html>

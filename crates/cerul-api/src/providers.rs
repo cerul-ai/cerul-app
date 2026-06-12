@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, env, fs, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    time::Duration,
+};
 
 use axum::{
     extract::{Path, State},
@@ -30,6 +34,13 @@ pub struct ProviderRecord {
     pub has_key: bool,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderModelRecord {
+    pub id: String,
+    pub label: String,
+    pub source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +85,7 @@ pub(crate) fn bootstrap_env_providers(paths: &AppPaths) -> anyhow::Result<()> {
             paths,
             ENV_ASR_PROVIDER_ID,
             asr_provider_type,
-            "ASR (.env)",
+            "ASR defaults",
             asr_base_url,
         )?;
         select_provider_if_missing_key(paths, "asr_provider_id", ENV_ASR_PROVIDER_ID)?;
@@ -85,7 +96,7 @@ pub(crate) fn bootstrap_env_providers(paths: &AppPaths) -> anyhow::Result<()> {
             paths,
             ENV_EMBEDDING_PROVIDER_ID,
             "gemini",
-            "Embedding (.env)",
+            "Embedding defaults",
             env_base_url("CERUL_EMBEDDING_BASE_URL"),
         )?;
         select_provider_if_missing_key(paths, "embedding_provider_id", ENV_EMBEDDING_PROVIDER_ID)?;
@@ -96,7 +107,7 @@ pub(crate) fn bootstrap_env_providers(paths: &AppPaths) -> anyhow::Result<()> {
             paths,
             ENV_VIDEO_UNDERSTANDING_PROVIDER_ID,
             "gemini",
-            "Video understanding (.env)",
+            "Video understanding defaults",
             env_base_url("CERUL_VIDEO_UNDERSTANDING_BASE_URL"),
         )?;
         select_provider_if_missing_key(
@@ -242,6 +253,25 @@ pub async fn test_provider(
     Ok(Json(provider_record(updated, &state.paths)))
 }
 
+pub async fn discover_provider_models(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<ProviderModelRecord>>> {
+    let provider = cerul_storage::providers::get_provider(&state.paths, &id)?
+        .ok_or_else(|| ApiError::not_found("provider not found"))?;
+    if provider.id == cerul_storage::providers::LOCAL_PROVIDER_ID {
+        return Err(ApiError::bad_request(
+            "local provider has no remote model catalog",
+        ));
+    }
+    let key = get_provider_key_for_provider(&state.paths, &provider)?
+        .ok_or_else(|| ApiError::bad_request("API key is not configured"))?;
+    let models = discover_remote_provider_models(&provider, &key)
+        .await
+        .map_err(|error| ApiError::bad_request(redact_secret(&error.to_string(), &key)))?;
+    Ok(Json(models))
+}
+
 async fn test_remote_provider(
     paths: &AppPaths,
     provider: &cerul_storage::providers::Provider,
@@ -272,6 +302,29 @@ async fn run_provider_test(
     Ok(())
 }
 
+async fn discover_remote_provider_models(
+    provider: &cerul_storage::providers::Provider,
+    key: &str,
+) -> anyhow::Result<Vec<ProviderModelRecord>> {
+    let spec = provider_test_request(provider, key)?;
+    let client = reqwest::Client::builder().timeout(TEST_TIMEOUT).build()?;
+    let mut request = client.get(spec.url);
+    for (name, value) in spec.headers {
+        request = request.header(name, value);
+    }
+    let response = request.send().await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "provider returned HTTP {}",
+        response.status()
+    );
+    let body = response.json::<Value>().await?;
+    Ok(parse_provider_models_response(
+        provider.provider_type.as_str(),
+        &body,
+    ))
+}
+
 fn validate_label(label: &str) -> ApiResult<()> {
     if label.trim().is_empty() {
         return Err(ApiError::bad_request("label cannot be empty"));
@@ -281,6 +334,98 @@ fn validate_label(label: &str) -> ApiResult<()> {
 
 fn is_blank(value: Option<&str>) -> bool {
     value.is_none_or(|item| item.trim().is_empty())
+}
+
+fn parse_provider_models_response(
+    provider_type: &str,
+    response: &Value,
+) -> Vec<ProviderModelRecord> {
+    let models = if provider_type == "gemini" {
+        response.get("models").and_then(Value::as_array)
+    } else {
+        response
+            .get("data")
+            .and_then(Value::as_array)
+            .or_else(|| response.as_array())
+    };
+
+    let mut seen = BTreeSet::new();
+    let mut records = models
+        .into_iter()
+        .flatten()
+        .filter_map(|model| provider_model_from_value(provider_type, model))
+        .filter(|model| seen.insert(model.id.clone()))
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| left.id.cmp(&right.id));
+    records
+}
+
+fn provider_model_from_value(provider_type: &str, value: &Value) -> Option<ProviderModelRecord> {
+    let raw_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("name").and_then(Value::as_str))?
+        .trim();
+    if raw_id.is_empty() {
+        return None;
+    }
+    let id = if provider_type == "gemini" {
+        raw_id.trim_start_matches("models/").to_string()
+    } else {
+        raw_id.to_string()
+    };
+    if id.is_empty() {
+        return None;
+    }
+    if !provider_model_is_usable_for_asr(provider_type, &id, value) {
+        return None;
+    }
+    let label = value
+        .get("display_name")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("displayName").and_then(Value::as_str))
+        .or_else(|| value.get("label").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .unwrap_or(&id)
+        .to_string();
+    let source = value
+        .get("owned_by")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("owner").and_then(Value::as_str))
+        .or_else(|| value.get("version").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .unwrap_or(provider_type)
+        .to_string();
+
+    Some(ProviderModelRecord { id, label, source })
+}
+
+fn provider_model_is_usable_for_asr(provider_type: &str, id: &str, value: &Value) -> bool {
+    let normalized = id.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    match provider_type {
+        "gemini" => {
+            normalized.starts_with("gemini-")
+                && value
+                    .get("supportedGenerationMethods")
+                    .and_then(Value::as_array)
+                    .is_none_or(|methods| {
+                        methods
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|method| method == "generateContent")
+                    })
+        }
+        "openai" | "openai-compatible" => {
+            normalized.contains("whisper") || normalized.contains("transcribe")
+        }
+        _ => false,
+    }
 }
 
 fn provider_test_request(
@@ -716,6 +861,61 @@ mod tests {
     }
 
     #[test]
+    fn parses_openai_compatible_model_catalog() {
+        let models = parse_provider_models_response(
+            "openai-compatible",
+            &json!({
+                "data": [
+                    {"id": "whisper-large-v3-turbo", "owned_by": "groq"},
+                    {"id": "whisper-large-v3-turbo", "owned_by": "groq"},
+                    {"id": "gpt-4o-mini-transcribe", "owned_by": "openai"},
+                    {"id": "gpt-4.1", "owned_by": "openai"},
+                    {"id": "text-embedding-3-large", "owned_by": "openai"}
+                ]
+            }),
+        );
+
+        assert_eq!(
+            models,
+            vec![
+                ProviderModelRecord {
+                    id: "gpt-4o-mini-transcribe".to_string(),
+                    label: "gpt-4o-mini-transcribe".to_string(),
+                    source: "openai".to_string(),
+                },
+                ProviderModelRecord {
+                    id: "whisper-large-v3-turbo".to_string(),
+                    label: "whisper-large-v3-turbo".to_string(),
+                    source: "groq".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_gemini_model_catalog() {
+        let models = parse_provider_models_response(
+            "gemini",
+            &json!({
+                "models": [
+                    {
+                        "name": "models/gemini-2.5-flash",
+                        "displayName": "Gemini 2.5 Flash",
+                        "supportedGenerationMethods": ["generateContent"]
+                    },
+                    {"name": "models/gemini-embedding-exp", "supportedGenerationMethods": ["embedContent"]},
+                    {"name": "models/text-embedding-004"}
+                ]
+            }),
+        );
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gemini-2.5-flash");
+        assert_eq!(models[0].label, "Gemini 2.5 Flash");
+        assert_eq!(models[0].source, "gemini");
+    }
+
+    #[test]
     fn env_bootstrap_uses_official_asr_by_default() {
         let _env = EnvGuard::new();
         std::env::set_var("CERUL_ASR_API_KEY", "test-key");
@@ -728,6 +928,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(provider.provider_type, "openai");
+        assert_eq!(provider.label, "ASR defaults");
         assert_eq!(provider.base_url.as_deref(), Some(OFFICIAL_OPENAI_BASE_URL));
     }
 

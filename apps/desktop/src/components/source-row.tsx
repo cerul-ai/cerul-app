@@ -18,9 +18,10 @@ import {
   Wrench,
   Youtube,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import type { Source } from "../lib/types";
+import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
 import { StatusBadge } from "./transcript";
 
 export function SourceRow({
@@ -45,6 +46,9 @@ export function SourceRow({
   const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const [errorExpanded, setErrorExpanded] = useState(source.status === "error");
+  const actionsRef = useRef<HTMLDivElement | null>(null);
+  useEscapeToClose(() => setMenuOpen(false), menuOpen);
+  useClickOutside(actionsRef, () => setMenuOpen(false), menuOpen);
   const Icon =
     source.type === "file"
       ? FileVideo
@@ -93,7 +97,7 @@ export function SourceRow({
       ) : (
         <StatusBadge status={source.status} label={statusLabel} />
       )}
-      <div className="row-actions">
+      <div className="row-actions" ref={actionsRef}>
         <button
           className="btn-icon"
           type="button"

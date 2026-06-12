@@ -24,6 +24,7 @@
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleDot,
   Clock,
@@ -36,13 +37,13 @@ import {
   FileVideo,
   Folder,
   HardDrive,
-  Home,
   Image as ImageIcon,
   Info,
   Library,
   ListChecks,
   ListFilter,
   Loader2,
+  Lock,
   Mic,
   MoreHorizontal,
   Eye,
@@ -56,16 +57,19 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
+  Star,
   Trash2,
   Video,
   Wrench,
   Youtube,
+  Wallet,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
+import { useAuthStore } from "./lib/cloud/authStore";
 import { LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
 import {
   errorMessage,
@@ -73,7 +77,6 @@ import {
   formatBytes,
   formatDuration,
   formatTimestamp,
-  formatUnixTime,
   formatUsd,
   metadataString,
   parseTimestampSeconds,
@@ -90,6 +93,7 @@ import {
   EmptyState,
   InlineNotice,
 } from "./components/leaf";
+import { useClickOutside, useEscapeToClose } from "./lib/use-dismissable";
 import {
   ProgressBar,
   StatusBadge,
@@ -98,7 +102,7 @@ import {
   highlightSnippet,
 } from "./components/transcript";
 import { DetailIssuePanel } from "./components/detail-issue-panel";
-import { CerulPlayer, type PlayerMarker } from "./components/player";
+import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "./components/player";
 import {
   ItemCard,
   ItemModalityIcon,
@@ -164,6 +168,7 @@ import {
   itemSourceKind,
   itemSourceLabel,
   itemStatus,
+  isNearEndPosition,
   latestActiveJobForItem,
   mapItemRecord,
   normalizeJobProgress,
@@ -209,6 +214,8 @@ const viewIds: View[] = [
   "results",
   "result-detail",
   "library",
+  "moments",
+  "entity-detail",
   "item-detail",
   "sources",
   "settings",
@@ -218,14 +225,136 @@ const viewIds: View[] = [
 // Mapping from sub-pages to their sidebar parent so the sidebar still
 // highlights the right top-level item when a sub-page is active.
 const sidebarParentFor: Partial<Record<View, View>> = {
-  "result-detail": "results",
+  "results": "home",
+  "result-detail": "home",
+  "entity-detail": "library",
   "item-detail": "library",
 };
 const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
+const lastOpenedStorageKey = "cerul.lastOpened.v1";
+
+function recordLastOpened(itemId: string, timestamp?: string | null) {
+  try {
+    window.localStorage.setItem(
+      lastOpenedStorageKey,
+      JSON.stringify({ itemId, timestamp: timestamp ?? null, at: Date.now() }),
+    );
+  } catch {
+    // localStorage may be unavailable; continue-watching is best-effort.
+  }
+}
+
+function forgetLastOpened(itemId: string) {
+  try {
+    const current = readLastOpened();
+    if (!current || current.itemId === itemId) {
+      window.localStorage.removeItem(lastOpenedStorageKey);
+    }
+  } catch {
+    // localStorage may be unavailable; continue-watching is best-effort.
+  }
+}
+
+function readLastOpened(): { itemId: string; timestamp: string | null; at: number } | null {
+  try {
+    const raw = window.localStorage.getItem(lastOpenedStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { itemId?: unknown; timestamp?: unknown; at?: unknown };
+    if (parsed && typeof parsed.itemId === "string") {
+      return {
+        itemId: parsed.itemId,
+        timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : null,
+        at: typeof parsed.at === "number" && Number.isFinite(parsed.at) ? parsed.at : 0,
+      };
+    }
+  } catch {
+    // ignore malformed storage
+  }
+  return null;
+}
 
 function hasOpenModalSurface() {
-  return Boolean(document.querySelector(".scrim, .modal-backdrop, [role='dialog'][aria-modal='true']"));
+  // Every transient surface must be reachable from this selector, otherwise
+  // page-level Escape handlers fire underneath it (e.g. detail "back").
+  return Boolean(document.querySelector(".scrim, .account-pop, .menu, [role='dialog']"));
+}
+
+function usePlaybackPositionPersistence({
+  itemId,
+  videoRef,
+  chunkId,
+  enabled,
+}: {
+  itemId: string;
+  videoRef: RefObject<HTMLVideoElement | null>;
+  chunkId: string | null;
+  enabled: boolean;
+}) {
+  const lastSavedAtRef = useRef(0);
+  const chunkIdRef = useRef(chunkId);
+
+  useEffect(() => {
+    chunkIdRef.current = chunkId;
+  }, [chunkId]);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+
+    let disposed = false;
+    const clearSavedPosition = () => {
+      forgetLastOpened(itemId);
+      void api
+        .updatePlaybackPosition(itemId, 0, null)
+        .catch((error) => console.warn("failed to clear playback position", error));
+    };
+    const persist = (force: boolean) => {
+      if (disposed) {
+        return;
+      }
+      const positionSec = video.currentTime;
+      if (!Number.isFinite(positionSec) || positionSec < 1) {
+        return;
+      }
+      if (isNearEndPosition(positionSec, video.duration)) {
+        if (force) {
+          clearSavedPosition();
+        }
+        return;
+      }
+      const now = Date.now();
+      if (!force && now - lastSavedAtRef.current < 10_000) {
+        return;
+      }
+      lastSavedAtRef.current = now;
+      const timestamp = formatTimestamp(positionSec);
+      recordLastOpened(itemId, timestamp);
+      void api
+        .updatePlaybackPosition(itemId, positionSec, chunkIdRef.current)
+        .catch((error) => console.warn("failed to save playback position", error));
+    };
+    const persistThrottled = () => persist(false);
+    const persistForced = () => persist(true);
+
+    video.addEventListener("timeupdate", persistThrottled);
+    video.addEventListener("pause", persistForced);
+    video.addEventListener("ended", clearSavedPosition);
+    window.addEventListener("pagehide", persistForced);
+    return () => {
+      persistForced();
+      disposed = true;
+      video.removeEventListener("timeupdate", persistThrottled);
+      video.removeEventListener("pause", persistForced);
+      video.removeEventListener("ended", clearSavedPosition);
+      window.removeEventListener("pagehide", persistForced);
+    };
+  }, [enabled, itemId, videoRef]);
 }
 
 async function readDaemonStatus() {
@@ -452,7 +581,7 @@ const items: Item[] = [
     source: "Andrej Karpathy",
     sourceKind: "youtube",
     duration: "1 h 18 m",
-    indexedAt: "Today",
+    indexedAt: "今天",
     indexedAtEpoch: 1780444800,
     status: "indexed",
     error: null,
@@ -467,6 +596,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -477,7 +607,7 @@ const items: Item[] = [
     source: "Talks 2026",
     sourceKind: "folder",
     duration: "49 m",
-    indexedAt: "Yesterday",
+    indexedAt: "昨天",
     indexedAtEpoch: 1780358400,
     status: "indexing",
     error: null,
@@ -492,6 +622,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: "pending",
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -502,7 +633,7 @@ const items: Item[] = [
     source: "Engineering Notes",
     sourceKind: "podcast",
     duration: "56 m",
-    indexedAt: "May 12",
+    indexedAt: "5月12日",
     indexedAtEpoch: 1778544000,
     status: "indexed",
     error: null,
@@ -517,6 +648,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -527,7 +659,7 @@ const items: Item[] = [
     source: "Design Reviews",
     sourceKind: "folder",
     duration: "23 m",
-    indexedAt: "May 11",
+    indexedAt: "5月11日",
     indexedAtEpoch: 1778457600,
     status: "failed",
     error: "The original file moved or was deleted from ~/Movies/design-reviews/multimodal-search-review.mp4.",
@@ -542,6 +674,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
   {
@@ -552,7 +685,7 @@ const items: Item[] = [
     source: "Andrej Karpathy",
     sourceKind: "youtube",
     duration: "41 m",
-    indexedAt: "May 10",
+    indexedAt: "5月10日",
     indexedAtEpoch: 1778371200,
     status: "failed",
     error: "yt-dlp fetch failed: video unavailable or private.",
@@ -567,6 +700,7 @@ const items: Item[] = [
     visualIndexMessage: null,
     embeddingIndexStatus: null,
     embeddingIndexMessage: null,
+    playbackPosition: null,
     usage: emptyUsageTotals,
   },
 ];
@@ -623,6 +757,7 @@ const demoJobs: api.JobRecord[] = [
     stage: "transcribing",
     stage_message: "Transcribing audio",
     usage: emptyUsageTotals,
+    error_info: null,
   },
   {
     id: "job-2",
@@ -636,8 +771,126 @@ const demoJobs: api.JobRecord[] = [
     stage: "failed",
     stage_message: "Index failed",
     usage: emptyUsageTotals,
+    error_info: {
+      code: "source_unavailable",
+      capability: "视频索引",
+      settings_section: "Models",
+      message: "来源暂时不可访问，可能是私有、地区限制或文件已移动。",
+    },
   },
 ];
+
+const demoMoments: api.MomentRecord[] = [
+  {
+    id: "moment-1",
+    item_id: "item-1",
+    chunk_id: "sample-2",
+    start_sec: 754,
+    end_sec: null,
+    timestamp: "12:34",
+    title: "Software Is Changing Again",
+    quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
+    note: null,
+    created_at: Math.floor(Date.now() / 1000) - 3600,
+  },
+  {
+    id: "moment-2",
+    item_id: "item-2",
+    chunk_id: "sample-3",
+    start_sec: 782,
+    end_sec: null,
+    timestamp: "13:02",
+    title: "API-first Media Systems",
+    quote: "Search quality improves when lexical recall and semantic retrieval are evaluated separately.",
+    note: null,
+    created_at: Math.floor(Date.now() / 1000) - 7200,
+  },
+];
+
+const demoEntities: api.EntitySummary[] = [
+  { id: "andrej-karpathy", label: "Andrej Karpathy", kind: "person_or_entity", mention_count: 6, item_count: 2 },
+  { id: "test-time-compute", label: "test-time compute", kind: "topic", mention_count: 5, item_count: 2 },
+  { id: "retrieval-quality", label: "retrieval quality", kind: "topic", mention_count: 4, item_count: 3 },
+];
+
+const demoEntityDetail: api.EntityDetail = {
+  entity: demoEntities[1],
+  mentions: [
+    {
+      entity_id: "test-time-compute",
+      label: "test-time compute",
+      kind: "topic",
+      item_id: "item-1",
+      item_title: "Software Is Changing Again",
+      chunk_id: "sample-2",
+      timestamp: "12:34",
+      start_sec: 754,
+      quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
+    },
+    {
+      entity_id: "test-time-compute",
+      label: "test-time compute",
+      kind: "topic",
+      item_id: "item-2",
+      item_title: "API-first Media Systems",
+      chunk_id: "sample-3",
+      timestamp: "13:02",
+      start_sec: 782,
+      quote: "The retrieval layer becomes part of the reasoning loop when answers cite exact moments.",
+    },
+  ],
+};
+
+const demoVideoUnderstanding: api.VideoUnderstandingRecord = {
+  item_id: "item-1",
+  provider_id: "fixture",
+  model_id: "qwen3-vl-fixture",
+  status: "completed",
+  summary:
+    "A discussion of test-time compute, retrieval quality, and how timestamped media evidence changes search workflows.",
+  chapters: [
+    {
+      start_sec: 730,
+      end_sec: 820,
+      title: "Test-time compute",
+      summary: "Reasoning budget can be spent after the prompt arrives.",
+    },
+    {
+      start_sec: 900,
+      end_sec: 1020,
+      title: "Retrieval as evidence",
+      summary: "Answers are grounded by exact transcript moments.",
+    },
+  ],
+  events: [
+    {
+      start_sec: 754,
+      end_sec: 790,
+      caption: "The speaker explains why test-time compute changes answer quality.",
+      visual: null,
+      audio: null,
+      actions: ["explains"],
+      entities: ["test-time compute"],
+      confidence: 0.91,
+    },
+  ],
+  topics: ["test-time compute", "retrieval quality", "media memory"],
+  searchable_text: null,
+  error: null,
+  created_at: Math.floor(Date.now() / 1000) - 3600,
+  updated_at: Math.floor(Date.now() / 1000) - 1800,
+};
+
+const demoUsageSummary: api.UsageSummary = {
+  total: { ...emptyUsageTotals, event_count: 18, request_count: 18, estimated_usd: 0.42, billed_credits: 42 },
+  remote: { ...emptyUsageTotals, event_count: 7, request_count: 7, estimated_usd: 0.42, billed_credits: 42 },
+  local: { ...emptyUsageTotals, event_count: 11, request_count: 11, estimated_usd: 0, billed_credits: 0 },
+  by_capability: [
+    { key: "asr", totals: { ...emptyUsageTotals, event_count: 6, request_count: 6, estimated_usd: 0.12 } },
+    { key: "embedding", totals: { ...emptyUsageTotals, event_count: 9, request_count: 9, estimated_usd: 0.18 } },
+    { key: "video_understanding", totals: { ...emptyUsageTotals, event_count: 3, request_count: 3, estimated_usd: 0.12 } },
+  ],
+};
 
 const transcript: TranscriptLine[] = [
   {
@@ -663,7 +916,7 @@ const transcript: TranscriptLine[] = [
   },
 ];
 
-const settingsSections = ["General", "Models", "Indexing", "Storage", "Advanced", "About"] as const;
+const settingsSections = ["Models", "Usage", "General", "Indexing", "Storage", "Advanced", "About"] as const;
 type SettingsSection = (typeof settingsSections)[number];
 
 function normalizeSettingsSection(section?: string | null): SettingsSection {
@@ -673,7 +926,7 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
   if (settingsSections.includes(section as SettingsSection)) {
     return section as SettingsSection;
   }
-  return "General";
+  return "Models";
 }
 
 function viewChromeLabel(view: View, settingsSection: string) {
@@ -746,6 +999,7 @@ export function App() {
 
 function AppWorkspace() {
   const t = useT();
+  const exchangeOAuthCode = useAuthStore((state) => state.exchangeOAuthCode);
   const initialRoute = readRouteState();
   const [view, setViewState] = useState<View>(initialRoute.view);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(initialRoute.itemId);
@@ -818,8 +1072,46 @@ function AppWorkspace() {
   const stepStarts = useStepStarts(visibleJobs);
 
   useEffect(() => {
+    function handleOAuthRoute(route: RouteState) {
+      if (!route.oauthProvider && !route.oauthCode && !route.oauthState && !route.oauthError) {
+        return false;
+      }
+      const settingsRoute = {
+        view: "settings" as const,
+        itemId: null,
+        chunkId: null,
+        timestamp: null,
+        settingsSection: "Usage",
+      };
+      setViewState(settingsRoute.view);
+      setSelectedItemId(null);
+      setSelectedChunkId(null);
+      setSelectedTimestamp(null);
+      setShowJobsSheet(false);
+      setShowAddSource(false);
+      setSettingsSection(settingsRoute.settingsSection);
+      window.history.replaceState(null, "", `#${routeHash("settings", { settingsSection: "Usage" })}`);
+      void persistLastRoute(settingsRoute);
+
+      if (route.oauthError) {
+        console.warn("OAuth login failed", route.oauthError);
+        return true;
+      }
+      if (!route.oauthCode || !route.oauthState) {
+        console.warn("OAuth login callback was missing code or state");
+        return true;
+      }
+      void exchangeOAuthCode({ code: route.oauthCode, state: route.oauthState }).catch((error) => {
+        console.warn("OAuth login exchange failed", error);
+      });
+      return true;
+    }
+
     function syncHashRoute() {
       const route = readRouteState();
+      if (handleOAuthRoute(route)) {
+        return;
+      }
       setViewState(route.view);
       setSelectedItemId(route.itemId);
       setSelectedChunkId(route.chunkId);
@@ -836,9 +1128,12 @@ function AppWorkspace() {
       void persistLastRoute(normalizedRoute);
     }
 
+    if (window.location.hash) {
+      syncHashRoute();
+    }
     window.addEventListener("hashchange", syncHashRoute);
     return () => window.removeEventListener("hashchange", syncHashRoute);
-  }, []);
+  }, [exchangeOAuthCode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -928,7 +1223,7 @@ function AppWorkspace() {
         ]);
       const mappedItems = itemRecords.map((record) => mapItemRecord(record, jobRecords, t));
       const nextData: AppData = {
-        sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems)),
+        sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
         jobs: jobRecords,
         settings,
@@ -996,6 +1291,9 @@ function AppWorkspace() {
     setViewState(nextView);
     const hash = routeHash(nextView, routeParams);
     window.location.hash = hash;
+    if ((nextView === "item-detail" || nextView === "result-detail") && routeParams.itemId) {
+      recordLastOpened(routeParams.itemId, routeParams.timestamp ?? null);
+    }
     void persistLastRoute({
       view: nextView,
       itemId: routeParams.itemId ?? null,
@@ -1135,7 +1433,7 @@ function AppWorkspace() {
       }
       setModelDownloadState({ status: "downloading", error: null });
       await api.updateSettings({
-        inference_mode: "remote",
+        inference_mode: "auto",
         asr_model: "whisper-1",
         active_embedding_profile: "gemini-embedding-2-3072",
       });
@@ -1150,9 +1448,9 @@ function AppWorkspace() {
 
   const sidebarActiveView = sidebarParentFor[view] ?? view;
   const railItems: { id: View; labelKey: string; icon: LucideIcon }[] = [
-    { id: "home", labelKey: "nav.home", icon: Home },
-    { id: "results", labelKey: "nav.results", icon: Search },
+    { id: "home", labelKey: "nav.home", icon: Search },
     { id: "library", labelKey: "nav.library", icon: Library },
+    { id: "moments", labelKey: "nav.moments", icon: Star },
     { id: "sources", labelKey: "nav.sources", icon: Database },
   ];
   const mobileNavItems = [
@@ -1233,6 +1531,16 @@ function AppWorkspace() {
             <span className="rail-label">{t("nav.settings")}</span>
           </button>
           <AccountRailButton />
+          <div className="rail-status mono">
+            <span
+              className="rail-status-dot"
+              data-ok={screenApiStatus === "online" ? "true" : undefined}
+              aria-hidden="true"
+            />
+            <span className="rail-label">
+              {screenApiStatus === "online" ? t("shell.coreLocal") : t("shell.coreOffline")}
+            </span>
+          </div>
         </div>
       </aside>
 
@@ -1290,7 +1598,10 @@ function AppWorkspace() {
             setQuery={setQuery}
             onSubmit={submitSearch}
             onAddSource={() => setShowAddSource(true)}
-            onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
+            onOpenItem={(item, timestamp) =>
+              navigate("item-detail", { itemId: item.id, timestamp })
+            }
+            onOpenLibrary={() => navigate("library")}
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}
@@ -1347,6 +1658,7 @@ function AppWorkspace() {
             actionsEnabled={screenApiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
+            onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
             onDeleteItems={async (itemIds) => {
               for (const itemId of itemIds) {
                 await api.deleteItem(itemId);
@@ -1361,6 +1673,28 @@ function AppWorkspace() {
             }}
             onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
             requestConfirm={requestConfirm}
+          />
+        ) : null}
+        {view === "moments" ? (
+          <MomentsScreen
+            actionsEnabled={screenApiStatus === "online"}
+            onOpenItem={(moment) =>
+              navigate("item-detail", { itemId: moment.item_id, timestamp: moment.timestamp })
+            }
+          />
+        ) : null}
+        {view === "entity-detail" ? (
+          <EntityDetailScreen
+            entityId={selectedItemId}
+            actionsEnabled={screenApiStatus === "online"}
+            onBack={() => navigate("library")}
+            onOpenMention={(mention) =>
+              navigate("item-detail", {
+                itemId: mention.item_id,
+                chunkId: mention.chunk_id,
+                timestamp: mention.timestamp,
+              })
+            }
           />
         ) : null}
         {view === "item-detail" ? (
@@ -1453,6 +1787,10 @@ function AppWorkspace() {
           items={visibleItems}
           stepStarts={stepStarts}
           onClose={() => setShowJobsSheet(false)}
+          onOpenSettingsFix={(section) => {
+            setShowJobsSheet(false);
+            navigate("settings", { settingsSection: section });
+          }}
         />
       ) : null}
       <ConfirmDialog
@@ -1472,12 +1810,25 @@ function submitSearchInputOnEnter(event: KeyboardEvent<HTMLInputElement>) {
   event.currentTarget.form?.requestSubmit();
 }
 
+function formatWeeklyHours(seconds: number) {
+  const hours = Math.floor(Math.max(0, seconds) / 3600);
+  const minutes = Math.round((Math.max(0, seconds) % 3600) / 60);
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  return `${minutes}m`;
+}
+
 function HomeScreen({
   query,
   setQuery,
   onSubmit,
   onAddSource,
   onOpenItem,
+  onOpenLibrary,
   items,
   sources,
   jobs,
@@ -1489,7 +1840,8 @@ function HomeScreen({
   setQuery: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAddSource: () => void;
-  onOpenItem: (item: Item) => void;
+  onOpenItem: (item: Item, timestamp?: string | null) => void;
+  onOpenLibrary: () => void;
   items: Item[];
   sources: Source[];
   jobs: api.JobRecord[];
@@ -1507,6 +1859,52 @@ function HomeScreen({
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = items.filter((item) => item.status === "indexed").slice(0, 4);
+  const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
+    visualFixtureModeEnabled()
+      ? {
+          week_start: 0,
+          indexed_items: 4,
+          indexed_seconds: 6 * 3600 + 12 * 60,
+          watched_percent: 40,
+          topics: [
+            { id: "test-time-compute", label: "test-time compute", count: 5 },
+            { id: "retrieval-quality", label: "retrieval quality", count: 4 },
+            { id: "media-memory", label: "media memory", count: 3 },
+          ],
+          has_data: true,
+        }
+      : null,
+  );
+  const [weeklyDismissed, setWeeklyDismissed] = useState(false);
+  const serverContinueItem = items
+    .filter((item) => item.status === "indexed" && item.playbackPosition?.updated_at)
+    .sort(
+      (left, right) =>
+        (right.playbackPosition?.updated_at ?? 0) - (left.playbackPosition?.updated_at ?? 0),
+    )[0];
+  const lastOpened = readLastOpened();
+  const fallbackContinueItem =
+    lastOpened
+      ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed")
+      : undefined;
+  const fallbackTimestampSec =
+    fallbackContinueItem && lastOpened?.timestamp
+      ? parseTimestampSeconds(lastOpened.timestamp)
+      : Number.NaN;
+  const fallbackIsUseful =
+    fallbackContinueItem &&
+    lastOpened &&
+    (!Number.isFinite(fallbackTimestampSec) ||
+      !isNearEndPosition(fallbackTimestampSec, fallbackContinueItem.durationSec));
+  const serverUpdatedAtMs = (serverContinueItem?.playbackPosition?.updated_at ?? 0) * 1000;
+  const preferFallbackContinue =
+    Boolean(fallbackIsUseful && lastOpened && (!serverContinueItem || lastOpened.at > serverUpdatedAtMs));
+  const continueItem = preferFallbackContinue ? fallbackContinueItem : serverContinueItem;
+  const continueTimestamp =
+    continueItem?.playbackPosition?.timestamp ??
+    (continueItem && lastOpened && continueItem.id === lastOpened.itemId
+      ? lastOpened.timestamp
+      : null);
 
   const statusLabel =
     activeJobs.length > 0
@@ -1525,6 +1923,24 @@ function HomeScreen({
 
     onSubmit(event);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureModeEnabled() || apiStatus !== "online") {
+      return;
+    }
+    api
+      .weeklyReview()
+      .then((review) => {
+        if (!cancelled) {
+          setWeeklyReview(review.has_data ? review : null);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [apiStatus, indexedCount, activeJobs.length]);
 
   if (!hasSources && apiStatus === "online") {
     return (
@@ -1604,13 +2020,61 @@ function HomeScreen({
         </div>
       </div>
 
+      {continueItem ? (
+        <div className="home-continue-block">
+          <p className="section-label" style={{ marginBottom: 10 }}>{t("home.continueWatching")}</p>
+          <ContinueWatchingCard
+            item={continueItem}
+            timestamp={continueTimestamp}
+            onOpen={() => onOpenItem(continueItem, continueTimestamp)}
+          />
+        </div>
+      ) : null}
+
+      {weeklyReview && !weeklyDismissed ? (
+        <section className="weekly-card" aria-label={t("weekly.title")}>
+          <div>
+            <p className="section-label">{t("weekly.eyebrow")}</p>
+            <h2>{t("weekly.title")}</h2>
+            <p>
+              {t("weekly.body", {
+                items: weeklyReview.indexed_items,
+                hours: formatWeeklyHours(weeklyReview.indexed_seconds),
+                watched: weeklyReview.watched_percent,
+              })}
+            </p>
+            {weeklyReview.topics.length > 0 ? (
+              <div className="weekly-topics">
+                {weeklyReview.topics.map((topic) => (
+                  <span className="chip neutral" key={topic.id}>{topic.label}</span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="btn-icon sm"
+            aria-label={t("common.close")}
+            onClick={() => setWeeklyDismissed(true)}
+          >
+            <X size={15} />
+          </button>
+        </section>
+      ) : null}
+
       <div className="home-recent-block">
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 14 }}>
           <p className="section-label" style={{ margin: 0 }}>{t("home.recentIndexed")}</p>
-          <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
-            <Plus size={14} />
-            <span>{t("home.addSource")}</span>
-          </button>
+          <div className="row gap-2">
+            <button className="btn btn-ghost sm" type="button" onClick={onOpenLibrary}>
+              <span>{t("home.browseLibrary")}</span>
+              <ChevronRight size={14} />
+            </button>
+            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+              <Plus size={14} />
+              <span>{t("home.addSource")}</span>
+            </button>
+          </div>
         </div>
         {recentIndexed.length > 0 ? (
           <div className="home-recent-grid">
@@ -1628,6 +2092,37 @@ function HomeScreen({
         )}
       </div>
     </div>
+  );
+}
+
+function ContinueWatchingCard({
+  item,
+  timestamp,
+  onOpen,
+}: {
+  item: Item;
+  timestamp: string | null;
+  onOpen: () => void;
+}) {
+  const t = useT();
+  return (
+    <button className="card hover continue-card" type="button" onClick={onOpen}>
+      <span className={`thumb continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
+        {item.thumbnailUrl ? (
+          <img src={item.thumbnailUrl} alt="" loading="lazy" />
+        ) : (
+          <ItemModalityIcon item={item} size={24} />
+        )}
+        {item.contentType !== "image" && item.duration ? (
+          <small className="thumb-duration mono">{item.duration}</small>
+        ) : null}
+      </span>
+      <span className="continue-body">
+        <strong className="clamp1">{item.title}</strong>
+        {timestamp ? <span className="mono faint">{timestamp}</span> : null}
+        <span className="continue-cta">{t("home.continueResume")}</span>
+      </span>
+    </button>
   );
 }
 
@@ -1650,7 +2145,7 @@ function RecentIndexedCard({ item, onOpen }: { item: Item; onOpen: () => void })
         <span className="recent-card-meta muted">
           {item.contentType !== "video" ? <ItemModalityIcon item={item} size={13} /> : null}
           <span>
-            {item.indexedAt === "Never"
+            {item.indexedAtEpoch === null
               ? t("library.itemCard.notIndexed")
               : t("library.itemCard.indexedAt", { when: item.indexedAt })}
           </span>
@@ -1955,6 +2450,250 @@ function ResultsSkeletonList() {
   );
 }
 
+function parseTimeToSeconds(time: string): number {
+  const parts = time.split(":").map((part) => Number.parseInt(part, 10) || 0);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] ?? 0;
+}
+
+function secondsToSrtTimestamp(total: number): string {
+  const pad = (value: number, width = 2) =>
+    String(Math.max(0, Math.floor(value))).padStart(width, "0");
+  return `${pad(total / 3600)}:${pad((total % 3600) / 60)}:${pad(total % 60)},000`;
+}
+
+function transcriptToSrt(lines: TranscriptLine[]): string {
+  return lines
+    .map((line, index) => {
+      const start = parseTimeToSeconds(line.time);
+      const nextStart =
+        index + 1 < lines.length ? parseTimeToSeconds(lines[index + 1].time) : start + 3;
+      const end = Math.max(nextStart, start + 1);
+      return `${index + 1}\n${secondsToSrtTimestamp(start)} --> ${secondsToSrtTimestamp(end)}\n${line.text}`;
+    })
+    .join("\n\n");
+}
+
+function transcriptToMarkdown(title: string, lines: TranscriptLine[]): string {
+  const body = lines.map((line) => `**[${line.time}]** ${line.text}`).join("\n\n");
+  return `# ${title}\n\n${body}\n`;
+}
+
+function transcriptFilenameBase(title: string): string {
+  const cleaned = title.replace(/[^\p{L}\p{N}\-_ ]/gu, "").trim().slice(0, 60);
+  return cleaned || "transcript";
+}
+
+function downloadTextFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function TranscriptExportButtons({ title, lines }: { title: string; lines: TranscriptLine[] }) {
+  const t = useT();
+  if (lines.length === 0) {
+    return null;
+  }
+  const base = transcriptFilenameBase(title);
+  return (
+    <>
+      <button
+        className="btn btn-secondary sm"
+        type="button"
+        onClick={() =>
+          downloadTextFile(`${base}.md`, transcriptToMarkdown(title, lines), "text/markdown;charset=utf-8")
+        }
+      >
+        <Download size={15} />
+        <span>{t("detail.action.exportMarkdown")}</span>
+      </button>
+      <button
+        className="btn btn-secondary sm"
+        type="button"
+        onClick={() => downloadTextFile(`${base}.srt`, transcriptToSrt(lines), "text/plain;charset=utf-8")}
+      >
+        <Download size={15} />
+        <span>{t("detail.action.exportSrt")}</span>
+      </button>
+    </>
+  );
+}
+
+function useItemMoments(item: Item, enabled: boolean) {
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
+    visualFixtureMode ? demoMoments.filter((moment) => moment.item_id === item.id) : [],
+  );
+  const [pendingLineId, setPendingLineId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    if (visualFixtureMode) {
+      setMoments((current) => current.filter((moment) => moment.item_id === item.id));
+      return;
+    }
+    if (!enabled) {
+      setMoments([]);
+      return;
+    }
+    const records = await api.listMoments();
+    setMoments(records.filter((moment) => moment.item_id === item.id));
+  }, [enabled, item.id, visualFixtureMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureMode) {
+      setMoments(demoMoments.filter((moment) => moment.item_id === item.id));
+      return;
+    }
+    if (!enabled) {
+      setMoments([]);
+      return;
+    }
+    api
+      .listMoments()
+      .then((records) => {
+        if (!cancelled) {
+          setMoments(records.filter((moment) => moment.item_id === item.id));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, item.id, visualFixtureMode]);
+
+  function momentForLine(line: TranscriptLine) {
+    return moments.find(
+      (moment) =>
+        moment.chunk_id === line.id ||
+        (moment.timestamp === line.time && moment.quote.trim() === line.text.trim()),
+    );
+  }
+
+  async function toggle(line: TranscriptLine) {
+    if (!enabled || pendingLineId) {
+      return;
+    }
+    setPendingLineId(line.id);
+    setMessage(null);
+    try {
+      const existing = momentForLine(line);
+      if (visualFixtureMode) {
+        const startSec = parseTimestampSeconds(line.time);
+        setMoments((current) =>
+          existing
+            ? current.filter((moment) => moment.id !== existing.id)
+            : [
+                ...current,
+                {
+                  id: `fixture-${line.id}`,
+                  item_id: item.id,
+                  chunk_id: line.id,
+                  start_sec: Number.isFinite(startSec) ? startSec : null,
+                  end_sec: null,
+                  timestamp: line.time,
+                  title: item.title,
+                  quote: line.text,
+                  note: null,
+                  created_at: Math.floor(Date.now() / 1000),
+                },
+              ],
+        );
+        return;
+      }
+      if (existing) {
+        await api.deleteMoment(existing.id);
+      } else {
+        const startSec = parseTimestampSeconds(line.time);
+        await api.createMoment({
+          item_id: item.id,
+          chunk_id: line.id,
+          start_sec: Number.isFinite(startSec) ? startSec : null,
+          title: item.title,
+          quote: line.text,
+        });
+      }
+      await reload();
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPendingLineId(null);
+    }
+  }
+
+  return {
+    moments,
+    pendingLineId,
+    message,
+    momentForLine,
+    toggle,
+  };
+}
+
+function MomentLineAction({
+  saved,
+  pending,
+  disabled,
+  onToggle,
+}: {
+  saved: boolean;
+  pending: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      className={saved ? "moment-star saved" : "moment-star"}
+      disabled={disabled || pending}
+      title={saved ? t("moments.unsave") : t("moments.save")}
+      aria-label={saved ? t("moments.unsave") : t("moments.save")}
+      onClick={onToggle}
+    >
+      {pending ? <Loader2 size={14} /> : <Star size={14} fill={saved ? "currentColor" : "none"} />}
+    </button>
+  );
+}
+
+function TranscriptReadingView({
+  title,
+  lines,
+  onSeek,
+}: {
+  title: string;
+  lines: TranscriptLine[];
+  onSeek?: (timestamp: string) => void;
+}) {
+  return (
+    <article className="transcript-reading">
+      <h2 className="reading-title">{title}</h2>
+      {lines.map((line) => (
+        <p key={line.id} className="reading-para">
+          <button
+            type="button"
+            className="reading-ts mono"
+            onClick={() => onSeek?.(line.time)}
+            aria-label={line.time}
+          >
+            {line.time}
+          </button>
+          <span>{line.text}</span>
+        </p>
+      ))}
+    </article>
+  );
+}
+
 function ResultDetail({
   item,
   startChunkId,
@@ -1979,6 +2718,14 @@ function ResultDetail({
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [isPlaying, setIsPlaying] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
+  const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
+    setPlayerChapters(
+      chapters
+        .filter((chapter) => chapter.start_sec !== null)
+        .map((chapter) => ({ seconds: chapter.start_sec as number, title: chapter.title })),
+    );
+  }, []);
   const shouldAutoPlayRef = useRef(true);
   const [mediaState, setMediaState] = useState<{
     status: "idle" | "loading" | "ready" | "error";
@@ -1991,9 +2738,11 @@ function ResultDetail({
     message: string | null;
   }>({ status: "idle", message: null });
   const [clipExportStatus, setClipExportStatus] = useState<"idle" | "exporting" | "done">("idle");
+  const [readingMode, setReadingMode] = useState(false);
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
     actionsEnabled && mediaState.status !== "idle" ? mediaState.lines : transcript;
+  const momentActions = useItemMoments(item, actionsEnabled && mediaState.status === "ready");
   const playbackUrl =
     item.contentType === "video" && mediaState.chunkId
       ? api.videoSegmentUrl(mediaState.chunkId)
@@ -2017,6 +2766,13 @@ function ResultDetail({
       match: line.time === startTimestamp,
     }))
     .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
+
+  usePlaybackPositionPersistence({
+    itemId: item.id,
+    videoRef,
+    chunkId: mediaState.chunkId,
+    enabled: actionsEnabled && Boolean(playbackUrl),
+  });
 
   useEffect(() => {
     setCurrentTimestamp(startTimestamp);
@@ -2356,9 +3112,9 @@ function ResultDetail({
           <div className="detail-media">
             <div className="row gap-2" style={{ marginBottom: 12, flexWrap: "wrap" }}>
               <span className="chip neutral">{item.source}</span>
-              <span className="chip success">
+              <span className={item.indexedAtEpoch === null ? "chip neutral" : "chip success"}>
                 <span className="dot" />
-                {item.indexedAt === "Never" ? t("detail.notIndexed") : t("detail.indexedAt", { when: item.indexedAt })}
+                {item.indexedAtEpoch === null ? t("detail.notIndexed") : t("detail.indexedAt", { when: item.indexedAt })}
               </span>
               <span className="mono faint" style={{ fontSize: 12 }}>{item.duration}</span>
             </div>
@@ -2381,6 +3137,7 @@ function ResultDetail({
                 videoRef={videoRef}
                 src={playbackUrl}
                 markers={playerMarkers}
+                chapters={playerChapters}
                 ariaLabel={t("itemDetail.player.aria", { title: item.title })}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
@@ -2411,6 +3168,7 @@ function ResultDetail({
             )}
 
             <div className="row gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
+              <TranscriptExportButtons title={item.title} lines={transcriptLines} />
               {item.contentType === "video" ? (
                 <button
                   className="btn btn-secondary sm"
@@ -2443,6 +3201,7 @@ function ResultDetail({
               enabled={actionsEnabled}
               onSeek={seekTo}
               requestConfirm={requestConfirm}
+              onChapters={handleUnderstandingChapters}
             />
           </div>
 
@@ -2452,24 +3211,35 @@ function ResultDetail({
                 <p className="section-label" style={{ marginBottom: 2 }}>{t("detail.transcript.eyebrow")}</p>
                 <span className="faint mono" style={{ fontSize: 12 }}>{t("detail.transcript.chunkCount", { count: transcriptLines.length })}</span>
               </div>
-              {otherMatches.length > 0 ? (
-                <div className="row gap-1" aria-label={t("detail.otherMatches")}>
-                  {otherMatches.map((timestamp) => (
-                    <button
-                      key={timestamp}
-                      type="button"
-                      className={timestamp === currentTimestamp ? "chip accent" : "chip neutral"}
-                      onClick={() => seekTo(timestamp)}
-                    >
-                      {timestamp}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
+              <div className="row gap-2" style={{ alignItems: "center" }}>
+                {otherMatches.length > 0 && !readingMode ? (
+                  <div className="row gap-1" aria-label={t("detail.otherMatches")}>
+                    {otherMatches.map((timestamp) => (
+                      <button
+                        key={timestamp}
+                        type="button"
+                        className={timestamp === currentTimestamp ? "chip accent" : "chip neutral"}
+                        onClick={() => seekTo(timestamp)}
+                      >
+                        {timestamp}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn btn-ghost sm"
+                  aria-pressed={readingMode}
+                  onClick={() => setReadingMode((on) => !on)}
+                >
+                  <span>{readingMode ? t("detail.transcriptMode") : t("detail.readingMode")}</span>
+                </button>
+              </div>
             </div>
 
             {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
             {copyStatus === "copied" ? <InlineNotice tone="muted" message={t("detail.copy.success")} /> : null}
+            {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
             {itemAction.message ? (
               <InlineNotice
                 tone={itemAction.status === "error" ? "error" : "muted"}
@@ -2483,12 +3253,27 @@ function ResultDetail({
             {mediaState.status === "error" && mediaState.message ? (
               <InlineNotice tone="error" message={mediaState.message} />
             ) : null}
-            <TranscriptList
-              lines={transcriptLines}
-              activeTime={currentTimestamp}
-              matchTime={startTimestamp}
-              onSeek={seekTo}
-            />
+            {readingMode ? (
+              <TranscriptReadingView title={item.title} lines={transcriptLines} onSeek={seekTo} />
+            ) : (
+              <TranscriptList
+                lines={transcriptLines}
+                activeTime={currentTimestamp}
+                matchTime={startTimestamp}
+                onSeek={seekTo}
+                renderAction={(line) => {
+                  const saved = Boolean(momentActions.momentForLine(line));
+                  return (
+                    <MomentLineAction
+                      saved={saved}
+                      pending={momentActions.pendingLineId === line.id}
+                      disabled={!actionsEnabled}
+                      onToggle={() => void momentActions.toggle(line)}
+                    />
+                  );
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -2501,18 +3286,26 @@ function VideoUnderstandingPanel({
   enabled,
   onSeek,
   requestConfirm,
+  onChapters,
+  fixtureRecord,
 }: {
   item: Item;
   enabled: boolean;
   onSeek?: (timestamp: string) => void;
   requestConfirm: RequestConfirm;
+  onChapters?: (chapters: api.VideoUnderstandingChapter[]) => void;
+  fixtureRecord?: api.VideoUnderstandingRecord | null;
 }) {
   const t = useT();
   const [state, setState] = useState<{
     status: "idle" | "loading" | "analyzing" | "loaded" | "error";
     record: api.VideoUnderstandingRecord | null;
     message: string | null;
-  }>({ status: "idle", record: null, message: null });
+  }>({
+    status: fixtureRecord ? "loaded" : "idle",
+    record: fixtureRecord ?? null,
+    message: null,
+  });
   const record = state.record;
   const isPending = state.status === "loading" || state.status === "analyzing";
   // Elapsed timer for the analyze run. The request is a single blocking call
@@ -2521,6 +3314,10 @@ function VideoUnderstandingPanel({
   const [analyzeElapsedMs, setAnalyzeElapsedMs] = useState(0);
 
   useEffect(() => {
+    if (fixtureRecord) {
+      setState({ status: "loaded", record: fixtureRecord, message: null });
+      return;
+    }
     if (!enabled || item.contentType !== "video") {
       setState({ status: "idle", record: null, message: null });
       return;
@@ -2548,7 +3345,12 @@ function VideoUnderstandingPanel({
     return () => {
       cancelled = true;
     };
-  }, [enabled, item.contentType, item.id]);
+  }, [enabled, fixtureRecord, item.contentType, item.id]);
+
+  // Surface chapters to the host so the player can segment its timeline.
+  useEffect(() => {
+    onChapters?.(record?.chapters ?? []);
+  }, [record, onChapters]);
 
   useEffect(() => {
     if (state.status !== "analyzing") {
@@ -2769,6 +3571,230 @@ async function writeClipboardText(text: string) {
   }
 }
 
+function MomentsScreen({
+  actionsEnabled,
+  onOpenItem,
+}: {
+  actionsEnabled: boolean;
+  onOpenItem: (moment: api.MomentRecord) => void;
+}) {
+  const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
+    visualFixtureMode ? demoMoments : [],
+  );
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    visualFixtureMode ? "ready" : "loading",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+
+  const load = useCallback(async () => {
+    if (visualFixtureMode) {
+      setStatus("ready");
+      setMoments(demoMoments);
+      return;
+    }
+    if (!actionsEnabled) {
+      setStatus("ready");
+      setMoments([]);
+      return;
+    }
+    setStatus("loading");
+    setMessage(null);
+    try {
+      setMoments(await api.listMoments());
+      setStatus("ready");
+    } catch (error) {
+      setMessage(errorMessage(error));
+      setStatus("error");
+    }
+  }, [actionsEnabled, visualFixtureMode]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function remove(moment: api.MomentRecord) {
+    if (visualFixtureMode) {
+      setMoments((current) => current.filter((record) => record.id !== moment.id));
+      return;
+    }
+    try {
+      await api.deleteMoment(moment.id);
+      await load();
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function copyMarkdown() {
+    const markdown = moments
+      .map((moment) => `- [${moment.timestamp}] ${moment.quote}\n  - ${moment.title}`)
+      .join("\n");
+    try {
+      await writeClipboardText(markdown);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
+  }
+
+  return (
+    <div className="page wide">
+      <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
+        <div>
+          <p className="page-eyebrow">{t("moments.eyebrow")}</p>
+          <h1 className="page-h1">{t("moments.heading")}</h1>
+          <p className="page-sub">{t("moments.sub")}</p>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary sm"
+          disabled={moments.length === 0}
+          onClick={() => void copyMarkdown()}
+        >
+          <Copy size={15} />
+          <span>{copyStatus === "copied" ? t("detail.copy.copied") : t("moments.copyMarkdown")}</span>
+        </button>
+      </div>
+      {message ? <InlineNotice tone={status === "error" ? "error" : "muted"} message={message} /> : null}
+      {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
+      {status === "loading" ? (
+        <div className="state"><Loader2 size={22} /><span>{t("common.loading")}</span></div>
+      ) : null}
+      {status !== "loading" && moments.length === 0 ? (
+        <EmptyState
+          title={t("moments.empty.title")}
+          body={t("moments.empty.body")}
+        />
+      ) : null}
+      {moments.length > 0 ? (
+        <div className="moments-list">
+          {moments.map((moment) => (
+            <article className="moment-card" key={moment.id}>
+              <button type="button" className="moment-card__main" onClick={() => onOpenItem(moment)}>
+                <span className="mono moment-card__time">{moment.timestamp}</span>
+                <strong>{moment.title}</strong>
+                <p>{moment.quote}</p>
+              </button>
+              <button
+                type="button"
+                className="btn-icon sm"
+                aria-label={t("moments.unsave")}
+                onClick={() => void remove(moment)}
+              >
+                <Trash2 size={15} />
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EntityDetailScreen({
+  entityId,
+  actionsEnabled,
+  onBack,
+  onOpenMention,
+}: {
+  entityId: string | null;
+  actionsEnabled: boolean;
+  onBack: () => void;
+  onOpenMention: (mention: api.EntityMention) => void;
+}) {
+  const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [detail, setDetail] = useState<api.EntityDetail | null>(() =>
+    visualFixtureMode ? demoEntityDetail : null,
+  );
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    visualFixtureMode ? "ready" : "loading",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureMode) {
+      const entity = demoEntities.find((record) => record.id === entityId) ?? demoEntityDetail.entity;
+      setDetail({ ...demoEntityDetail, entity });
+      setStatus("ready");
+      setMessage(null);
+      return;
+    }
+    if (!actionsEnabled || !entityId) {
+      setStatus("ready");
+      setDetail(null);
+      return;
+    }
+    setStatus("loading");
+    setMessage(null);
+    api
+      .getEntity(entityId)
+      .then((next) => {
+        if (!cancelled) {
+          setDetail(next);
+          setStatus("ready");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMessage(errorMessage(error));
+          setStatus("error");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, entityId, visualFixtureMode]);
+
+  return (
+    <div className="page wide">
+      <div className="page-head">
+        <button className="btn btn-ghost sm" type="button" onClick={onBack}>
+          <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
+          <span>{t("library.heading")}</span>
+        </button>
+        <p className="page-eyebrow" style={{ marginTop: 18 }}>{t("entities.eyebrow")}</p>
+        <h1 className="page-h1">{detail?.entity.label ?? t("entities.heading")}</h1>
+        {detail ? (
+          <p className="page-sub">
+            {t("entities.detail.sub", {
+              count: detail.entity.mention_count,
+              items: detail.entity.item_count,
+            })}
+          </p>
+        ) : null}
+      </div>
+      {message ? <InlineNotice tone="error" message={message} /> : null}
+      {status === "loading" ? (
+        <div className="state"><Loader2 size={22} /><span>{t("common.loading")}</span></div>
+      ) : null}
+      {status !== "loading" && !detail ? (
+        <EmptyState title={t("entities.empty.title")} body={t("entities.empty.body")} />
+      ) : null}
+      {detail ? (
+        <div className="entity-mentions">
+          {detail.mentions.map((mention) => (
+            <button
+              key={`${mention.item_id}-${mention.chunk_id ?? mention.timestamp}`}
+              type="button"
+              className="entity-mention"
+              onClick={() => onOpenMention(mention)}
+            >
+              <span className="mono entity-mention__time">{mention.timestamp}</span>
+              <strong>{mention.item_title}</strong>
+              <p>{mention.quote}</p>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LibraryScreen({
   items,
   jobs,
@@ -2778,6 +3804,7 @@ function LibraryScreen({
   onDeleteItems,
   onReindexItems,
   onOpenItem,
+  onOpenEntity,
   onOpenJobs,
   requestConfirm,
 }: {
@@ -2789,6 +3816,7 @@ function LibraryScreen({
   onDeleteItems: (itemIds: string[]) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
+  onOpenEntity: (entity: api.EntitySummary) => void;
   onOpenJobs: () => void;
   requestConfirm: RequestConfirm;
 }) {
@@ -2803,6 +3831,8 @@ function LibraryScreen({
     status: "idle" | "reindexing" | "deleting" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
+  const [entities, setEntities] = useState<api.EntitySummary[]>([]);
+  const visualFixtureMode = visualFixtureModeEnabled();
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
@@ -2833,6 +3863,29 @@ function LibraryScreen({
       return next.size === current.size ? current : next;
     });
   }, [items]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (visualFixtureMode) {
+      setEntities(demoEntities);
+      return;
+    }
+    if (!actionsEnabled) {
+      setEntities([]);
+      return;
+    }
+    api
+      .listEntities()
+      .then((records) => {
+        if (!cancelled) {
+          setEntities(records.slice(0, 10));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, items.length, visualFixtureMode]);
 
   function clearLibraryFilters() {
     setLibraryQuery("");
@@ -2979,6 +4032,22 @@ function LibraryScreen({
           </button>
         ) : null}
       </div>
+      {entities.length > 0 ? (
+        <div className="entity-chip-row" aria-label={t("entities.eyebrow")}>
+          {entities.map((entity) => (
+            <button
+              key={entity.id}
+              type="button"
+              className="entity-chip"
+              onClick={() => onOpenEntity(entity)}
+            >
+              <CircleDot size={12} />
+              <span>{entity.label}</span>
+              <small className="mono">{entity.mention_count}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {batchState.status === "error" && batchState.message ? (
         <InlineNotice tone="error" message={batchState.message} />
       ) : null}
@@ -3078,13 +4147,26 @@ function ItemDetail({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
+  const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
+    setPlayerChapters(
+      chapters
+        .filter((chapter) => chapter.start_sec !== null)
+        .map((chapter) => ({ seconds: chapter.start_sec as number, title: chapter.title })),
+    );
+  }, []);
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
     lines: TranscriptLine[];
     message: string | null;
-  }>({ status: "idle", lines: transcript, message: null });
+  }>({
+    status: visualFixtureMode ? "loaded" : "idle",
+    lines: transcript,
+    message: null,
+  });
   const [itemAction, setItemAction] = useState<{
     status: "idle" | "locating" | "reindexing" | "deleting" | "queued" | "error";
     message: string | null;
@@ -3092,6 +4174,10 @@ function ItemDetail({
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
     apiStatus === "online" && chunkState.status !== "idle" ? chunkState.lines : transcript;
+  const momentActions = useItemMoments(
+    item,
+    (visualFixtureMode || actionsEnabled) && chunkState.status === "loaded",
+  );
   const playerMarkers: PlayerMarker[] = transcriptLines
     .map((line) => ({ seconds: parseTimestampSeconds(line.time), label: line.time, text: line.text }))
     .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
@@ -3107,10 +4193,17 @@ function ItemDetail({
   const playableChunkId =
     item.contentType === "video"
       ? extractChunkIdFromThumbnail(item.thumbnailUrl) ??
-        (chunkState.status === "loaded" && chunkState.lines[0]?.id) ??
+        (chunkState.status === "loaded" ? chunkState.lines[0]?.id : null) ??
         null
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+
+  usePlaybackPositionPersistence({
+    itemId: item.id,
+    videoRef,
+    chunkId: playableChunkId,
+    enabled: actionsEnabled && Boolean(itemPlaybackUrl),
+  });
 
   useEffect(() => {
     setItemAction({ status: "idle", message: null });
@@ -3186,6 +4279,10 @@ function ItemDetail({
   }, [onBack]);
 
   useEffect(() => {
+    if (visualFixtureMode) {
+      setChunkState({ status: "loaded", lines: transcript, message: null });
+      return;
+    }
     if (apiStatus !== "online") {
       setChunkState({ status: "idle", lines: transcript, message: null });
       return;
@@ -3211,7 +4308,7 @@ function ItemDetail({
     return () => {
       cancelled = true;
     };
-  }, [apiStatus, item.id]);
+  }, [apiStatus, item.id, visualFixtureMode]);
 
   async function locateSourceFile() {
     setItemAction({ status: "locating", message: null });
@@ -3331,7 +4428,7 @@ function ItemDetail({
         <h1 className="page-h1" style={{ marginTop: 12 }}>{item.title}</h1>
         <p className="page-sub">
           {item.source} ·{" "}
-          {item.indexedAt === "Never"
+          {item.indexedAtEpoch === null
             ? t("detail.notIndexed")
             : t("detail.indexedAt", { when: item.indexedAt })}
         </p>
@@ -3357,6 +4454,7 @@ function ItemDetail({
               videoRef={videoRef}
               src={itemPlaybackUrl}
               markers={playerMarkers}
+              chapters={playerChapters}
               ariaLabel={t("itemDetail.player.aria", { title: item.title })}
               onSeekMarker={(marker) => seekTo(marker.label)}
             />
@@ -3383,7 +4481,7 @@ function ItemDetail({
             </div>
             <div className="proprow">
               <span className="k">{t("itemDetail.metric.ingested")}</span>
-              <span className="v">{item.indexedAt === "Never" ? t("detail.notIndexed") : item.indexedAt}</span>
+              <span className="v">{item.indexedAtEpoch === null ? t("detail.notIndexed") : item.indexedAt}</span>
             </div>
             <div className="proprow">
               <span className="k">{t("itemDetail.metric.duration")}</span>
@@ -3409,6 +4507,8 @@ function ItemDetail({
             enabled={actionsEnabled}
             onSeek={seekTo}
             requestConfirm={requestConfirm}
+            onChapters={handleUnderstandingChapters}
+            fixtureRecord={visualFixtureMode ? demoVideoUnderstanding : null}
           />
           {itemAction.message ? (
             <p
@@ -3418,6 +4518,7 @@ function ItemDetail({
               {itemAction.message}
             </p>
           ) : null}
+          {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
           {chunkState.status === "loading" ? <TranscriptSkeleton /> : null}
           {chunkState.status === "error" && chunkState.message ? (
             <InlineNotice tone="error" message={chunkState.message} />
@@ -3434,7 +4535,22 @@ function ItemDetail({
             <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
           ) : null}
           {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
-            <TranscriptList lines={transcriptLines} activeTime={currentTimestamp} onSeek={seekTo} />
+            <TranscriptList
+              lines={transcriptLines}
+              activeTime={currentTimestamp}
+              onSeek={seekTo}
+              renderAction={(line) => {
+                const saved = Boolean(momentActions.momentForLine(line));
+                return (
+                  <MomentLineAction
+                    saved={saved}
+                    pending={momentActions.pendingLineId === line.id}
+                    disabled={!actionsEnabled}
+                    onToggle={() => void momentActions.toggle(line)}
+                  />
+                );
+              }}
+            />
           ) : null}
         </div>
       </div>
@@ -3465,6 +4581,7 @@ function SettingsScreen({
   const sectionIcons: Record<string, LucideIcon> = {
     General: SlidersHorizontal,
     Models: Cpu,
+    Usage: Wallet,
     Indexing: ListChecks,
     Storage: HardDrive,
     Advanced: Wrench,
@@ -3473,6 +4590,7 @@ function SettingsScreen({
   const sectionLabels: Record<string, string> = {
     General: t("settings.section.general"),
     Models: t("settings.section.models"),
+    Usage: t("settings.section.usage"),
     Indexing: t("settings.section.indexing"),
     Storage: t("settings.section.storage"),
     Advanced: t("settings.section.advanced"),
@@ -3626,6 +4744,7 @@ function SettingsScreen({
               requestConfirm={requestConfirm}
             />
           ) : null}
+          {activeSection === "Usage" ? <UsageSettings /> : null}
           {activeSection === "Storage" ? <StorageSettings disabled={controlsDisabled} /> : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
@@ -3672,8 +4791,8 @@ function GeneralSettings({
   const languageOptions: { value: string; label: string; disabled?: boolean }[] = [
     { value: "zh", label: t("settings.general.language.zh") },
     { value: "en", label: t("settings.general.language.en") },
-    { value: "zh-TW", label: "繁體中文 (即将支持)", disabled: true },
-    { value: "ja", label: "日本語 (即将支持)", disabled: true },
+    { value: "zh-TW", label: t("settings.general.language.zhTW"), disabled: true },
+    { value: "ja", label: t("settings.general.language.ja"), disabled: true },
   ];
 
   return (
@@ -3684,6 +4803,11 @@ function GeneralSettings({
           control={
             <Segmented
               values={["System", "Light", "Dark"]}
+              labels={{
+                System: t("settings.general.theme.system"),
+                Light: t("settings.general.theme.light"),
+                Dark: t("settings.general.theme.dark"),
+              }}
               value={theme}
               disabled={disabled}
               onChange={(value) => void onSettingsChange({ theme: value })}
@@ -3867,7 +4991,7 @@ function ModelsSettings({
     "video_understanding_model",
     "gemini-3.5-flash",
   );
-  const inferenceMode = settingString(settings, "inference_mode", "remote");
+  const inferenceMode = settingString(settings, "inference_mode", "auto");
   const [catalog, setCatalog] = useState<api.ModelCatalogResponse | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [modelTab, setModelTab] = useState<"setup" | "catalog">("setup");
@@ -3935,9 +5059,7 @@ function ModelsSettings({
   const asrModels = catalog?.models.filter((model) => model.capability === "asr") ?? [];
   const remoteAsrModels = asrModels.filter((model) => model.tier !== "local");
   const remoteAsrOptions = remoteAsrModels.length > 0 ? remoteAsrModels : fallbackAsrModels;
-  const activeRemoteAsr = remoteAsrOptions.some((model) => model.id === selectedAsr)
-    ? selectedAsr
-    : remoteAsrOptions[0]?.id ?? selectedAsr;
+  const activeRemoteAsr = selectedAsr.trim() || (remoteAsrOptions[0]?.id ?? "");
   const embeddingModels =
     catalog?.models.filter((model) => model.capability === "multimodal_embedding") ?? [];
   const videoUnderstandingModels =
@@ -3952,27 +5074,30 @@ function ModelsSettings({
   const localRuntimeIssue = catalog?.runtime.local_runtime_error ?? null;
   // The runtime banner reflects the selected mode. Remote provider readiness is
   // still used for remote model blockers in the catalog tab.
+  const isAutoMode = inferenceMode === "auto";
   const isLocalMode = inferenceMode === "local";
+  const effectiveLocalMode = isLocalMode || (isAutoMode && localRuntimeReady);
   const localAsrLabel =
     asrModels.find((model) => model.tier === "local")?.label ?? t("settings.models.localAsr.fallbackLabel");
-  const bannerReady = isLocalMode ? localRuntimeReady : runtimeReady;
-  const bannerBadge = isLocalMode
+  const bannerReady = isLocalMode ? localRuntimeReady : isAutoMode ? localRuntimeReady || runtimeReady : runtimeReady;
+  const bannerBadge = effectiveLocalMode
     ? localRuntimeReady
       ? t("settings.models.runtime.badge.localReady")
       : t("settings.models.runtime.badge.runtimeNeeded")
     : runtimeReady
       ? t("settings.models.runtime.badge.apiReady")
       : t("settings.models.runtime.badge.connectionNeeded");
-  const bannerMessage = isLocalMode
+  const bannerMessage = effectiveLocalMode
     ? localRuntimeReady
       ? t("settings.models.runtime.msg.localReady")
       : localRuntimeIssue ?? t("settings.models.runtime.msg.localChecking")
     : runtimeIssue ??
       t("settings.models.runtime.msg.remoteReady");
-  const asrProviderOptions = providers.filter((provider) =>
-    activeRemoteAsr.startsWith("gemini-")
-      ? provider.type === "gemini"
-      : provider.type === "openai" || provider.type === "openai-compatible",
+  const asrProviderOptions = providers.filter(
+    (provider) =>
+      provider.type === "openai" ||
+      provider.type === "openai-compatible" ||
+      provider.type === "gemini",
   );
   const embeddingProviderOptions = providers.filter((provider) => provider.type === "gemini");
   const videoUnderstandingProviderOptions = providers.filter((provider) => provider.type === "gemini");
@@ -4004,19 +5129,21 @@ function ModelsSettings({
     <div className="models-settings-panel">
       {catalogError ? <InlineNotice tone="error" message={catalogError} /> : null}
 
-      <section className={bannerReady ? "model-runtime-card ready" : "model-runtime-card warning"}>
-        <div>
-          <p className="model-section-kicker">{t("settings.models.runtime.kicker")}</p>
-          <h2>{catalog?.runtime.platform ?? t("settings.models.runtime.checkingPlatform")}</h2>
-          <p>{bannerMessage}</p>
+      {/* P2 · The always-on "Runtime · macOS · Apple Silicon · ready" banner was
+          pure noise when nothing was wrong. Readiness now lives as a pill on the
+          local mode card; this strip only appears when there's an actual blocker
+          (runtime needed / connection needed / error) the user must act on. */}
+      {bannerReady ? null : (
+        <div className="model-runtime-alert" role="status">
+          <span className="chip warn">
+            <span className="dot" />
+            {bannerBadge}
+          </span>
+          <p className="model-runtime-alert__note">{bannerMessage}</p>
         </div>
-        <span className={bannerReady ? "chip success" : "chip warn"}>
-          <span className="dot" />
-          {bannerBadge}
-        </span>
-      </section>
+      )}
 
-      <nav className="segmented model-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
+      <nav className="seg-tabs" role="tablist" aria-label={t("settings.models.tabs.aria")}>
         <button
           type="button"
           role="tab"
@@ -4039,30 +5166,14 @@ function ModelsSettings({
 
       {modelTab === "setup" && (
         <>
-      <InferenceModeOverview
+      <InferenceModeSelector
         inferenceMode={inferenceMode}
         usageSummary={usageSummary}
+        localRuntimeReady={localRuntimeReady}
+        platformLabel={humanizeRuntimePlatform(catalog?.runtime.platform, t)}
+        disabled={disabled}
+        onSettingsChange={onSettingsChange}
       />
-
-      <SettingsGroup title={t("settings.models.inferenceMode.title")}>
-        <SettingRow
-          label={t("settings.models.inferenceMode.label")}
-          description={t("settings.models.inferenceMode.description")}
-          control={
-            <Segmented
-              values={[t("settings.models.inferenceMode.remote"), t("settings.models.inferenceMode.local")]}
-              value={inferenceMode === "local" ? t("settings.models.inferenceMode.local") : t("settings.models.inferenceMode.remote")}
-              disabled={disabled}
-              onChange={(value) =>
-                void onSettingsChange({
-                  inference_mode: value === t("settings.models.inferenceMode.local") ? "local" : "remote",
-                })
-              }
-            />
-          }
-        />
-        <p className="settings-help">{t("settings.models.inferenceMode.localRequirements")}</p>
-      </SettingsGroup>
 
       <ProviderConnections
         providers={providers}
@@ -4073,66 +5184,23 @@ function ModelsSettings({
       />
 
       <section className="model-control-grid" aria-label={t("settings.models.controlGrid.aria")}>
-        <article className="model-control-card">
-          <p className="model-section-kicker">{t("settings.models.transcription.kicker")}</p>
-          {isLocalMode ? (
-            <>
-              <div className="model-select-row">
-                <select className="select" value="local" disabled>
-                  <option value="local">{localAsrLabel}</option>
-                </select>
-              </div>
-              <p className="field-hint">
-                {t("settings.models.transcription.localHelp", { model: localAsrLabel })}
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="model-select-row">
-                <select
-                  className="select"
-                  value={selectedAsrProvider}
-                  disabled={disabled || asrProviderOptions.length === 0}
-                  onChange={(event) =>
-                    void onSettingsChange({ asr_provider_id: event.currentTarget.value })
-                  }
-                >
-                  <option value="">{t("settings.models.transcription.autoProvider")}</option>
-                  {asrProviderOptions.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.label}
-                      {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="model-select-row">
-                <select
-                  className="select"
-                  value={activeRemoteAsr}
-                  disabled={disabled || remoteAsrOptions.length === 0}
-                  onChange={(event) => void onSettingsChange({ asr_model: event.currentTarget.value })}
-                >
-                  {remoteAsrOptions.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label} - {model.size_label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <p className="field-hint">
-                {t("settings.models.transcription.remoteHelp")}
-              </p>
-            </>
-          )}
-        </article>
+        <TranscriptionControl
+          isLocalMode={effectiveLocalMode}
+          localAsrLabel={localAsrLabel}
+          providers={asrProviderOptions}
+          selectedProviderId={selectedAsrProvider}
+          models={remoteAsrOptions}
+          selectedModelId={activeRemoteAsr}
+          disabled={disabled}
+          onSettingsChange={onSettingsChange}
+        />
 
         <EmbeddingControl
           models={embeddingModels}
           activeProfile={activeProfile}
           providers={embeddingProviderOptions}
           selectedProviderId={selectedEmbeddingProvider}
-          localActive={isLocalMode}
+          localActive={effectiveLocalMode}
           localRuntimeReady={localRuntimeReady}
           localRuntimeIssue={localRuntimeIssue}
           disabled={disabled}
@@ -4180,59 +5248,563 @@ function ModelsSettings({
   );
 }
 
-const fallbackAsrModels: Pick<api.ModelCatalogRecord, "id" | "label" | "size_label">[] = [
+type AsrModelOption = Pick<api.ModelCatalogRecord, "id" | "label" | "size_label">;
+
+// Env-bootstrapped default connections are seeded with English labels in the
+// backend (providers.rs) and persisted, so we can't localise them at the
+// source. Map their stable ids to localised display names instead; user-named
+// connections fall through unchanged. (Redesign B6.)
+function providerDisplayLabel(provider: api.ProviderRecord, t: TFunction): string {
+  switch (provider.id) {
+    case "env-asr":
+      return t("settings.models.providers.defaults.asr");
+    case "env-embedding":
+      return t("settings.models.providers.defaults.embedding");
+    case "env-video-understanding":
+      return t("settings.models.providers.defaults.video");
+    default:
+      return provider.label;
+  }
+}
+
+// The backend reports the runtime as a target triple (e.g. "macos-aarch64").
+// Surface a human label for known platforms; keep the raw value as a tooltip
+// for anyone who needs it. (Redesign A1.)
+function humanizeRuntimePlatform(platform: string | undefined, t: TFunction): string {
+  if (!platform) {
+    return t("settings.models.runtime.checkingPlatform");
+  }
+  const normalized = platform.toLowerCase();
+  if (normalized.includes("aarch64") || normalized.includes("arm64")) {
+    return t("settings.models.runtime.platform.appleSilicon");
+  }
+  if (normalized.startsWith("macos")) {
+    return t("settings.models.runtime.platform.macIntel");
+  }
+  return platform;
+}
+
+// Strip protocol + path so a connection's endpoint reads as a short host in the
+// row sub-line ("https://api.groq.com/openai/v1" -> "api.groq.com"). (B2.)
+function shortenEndpoint(url: string | null): string | null {
+  if (!url) {
+    return null;
+  }
+  return url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+type ModelComboOption = { id: string; label: string; hint?: string };
+
+// B4 · One control for model selection: pick from the known/discovered list,
+// type a custom model name, or refresh the list — replacing a stacked
+// select + text input + two ghost buttons. Selecting applies immediately.
+function ModelCombobox({
+  value,
+  options,
+  disabled = false,
+  busy = false,
+  onSelect,
+  onExplore,
+  onOpen,
+  ariaLabel,
+}: {
+  value: string;
+  options: ModelComboOption[];
+  disabled?: boolean;
+  /** Discovery in flight — spins the refresh affordance. */
+  busy?: boolean;
+  /** Applies the chosen/typed model immediately. */
+  onSelect: (id: string) => void;
+  /** Re-fetch the provider's /models list. Omit to hide discovery. */
+  onExplore?: () => void;
+  /** Fired when the popup opens (used to auto-discover on first open). */
+  onOpen?: () => void;
+  ariaLabel?: string;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEscapeToClose(() => setOpen(false), open);
+  useClickOutside(rootRef, () => setOpen(false), open);
+
+  useEffect(() => {
+    if (open) {
+      inputRef.current?.focus();
+    }
+  }, [open]);
+
+  function openPop() {
+    if (disabled) {
+      return;
+    }
+    setDraft("");
+    setOpen(true);
+    onOpen?.();
+  }
+
+  function choose(id: string) {
+    const next = id.trim();
+    setOpen(false);
+    if (next && next !== value) {
+      onSelect(next);
+    }
+  }
+
+  const query = draft.trim().toLowerCase();
+  const filtered = query
+    ? options.filter(
+        (option) =>
+          option.id.toLowerCase().includes(query) || option.label.toLowerCase().includes(query),
+      )
+    : options;
+
+  return (
+    <div className={open ? "model-combobox open" : "model-combobox"} ref={rootRef}>
+      <button
+        type="button"
+        className="model-combobox__field"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel ?? t("settings.models.combobox.aria")}
+        onClick={() => (open ? setOpen(false) : openPop())}
+      >
+        <span className={value ? "model-combobox__value" : "model-combobox__value placeholder"}>
+          {value || t("settings.models.combobox.placeholder")}
+        </span>
+        {onExplore ? (
+          <RefreshCcw
+            size={14}
+            className={busy ? "model-combobox__refresh spin" : "model-combobox__refresh"}
+          />
+        ) : null}
+        <ChevronDown size={15} className="model-combobox__chev" />
+      </button>
+      {open ? (
+        <div className="model-combobox__pop">
+          <div className="model-combobox__search">
+            <input
+              ref={inputRef}
+              value={draft}
+              placeholder={t("settings.models.combobox.searchPlaceholder")}
+              onChange={(event) => setDraft(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  if (draft.trim()) {
+                    choose(draft);
+                  }
+                }
+              }}
+            />
+          </div>
+          <div className="model-combobox__list" role="listbox">
+            {filtered.length > 0 ? (
+              filtered.map((option) => (
+                <button
+                  type="button"
+                  key={option.id}
+                  className="model-combobox__opt"
+                  role="option"
+                  aria-selected={option.id === value}
+                  onClick={() => choose(option.id)}
+                >
+                  <span className="model-combobox__opt-id">{option.id}</span>
+                  {option.hint ? (
+                    <span className="model-combobox__opt-hint">{option.hint}</span>
+                  ) : null}
+                </button>
+              ))
+            ) : (
+              <p className="model-combobox__empty">
+                {query
+                  ? t("settings.models.combobox.customHint")
+                  : t("settings.models.combobox.empty")}
+              </p>
+            )}
+          </div>
+          {onExplore ? (
+            <div className="model-combobox__foot">
+              <button type="button" disabled={busy} onClick={() => onExplore()}>
+                <RefreshCcw size={13} />
+                <span>
+                  {busy
+                    ? t("settings.models.combobox.refreshing")
+                    : t("settings.models.combobox.refresh")}
+                </span>
+              </button>
+              <span className="model-combobox__foot-hint">
+                {t("settings.models.combobox.customHint")}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const fallbackAsrModels: AsrModelOption[] = [
   { id: "whisper-1", label: "OpenAI Whisper", size_label: "usage-based" },
   { id: "gpt-4o-mini-transcribe", label: "OpenAI GPT-4o mini transcribe", size_label: "usage-based" },
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
 ];
 
-function InferenceModeOverview({
+function TranscriptionControl({
+  isLocalMode,
+  localAsrLabel,
+  providers,
+  selectedProviderId,
+  models,
+  selectedModelId,
+  disabled,
+  onSettingsChange,
+}: {
+  isLocalMode: boolean;
+  localAsrLabel: string;
+  providers: api.ProviderRecord[];
+  selectedProviderId: string;
+  models: AsrModelOption[];
+  selectedModelId: string;
+  disabled: boolean;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+}) {
+  const t = useT();
+  const [discoveredModels, setDiscoveredModels] = useState<api.ProviderModelRecord[]>([]);
+  const [discoveredProviderId, setDiscoveredProviderId] = useState<string | null>(null);
+  const [action, setAction] = useState<{
+    status: "idle" | "running" | "done" | "error";
+    message: string | null;
+  }>({ status: "idle", message: null });
+
+  useEffect(() => {
+    setDiscoveredModels([]);
+    setDiscoveredProviderId(null);
+    setAction({ status: "idle", message: null });
+  }, [selectedProviderId]);
+
+  const activeProviderId = providers.some((provider) => provider.id === selectedProviderId)
+    ? selectedProviderId
+    : "";
+  const providerForDiscovery =
+    providers.find((provider) => provider.id === activeProviderId) ??
+    providers.find((provider) => provider.has_key) ??
+    providers[0] ??
+    null;
+  const discoveredOptions = discoveredModels.map((model) => ({
+    id: model.id,
+    label: model.label || model.id,
+    size_label: model.source || "provider",
+  }));
+  const mergedModels = mergeAsrModelOptions(models, discoveredOptions);
+
+  async function selectProvider(providerId: string) {
+    setDiscoveredModels([]);
+    setDiscoveredProviderId(null);
+    const provider = providers.find((candidate) => candidate.id === providerId) ?? null;
+    const patch: api.SettingsMap = { asr_provider_id: providerId };
+    if (provider && !asrModelCompatibleWithProvider(selectedModelId, provider)) {
+      patch.asr_model = preferredAsrModelForProvider(provider, mergedModels);
+    }
+    await onSettingsChange(patch);
+  }
+
+  function selectModel(modelId: string) {
+    const patch: api.SettingsMap = { asr_model: modelId };
+    const discoveredProvider = discoveredProviderId
+      ? providers.find((provider) => provider.id === discoveredProviderId) ?? null
+      : null;
+    const activeProvider = activeProviderId
+      ? providers.find((provider) => provider.id === activeProviderId) ?? null
+      : null;
+
+    if (discoveredProvider && (!activeProviderId || activeProviderId === discoveredProvider.id)) {
+      patch.asr_provider_id = discoveredProvider.id;
+    } else if (activeProvider && !asrModelCompatibleWithProvider(modelId, activeProvider)) {
+      patch.asr_provider_id = "";
+    }
+
+    void onSettingsChange(patch);
+  }
+
+  async function exploreProviderModels() {
+    if (!providerForDiscovery) {
+      setAction({ status: "error", message: t("settings.models.transcription.error.noProvider") });
+      return;
+    }
+    if (!providerForDiscovery.has_key) {
+      setAction({ status: "error", message: t("settings.models.transcription.error.noKey") });
+      return;
+    }
+    setAction({
+      status: "running",
+      message: t("settings.models.transcription.status.exploring", {
+        provider: providerForDiscovery.label,
+      }),
+    });
+    try {
+      const models = await api.discoverProviderModels(providerForDiscovery.id);
+      setDiscoveredModels(models);
+      setDiscoveredProviderId(providerForDiscovery.id);
+      setAction({
+        status: "done",
+        message:
+          models.length > 0
+            ? t("settings.models.transcription.status.explored", {
+                count: models.length,
+                provider: providerForDiscovery.label,
+              })
+            : t("settings.models.transcription.status.exploredEmpty", {
+                provider: providerForDiscovery.label,
+              }),
+      });
+    } catch (err) {
+      setAction({ status: "error", message: errorMessage(err) });
+    }
+  }
+
+  return (
+    <article className="model-control-card">
+      <p className="model-section-kicker">{t("settings.models.transcription.kicker")}</p>
+      {isLocalMode ? (
+        <>
+          <div className="model-readonly-row">
+            <span className="model-readonly-row__value">{localAsrLabel}</span>
+          </div>
+          <p className="settings-help">
+            {t("settings.models.transcription.localHelp", { model: localAsrLabel })}
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="model-field">
+            <span className="model-field__label">{t("settings.models.field.connection")}</span>
+            <select
+              className="select"
+              value={activeProviderId}
+              disabled={disabled || providers.length === 0}
+              onChange={(event) => void selectProvider(event.currentTarget.value)}
+            >
+              <option value="">{t("settings.models.transcription.autoProvider")}</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {providerDisplayLabel(provider, t)}
+                  {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="model-field">
+            <span className="model-field__label">{t("settings.models.field.model")}</span>
+            <ModelCombobox
+              value={selectedModelId}
+              options={mergedModels.map((model) => ({
+                id: model.id,
+                label: model.label,
+                hint: model.size_label,
+              }))}
+              disabled={disabled}
+              busy={action.status === "running"}
+              onSelect={selectModel}
+              onExplore={() => void exploreProviderModels()}
+              onOpen={() => {
+                if (
+                  providerForDiscovery?.has_key &&
+                  discoveredProviderId !== providerForDiscovery.id &&
+                  action.status !== "running"
+                ) {
+                  void exploreProviderModels();
+                }
+              }}
+            />
+          </div>
+          <p className="settings-help">{t("settings.models.transcription.remoteHelp")}</p>
+          {action.message ? (
+            <InlineNotice
+              tone={action.status === "error" ? "error" : "muted"}
+              message={action.message}
+            />
+          ) : null}
+        </>
+      )}
+    </article>
+  );
+}
+
+function mergeAsrModelOptions(base: AsrModelOption[], discovered: AsrModelOption[]) {
+  const seen = new Set<string>();
+  const merged: AsrModelOption[] = [];
+  for (const model of [...base, ...discovered]) {
+    if (!model.id || seen.has(model.id)) {
+      continue;
+    }
+    seen.add(model.id);
+    merged.push(model);
+  }
+  return merged;
+}
+
+function isGeminiAsrModelId(modelId: string) {
+  return modelId.trim().toLowerCase().startsWith("gemini-");
+}
+
+function asrModelCompatibleWithProvider(modelId: string, provider: api.ProviderRecord) {
+  if (provider.type === "openai-compatible") {
+    return true;
+  }
+  if (provider.type === "gemini") {
+    return isGeminiAsrModelId(modelId);
+  }
+  if (provider.type === "openai") {
+    return !isGeminiAsrModelId(modelId);
+  }
+  return true;
+}
+
+function preferredAsrModelForProvider(provider: api.ProviderRecord, options: AsrModelOption[]) {
+  if (provider.type === "gemini") {
+    return options.find((model) => isGeminiAsrModelId(model.id))?.id ?? "gemini-2.5-flash";
+  }
+  if (provider.type === "openai") {
+    return options.find((model) => !isGeminiAsrModelId(model.id))?.id ?? "whisper-1";
+  }
+  return options[0]?.id ?? "whisper-1";
+}
+
+// Smart-processing selector. The three cards ARE the inference-mode switch:
+// clicking one applies it. Each carries its own one-line explanation, and the
+// local card carries the Apple-Silicon constraint as a badge — replacing the
+// read-only overview + a detached segmented control + one floating help
+// paragraph. (Redesign A2/A4/A5.)
+function InferenceModeSelector({
   inferenceMode,
   usageSummary,
+  localRuntimeReady,
+  platformLabel,
+  disabled,
+  onSettingsChange,
 }: {
   inferenceMode: string;
   usageSummary: api.UsageSummary | null;
+  localRuntimeReady: boolean;
+  platformLabel: string;
+  disabled: boolean;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const activeBadge = t("settings.models.overview.badge.active");
-  const availableBadge = t("settings.models.overview.badge.available");
+  // Share of processing that ran on-device (free). Drives the usage strip that
+  // replaced the old runtime banner's prime real estate.
+  const localShare =
+    usageSummary && usageSummary.total.event_count > 0
+      ? Math.round((usageSummary.local.event_count / usageSummary.total.event_count) * 100)
+      : 0;
   const modes = [
     {
-      id: "remote",
-      label: t("settings.models.inferenceMode.remote"),
-      badge: inferenceMode === "local" ? availableBadge : activeBadge,
-      cost: usageSummary?.remote.estimated_usd ?? 0,
-      events: usageSummary?.remote.event_count ?? 0,
+      id: "auto",
+      label: t("settings.models.inferenceMode.auto"),
+      desc: t("settings.models.inferenceMode.auto.desc"),
+      badge: null as string | null,
+      cost: usageSummary?.total.estimated_usd ?? 0,
+      events: usageSummary?.total.event_count ?? 0,
     },
     {
       id: "local",
       label: t("settings.models.inferenceMode.local"),
-      badge: inferenceMode === "local" ? activeBadge : availableBadge,
+      desc: t("settings.models.inferenceMode.local.desc"),
+      badge: t("settings.models.inferenceMode.local.badge"),
       cost: usageSummary?.local.estimated_usd ?? 0,
       events: usageSummary?.local.event_count ?? 0,
+    },
+    {
+      id: "remote",
+      label: t("settings.models.inferenceMode.remote"),
+      desc: t("settings.models.inferenceMode.remote.desc"),
+      badge: null as string | null,
+      cost: usageSummary?.remote.estimated_usd ?? 0,
+      events: usageSummary?.remote.event_count ?? 0,
     },
   ];
 
   return (
-    <section className="inference-mode-grid" aria-label={t("settings.models.overview.aria")}>
-      {modes.map((mode) => (
-        <article className="inference-mode-card" key={mode.id}>
-          <div>
-            <strong>{mode.label}</strong>
-            <span>{mode.badge}</span>
+    <section aria-label={t("settings.models.overview.aria")}>
+      <div className="imode-head">
+        <h2>{t("settings.models.inferenceMode.title")}</h2>
+        <p>{t("settings.models.inferenceMode.description")}</p>
+      </div>
+      <div className="imode-grid">
+        {modes.map((mode) => {
+          const selected = inferenceMode === mode.id;
+          return (
+            <button
+              type="button"
+              key={mode.id}
+              className="imode-card"
+              aria-pressed={selected}
+              disabled={disabled}
+              onClick={() => {
+                if (!selected) {
+                  void onSettingsChange({ inference_mode: mode.id });
+                }
+              }}
+            >
+              <div className="imode-card__top">
+                <span className="imode-card__name">{mode.label}</span>
+                {selected ? (
+                  <span
+                    className="imode-card__check"
+                    aria-label={t("settings.models.inferenceMode.selectedAria")}
+                  >
+                    <Check size={12} />
+                  </span>
+                ) : null}
+              </div>
+              <p className="imode-card__desc">{mode.desc}</p>
+              {mode.id === "local" ? (
+                <span
+                  className={localRuntimeReady ? "imode-card__badge ready" : "imode-card__badge"}
+                  title={platformLabel}
+                >
+                  <Cpu size={11} />
+                  {localRuntimeReady ? t("settings.models.localCard.ready") : mode.badge}
+                </span>
+              ) : mode.badge ? (
+                <span className="imode-card__badge">
+                  <Cpu size={11} />
+                  {mode.badge}
+                </span>
+              ) : null}
+              <dl className="imode-card__stats">
+                <div className="imode-card__stat">
+                  <dt>{t("settings.models.overview.estimatedCost")}</dt>
+                  <dd>{formatUsd(mode.cost)}</dd>
+                </div>
+                <div className="imode-card__stat">
+                  <dt>{t("settings.models.overview.usageEvents")}</dt>
+                  <dd>{mode.events}</dd>
+                </div>
+              </dl>
+            </button>
+          );
+        })}
+      </div>
+      {usageSummary && usageSummary.total.event_count > 0 ? (
+        <div className="imode-usage-strip">
+          <span className="imode-usage-strip__metric mono">
+            {t("settings.models.usage.strip.spent", {
+              cost: formatUsd(usageSummary.total.estimated_usd),
+              events: usageSummary.total.event_count,
+            })}
+          </span>
+          <div className="imode-usage-strip__bar" aria-hidden="true">
+            <div style={{ width: `${localShare}%` }} />
           </div>
-          <dl>
-            <div>
-              <dt>{t("settings.models.overview.estimatedCost")}</dt>
-              <dd>{formatUsd(mode.cost)}</dd>
-            </div>
-            <div>
-              <dt>{t("settings.models.overview.usageEvents")}</dt>
-              <dd>{mode.events}</dd>
-            </div>
-          </dl>
-        </article>
-      ))}
+          <span className="imode-usage-strip__metric mono">
+            {t("settings.models.usage.strip.localShare", { pct: localShare })}
+          </span>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -4256,6 +5828,96 @@ const providerTypeOptions: { value: RemoteProviderType; label: string; placehold
     placeholder: "https://your-provider.example/v1",
   },
 ];
+
+// B2 · A saved connection row. Name-first; the endpoint is demoted to an
+// elided sub-line; status sits in its own slot; edit/delete live in an
+// overflow menu so delete isn't a permanent red target on every row.
+function ProviderConnectionRow({
+  provider,
+  disabled,
+  typeLabel,
+  onEdit,
+  onRemove,
+}: {
+  provider: api.ProviderRecord;
+  disabled: boolean;
+  typeLabel: (type: api.ProviderType) => string;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const t = useT();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement | null>(null);
+  useEscapeToClose(() => setMenuOpen(false), menuOpen);
+  useClickOutside(actionsRef, () => setMenuOpen(false), menuOpen);
+
+  const name = providerDisplayLabel(provider, t);
+  const sub = [
+    typeLabel(provider.type),
+    shortenEndpoint(provider.base_url),
+    provider.has_key
+      ? t("settings.models.providers.keySaved")
+      : t("settings.models.providers.noKey"),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  function runAndClose(action: () => void) {
+    setMenuOpen(false);
+    action();
+  }
+
+  return (
+    <article className="provider-conn-row">
+      <span className="provider-conn-row__avatar" aria-hidden="true">
+        {name.slice(0, 1)}
+      </span>
+      <div className="provider-conn-row__body">
+        <span className="provider-conn-row__name">{name}</span>
+        <span className="provider-conn-row__sub" title={provider.base_url ?? undefined}>
+          {sub}
+        </span>
+        {provider.last_error ? (
+          <span className="provider-conn-row__error" title={provider.last_error}>
+            {provider.last_error}
+          </span>
+        ) : null}
+      </div>
+      <span className={`model-state ${provider.status}`}>
+        {providerStatusLabel(provider.status, t)}
+      </span>
+      <div className="row-actions" ref={actionsRef}>
+        <button
+          className="btn-icon"
+          type="button"
+          aria-label={t("settings.models.providers.moreActionsAria")}
+          aria-expanded={menuOpen}
+          disabled={disabled}
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <MoreHorizontal size={16} />
+        </button>
+        {menuOpen ? (
+          <div className="menu row-menu">
+            <button type="button" disabled={disabled} onClick={() => runAndClose(onEdit)}>
+              <SlidersHorizontal size={15} />
+              <span>{t("settings.models.providers.edit")}</span>
+            </button>
+            <button
+              className="danger"
+              type="button"
+              disabled={disabled}
+              onClick={() => runAndClose(onRemove)}
+            >
+              <Trash2 size={15} />
+              <span>{t("settings.models.providers.delete")}</span>
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
 
 function ProviderConnections({
   providers,
@@ -4296,6 +5958,9 @@ function ProviderConnections({
   // and Local model cards above — it is not a remote API key, so it does not
   // belong in this list. Show only genuinely remote provider connections here.
   const remoteProviders = providers.filter((provider) => provider.type !== "local");
+
+  // P3 · The connection editor is a focused modal now, so Esc dismisses it.
+  useEscapeToClose(closeForm, mode !== null);
 
   function openCreate() {
     setMode("create");
@@ -4460,57 +6125,51 @@ function ProviderConnections({
           <p className="provider-empty">{t("settings.models.providers.empty")}</p>
         ) : null}
         {remoteProviders.map((provider) => (
-          <article className="provider-row" key={provider.id}>
-            <div className="provider-main">
-              <strong>{provider.label}</strong>
-              <div className="provider-meta mono">
-                {[
-                  typeLabel(provider.type),
-                  provider.base_url || null,
-                  provider.has_key
-                    ? t("settings.models.providers.keySaved")
-                    : t("settings.models.providers.noKey"),
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </div>
-              {provider.last_error ? (
-                <p className="settings-help danger">{provider.last_error}</p>
-              ) : null}
-            </div>
-            <span className={`model-state ${provider.status}`}>
-              {providerStatusLabel(provider.status, t)}
-            </span>
-            <div className="provider-actions">
-              <button
-                type="button"
-                className="btn btn-ghost sm"
-                disabled={disabled}
-                onClick={() => openEdit(provider)}
-              >
-                {t("settings.models.providers.edit")}
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger sm"
-                disabled={disabled}
-                onClick={() => void removeConnection(provider)}
-              >
-                {t("settings.models.providers.delete")}
-              </button>
-            </div>
-          </article>
+          <ProviderConnectionRow
+            key={provider.id}
+            provider={provider}
+            disabled={disabled}
+            typeLabel={typeLabel}
+            onEdit={() => openEdit(provider)}
+            onRemove={() => void removeConnection(provider)}
+          />
         ))}
       </div>
 
       {mode ? (
-        <form
-          className="provider-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void saveConnection(false);
-          }}
-        >
+        <div className="scrim" role="presentation" onMouseDown={closeForm}>
+          <section
+            className="dialog provider-conn-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="provider-conn-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="dhead">
+              <div>
+                <p className="section-label">{t("settings.models.providers.kicker")}</p>
+                <h2 id="provider-conn-title" className="dtitle">
+                  {mode === "create"
+                    ? t("settings.models.providers.add")
+                    : t("settings.models.providers.edit")}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="btn-icon"
+                aria-label={t("common.close")}
+                onClick={closeForm}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <form
+              className="provider-form provider-conn-dialog__form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveConnection(false);
+              }}
+            >
           <div className="provider-form-grid">
             <label>
               <span>{t("settings.models.providers.form.type")}</span>
@@ -4587,7 +6246,9 @@ function ProviderConnections({
               {t("settings.models.providers.form.cancel")}
             </button>
           </div>
-        </form>
+            </form>
+          </section>
+        </div>
       ) : null}
     </section>
   );
@@ -4767,12 +6428,20 @@ function EmbeddingControl({
   }
 
   const showPrepare = !localActive && Boolean(info && !info.ready && !info.preparing);
+  const activeModelLabel =
+    models.find((model) => model.id === activeModelId)?.label ||
+    (models.length > 0 ? activeModelId : t("settings.models.embedding.loadingOption"));
+  // Distinguish an actual connection failure (loud inline error + retry) from
+  // informational status (quiet line). The raw exception is tucked behind a
+  // "details" toggle so the headline stays human-readable. (Redesign B3.)
+  const remoteError = localActive ? null : statusError ?? info?.last_error ?? null;
 
   return (
     <article className="model-control-card">
       <p className="model-section-kicker">{t("settings.models.embedding.kicker")}</p>
       {localActive ? null : (
-        <div className="model-select-row">
+        <div className="model-field">
+          <span className="model-field__label">{t("settings.models.field.connection")}</span>
           <select
             className="select"
             value={selectedProviderId}
@@ -4784,46 +6453,59 @@ function EmbeddingControl({
             <option value="">{t("settings.models.embedding.autoProvider")}</option>
             {providers.map((provider) => (
               <option key={provider.id} value={provider.id}>
-                {provider.label}
+                {providerDisplayLabel(provider, t)}
                 {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
               </option>
             ))}
           </select>
         </div>
       )}
-      <div className="model-select-row">
-        <select className="select" value={activeModelId} disabled={models.length === 0} onChange={() => {}}>
-          {models.length > 0 ? (
-            models.map((model) => (
-              <option key={model.id} value={model.id} disabled={model.id !== activeModelId}>
-                {model.label}
-                {model.id === activeModelId ? "" : t("settings.models.embedding.notAvailableSuffix")}
-              </option>
-            ))
-          ) : (
-            <option value="">{t("settings.models.embedding.loadingOption")}</option>
-          )}
-        </select>
+      <div className="model-field">
+        <span className="model-field__label">{t("settings.models.field.model")}</span>
+        {/* Read-only by design: the embedding model is bound to the existing
+            index, so it's a locked fact, not a disabled <select> that reads as
+            broken. Changing it requires a full re-index. */}
+        <div className="model-readonly-row">
+          <span className="model-readonly-row__value">{activeModelLabel}</span>
+          <span className="chip neutral">
+            <Lock size={12} />
+            {t("settings.models.embedding.boundBadge")}
+          </span>
+        </div>
       </div>
-      <p className="settings-help">{statusText}</p>
-      {showPrepare ? (
-        <button
-          type="button"
-          className="model-inline-action"
-          onClick={() => void prepareNow()}
-        >
-          {t("settings.models.embedding.testButton")}
-        </button>
+      {models.length > 0 ? (
+        <p className="settings-help">{t("settings.models.embedding.lockedHelp")}</p>
       ) : null}
-      {!localActive && info?.last_error ? (
-        <p className="settings-help" style={{ color: "var(--danger)" }}>
-          {t("settings.models.embedding.lastError", { error: info.last_error })}
-        </p>
-      ) : null}
+      {remoteError ? (
+        <InlineNotice
+          tone="error"
+          message={t("settings.models.embedding.error.connect")}
+          detail={remoteError}
+          detailLabel={t("common.details")}
+          action={{ label: t("common.retry"), onClick: () => void prepareNow() }}
+        />
+      ) : (
+        <>
+          <p className="settings-help">{statusText}</p>
+          {showPrepare ? (
+            <button
+              type="button"
+              className="model-inline-action"
+              onClick={() => void prepareNow()}
+            >
+              {t("settings.models.embedding.testButton")}
+            </button>
+          ) : null}
+        </>
+      )}
       {triggerError ? (
-        <p className="settings-help" style={{ color: "var(--danger)" }}>
-          {triggerError}
-        </p>
+        <InlineNotice
+          tone="error"
+          message={t("settings.models.embedding.error.connect")}
+          detail={triggerError}
+          detailLabel={t("common.details")}
+          action={{ label: t("common.retry"), onClick: () => void prepareNow() }}
+        />
       ) : null}
     </article>
   );
@@ -4845,14 +6527,17 @@ function VideoUnderstandingControl({
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const activeModelId = models.some((model) => model.id === selectedModelId)
-    ? selectedModelId
-    : models[0]?.id ?? selectedModelId;
+  const modelOptions = models.map((model) => ({
+    id: model.id,
+    label: model.label,
+    hint: model.size_label,
+  }));
 
   return (
     <article className="model-control-card">
       <p className="model-section-kicker">{t("settings.models.video.kicker")}</p>
-      <div className="model-select-row">
+      <div className="model-field">
+        <span className="model-field__label">{t("settings.models.field.connection")}</span>
         <select
           className="select"
           value={selectedProviderId}
@@ -4864,35 +6549,22 @@ function VideoUnderstandingControl({
           <option value="">{t("settings.models.video.autoProvider")}</option>
           {providers.map((provider) => (
             <option key={provider.id} value={provider.id}>
-              {provider.label}
+              {providerDisplayLabel(provider, t)}
               {provider.has_key ? "" : t("settings.models.provider.noKeySuffix")}
             </option>
           ))}
         </select>
       </div>
-      <div className="model-select-row">
-        <select
-          className="select"
-          value={activeModelId}
-          disabled={disabled || models.length === 0}
-          onChange={(event) =>
-            void onSettingsChange({ video_understanding_model: event.currentTarget.value })
-          }
-        >
-          {models.length > 0 ? (
-            models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label} - {model.size_label}
-              </option>
-            ))
-          ) : (
-            <option value={activeModelId}>{t("settings.models.video.fallbackModel")}</option>
-          )}
-        </select>
+      <div className="model-field">
+        <span className="model-field__label">{t("settings.models.field.model")}</span>
+        <ModelCombobox
+          value={selectedModelId}
+          options={modelOptions}
+          disabled={disabled}
+          onSelect={(id) => void onSettingsChange({ video_understanding_model: id })}
+        />
       </div>
-      <p className="settings-help">
-        {t("settings.models.video.help")}
-      </p>
+      <p className="settings-help">{t("settings.models.video.help")}</p>
     </article>
   );
 }
@@ -5019,9 +6691,21 @@ function UsageValue({
   );
 }
 
+function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
+  const labels: Record<string, string> = {
+    database: t("settings.storage.category.database"),
+    models: t("settings.storage.category.models"),
+    index: t("settings.storage.category.index"),
+    cache: t("settings.storage.category.cache"),
+    other: t("settings.storage.category.other"),
+  };
+  return labels[key] ?? fallback;
+}
+
 function StorageSettings({ disabled }: { disabled: boolean }) {
   const t = useT();
   const [locations, setLocations] = useState<StorageLocations | null>(null);
+  const [usage, setUsage] = useState<api.StorageUsageResponse | null>(null);
   const [action, setAction] = useState<{
     status: SettingsActionStatus;
     message: string | null;
@@ -5030,19 +6714,28 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
 
   useEffect(() => {
     let cancelled = false;
-    void readStorageLocations()
-      .then((value) => {
+    void Promise.all([readStorageLocations(), api.storageUsage()])
+      .then(([locationsValue, usageValue]) => {
         if (!cancelled) {
-          setLocations(value);
+          setLocations(locationsValue);
+          setUsage(usageValue);
         }
       })
       .catch((error) => {
-        console.warn("failed to read Cerul storage locations", error);
+        console.warn("failed to read Cerul storage information", error);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  async function refreshStorageUsage() {
+    try {
+      setUsage(await api.storageUsage());
+    } catch (error) {
+      console.warn("failed to refresh Cerul storage usage", error);
+    }
+  }
 
   async function runStorageAction(actionName: "reveal-data" | "clear-cache") {
     setAction({ status: "running", message: null });
@@ -5058,6 +6751,7 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
           status: "done",
           message: t("settings.storage.message.cacheCleared", { size: formatBytes(result.bytes_removed) }),
         });
+        await refreshStorageUsage();
         return;
       }
     } catch (error) {
@@ -5085,7 +6779,33 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
             </div>
           }
         />
-        <SettingRow label={t("settings.storage.cacheSize.label")} control={<ProgressBar value={58} />} />
+        <SettingRow
+          label={t("settings.storage.cacheSize.label")}
+          control={
+            <span className="settings-value">
+              {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
+            </span>
+          }
+        />
+        {usage ? (
+          <div className="storage-breakdown">
+            {usage.categories.map((category) => {
+              const pct =
+                usage.total_bytes > 0
+                  ? Math.min(100, Math.round((category.bytes / usage.total_bytes) * 100))
+                  : 0;
+              return (
+                <div className="storage-row" key={category.key}>
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <span>{storageCategoryLabel(category.key, category.label, t)}</span>
+                    <span className="mono faint">{formatBytes(category.bytes)}</span>
+                  </div>
+                  <ProgressBar value={pct} />
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
       </SettingsGroup>
       <div className="settings-actions">
         <button
@@ -5243,6 +6963,100 @@ function AdvancedSettings({
   );
 }
 
+// F5 · Account & Usage. Spend, on-device/cloud split, and per-capability
+// breakdown come from the local usageSummary endpoint.
+function UsageSettings() {
+  const t = useT();
+  const visualFixtureMode = visualFixtureModeEnabled();
+  const [summary, setSummary] = useState<api.UsageSummary | null>(() =>
+    visualFixtureMode ? demoUsageSummary : null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const user = useAuthStore((state) => state.user);
+  const status = useAuthStore((state) => state.status);
+  const signedIn = status === "signedIn" && !!user;
+
+  useEffect(() => {
+    if (visualFixtureMode) {
+      setSummary(demoUsageSummary);
+      setError(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const next = await api.usageSummary();
+        if (active) {
+          setSummary(next);
+        }
+      } catch (err) {
+        if (active) {
+          setError(errorMessage(err));
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [visualFixtureMode]);
+
+  const total = summary?.total.estimated_usd ?? 0;
+  const events = summary?.total.event_count ?? 0;
+  const localEvents = summary?.local.event_count ?? 0;
+  const remoteEvents = summary?.remote.event_count ?? 0;
+  const localShare = events > 0 ? Math.round((localEvents / events) * 100) : 0;
+
+  return (
+    <section className="usage-settings">
+      <p className="settings-help">{t("settings.usage.desc")}</p>
+      {error ? <InlineNotice tone="error" message={error} /> : null}
+      <div className="usage-cards">
+        <div className="usage-card">
+          <span className="usage-card__label">{t("settings.usage.account.label")}</span>
+          {signedIn && user ? (
+            <>
+              <strong className="usage-card__value">{user.email}</strong>
+              <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
+            </>
+          ) : (
+            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
+          )}
+        </div>
+        <div className="usage-card">
+          <span className="usage-card__label">{t("settings.usage.spend.label")}</span>
+          <strong className="usage-card__value mono">{formatUsd(total)}</strong>
+          <span className="usage-card__note">{t("settings.usage.spend.events", { count: events })}</span>
+        </div>
+      </div>
+      <div className="usage-split">
+        <div className="usage-split__head">
+          <span className="usage-card__label">{t("settings.usage.split.label")}</span>
+          <span className="mono">{t("settings.usage.split.value", { pct: localShare })}</span>
+        </div>
+        <div className="usage-split__bar" aria-hidden="true">
+          <div style={{ width: `${localShare}%` }} />
+        </div>
+        <div className="usage-split__legend">
+          <span>{t("settings.usage.split.local", { count: localEvents })}</span>
+          <span>{t("settings.usage.split.cloud", { count: remoteEvents })}</span>
+        </div>
+      </div>
+      {summary?.by_capability.length ? (
+        <div className="usage-breakdown">
+          <span className="usage-card__label">{t("settings.usage.breakdown.label")}</span>
+          {summary.by_capability.map((row) => (
+            <div className="usage-breakdown__row" key={row.key}>
+              <span>{t(`usage.capability.${row.key}`)}</span>
+              <span className="mono">{formatUsd(row.totals.estimated_usd)}</span>
+              <span className="mono faint">{t("settings.usage.spend.events", { count: row.totals.event_count })}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function AboutSettings({ version }: { version: string | null }) {
   const t = useT();
   type AvailableDesktopUpdate = Exclude<DesktopUpdate, null>;
@@ -5378,11 +7192,14 @@ function Segmented({
   values,
   value,
   disabled = false,
+  labels,
   onChange,
 }: {
   values: string[];
   value: string;
   disabled?: boolean;
+  /** Display label per stored value — stored values stay stable (e.g. "Dark"). */
+  labels?: Record<string, string>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -5395,7 +7212,7 @@ function Segmented({
           disabled={disabled}
           onClick={() => onChange(option)}
         >
-          {option}
+          {labels?.[option] ?? option}
         </button>
       ))}
     </div>

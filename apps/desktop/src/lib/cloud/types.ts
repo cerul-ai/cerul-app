@@ -31,6 +31,11 @@ export interface LoginInput {
   password: string;
 }
 
+export interface OAuthExchangeInput {
+  code: string;
+  state: string;
+}
+
 // Thrown for non-2xx responses; carries the server's error code + HTTP status
 // so callers can branch (e.g. 401 → clear session, "email_already_registered").
 export class CloudApiError extends Error {

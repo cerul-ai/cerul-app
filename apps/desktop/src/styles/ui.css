@@ -140,6 +140,9 @@
   background: var(--surface-3); color: var(--text-muted);
 }
 .chip .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+/* Chips are also rendered as <button> (removable file chips, channel badges) —
+   strip the UA button chrome so both render identically. */
+button.chip { appearance: none; border: 0; cursor: pointer; font-family: inherit; }
 .chip.accent { background: var(--accent-soft); color: var(--accent); }
 .chip.success { background: var(--success-soft); color: var(--success); }
 .chip.warn { background: var(--warn-soft); color: var(--warn); }
@@ -159,6 +162,8 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .segmented button:hover { color: var(--text); }
+.segmented button:disabled { color: var(--text-faint); cursor: not-allowed; opacity: 0.55; }
+.segmented button:disabled:hover { color: var(--text-faint); }
 .segmented button.active { background: var(--surface); color: var(--text); border-color: var(--line); box-shadow: var(--shadow-1); }
 [data-theme="dark"] .segmented button.active { background: var(--surface-3); box-shadow: none; }
 

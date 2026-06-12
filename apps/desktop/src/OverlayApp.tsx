@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import * as api from "./lib/api";
-import { cleanMediaTitle, compactPathParent } from "./lib/formatters";
-import { useT } from "./lib/i18n";
+import { cleanMediaTitle, compactPathParent, errorMessage } from "./lib/formatters";
+import { useI18n } from "./lib/i18n";
+import type { TFunction } from "./lib/i18n";
 import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
-
-type TFunction = ReturnType<typeof useT>;
 
 type OverlayResult = {
   id: string;
@@ -22,11 +21,43 @@ type OverlayResult = {
 };
 
 type SearchState = "idle" | "loading" | "ready" | "error";
+type OverlayMode = "search" | "ask";
 
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
 const searchDebounceMs = 180;
 const overlayRetainQueryMs = 30_000;
 const defaultHotkeyLabel = "Alt Space";
+
+const demoAskAnswer: api.AskResponse = {
+  answer:
+    "Test-time compute lets the model spend extra reasoning budget after the prompt arrives, so the retrieval layer becomes part of the answer loop instead of a separate search step.",
+  citations: [
+    {
+      chunk_id: "sample-2",
+      item_id: "item-1",
+      title: "Software Is Changing Again",
+      timestamp: "12:34",
+      start_sec: 754,
+      snippet:
+        "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
+    },
+    {
+      chunk_id: "sample-3",
+      item_id: "item-2",
+      title: "API-first Media Systems",
+      timestamp: "13:02",
+      start_sec: 782,
+      snippet:
+        "The retrieval layer becomes part of the reasoning loop when answers cite exact moments.",
+    },
+  ],
+};
+
+function overlayFixtureModeEnabled() {
+  const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
+  const params = new URLSearchParams(queryString);
+  return params.get("fixture") === "design";
+}
 
 function readRecentSearches() {
   try {
@@ -45,21 +76,48 @@ function readRecentSearches() {
   }
 }
 
+// F3 · A pasted link (rather than a search phrase) turns the read-only overlay
+// into a quick "index this" inbox. Whitespace ⇒ it's a query, not a URL.
+function isLikelyUrl(value: string): boolean {
+  const v = value.trim();
+  if (!v || /\s/.test(v)) {
+    return false;
+  }
+  return /^https?:\/\//i.test(v) || /^(?:www\.)?(?:youtube\.com|youtu\.be)/i.test(v);
+}
+
 export function OverlayApp() {
-  const t = useT();
-  const [query, setQuery] = useState("");
+  const { lang, t } = useI18n();
+  const visualFixtureMode = overlayFixtureModeEnabled();
+  const [query, setQuery] = useState(visualFixtureMode ? "test-time compute" : "");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [items, setItems] = useState<api.ItemRecord[]>([]);
   const [sources, setSources] = useState<api.SourceRecord[]>([]);
   const [results, setResults] = useState<OverlayResult[]>([]);
   const [searchState, setSearchState] = useState<SearchState>("idle");
+  const [mode, setMode] = useState<OverlayMode>(visualFixtureMode ? "ask" : "search");
+  const [askState, setAskState] = useState<SearchState>(visualFixtureMode ? "ready" : "idle");
+  const [askAnswer, setAskAnswer] = useState<api.AskResponse | null>(
+    visualFixtureMode ? demoAskAnswer : null,
+  );
   const [error, setError] = useState<string | null>(null);
+  const [askError, setAskError] = useState<string | null>(null);
   const [hotkeyLabel, setHotkeyLabel] = useState(defaultHotkeyLabel);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
+  const [urlQueue, setUrlQueue] = useState<{
+    status: "idle" | "queuing" | "done" | "error";
+    message?: string;
+  }>({ status: "idle" });
   const retainedQueryTimerRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const trimmedQuery = query.trim();
   const selectedResult = results[selectedIndex];
+  const isUrlQuery = mode === "search" && isLikelyUrl(trimmedQuery);
+
+  // Reset the queue affordance whenever the typed/pasted text changes.
+  useEffect(() => {
+    setUrlQueue({ status: "idle" });
+  }, [trimmedQuery]);
 
   useEffect(() => {
     document.body.classList.add("overlay-body");
@@ -150,13 +208,17 @@ export function OverlayApp() {
   }, [query]);
 
   useEffect(() => {
+    setSelectedIndex(0);
+  }, [mode]);
+
+  useEffect(() => {
     setSelectedIndex((index) => Math.min(index, Math.max(results.length - 1, 0)));
   }, [results.length]);
 
   useEffect(() => {
     let cancelled = false;
 
-    if (!trimmedQuery) {
+    if (mode !== "search" || isUrlQuery || !trimmedQuery) {
       setSearchState("idle");
       setError(null);
       setResults([]);
@@ -191,7 +253,56 @@ export function OverlayApp() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [trimmedQuery, items, sources]);
+  }, [trimmedQuery, items, sources, mode, isUrlQuery]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (mode !== "ask" || !trimmedQuery) {
+      setAskState("idle");
+      setAskError(null);
+      setAskAnswer(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (visualFixtureMode) {
+      setAskAnswer(demoAskAnswer);
+      setAskState("ready");
+      setAskError(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = window.setTimeout(() => {
+      setAskState("loading");
+      setAskError(null);
+      api
+        .askLibrary(trimmedQuery, 5, lang)
+        .then((answer) => {
+          if (cancelled) {
+            return;
+          }
+          setAskAnswer(answer);
+          setAskState("ready");
+        })
+        .catch((askErr) => {
+          if (cancelled) {
+            return;
+          }
+          setAskAnswer(null);
+          setAskError(errorMessage(askErr));
+          setAskState("error");
+        });
+    }, searchDebounceMs);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [trimmedQuery, mode, visualFixtureMode, lang]);
 
   function clearRetainedQueryTimer() {
     if (retainedQueryTimerRef.current !== null) {
@@ -206,6 +317,9 @@ export function OverlayApp() {
     setResults([]);
     setSearchState("idle");
     setError(null);
+    setAskAnswer(null);
+    setAskState("idle");
+    setAskError(null);
   }
 
   function scheduleRetainedQueryReset() {
@@ -239,6 +353,27 @@ export function OverlayApp() {
     await navigator.clipboard?.writeText(link).catch(() => undefined);
   }
 
+  // F3 · Queue a pasted link for indexing, reusing the same source payloads the
+  // Add-source dialog uses (YouTube vs. podcast/RSS). No new backend behaviour.
+  async function queueUrl() {
+    const url = trimmedQuery;
+    if (!url) {
+      return;
+    }
+    setUrlQueue({ status: "queuing" });
+    try {
+      const isYoutube = /(?:youtube\.com|youtu\.be)/i.test(url);
+      if (isYoutube) {
+        await api.addSource("youtube", { url, max_videos: 50 });
+      } else {
+        await api.addSource("rss_podcast", { url, max_episodes: 50 });
+      }
+      setUrlQueue({ status: "done" });
+    } catch (err) {
+      setUrlQueue({ status: "error", message: errorMessage(err) });
+    }
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -270,6 +405,14 @@ export function OverlayApp() {
       return;
     }
 
+    if (event.key === "Enter" && isUrlQuery) {
+      event.preventDefault();
+      if (urlQueue.status === "idle" || urlQueue.status === "error") {
+        void queueUrl();
+      }
+      return;
+    }
+
     if (event.key === "Enter" && selectedResult) {
       event.preventDefault();
       void openResult(selectedResult);
@@ -294,13 +437,26 @@ export function OverlayApp() {
             : searchState === "ready"
               ? "noresult"
               : "loading";
+  const askOverlayState: "empty" | "loading" | "error" | "results" | "noresult" =
+    !trimmedQuery
+      ? "empty"
+      : askState === "loading"
+        ? "loading"
+        : askState === "error"
+          ? "error"
+          : askAnswer
+            ? "results"
+            : askState === "ready"
+              ? "noresult"
+              : "loading";
+  const activeOverlayState = mode === "ask" ? askOverlayState : overlayState;
 
   return (
     <main className="overlay-root" onMouseDown={handleBackdropMouseDown}>
       <section
         ref={panelRef}
         className="overlay-panel"
-        data-state={overlayState}
+        data-state={activeOverlayState}
         aria-label={t("overlay.panelAria")}
       >
         <div className="overlay-search">
@@ -316,10 +472,102 @@ export function OverlayApp() {
             onKeyDown={handleKeyDown}
             placeholder={t("overlay.searchPlaceholder")}
           />
-          <OverlayHint state={overlayState} hotkeyLabel={hotkeyLabel} />
+          <OverlayHint state={activeOverlayState} hotkeyLabel={hotkeyLabel} />
+        </div>
+        <div className="overlay-tabs" role="tablist" aria-label={t("overlay.tabs.aria")}>
+          <button
+            type="button"
+            className={mode === "search" ? "active" : ""}
+            role="tab"
+            aria-selected={mode === "search"}
+            onClick={() => setMode("search")}
+          >
+            {t("overlay.tab.search")}
+          </button>
+          <button
+            type="button"
+            className={mode === "ask" ? "active" : ""}
+            role="tab"
+            aria-selected={mode === "ask"}
+            onClick={() => setMode("ask")}
+          >
+            {t("overlay.tab.ask")}
+          </button>
+          <span>{mode === "ask" ? t("overlay.ask.hint") : t("overlay.url.hint")}</span>
         </div>
 
         <div className="overlay-panel-body">
+          {mode === "ask" ? (
+            <>
+              {askOverlayState === "empty" ? (
+                <div className="overlay-empty">
+                  <strong>{t("overlay.ask.emptyTitle")}</strong>
+                  <span>{t("overlay.ask.emptyBody")}</span>
+                </div>
+              ) : null}
+              {askOverlayState === "loading" ? <OverlayLoading /> : null}
+              {askOverlayState === "error" ? (
+                <div className="overlay-error">
+                  <strong>{t("overlay.error.title")}</strong>
+                  <span>{askError ?? t("overlay.error.fallback")}</span>
+                </div>
+              ) : null}
+              {askOverlayState === "results" && askAnswer ? (
+                <div className="overlay-answer">
+                  <p>{askAnswer.answer}</p>
+                  {askAnswer.citations.length > 0 ? (
+                    <div className="overlay-answer-cites">
+                      {askAnswer.citations.map((citation) => (
+                        <button
+                          key={citation.chunk_id}
+                          type="button"
+                          onClick={() =>
+                            void openResult({
+                              id: citation.chunk_id,
+                              itemId: citation.item_id,
+                              title: citation.title,
+                              source: citation.title,
+                              timestamp: citation.timestamp,
+                              snippet: citation.snippet,
+                              contentType: "video",
+                              chunkType: "transcript",
+                              sourceType: null,
+                              thumbnailUrl: null,
+                            })
+                          }
+                        >
+                          <span className="mono">{citation.timestamp}</span>
+                          <strong>{citation.title}</strong>
+                          <small>{citation.snippet}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          ) : isUrlQuery ? (
+            <div className="overlay-urlrow">
+              <span className="overlay-urlrow__plus" aria-hidden="true">+</span>
+              <div className="overlay-urlrow__main">
+                <span className="overlay-urlrow__title">{t("overlay.url.title")}</span>
+                <span className="overlay-urlrow__link">{trimmedQuery}</span>
+              </div>
+              {urlQueue.status === "done" ? (
+                <span className="overlay-urlrow__done">{t("overlay.url.queued")}</span>
+              ) : (
+                <button
+                  type="button"
+                  className="overlay-urlrow__btn"
+                  disabled={urlQueue.status === "queuing"}
+                  onClick={() => void queueUrl()}
+                >
+                  {urlQueue.status === "queuing" ? t("overlay.url.queuing") : t("overlay.url.queue")}
+                </button>
+              )}
+            </div>
+          ) : (
+          <>
           {overlayState === "empty" && recentSearches.length > 0 ? (
             <>
               <div className="overlay-glabel">{t("overlay.recents.title")}</div>
@@ -437,6 +685,8 @@ export function OverlayApp() {
               </span>
             </div>
           ) : null}
+          </>
+          )}
         </div>
       </section>
     </main>
@@ -719,10 +969,6 @@ function formatTimestamp(seconds: number | null) {
   const minutes = Math.floor(total / 60);
   const remaining = `${total % 60}`.padStart(2, "0");
   return `${minutes}:${remaining}`;
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function highlightOverlay(text: string, phrase: string) {

@@ -13,6 +13,8 @@ export type View =
   | "results"
   | "result-detail"
   | "library"
+  | "moments"
+  | "entity-detail"
   | "item-detail"
   | "sources"
   | "settings";
@@ -103,6 +105,7 @@ export type Item = {
   source: string;
   sourceKind: ItemSourceKind;
   duration: string;
+  durationSec?: number | null;
   indexedAt: string;
   indexedAtEpoch: number | null;
   status: ItemStatus;
@@ -118,6 +121,7 @@ export type Item = {
   visualIndexMessage: string | null;
   embeddingIndexStatus: EmbeddingIndexStatus;
   embeddingIndexMessage: string | null;
+  playbackPosition: api.PlaybackPositionRecord | null;
   usage: import("./api").UsageTotals;
 };
 
@@ -165,4 +169,8 @@ export type RouteState = {
   chunkId: string | null;
   timestamp: string | null;
   settingsSection: string | null;
+  oauthProvider: string | null;
+  oauthCode: string | null;
+  oauthState: string | null;
+  oauthError: string | null;
 };

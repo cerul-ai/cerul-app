@@ -74,8 +74,6 @@ git clone https://github.com/cerul-ai/cerul-app.git
 cd cerul-app
 pnpm install
 
-cp .env.example .env
-# Fill in provider keys (see "Configuration" below), then:
 ./run.sh
 ```
 
@@ -87,7 +85,9 @@ For a clean rebuild that clears build caches first:
 
 ## Configuration
 
-Cerul connects to inference providers through `.env` (copied from [`.env.example`](.env.example)). `run.sh` wires these as local provider connections at startup:
+Configure provider connections in the app's **Settings → Models** screen. OpenAI-compatible endpoints work too: enter the API base URL, for example `https://api.lazu.ai/v1`, then use model discovery or type the model ID directly.
+
+For source development, `run.sh` can also load a local `.env` file copied from [`.env.example`](.env.example). This is only a developer convenience for default provider values:
 
 ```bash
 # Transcription (ASR)
@@ -101,7 +101,7 @@ CERUL_EMBEDDING_API_KEY=...
 CERUL_EMBEDDING_BASE_URL=...
 ```
 
-Any OpenAI-compatible endpoint works. You can also switch to a fully local model (Qwen3-VL / MLX) in the app's Models settings.
+You can also switch to a fully local model (Qwen3-VL / MLX) in the app's Models settings.
 
 ## Local API
 

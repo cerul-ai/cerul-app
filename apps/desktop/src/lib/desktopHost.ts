@@ -25,6 +25,9 @@ type ElectronDesktopHost = {
   storeGet<T>(path: string, key: string): Promise<T | undefined>;
   storeSet<T>(path: string, key: string, value: T): Promise<void>;
   storeSave(path: string): Promise<void>;
+  secureTokenGet(key: string): Promise<string | undefined>;
+  secureTokenSet(key: string, value: string | null): Promise<void>;
+  startOAuth(provider: "google" | "github"): Promise<void>;
 };
 
 declare global {
@@ -72,4 +75,20 @@ export async function loadDesktopStore(path: string): Promise<DesktopStore | nul
     };
   }
   return null;
+}
+
+export async function getSecureToken(key: string): Promise<string | undefined> {
+  return window.cerulDesktop?.secureTokenGet(key);
+}
+
+export async function setSecureToken(key: string, value: string | null): Promise<void> {
+  await window.cerulDesktop?.secureTokenSet(key, value);
+}
+
+export async function startDesktopOAuth(provider: "google" | "github"): Promise<boolean> {
+  if (!window.cerulDesktop) {
+    return false;
+  }
+  await window.cerulDesktop.startOAuth(provider);
+  return true;
 }

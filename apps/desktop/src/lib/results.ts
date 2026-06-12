@@ -23,7 +23,7 @@ export function mapResultMatch(
   return {
     id: record.chunk_id,
     timestamp: formatTimestamp(record.start_sec),
-    snippet: displaySnippet(record),
+    snippet: displaySnippet(record, t),
     chunkType: record.chunk_type,
     confidence,
     confidenceLabel: resultConfidenceLabel(confidence, t),
@@ -49,7 +49,7 @@ export function mapSearchResult(
     timestamp: formatTimestamp(record.start_sec),
     indexedAtEpoch: item?.indexedAtEpoch ?? null,
     duration: item?.duration ?? "",
-    snippet: displaySnippet(record),
+    snippet: displaySnippet(record, t),
     color: item?.color ?? "steel",
     thumbnailUrl: record.frame_path ? api.chunkFrameUrl(record.chunk_id) : null,
     confidence,
@@ -220,19 +220,25 @@ export function resultModality(result: Result): import("./types").ResultModality
   return "video";
 }
 
-function displaySnippet(record: api.SearchResultRecord) {
+function displaySnippet(record: api.SearchResultRecord, t: TFunction) {
   const snippet = record.snippet.trim();
   if (snippet && !looksLikeLocalPath(snippet)) {
     return snippet;
   }
   const timestamp = formatTimestamp(record.start_sec);
   if (isShownChunkType(record.chunk_type)) {
-    return record.start_sec === null ? "Visual match" : `Visual frame at ${timestamp}`;
+    return record.start_sec === null
+      ? t("results.snippet.visualMatch")
+      : t("results.snippet.visualFrameAt", { ts: timestamp });
   }
   if (isBothChunkType(record.chunk_type)) {
-    return record.start_sec === null ? "Video understanding match" : `Video understanding at ${timestamp}`;
+    return record.start_sec === null
+      ? t("results.snippet.understandingMatch")
+      : t("results.snippet.understandingAt", { ts: timestamp });
   }
-  return record.start_sec === null ? "Search match" : `Search match at ${timestamp}`;
+  return record.start_sec === null
+    ? t("results.snippet.searchMatch")
+    : t("results.snippet.searchMatchAt", { ts: timestamp });
 }
 
 function looksLikeLocalPath(value: string) {

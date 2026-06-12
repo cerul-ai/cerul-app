@@ -1,12 +1,13 @@
 import { create } from "zustand";
 import { cloudClient } from "./client";
-import { CloudApiError, type CloudUser, type LoginInput, type RegisterInput } from "./types";
-import { loadDesktopStore, type DesktopStore } from "../desktopHost";
+import { CloudApiError, type CloudUser, type LoginInput, type OAuthExchangeInput, type RegisterInput } from "./types";
+import { getSecureToken, loadDesktopStore, setSecureToken, type DesktopStore } from "../desktopHost";
 
 // Persistence mirrors lib/uiStore.ts: desktop shell store with a localStorage
 // fallback so it degrades outside the desktop shell.
 const authStorePath = "cloud-auth.json";
 const fallbackKey = "cerul.cloudAuth.v1";
+const accessTokenKey = "cerul.cloud.accessToken";
 
 interface PersistedAuth {
   accessToken: string | null;
@@ -14,6 +15,7 @@ interface PersistedAuth {
 }
 
 const emptyAuth: PersistedAuth = { accessToken: null, user: null };
+let fallbackAuth: PersistedAuth = emptyAuth;
 
 let storePromise: Promise<DesktopStore | null> | null = null;
 
@@ -25,29 +27,38 @@ async function loadAuthStore() {
 async function readPersisted(): Promise<PersistedAuth> {
   const store = await loadAuthStore();
   if (store) {
+    const secureAccessToken = (await getSecureToken(accessTokenKey)) ?? null;
+    const legacyAccessToken = (await store.get<string>("accessToken")) ?? null;
+    if (legacyAccessToken && !secureAccessToken) {
+      await setSecureToken(accessTokenKey, legacyAccessToken);
+      await store.set("accessToken", null);
+      await store.save();
+    }
     return {
-      accessToken: (await store.get<string>("accessToken")) ?? null,
+      accessToken: secureAccessToken ?? legacyAccessToken,
       user: (await store.get<CloudUser>("user")) ?? null,
     };
   }
   try {
-    const raw = window.localStorage.getItem(fallbackKey);
-    return raw ? (JSON.parse(raw) as PersistedAuth) : emptyAuth;
+    window.localStorage.removeItem(fallbackKey);
   } catch {
-    return emptyAuth;
+    // ignore fallback cleanup failure
   }
+  return fallbackAuth;
 }
 
 async function writePersisted(value: PersistedAuth) {
   const store = await loadAuthStore();
   if (store) {
-    await store.set("accessToken", value.accessToken);
+    await setSecureToken(accessTokenKey, value.accessToken);
+    await store.set("accessToken", null);
     await store.set("user", value.user);
     await store.save();
     return;
   }
+  fallbackAuth = value;
   try {
-    window.localStorage.setItem(fallbackKey, JSON.stringify(value));
+    window.localStorage.removeItem(fallbackKey);
   } catch {
     // best-effort; the in-memory session still works for this run
   }
@@ -62,6 +73,7 @@ interface AuthState {
   hydrate: () => Promise<void>;
   register: (input: RegisterInput) => Promise<void>;
   login: (input: LoginInput) => Promise<void>;
+  exchangeOAuthCode: (input: OAuthExchangeInput) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
   sendVerificationCode: () => Promise<void>;
@@ -107,6 +119,12 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   login: async (input) => {
     const res = await cloudClient.login(input);
+    await writePersisted({ accessToken: res.access_token, user: res.user });
+    set({ status: "signedIn", accessToken: res.access_token, user: res.user });
+  },
+
+  exchangeOAuthCode: async (input) => {
+    const res = await cloudClient.exchangeOAuth(input);
     await writePersisted({ accessToken: res.access_token, user: res.user });
     set({ status: "signedIn", accessToken: res.access_token, user: res.user });
   },

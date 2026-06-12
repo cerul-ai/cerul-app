@@ -10,31 +10,38 @@ export function TranscriptList({
   activeTime = "12:34",
   matchTime,
   onSeek,
+  renderAction,
 }: {
   lines: TranscriptLine[];
   activeTime?: string;
   matchTime?: string;
   onSeek?: (timestamp: string) => void;
+  renderAction?: (line: TranscriptLine) => ReactNode;
 }) {
   return (
     <div className="seg-line transcript">
       {lines.map((line) => (
-        <button
+        <div
           key={line.id}
-          type="button"
           className={[
             "seg-btn",
             line.time === activeTime ? "selected hot" : "",
             line.time === matchTime ? "accent matched" : "",
           ].filter(Boolean).join(" ")}
-          onClick={() => onSeek?.(line.time)}
         >
-          <span className="ts mono">
-            {line.time === matchTime ? <CircleDot size={12} /> : null}
-            {line.time}
-          </span>
-          <p className="seg-text">{line.text}</p>
-        </button>
+          <button
+            type="button"
+            className="seg-btn-main"
+            onClick={() => onSeek?.(line.time)}
+          >
+            <span className="ts mono">
+              {line.time === matchTime ? <CircleDot size={12} /> : null}
+              {line.time}
+            </span>
+            <p className="seg-text">{line.text}</p>
+          </button>
+          {renderAction ? <span className="seg-action">{renderAction(line)}</span> : null}
+        </div>
       ))}
     </div>
   );

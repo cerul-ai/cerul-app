@@ -5,9 +5,9 @@
 // fulfilling the request's resolve callback.
 
 import { AlertTriangle, Trash2 } from "lucide-react";
-import { useEffect } from "react";
 import { useT } from "../lib/i18n";
 import type { ConfirmRequest } from "../lib/types";
+import { useEscapeToClose } from "../lib/use-dismissable";
 
 export function ConfirmDialog({
   request,
@@ -19,19 +19,7 @@ export function ConfirmDialog({
   onConfirm: () => void;
 }) {
   const t = useT();
-  useEffect(() => {
-    if (!request) {
-      return;
-    }
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCancel();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [request, onCancel]);
+  useEscapeToClose(onCancel, Boolean(request));
 
   if (!request) {
     return null;
