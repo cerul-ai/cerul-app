@@ -220,9 +220,43 @@ export function resultModality(result: Result): import("./types").ResultModality
   return "video";
 }
 
+// The search backend (`cerul-search::fallback_snippet`) fills text-less visual /
+// keyframe chunks with a hardcoded ENGLISH placeholder such as "Visual frame at
+// 0:40". Left untouched it leaks English into a localized UI and repeats a
+// timestamp the row already shows on its thumbnail and meta column. Reconstruct
+// those exact placeholders so callers can recognise them and swap in a localized
+// label instead. (We can't make the backend return an empty snippet — the Ask
+// path filters empty snippets out of its answer context.)
+export function backendFallbackSnippet(chunkType: string, startSec: number | null): string {
+  let ts: string | null = null;
+  if (startSec !== null) {
+    const total = Math.max(0, Math.round(startSec));
+    ts = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  }
+  if (chunkType === "keyframe" || chunkType === "image" || chunkType === "ocr") {
+    return ts ? `Visual frame at ${ts}` : "Visual match";
+  }
+  if (chunkType === "understanding") {
+    return ts ? `Video understanding at ${ts}` : "Video understanding match";
+  }
+  return ts ? `Search match at ${ts}` : "Search match";
+}
+
+export function isBackendFallbackSnippet(
+  snippet: string,
+  chunkType: string,
+  startSec: number | null,
+): boolean {
+  return snippet.trim() === backendFallbackSnippet(chunkType, startSec);
+}
+
 function displaySnippet(record: api.SearchResultRecord, t: TFunction) {
   const snippet = record.snippet.trim();
-  if (snippet && !looksLikeLocalPath(snippet)) {
+  if (
+    snippet &&
+    !looksLikeLocalPath(snippet) &&
+    !isBackendFallbackSnippet(snippet, record.chunk_type, record.start_sec)
+  ) {
     return snippet;
   }
   const timestamp = formatTimestamp(record.start_sec);

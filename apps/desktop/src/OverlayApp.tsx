@@ -6,6 +6,7 @@ import { useI18n } from "./lib/i18n";
 import type { TFunction } from "./lib/i18n";
 import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
+import { isBackendFallbackSnippet } from "./lib/results";
 
 type OverlayResult = {
   id: string;
@@ -908,23 +909,20 @@ function overlaySourceName(source: api.SourceRecord, t: TFunction) {
 
 function overlaySnippet(record: api.SearchResultRecord, t: TFunction) {
   const snippet = record.snippet.trim();
-  if (snippet && !snippet.includes("/cache/pipeline/") && !snippet.startsWith("/Users/")) {
+  const isFallback = isBackendFallbackSnippet(snippet, record.chunk_type, record.start_sec);
+  if (snippet && !isFallback && !snippet.includes("/cache/pipeline/") && !snippet.startsWith("/Users/")) {
     return snippet;
   }
-  const timestamp = formatTimestamp(record.start_sec);
+  // The thumbnail badge and the meta column already carry this result's
+  // timestamp, so the placeholder snippet stays timestamp-free — otherwise a
+  // text-less visual row would show the same time three times over.
   if (record.chunk_type === "keyframe" || record.chunk_type === "image" || record.chunk_type === "ocr") {
-    return record.start_sec === null
-      ? t("overlay.snippet.visualMatch")
-      : t("overlay.snippet.visualFrameAt", { ts: timestamp });
+    return t("overlay.snippet.visualMatch");
   }
   if (record.chunk_type === "understanding") {
-    return record.start_sec === null
-      ? t("overlay.snippet.understandingMatch")
-      : t("overlay.snippet.understandingAt", { ts: timestamp });
+    return t("overlay.snippet.understandingMatch");
   }
-  return record.start_sec === null
-    ? t("overlay.snippet.searchMatch")
-    : t("overlay.snippet.searchMatchAt", { ts: timestamp });
+  return t("overlay.snippet.searchMatch");
 }
 
 function sourceConfigString(config: Record<string, unknown>, key: string) {
