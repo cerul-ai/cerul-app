@@ -3,6 +3,7 @@ import {
   type AuthResponse,
   type CloudUser,
   type LoginInput,
+  type OAuthExchangeInput,
   type RegisterInput,
 } from "./types";
 
@@ -53,11 +54,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const cloudClient = {
+  oauthStartUrl(provider: "google" | "github") {
+    const redirect = encodeURIComponent("cerul-app://auth/callback");
+    return `${CLOUD_API_BASE_URL}/v1/auth/oauth/${provider}/start?redirect_uri=${redirect}`;
+  },
   register(input: RegisterInput) {
     return request<AuthResponse>("/v1/auth/register", { method: "POST", body: input });
   },
   login(input: LoginInput) {
     return request<AuthResponse>("/v1/auth/login", { method: "POST", body: input });
+  },
+  exchangeOAuth(input: OAuthExchangeInput) {
+    return request<AuthResponse>("/v1/auth/oauth/exchange", { method: "POST", body: input });
   },
   logout(token: string) {
     return request<void>("/v1/auth/logout", { method: "POST", token });

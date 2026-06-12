@@ -31,6 +31,7 @@ import {
 } from "../lib/validation";
 import { SourcePreview } from "../components/source-preview";
 import { openDialog } from "../lib/desktopHost";
+import { useEscapeToClose } from "../lib/use-dismissable";
 
 const sourceTabs: {
   id: "folder" | "file" | "youtube" | "podcast";
@@ -71,6 +72,7 @@ export function AddSourceDialog({
     status: "idle",
     message: null,
   });
+  useEscapeToClose(onClose);
 
   async function chooseFolder() {
     const selected = await openDialog({ directory: true, multiple: false }).catch(() => null);

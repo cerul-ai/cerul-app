@@ -37,6 +37,14 @@ export type JobRecord = {
   stage: string | null;
   stage_message: string | null;
   usage: UsageTotals;
+  error_info: JobErrorInfo | null;
+};
+
+export type JobErrorInfo = {
+  code: string;
+  capability: string;
+  settings_section: string;
+  message: string;
 };
 
 export type UsageTotals = {
@@ -62,6 +70,103 @@ export type UsageSummary = {
   remote: UsageTotals;
   local: UsageTotals;
   by_capability: UsageBreakdown[];
+};
+
+export type MomentRecord = {
+  id: string;
+  item_id: string;
+  chunk_id: string | null;
+  start_sec: number | null;
+  end_sec: number | null;
+  timestamp: string;
+  title: string;
+  quote: string;
+  note: string | null;
+  created_at: number | null;
+};
+
+export type CreateMomentRequest = {
+  item_id: string;
+  chunk_id?: string | null;
+  start_sec?: number | null;
+  end_sec?: number | null;
+  title?: string | null;
+  quote: string;
+  note?: string | null;
+};
+
+export type AskCitation = {
+  chunk_id: string;
+  item_id: string;
+  title: string;
+  timestamp: string;
+  start_sec: number | null;
+  snippet: string;
+};
+
+export type AskResponse = {
+  answer: string;
+  citations: AskCitation[];
+};
+
+export type EntitySummary = {
+  id: string;
+  label: string;
+  kind: string;
+  mention_count: number;
+  item_count: number;
+};
+
+export type EntityMention = {
+  entity_id: string;
+  label: string;
+  kind: string;
+  item_id: string;
+  item_title: string;
+  chunk_id: string | null;
+  timestamp: string;
+  start_sec: number | null;
+  quote: string;
+};
+
+export type EntityDetail = {
+  entity: EntitySummary;
+  mentions: EntityMention[];
+};
+
+export type WeeklyTopic = {
+  id: string;
+  label: string;
+  count: number;
+};
+
+export type WeeklyReview = {
+  week_start: number;
+  indexed_items: number;
+  indexed_seconds: number;
+  watched_percent: number;
+  topics: WeeklyTopic[];
+  has_data: boolean;
+};
+
+export type PlaybackPositionRecord = {
+  item_id: string;
+  position_sec: number;
+  timestamp: string;
+  chunk_id: string | null;
+  updated_at: number | null;
+};
+
+export type StorageUsageCategory = {
+  key: string;
+  label: string;
+  bytes: number;
+};
+
+export type StorageUsageResponse = {
+  data_dir: string;
+  total_bytes: number;
+  categories: StorageUsageCategory[];
 };
 
 export type UsageEvent = {
@@ -231,6 +336,12 @@ export type ProviderRecord = {
   updated_at: number | null;
 };
 
+export type ProviderModelRecord = {
+  id: string;
+  label: string;
+  source: string;
+};
+
 export type CreateProviderRequest = {
   type: Exclude<ProviderType, "local">;
   label: string;
@@ -299,8 +410,48 @@ export async function listJobs() {
   return fetchJson<JobRecord[]>("/jobs");
 }
 
+export async function listMoments() {
+  return fetchJson<MomentRecord[]>("/moments");
+}
+
+export async function createMoment(request: CreateMomentRequest) {
+  return fetchJson<MomentRecord>("/moments", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function deleteMoment(id: string) {
+  return fetchJson<{ status: string; id: string }>(`/moments/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function askLibrary(q: string, limit = 6, locale?: string) {
+  return fetchJson<AskResponse>("/ask", {
+    method: "POST",
+    body: JSON.stringify({ q, limit, locale }),
+  });
+}
+
+export async function listEntities() {
+  return fetchJson<EntitySummary[]>("/entities");
+}
+
+export async function getEntity(id: string) {
+  return fetchJson<EntityDetail>(`/entities/${encodeURIComponent(id)}`);
+}
+
+export async function weeklyReview() {
+  return fetchJson<WeeklyReview>("/weekly-review");
+}
+
 export async function usageSummary() {
   return fetchJson<UsageSummary>("/usage/summary");
+}
+
+export async function storageUsage() {
+  return fetchJson<StorageUsageResponse>("/storage/usage");
 }
 
 export async function usageEvents(limit = 50) {
@@ -337,6 +488,20 @@ export async function reindexItem(id: string) {
       method: "POST",
     },
   );
+}
+
+export async function updatePlaybackPosition(
+  id: string,
+  positionSec: number,
+  chunkId?: string | null,
+) {
+  return fetchJson<PlaybackPositionRecord>(`/items/${encodeURIComponent(id)}/playback`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      position_sec: positionSec,
+      chunk_id: chunkId ?? null,
+    }),
+  });
 }
 
 export async function getItemUnderstanding(id: string) {
@@ -433,6 +598,10 @@ export async function testProvider(id: string) {
   return fetchJson<ProviderRecord>(`/providers/${encodeURIComponent(id)}/test`, {
     method: "POST",
   });
+}
+
+export async function discoverProviderModels(id: string) {
+  return fetchJson<ProviderModelRecord[]>(`/providers/${encodeURIComponent(id)}/models`);
 }
 
 export async function listSettings() {

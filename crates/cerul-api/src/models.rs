@@ -254,12 +254,16 @@ pub async fn model_catalog(State(state): State<ApiState>) -> ApiResult<Json<Mode
 }
 
 pub fn model_catalog_for_paths(paths: &AppPaths) -> anyhow::Result<ModelCatalogResponse> {
-    let inference_mode = selected_inference_mode(paths);
-    let active_embedding_profile =
-        cerul_storage::vectors::embedding_profile_for_inference_mode(paths, &inference_mode)?;
-    let embedding_profiles = cerul_storage::vectors::list_embedding_profiles(paths)?;
+    let configured_inference_mode = selected_inference_mode(paths);
     let runtime = model_runtime_status(paths);
     crate::sync_deferred_embedding_rebuild_if_ready(paths, &runtime)?;
+    let inference_mode = effective_inference_mode_for_runtime(&configured_inference_mode, &runtime);
+    let active_embedding_profile =
+        cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(
+            paths,
+            &inference_mode,
+        )?;
+    let embedding_profiles = cerul_storage::vectors::list_embedding_profiles(paths)?;
     let selected_asr = selected_remote_asr_model_id(paths);
     let selected_video_understanding = selected_video_understanding_model_id(paths)
         .unwrap_or_else(|| DEFAULT_VIDEO_UNDERSTANDING_MODEL_ID.to_string());
@@ -649,8 +653,16 @@ pub(crate) fn selected_video_understanding_model_id(paths: &AppPaths) -> Option<
 fn selected_inference_mode(paths: &AppPaths) -> String {
     selected_setting(paths, "inference_mode")
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local")
-        .unwrap_or_else(|| "remote".to_string())
+        .filter(|value| value == "remote" || value == "local" || value == "auto")
+        .unwrap_or_else(|| "auto".to_string())
+}
+
+fn effective_inference_mode_for_runtime(mode: &str, runtime: &ModelRuntimeStatus) -> String {
+    match mode {
+        "local" => "local".to_string(),
+        "auto" if runtime.local_runtime_ready => "local".to_string(),
+        _ => "remote".to_string(),
+    }
 }
 
 fn env_setting(name: &str) -> Option<String> {
@@ -1012,6 +1024,28 @@ mod tests {
         let status = auto_download_status(&paths);
         assert!(!status.any_model_installed);
         assert_eq!(status.model_id, DEFAULT_WHISPER_MODEL_ID);
+    }
+
+    #[test]
+    fn auto_inference_mode_resolves_to_local_when_runtime_ready() {
+        let runtime = ModelRuntimeStatus {
+            platform: "test".to_string(),
+            api_runtime_ready: true,
+            local_runtime_ready: true,
+            openai_ready: true,
+            gemini_ready: true,
+            last_error: None,
+            local_runtime_error: None,
+        };
+
+        assert_eq!(
+            effective_inference_mode_for_runtime("auto", &runtime),
+            "local"
+        );
+        assert_eq!(
+            effective_inference_mode_for_runtime("remote", &runtime),
+            "remote"
+        );
     }
 
     #[test]

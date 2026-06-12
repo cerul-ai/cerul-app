@@ -8,7 +8,6 @@ import {
   Command,
   Folder,
   Loader2,
-  Search,
   Wrench,
   X,
   Youtube,
@@ -39,17 +38,13 @@ export function AccessibilityPermissionCallout() {
   return (
     <>
       <div className="hotkey-demo" aria-hidden="true">
-        <div className="hotkey-demo-keys">
-          <kbd className="kbd">{t("onboarding.hotkey.altKey")}</kbd>
+        <div className="hotkey-demo__keys">
+          <kbd className="hotkey-demo__key">{t("onboarding.hotkey.altKey")}</kbd>
           <span>+</span>
-          <kbd className="kbd">{t("onboarding.hotkey.spaceKey")}</kbd>
+          <kbd className="hotkey-demo__key">{t("onboarding.hotkey.spaceKey")}</kbd>
         </div>
-        <div className="hotkey-demo-arrow">→</div>
-        <div className="hotkey-demo-overlay">
-          <Search size={14} />
-          <span className="hotkey-demo-caret">|</span>
-        </div>
-        <p className="hotkey-demo-caption">{t("onboarding.hotkey.caption")}</p>
+        <span className="hotkey-demo__caret" />
+        <p className="hotkey-demo__caption">{t("onboarding.hotkey.caption")}</p>
       </div>
       <div className="permission-callout">
         <Command size={18} />
@@ -105,12 +100,12 @@ export function OnboardingFolderPicker({
 
   return (
     <div className="onboarding-picker">
-      <button className="picker-button" type="button" onClick={chooseFolders}>
+      <button className="btn btn-secondary" type="button" onClick={chooseFolders}>
         <Folder size={18} />
         <span>{t("onboarding.folder.choose")}</span>
       </button>
       <button
-        className="picker-button picker-button-secondary"
+        className="btn btn-secondary"
         type="button"
         onClick={addCommonLocations}
         disabled={commonLocationsAdded}
@@ -124,22 +119,29 @@ export function OnboardingFolderPicker({
         </span>
       </button>
       {folders.length > 0 ? (
-        <div className="chip-row" aria-label={t("onboarding.folder.chipsAria")}>
+        <div
+          className="row gap-2"
+          aria-label={t("onboarding.folder.chipsAria")}
+          /* full grid row inside .onboarding-picker; chips wrap, centered card */
+          style={{ gridColumn: "1 / -1", flexWrap: "wrap", justifyContent: "center" }}
+        >
           {folders.map((folder) => (
             <button
               key={folder}
-              className="path-chip"
+              className="chip neutral"
               type="button"
               onClick={() => removeFolder(folder)}
               aria-label={t("onboarding.folder.removeChipAria", { folder })}
             >
-              <span>{folder}</span>
+              <span className="clamp1 mono">{folder}</span>
               <X size={13} />
             </button>
           ))}
         </div>
       ) : (
-        <p className="muted-copy">{t("onboarding.folder.emptyHint")}</p>
+        <p className="field-hint" style={{ gridColumn: "1 / -1" }}>
+          {t("onboarding.folder.emptyHint")}
+        </p>
       )}
     </div>
   );
@@ -153,7 +155,9 @@ export function OnboardingYoutubePicker({
   setChannels: (channels: OnboardingYoutubeChannel[]) => void;
 }) {
   const t = useT();
-  const [url, setUrl] = useState("https://youtube.com/@karpathy");
+  // Starts empty on purpose: a prefilled real channel could get added by a
+  // user just clicking through. The example URL lives in the placeholder.
+  const [url, setUrl] = useState("");
   const [validation, setValidation] = useState<ValidationState>({
     status: "idle",
     message: null,
@@ -187,17 +191,18 @@ export function OnboardingYoutubePicker({
   }
 
   return (
-    <div className="onboarding-picker">
-      <label className="url-field">
+    <div className="col gap-3">
+      <label className="search-wrap">
         <Youtube size={18} />
         <input
+          className="search-input"
           value={url}
           onChange={(event) => updateUrl(event.currentTarget.value)}
           placeholder={t("onboarding.youtube.urlPlaceholder")}
         />
       </label>
       <button
-        className="btn btn-secondary sm validate-button"
+        className="btn btn-ghost accent sm"
         type="button"
         onClick={() => void validateAndAddChannel()}
         disabled={!url.trim() || validation.status === "validating"}
@@ -229,11 +234,15 @@ export function OnboardingYoutubePicker({
               type="button"
               onClick={() => removeChannel(channel.url)}
               aria-label={t("onboarding.youtube.removeAria", { name: channel.name })}
+              /* .youtube-channel-card has no button reset; keep app font + pointer */
+              style={{ font: "inherit", cursor: "pointer" }}
             >
-              <span className="avatar">{channel.name.slice(0, 2).toUpperCase()}</span>
-              <span>
-                <strong>{channel.name}</strong>
-                <small>{channel.subscribers}</small>
+              <span className="chip neutral" aria-hidden="true">
+                {channel.name.slice(0, 2).toUpperCase()}
+              </span>
+              <span className="col grow" style={{ textAlign: "left" }}>
+                <strong className="youtube-channel-card__title">{channel.name}</strong>
+                <small className="youtube-channel-card__meta">{channel.subscribers}</small>
               </span>
               <X size={14} />
             </button>

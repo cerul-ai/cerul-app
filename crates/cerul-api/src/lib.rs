@@ -1,8 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fs,
     net::SocketAddr,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path as FsPath, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -27,6 +28,8 @@ pub mod jobs;
 pub mod models;
 pub mod providers;
 pub mod video_understanding;
+
+const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -135,6 +138,137 @@ pub struct JobRecord {
     pub stage: Option<String>,
     pub stage_message: Option<String>,
     pub usage: cerul_storage::UsageTotals,
+    pub error_info: Option<JobErrorInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobErrorInfo {
+    pub code: String,
+    pub capability: String,
+    pub settings_section: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MomentRecord {
+    pub id: String,
+    pub item_id: String,
+    pub chunk_id: Option<String>,
+    pub start_sec: Option<f64>,
+    pub end_sec: Option<f64>,
+    pub timestamp: String,
+    pub title: String,
+    pub quote: String,
+    pub note: Option<String>,
+    pub created_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMomentRequest {
+    pub item_id: String,
+    pub chunk_id: Option<String>,
+    pub start_sec: Option<f64>,
+    pub end_sec: Option<f64>,
+    pub title: Option<String>,
+    pub quote: String,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AskRequest {
+    pub q: String,
+    pub limit: Option<usize>,
+    pub locale: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AskResponse {
+    pub answer: String,
+    pub citations: Vec<AskCitation>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AskCitation {
+    pub chunk_id: String,
+    pub item_id: String,
+    pub title: String,
+    pub timestamp: String,
+    pub start_sec: Option<f64>,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntitySummary {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub mention_count: usize,
+    pub item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityMention {
+    pub entity_id: String,
+    pub label: String,
+    pub kind: String,
+    pub item_id: String,
+    pub item_title: String,
+    pub chunk_id: Option<String>,
+    pub timestamp: String,
+    pub start_sec: Option<f64>,
+    pub quote: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EntityDetail {
+    pub entity: EntitySummary,
+    pub mentions: Vec<EntityMention>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeeklyReviewResponse {
+    pub week_start: i64,
+    pub indexed_items: usize,
+    pub indexed_seconds: f64,
+    pub watched_percent: u8,
+    pub topics: Vec<WeeklyTopic>,
+    pub has_data: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeeklyTopic {
+    pub id: String,
+    pub label: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlaybackPositionRecord {
+    pub item_id: String,
+    pub position_sec: f64,
+    pub timestamp: String,
+    pub chunk_id: Option<String>,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdatePlaybackPositionRequest {
+    position_sec: f64,
+    chunk_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageUsageResponse {
+    pub data_dir: String,
+    pub total_bytes: u64,
+    pub categories: Vec<StorageUsageCategory>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageUsageCategory {
+    pub key: String,
+    pub label: String,
+    pub bytes: u64,
 }
 
 #[derive(Debug)]
@@ -191,13 +325,23 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
         .route("/search", post(search))
+        .route("/ask", post(ask_library))
         .route("/sources", get(list_sources).post(add_source))
         .route("/sources/preview/rss", post(preview_rss_source))
         .route("/sources/:id", delete(remove_source))
         .route("/sources/:id/pause", post(pause_source))
         .route("/sources/:id/resume", post(resume_source))
+        .route("/moments", get(list_moments).post(create_moment))
+        .route("/moments/:id", delete(remove_moment))
+        .route("/entities", get(list_entities))
+        .route("/entities/:id", get(get_entity))
+        .route("/weekly-review", get(weekly_review))
         .route("/items", get(list_items))
         .route("/items/:id", get(get_item).delete(remove_item))
+        .route(
+            "/items/:id/playback",
+            get(get_item_playback_position).patch(update_item_playback_position),
+        )
         .route("/items/:id/reindex", post(reindex_item))
         .route("/items/:id/chunks", get(list_item_chunks))
         .route(
@@ -211,6 +355,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/jobs", get(list_jobs))
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
+        .route("/storage/usage", get(storage_usage))
         .route("/models/catalog", get(models::model_catalog))
         .route("/models/whisper", get(models::list_whisper_models))
         .route(
@@ -235,6 +380,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             patch(providers::update_provider).delete(providers::delete_provider),
         )
         .route("/providers/:id/test", post(providers::test_provider))
+        .route(
+            "/providers/:id/models",
+            get(providers::discover_provider_models),
+        )
         .route("/settings", get(list_settings).patch(update_settings))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -418,34 +567,247 @@ async fn search(
     State(state): State<ApiState>,
     Json(req): Json<cerul_search::SearchRequest>,
 ) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
+    Ok(Json(search_records(&state.paths, req).await?))
+}
+
+async fn search_records(
+    paths: &AppPaths,
+    req: cerul_search::SearchRequest,
+) -> anyhow::Result<Vec<cerul_search::SearchResult>> {
     let query = req.q.clone();
-    let paths = state.paths.clone();
-    let query_embedding =
-        tokio::task::spawn_blocking(move || api_models::embed_query(&paths, &query)).await;
+    let paths_for_embedding = paths.clone();
+    let query_embedding = tokio::time::timeout(
+        QUERY_EMBEDDING_TIMEOUT,
+        tokio::task::spawn_blocking(move || api_models::embed_query(&paths_for_embedding, &query)),
+    )
+    .await;
 
     match query_embedding {
-        Ok(Ok(embedding)) => Ok(Json(
+        Ok(Ok(Ok(embedding))) => {
             cerul_search::search_with_vector_for_profile(
-                &state.paths,
+                paths,
                 req,
                 embedding.vector,
                 &embedding.profile,
             )
-            .await?,
-        )),
-        Ok(Err(error)) => {
+            .await
+        }
+        Ok(Ok(Err(error))) => {
             tracing::warn!(%error, "API semantic query embedding unavailable; falling back to FTS");
-            Ok(Json(
-                cerul_search::search_fts_only(&state.paths, req).await?,
-            ))
+            cerul_search::search_fts_only(paths, req).await
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "API query embedding task failed; falling back to FTS");
+            cerul_search::search_fts_only(paths, req).await
         }
         Err(error) => {
-            tracing::warn!(%error, "API query embedding task failed; falling back to FTS");
-            Ok(Json(
-                cerul_search::search_fts_only(&state.paths, req).await?,
-            ))
+            tracing::warn!(
+                %error,
+                timeout_sec = QUERY_EMBEDDING_TIMEOUT.as_secs(),
+                "API query embedding timed out; falling back to FTS"
+            );
+            cerul_search::search_fts_only(paths, req).await
         }
     }
+}
+
+async fn ask_library(
+    State(state): State<ApiState>,
+    Json(req): Json<AskRequest>,
+) -> ApiResult<Json<AskResponse>> {
+    let query = req.q.trim();
+    if query.is_empty() {
+        return Err(ApiError::bad_request("question cannot be empty"));
+    }
+
+    let limit = req.limit.unwrap_or(6).clamp(1, 8);
+    let results = search_records(
+        &state.paths,
+        cerul_search::SearchRequest {
+            q: query.to_string(),
+            limit,
+        },
+    )
+    .await?;
+    let citations = results
+        .into_iter()
+        .filter(|result| !result.snippet.trim().is_empty())
+        .take(limit)
+        .map(|result| AskCitation {
+            chunk_id: result.chunk_id,
+            item_id: result.item_id,
+            title: result
+                .item_title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| "Untitled media".to_string()),
+            timestamp: format_playback_timestamp(result.start_sec.unwrap_or(0.0)),
+            start_sec: result.start_sec,
+            snippet: trim_for_answer(&result.snippet, 280),
+        })
+        .collect::<Vec<_>>();
+
+    let answer_in_english = req
+        .locale
+        .as_deref()
+        .is_some_and(|locale| locale.to_ascii_lowercase().starts_with("en"));
+    let answer = if citations.is_empty() {
+        if answer_in_english {
+            format!(
+                "I couldn't find a directly related moment for \"{}\" in the local index. Try another keyword or wait for current indexing jobs to finish.",
+                query
+            )
+        } else {
+            format!(
+                "没有在本地索引里找到和「{}」直接相关的片段。可以先换一个关键词，或等当前索引任务完成后再问。",
+                query
+            )
+        }
+    } else {
+        let mut sentences = Vec::new();
+        for citation in citations.iter().take(3) {
+            if answer_in_english {
+                sentences.push(format!(
+                    "Around {} in \"{}\", the index says: {}",
+                    citation.timestamp, citation.title, citation.snippet
+                ));
+            } else {
+                sentences.push(format!(
+                    "在《{}》{} 附近，索引里提到：{}",
+                    citation.title, citation.timestamp, citation.snippet
+                ));
+            }
+        }
+        if answer_in_english {
+            format!(
+                "{} This answer is grounded only in the local search hits below, and each citation can jump back to the original moment.",
+                sentences.join(" ")
+            )
+        } else {
+            format!(
+                "{} 这不是云端幻觉式回答；它只基于当前本地检索到的片段生成，下面每条引用都能跳回原始时刻。",
+                sentences.join(" ")
+            )
+        }
+    };
+
+    Ok(Json(AskResponse { answer, citations }))
+}
+
+async fn list_moments(State(state): State<ApiState>) -> ApiResult<Json<Vec<MomentRecord>>> {
+    Ok(Json(read_moments(&state.paths)?))
+}
+
+async fn create_moment(
+    State(state): State<ApiState>,
+    Json(req): Json<CreateMomentRequest>,
+) -> ApiResult<Json<MomentRecord>> {
+    let quote = req.quote.trim();
+    if quote.is_empty() {
+        return Err(ApiError::bad_request("quote cannot be empty"));
+    }
+
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let item_title: Option<String> = conn
+        .query_row(
+            "SELECT title FROM items WHERE id = ?1",
+            [req.item_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(item_title) = item_title else {
+        return Err(ApiError::not_found(format!(
+            "item not found: {}",
+            req.item_id
+        )));
+    };
+
+    if let Some(chunk_id) = req
+        .chunk_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let chunk_exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM chunks WHERE id = ?1 AND item_id = ?2",
+                (chunk_id, req.item_id.as_str()),
+                |row| row.get(0),
+            )
+            .optional()?;
+        if chunk_exists.is_none() {
+            return Err(ApiError::bad_request("chunk does not belong to item"));
+        }
+    }
+
+    let id = new_id("moment");
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(item_title.as_str());
+    conn.execute(
+        r#"
+        INSERT INTO moments (id, item_id, chunk_id, start_sec, end_sec, title, quote, note)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        (
+            id.as_str(),
+            req.item_id.as_str(),
+            req.chunk_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            req.start_sec,
+            req.end_sec,
+            title,
+            quote,
+            req.note.as_deref().filter(|value| !value.trim().is_empty()),
+        ),
+    )?;
+
+    read_moment(&state.paths, &id)?
+        .map(Json)
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("moment was not recorded")))
+}
+
+async fn remove_moment(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let removed = conn.execute("DELETE FROM moments WHERE id = ?1", [id.as_str()])?;
+    if removed != 1 {
+        return Err(ApiError::not_found(format!("moment not found: {id}")));
+    }
+    Ok(Json(json!({ "status": "removed", "id": id })))
+}
+
+async fn list_entities(State(state): State<ApiState>) -> ApiResult<Json<Vec<EntitySummary>>> {
+    let mentions = collect_entity_mentions(&state.paths)?;
+    Ok(Json(entity_summaries(&mentions)))
+}
+
+async fn get_entity(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<EntityDetail>> {
+    let mentions = collect_entity_mentions(&state.paths)?;
+    let mut summaries = entity_summaries(&mentions);
+    let Some(entity) = summaries.iter_mut().find(|entity| entity.id == id).cloned() else {
+        return Err(ApiError::not_found(format!("entity not found: {id}")));
+    };
+    let entity_mentions = mentions
+        .into_iter()
+        .filter(|mention| mention.entity_id == id)
+        .collect::<Vec<_>>();
+
+    Ok(Json(EntityDetail {
+        entity,
+        mentions: entity_mentions,
+    }))
+}
+
+async fn weekly_review(State(state): State<ApiState>) -> ApiResult<Json<WeeklyReviewResponse>> {
+    Ok(Json(weekly_review_for_paths(&state.paths)?))
 }
 
 async fn list_sources(State(state): State<ApiState>) -> ApiResult<Json<Vec<SourceRecord>>> {
@@ -632,6 +994,60 @@ async fn get_item(
     attach_item_usage(&state.paths, std::slice::from_mut(&mut item));
 
     Ok(Json(item))
+}
+
+async fn get_item_playback_position(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<PlaybackPositionRecord>> {
+    let item = cerul_storage::get_item(&state.paths, &id)
+        .map_err(|_| ApiError::not_found(format!("item not found: {id}")))?;
+    Ok(Json(playback_position_from_metadata(
+        &item.id,
+        &item.metadata,
+    )))
+}
+
+async fn update_item_playback_position(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdatePlaybackPositionRequest>,
+) -> ApiResult<Json<PlaybackPositionRecord>> {
+    if !request.position_sec.is_finite() || request.position_sec < 0.0 {
+        return Err(ApiError::bad_request(
+            "position_sec must be a finite non-negative number",
+        ));
+    }
+
+    let updated_at = current_unix_seconds();
+    let position_sec = request.position_sec;
+    let chunk_id = request.chunk_id.filter(|value| !value.trim().is_empty());
+    cerul_storage::update_item_metadata(&state.paths, &id, |metadata| {
+        metadata.insert(
+            "playback_position".to_string(),
+            json!({
+                "position_sec": position_sec,
+                "timestamp": format_playback_timestamp(position_sec),
+                "chunk_id": chunk_id,
+                "updated_at": updated_at,
+            }),
+        );
+    })
+    .map_err(|error| {
+        if error.to_string().contains("item not found") {
+            ApiError::not_found(format!("item not found: {id}"))
+        } else {
+            ApiError::internal(error)
+        }
+    })?;
+
+    Ok(Json(PlaybackPositionRecord {
+        item_id: id,
+        position_sec,
+        timestamp: format_playback_timestamp(position_sec),
+        chunk_id,
+        updated_at: Some(updated_at),
+    }))
 }
 
 async fn remove_item(
@@ -845,18 +1261,23 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
     )?;
     let rows = stmt.query_map([], |row| {
         let job_id: String = row.get(0)?;
+        let job_type: String = row.get(2)?;
+        let error: Option<String> = row.get(6)?;
         Ok(JobRecord {
             id: job_id.clone(),
             item_id: row.get(1)?,
-            job_type: row.get(2)?,
+            job_type: job_type.clone(),
             status: row.get(3)?,
             started_at: row.get(4)?,
             finished_at: row.get(5)?,
-            error: row.get(6)?,
+            error: error.clone(),
             progress: row.get(7)?,
             stage: row.get(8)?,
             stage_message: row.get(9)?,
             usage: cerul_storage::usage_totals_for_job(&state.paths, &job_id).unwrap_or_default(),
+            error_info: error
+                .as_deref()
+                .and_then(|message| classify_job_error(&job_type, message)),
         })
     })?;
 
@@ -867,6 +1288,10 @@ async fn usage_summary(
     State(state): State<ApiState>,
 ) -> ApiResult<Json<cerul_storage::UsageSummary>> {
     Ok(Json(cerul_storage::usage_summary(&state.paths)?))
+}
+
+async fn storage_usage(State(state): State<ApiState>) -> ApiResult<Json<StorageUsageResponse>> {
+    Ok(Json(storage_usage_for_paths(&state.paths)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -882,6 +1307,474 @@ async fn list_usage_events(
         &state.paths,
         query.limit.unwrap_or(50).min(500),
     )?))
+}
+
+fn read_moments(paths: &AppPaths) -> anyhow::Result<Vec<MomentRecord>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT m.id, m.item_id, m.chunk_id, m.start_sec, m.end_sec,
+               COALESCE(NULLIF(m.title, ''), i.title, 'Untitled media') AS title,
+               m.quote, m.note, m.created_at
+        FROM moments m
+        JOIN items i ON i.id = m.item_id
+        ORDER BY m.created_at DESC, m.id DESC
+        "#,
+    )?;
+    let rows = stmt.query_map([], moment_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn read_moment(paths: &AppPaths, id: &str) -> anyhow::Result<Option<MomentRecord>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.query_row(
+        r#"
+        SELECT m.id, m.item_id, m.chunk_id, m.start_sec, m.end_sec,
+               COALESCE(NULLIF(m.title, ''), i.title, 'Untitled media') AS title,
+               m.quote, m.note, m.created_at
+        FROM moments m
+        JOIN items i ON i.id = m.item_id
+        WHERE m.id = ?1
+        "#,
+        [id],
+        moment_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn moment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MomentRecord> {
+    let start_sec: Option<f64> = row.get(3)?;
+    Ok(MomentRecord {
+        id: row.get(0)?,
+        item_id: row.get(1)?,
+        chunk_id: row.get(2)?,
+        start_sec,
+        end_sec: row.get(4)?,
+        timestamp: format_playback_timestamp(start_sec.unwrap_or(0.0)),
+        title: row.get(5)?,
+        quote: row.get(6)?,
+        note: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+fn collect_entity_mentions(paths: &AppPaths) -> anyhow::Result<Vec<EntityMention>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut mentions = Vec::new();
+
+    let mut understanding_stmt = conn.prepare(
+        r#"
+        SELECT iu.item_id, COALESCE(i.title, 'Untitled media'), iu.result
+        FROM item_understandings iu
+        JOIN items i ON i.id = iu.item_id
+        WHERE iu.status = 'completed'
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, iu.item_id ASC
+        "#,
+    )?;
+    let understanding_rows = understanding_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in understanding_rows {
+        let (item_id, item_title, raw_result) = row?;
+        let result = parse_json(&raw_result);
+        if let Some(topics) = result.get("topics").and_then(Value::as_array) {
+            for topic in topics {
+                if let Some(label) = topic.as_str() {
+                    push_entity_mention(
+                        &mut mentions,
+                        label,
+                        "topic",
+                        &item_id,
+                        &item_title,
+                        None,
+                        None,
+                        label,
+                    );
+                }
+            }
+        }
+        if let Some(events) = result.get("events").and_then(Value::as_array) {
+            for event in events {
+                let start_sec = event.get("start_sec").and_then(Value::as_f64);
+                let quote = event
+                    .get("caption")
+                    .and_then(Value::as_str)
+                    .or_else(|| event.get("visual").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .trim();
+                if let Some(entities) = event.get("entities").and_then(Value::as_array) {
+                    for entity in entities {
+                        if let Some(label) = entity.as_str() {
+                            push_entity_mention(
+                                &mut mentions,
+                                label,
+                                "person_or_entity",
+                                &item_id,
+                                &item_title,
+                                None,
+                                start_sec,
+                                if quote.is_empty() { label } else { quote },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut chunk_stmt = conn.prepare(
+        r#"
+        SELECT c.id, c.item_id, COALESCE(i.title, 'Untitled media'), c.start_sec, c.text
+        FROM chunks c
+        JOIN items i ON i.id = c.item_id
+        WHERE c.text IS NOT NULL
+          AND c.chunk_type IN ('transcript', 'transcript_line', 'understanding', 'ocr')
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, COALESCE(c.start_sec, 0), c.id
+        LIMIT 1000
+        "#,
+    )?;
+    let chunk_rows = chunk_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<f64>>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    for row in chunk_rows {
+        let (chunk_id, item_id, item_title, start_sec, text) = row?;
+        for label in extract_candidate_entities(&text).into_iter().take(4) {
+            let kind = entity_kind(&label);
+            push_entity_mention(
+                &mut mentions,
+                &label,
+                kind,
+                &item_id,
+                &item_title,
+                Some(&chunk_id),
+                start_sec,
+                &text,
+            );
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    mentions.retain(|mention| {
+        seen.insert(format!(
+            "{}:{}:{}",
+            mention.entity_id,
+            mention.item_id,
+            mention.chunk_id.as_deref().unwrap_or("")
+        ))
+    });
+    Ok(mentions)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_entity_mention(
+    mentions: &mut Vec<EntityMention>,
+    label: &str,
+    kind: &str,
+    item_id: &str,
+    item_title: &str,
+    chunk_id: Option<&str>,
+    start_sec: Option<f64>,
+    quote: &str,
+) {
+    let Some(label) = normalize_entity_label(label) else {
+        return;
+    };
+    let entity_id = entity_slug(&label);
+    if entity_id.is_empty() {
+        return;
+    }
+    mentions.push(EntityMention {
+        entity_id,
+        label,
+        kind: kind.to_string(),
+        item_id: item_id.to_string(),
+        item_title: item_title.to_string(),
+        chunk_id: chunk_id.map(ToString::to_string),
+        timestamp: format_playback_timestamp(start_sec.unwrap_or(0.0)),
+        start_sec,
+        quote: trim_for_answer(quote, 220),
+    });
+}
+
+fn entity_summaries(mentions: &[EntityMention]) -> Vec<EntitySummary> {
+    let mut by_id: BTreeMap<String, (String, usize, BTreeSet<String>)> = BTreeMap::new();
+    for mention in mentions {
+        let entry = by_id
+            .entry(mention.entity_id.clone())
+            .or_insert_with(|| (mention.label.clone(), 0, BTreeSet::<String>::new()));
+        entry.1 += 1;
+        entry.2.insert(mention.item_id.clone());
+    }
+    let mut summaries = by_id
+        .into_iter()
+        .map(|(id, (label, mention_count, item_ids))| EntitySummary {
+            kind: entity_kind(&label).to_string(),
+            id,
+            label,
+            mention_count,
+            item_count: item_ids.len(),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .mention_count
+            .cmp(&left.mention_count)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    summaries.truncate(30);
+    summaries
+}
+
+fn weekly_review_for_paths(paths: &AppPaths) -> anyhow::Result<WeeklyReviewResponse> {
+    let now = current_unix_seconds();
+    let week_start = now - 7 * 24 * 60 * 60;
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let (indexed_items, indexed_seconds, watched_seconds): (i64, f64, f64) = conn.query_row(
+        r#"
+        SELECT COUNT(*),
+               COALESCE(SUM(duration_sec), 0),
+               COALESCE(SUM(
+                 MIN(
+                   COALESCE(json_extract(metadata, '$.playback_position.position_sec'), 0),
+                   COALESCE(duration_sec, 0)
+                 )
+               ), 0)
+        FROM items
+        WHERE indexed_at IS NOT NULL
+          AND indexed_at >= ?1
+        "#,
+        [week_start],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let watched_percent = if indexed_seconds > 0.0 {
+        ((watched_seconds / indexed_seconds) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
+    } else {
+        0
+    };
+    let current_week_item_ids = conn
+        .prepare(
+            r#"
+            SELECT id
+            FROM items
+            WHERE indexed_at IS NOT NULL
+              AND indexed_at >= ?1
+            "#,
+        )?
+        .query_map([week_start], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    let current_week_mentions = collect_entity_mentions(paths)?
+        .into_iter()
+        .filter(|mention| current_week_item_ids.contains(&mention.item_id))
+        .collect::<Vec<_>>();
+    let topics = entity_summaries(&current_week_mentions)
+        .into_iter()
+        .take(3)
+        .map(|entity| WeeklyTopic {
+            id: entity.id,
+            label: entity.label,
+            count: entity.mention_count,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(WeeklyReviewResponse {
+        week_start,
+        indexed_items: indexed_items.max(0) as usize,
+        indexed_seconds,
+        watched_percent,
+        has_data: indexed_items > 0 || !topics.is_empty(),
+        topics,
+    })
+}
+
+fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
+    let normalized = message.to_ascii_lowercase();
+    let capability = capability_for_job_type(job_type).to_string();
+    let (code, friendly) = if normalized.contains("api key")
+        || normalized.contains("missing key")
+        || normalized.contains("no key")
+        || normalized.contains("unauthorized")
+        || normalized.contains("401")
+    {
+        (
+            "missing_api_key",
+            format!("{capability} 连接缺少可用 API 密钥。"),
+        )
+    } else if normalized.contains("model")
+        && (normalized.contains("not found")
+            || normalized.contains("does not exist")
+            || normalized.contains("unsupported")
+            || normalized.contains("404"))
+    {
+        (
+            "model_not_found",
+            format!("{capability} 当前选择的模型不可用，请换一个模型或连接。"),
+        )
+    } else if normalized.contains("ffmpeg") {
+        (
+            "ffmpeg_unavailable",
+            "本机视频处理运行时不可用，需要修复本地工具链。".to_string(),
+        )
+    } else if normalized.contains("yt-dlp")
+        || normalized.contains("video unavailable")
+        || normalized.contains("private")
+        || normalized.contains("geo")
+    {
+        (
+            "source_unavailable",
+            "来源暂时不可访问，可能是私有、地区限制或下载器失效。".to_string(),
+        )
+    } else if normalized.trim().is_empty() {
+        return None;
+    } else {
+        (
+            "unknown_processing_error",
+            format!("{capability} 处理失败，需要查看技术详情。"),
+        )
+    };
+
+    Some(JobErrorInfo {
+        code: code.to_string(),
+        capability,
+        settings_section: "Models".to_string(),
+        message: friendly,
+    })
+}
+
+fn capability_for_job_type(job_type: &str) -> &'static str {
+    match job_type {
+        "index_audio" => "转录",
+        "index_image" => "图像索引",
+        "index_video" => "视频索引",
+        _ => "索引",
+    }
+}
+
+fn extract_candidate_entities(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = text.to_ascii_lowercase();
+    for phrase in [
+        "test-time compute",
+        "retrieval quality",
+        "media memory",
+        "semantic retrieval",
+        "video understanding",
+        "prompt engineering",
+        "agent",
+        "agents",
+    ] {
+        if lower.contains(phrase) {
+            out.push(phrase.to_string());
+        }
+    }
+
+    let words = text
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '-' || ch == '\''))
+        .filter(|word| word.len() > 1)
+        .collect::<Vec<_>>();
+    let mut current = Vec::new();
+    for word in words {
+        if word
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+            && !matches!(word, "I" | "The" | "This" | "That" | "And" | "But")
+        {
+            current.push(word);
+            if current.len() >= 4 {
+                out.push(current.join(" "));
+                current.clear();
+            }
+        } else {
+            if current.len() >= 2 {
+                out.push(current.join(" "));
+            }
+            current.clear();
+        }
+    }
+    if current.len() >= 2 {
+        out.push(current.join(" "));
+    }
+
+    let mut seen = BTreeSet::new();
+    out.into_iter()
+        .filter_map(|label| normalize_entity_label(&label))
+        .filter(|label| seen.insert(label.to_ascii_lowercase()))
+        .take(12)
+        .collect()
+}
+
+fn normalize_entity_label(label: &str) -> Option<String> {
+    let cleaned = label
+        .trim()
+        .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != ' ')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.len() < 3 || cleaned.len() > 80 {
+        return None;
+    }
+    let lower = cleaned.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "the" | "and" | "this" | "that" | "with" | "from" | "your" | "you"
+    ) {
+        return None;
+    }
+    Some(cleaned)
+}
+
+fn entity_slug(label: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in label.chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() {
+            slug.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn entity_kind(label: &str) -> &'static str {
+    if label
+        .split_whitespace()
+        .next()
+        .and_then(|word| word.chars().next())
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+    {
+        "person_or_entity"
+    } else {
+        "topic"
+    }
+}
+
+fn trim_for_answer(value: &str, max_chars: usize) -> String {
+    let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let mut out = text
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    out.push('…');
+    out
 }
 
 async fn list_settings(State(state): State<ApiState>) -> ApiResult<Json<BTreeMap<String, Value>>> {
@@ -995,14 +1888,14 @@ fn configured_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
     Ok(setting_string(paths, "inference_mode")?
         .as_deref()
         .map(normalize_inference_mode)
-        .unwrap_or_else(|| "remote".to_string()))
+        .unwrap_or_else(|| "auto".to_string()))
 }
 
 fn normalize_inference_mode(value: &str) -> String {
-    if value.trim().eq_ignore_ascii_case("local") {
-        "local".to_string()
-    } else {
-        "remote".to_string()
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => "auto".to_string(),
+        "local" => "local".to_string(),
+        _ => "remote".to_string(),
     }
 }
 
@@ -1013,8 +1906,11 @@ fn sync_inference_mode_side_effects(
 ) -> anyhow::Result<()> {
     let previous_mode = normalize_inference_mode(previous_mode);
     let next_mode = normalize_inference_mode(next_mode);
-    cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(paths, &next_mode)?;
-    if next_mode != "local" {
+    let runtime = models::model_runtime_status(paths);
+    let previous_effective = effective_inference_mode_for_runtime(&previous_mode, &runtime);
+    let next_effective = effective_inference_mode_for_runtime(&next_mode, &runtime);
+    cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(paths, &next_effective)?;
+    if next_effective != "local" {
         api_models::shutdown_local_query_sidecar();
     }
 
@@ -1022,34 +1918,55 @@ fn sync_inference_mode_side_effects(
         .as_deref()
         .map(normalize_inference_mode);
     let has_deferred_rebuild = deferred_mode.as_deref() == Some(next_mode.as_str());
-    if previous_mode == next_mode && !has_deferred_rebuild {
+    if previous_mode == next_mode && previous_effective == next_effective && !has_deferred_rebuild {
         return Ok(());
     }
 
-    if next_mode == "local" {
-        let runtime = models::model_runtime_status(paths);
-        if !runtime.local_runtime_ready {
-            set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
-            tracing::warn!(
-                previous_mode,
-                next_mode,
-                local_runtime_error = ?runtime.local_runtime_error,
-                "local inference mode selected but runtime is not ready; deferred embedding profile rebuild"
-            );
+    if next_mode == "local" && !runtime.local_runtime_ready {
+        set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
+        tracing::warn!(
+            previous_mode,
+            next_mode,
+            local_runtime_error = ?runtime.local_runtime_error,
+            "local-only inference mode selected but runtime is not ready; deferred embedding profile rebuild"
+        );
+        return Ok(());
+    }
+
+    if next_mode == "auto" && !runtime.local_runtime_ready {
+        set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
+        if previous_effective == next_effective && !has_deferred_rebuild {
             return Ok(());
         }
     }
 
     let (rebuild_items, queued_jobs) = queue_items_for_embedding_mode_rebuild(paths)?;
-    clear_deferred_embedding_rebuild_mode(paths)?;
+    if next_mode == "auto" && !runtime.local_runtime_ready {
+        set_deferred_embedding_rebuild_mode(paths, &next_mode)?;
+    } else {
+        clear_deferred_embedding_rebuild_mode(paths)?;
+    }
     tracing::info!(
         previous_mode,
         next_mode,
+        previous_effective,
+        next_effective,
         rebuild_items,
         queued_jobs,
         "inference mode changed; queued items for embedding profile rebuild"
     );
     Ok(())
+}
+
+fn effective_inference_mode_for_runtime(
+    mode: &str,
+    runtime: &models::ModelRuntimeStatus,
+) -> String {
+    match normalize_inference_mode(mode).as_str() {
+        "local" => "local".to_string(),
+        "auto" if runtime.local_runtime_ready => "local".to_string(),
+        _ => "remote".to_string(),
+    }
 }
 
 pub(crate) fn sync_deferred_embedding_rebuild_if_ready(
@@ -1061,14 +1978,14 @@ pub(crate) fn sync_deferred_embedding_rebuild_if_ready(
     }
 
     let inference_mode = configured_inference_mode(paths)?;
-    if inference_mode != "local" {
+    if inference_mode != "local" && inference_mode != "auto" {
         return Ok(());
     }
 
     let deferred_mode = setting_string(paths, DEFERRED_EMBEDDING_REBUILD_MODE_SETTING)?
         .as_deref()
         .map(normalize_inference_mode);
-    if deferred_mode.as_deref() != Some("local") {
+    if deferred_mode.as_deref() != Some(inference_mode.as_str()) {
         return Ok(());
     }
 
@@ -1410,6 +2327,47 @@ fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
     }
 }
 
+fn playback_position_from_metadata(item_id: &str, metadata: &Value) -> PlaybackPositionRecord {
+    let position = metadata.get("playback_position").unwrap_or(&Value::Null);
+    let position_sec = position
+        .get("position_sec")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.0);
+    let timestamp = position
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format_playback_timestamp(position_sec));
+    let chunk_id = position
+        .get("chunk_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string);
+    let updated_at = position.get("updated_at").and_then(Value::as_i64);
+
+    PlaybackPositionRecord {
+        item_id: item_id.to_string(),
+        position_sec,
+        timestamp,
+        chunk_id,
+        updated_at,
+    }
+}
+
+fn format_playback_timestamp(position_sec: f64) -> String {
+    let total_seconds = position_sec.max(0.0).floor() as u64;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 fn chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChunkRecord> {
     let metadata: Option<String> = row.get(7)?;
 
@@ -1543,6 +2501,81 @@ fn safe_filename_part(value: &str) -> String {
         part = part.replace("--", "-");
     }
     part.trim_matches('-').chars().take(80).collect()
+}
+
+fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageResponse> {
+    let total_bytes = path_size(&paths.data)?;
+    let database_bytes = file_size(&paths.db)?;
+    let models_bytes = path_size(&paths.models)?;
+    let index_bytes = path_size(&paths.qdrant)?;
+    let cache_bytes = path_size(&paths.cache)?;
+    let known_bytes = database_bytes
+        .saturating_add(models_bytes)
+        .saturating_add(index_bytes)
+        .saturating_add(cache_bytes);
+    let other_bytes = total_bytes.saturating_sub(known_bytes);
+
+    Ok(StorageUsageResponse {
+        data_dir: paths.data.to_string_lossy().to_string(),
+        total_bytes,
+        categories: vec![
+            storage_category("database", "Database", database_bytes),
+            storage_category("models", "Models", models_bytes),
+            storage_category("index", "Search index", index_bytes),
+            storage_category("cache", "Cache", cache_bytes),
+            storage_category("other", "Other", other_bytes),
+        ],
+    })
+}
+
+fn storage_category(key: &str, label: &str, bytes: u64) -> StorageUsageCategory {
+    StorageUsageCategory {
+        key: key.to_string(),
+        label: label.to_string(),
+        bytes,
+    }
+}
+
+fn file_size(path: &FsPath) -> anyhow::Result<u64> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(metadata) if metadata.is_dir() => path_size(path),
+        Ok(_) => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn path_size(path: &FsPath) -> anyhow::Result<u64> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => return Ok(metadata.len()),
+        Ok(metadata) if !metadata.is_dir() => return Ok(0),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut total = 0_u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn current_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResult<Response> {
@@ -1768,13 +2801,20 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/metrics", &["get"]),
     ("/openapi.json", &["get"]),
     ("/search", &["post"]),
+    ("/ask", &["post"]),
     ("/sources", &["get", "post"]),
     ("/sources/preview/rss", &["post"]),
     ("/sources/{id}", &["delete"]),
     ("/sources/{id}/pause", &["post"]),
     ("/sources/{id}/resume", &["post"]),
+    ("/moments", &["get", "post"]),
+    ("/moments/{id}", &["delete"]),
+    ("/entities", &["get"]),
+    ("/entities/{id}", &["get"]),
+    ("/weekly-review", &["get"]),
     ("/items", &["get"]),
     ("/items/{id}", &["get", "delete"]),
+    ("/items/{id}/playback", &["get", "patch"]),
     ("/items/{id}/reindex", &["post"]),
     ("/items/{id}/chunks", &["get"]),
     ("/items/{id}/understanding", &["get", "post"]),
@@ -1784,6 +2824,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/jobs", &["get"]),
     ("/usage/events", &["get"]),
     ("/usage/summary", &["get"]),
+    ("/storage/usage", &["get"]),
     ("/models/catalog", &["get"]),
     ("/models/whisper", &["get"]),
     ("/models/whisper/{id}/download", &["post"]),
@@ -1793,6 +2834,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/providers", &["get", "post"]),
     ("/providers/{id}", &["patch", "delete"]),
     ("/providers/{id}/test", &["post"]),
+    ("/providers/{id}/models", &["get"]),
     ("/settings", &["get", "patch"]),
 ];
 
@@ -1820,6 +2862,24 @@ mod tests {
         http::{Method, Request},
     };
     use tower::ServiceExt;
+
+    fn seed_indexing_schema_version(paths: &AppPaths) {
+        let conn = cerul_storage::sqlite::open(paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?1, ?2, strftime('%s','now'))
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            "#,
+            (
+                INDEXING_SCHEMA_VERSION_SETTING,
+                Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+            ),
+        )
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn router_serves_health_and_openapi() {
@@ -1956,9 +3016,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn router_serves_model_catalog_with_default_profile() {
+    async fn router_serves_model_catalog_with_remote_profile() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('inference_mode', '"remote"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+        }
         let app = router_with_paths(paths);
 
         let response = app
@@ -2313,6 +3384,35 @@ mod tests {
         assert_eq!(created_json["base_url"], "https://api.openai.com/v1");
         assert_eq!(created_json["has_key"], false);
 
+        let models_without_key = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!(
+                        "/providers/{}/models",
+                        created_json["id"].as_str().unwrap()
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(models_without_key.status(), StatusCode::BAD_REQUEST);
+
+        let local_models = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/providers/local/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(local_models.status(), StatusCode::BAD_REQUEST);
+
         let local_patch = app
             .clone()
             .oneshot(
@@ -2440,6 +3540,33 @@ mod tests {
         assert_eq!(
             asr_info.base_url.as_deref(),
             Some("https://api.groq.com/openai/v1")
+        );
+
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('asr_model', ?1, strftime('%s','now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                "#,
+                [Value::String("gemini-2.5-flash".to_string()).to_string()],
+            )
+            .unwrap();
+        }
+
+        let gateway_named_model_info = crate::api_models::routed_transcriber(paths.clone())
+            .inference_provider()
+            .unwrap();
+        assert_eq!(
+            gateway_named_model_info.provider_id.as_deref(),
+            asr_provider["id"].as_str()
+        );
+        assert_eq!(
+            gateway_named_model_info.model_id.as_deref(),
+            Some("gemini-2.5-flash")
         );
 
         let embedding_info = crate::api_models::selected_embedder(&paths)
@@ -2574,6 +3701,7 @@ mod tests {
             )
             .unwrap();
         }
+        seed_indexing_schema_version(&paths);
         let app = router_with_paths(paths.clone());
 
         let reindex = app
@@ -2636,6 +3764,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn item_playback_position_persists_in_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+
+        let update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/items/item-1/playback")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "position_sec": 75.4, "chunk_id": "chunk-1" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update.status(), StatusCode::OK);
+        let update = response_json(update).await;
+        assert_eq!(update["position_sec"], 75.4);
+        assert_eq!(update["timestamp"], "1:15");
+        assert_eq!(update["chunk_id"], "chunk-1");
+        assert!(update["updated_at"].as_i64().unwrap() > 0);
+
+        let get = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items/item-1/playback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::OK);
+        let get = response_json(get).await;
+        assert_eq!(get["timestamp"], "1:15");
+
+        let items = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert_eq!(
+            items[0]["metadata"]["playback_position"]["timestamp"],
+            "1:15"
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_usage_reports_data_directory_breakdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let _ = cerul_storage::sqlite::open(&paths).unwrap();
+        std::fs::write(paths.models.join("model.bin"), b"model").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            paths.models.join("model.bin"),
+            paths.models.join("snapshot.bin"),
+        )
+        .unwrap();
+        std::fs::write(paths.cache.join("cache.bin"), b"cache-data").unwrap();
+        std::fs::write(paths.qdrant.join("index.bin"), b"idx").unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/storage/usage")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let usage = response_json(response).await;
+        assert!(usage["total_bytes"].as_u64().unwrap() >= 18);
+        let categories = usage["categories"].as_array().unwrap();
+        let bytes_for = |key: &str| {
+            categories
+                .iter()
+                .find(|category| category["key"] == key)
+                .and_then(|category| category["bytes"].as_u64())
+                .unwrap()
+        };
+        assert_eq!(bytes_for("models"), 5);
+        assert_eq!(bytes_for("cache"), 10);
+        assert_eq!(bytes_for("index"), 3);
+        assert!(bytes_for("database") > 0);
+    }
+
+    #[tokio::test]
     async fn concurrent_reindex_requests_queue_without_sqlite_locking() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -2662,6 +3911,7 @@ mod tests {
                 .unwrap();
             }
         }
+        seed_indexing_schema_version(&paths);
         let app = router_with_paths(paths.clone());
 
         let request = |item_id: &str| {
@@ -3331,21 +4581,26 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
+for arg in "$@"; do
+  if [ "$arg" = "--flat-playlist" ]; then
   printf '{"id":"abc123","title":"First video","duration":12}\n'
   printf '{"id":"def456","title":"Second video","duration":34}\n'
-else
-  out=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-o" ]; then
-      shift
-      out="$1"
-    fi
+  exit 0
+  fi
+done
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
     shift
-  done
-  mkdir -p "$(dirname "$out")"
-  printf 'video' > "$out"
+    out="$1"
+  fi
+  shift
+done
+if [ -z "$out" ]; then
+  exit 1
 fi
+mkdir -p "$(dirname "$out")"
+printf 'video' > "$out"
 "#,
         )
         .unwrap();

@@ -1,43 +1,38 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   CheckCircle2,
-  Cloud,
+  Github,
   LogIn,
   LogOut,
   Mail,
-  RefreshCw,
   ShieldCheck,
-  Sparkles,
   User,
   UserPlus,
 } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
+import { useEscapeToClose } from "../lib/use-dismissable";
 import { InlineNotice } from "./leaf";
+import { BrandMark } from "./brand";
 import { useAuthStore } from "../lib/cloud/authStore";
+import { cloudClient } from "../lib/cloud/client";
 import { CloudApiError } from "../lib/cloud/types";
+import { startDesktopOAuth } from "../lib/desktopHost";
 
 type AuthMode = "signin" | "register";
 
-// What signing in unlocks — shown value-first on the signed-out popover
-// (design Area 1, direction A). Static marketing copy; keys live in the catalog.
-const ACCOUNT_VALUES: { icon: ReactNode; titleKey: string; descKey: string }[] = [
-  {
-    icon: <Cloud size={16} />,
-    titleKey: "settings.account.value.credits.title",
-    descKey: "settings.account.value.credits.desc",
-  },
-  {
-    icon: <RefreshCw size={16} />,
-    titleKey: "settings.account.value.sync.title",
-    descKey: "settings.account.value.sync.desc",
-  },
-  {
-    icon: <Sparkles size={16} />,
-    titleKey: "settings.account.value.pro.title",
-    descKey: "settings.account.value.pro.desc",
-  },
-];
+// Google's wordmark glyph (lucide has no brand mark for it). Matches the
+// prototype's OAuth row.
+function GoogleMark() {
+  return (
+    <svg width={15} height={15} viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
+  );
+}
 
 function friendlyError(error: unknown, t: TFunction): string {
   if (error instanceof CloudApiError) {
@@ -78,6 +73,7 @@ export function AccountRailButton() {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [pos, setPos] = useState({ left: 10, bottom: 56 });
+  useEscapeToClose(() => setOpen(false), open);
 
   useEffect(() => {
     if (useAuthStore.getState().status === "loading") {
@@ -137,12 +133,10 @@ function AccountAuthForm() {
   const login = useAuthStore((state) => state.login);
   const register = useAuthStore((state) => state.register);
   const [mode, setMode] = useState<AuthMode>("signin");
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
 
   const switchMode = (next: AuthMode) => {
     setMode(next);
@@ -157,8 +151,7 @@ function AccountAuthForm() {
       if (mode === "signin") {
         await login({ email: email.trim(), password });
       } else {
-        const trimmedName = name.trim();
-        await register({ email: email.trim(), password, ...(trimmedName ? { name: trimmedName } : {}) });
+        await register({ email: email.trim(), password });
       }
     } catch (err) {
       setError(friendlyError(err, t));
@@ -166,66 +159,40 @@ function AccountAuthForm() {
     }
   };
 
+  const startOAuth = async (provider: "google" | "github") => {
+    setError(null);
+    try {
+      if (await startDesktopOAuth(provider)) {
+        return;
+      }
+    } catch {
+      setError(t("settings.account.error.network"));
+      return;
+    }
+    const opened = window.open(cloudClient.oauthStartUrl(provider), "_blank", "noopener,noreferrer");
+    if (!opened) {
+      setError(t("settings.account.oauthPopupBlocked"));
+    }
+  };
+
   return (
     <div>
       <div className="account-pop-head">
-        <div className="account-pop-title">Cerul Cloud</div>
-        <p className="account-pop-sub">{t("settings.account.intro")}</p>
+        <div className="account-pop-title">
+          <BrandMark className="account-pop-mark" />
+          <span>Cerul Cloud</span>
+        </div>
+        <p className="account-pop-sub">{t("settings.account.subtitle")}</p>
       </div>
-      {!showForm ? (
-        <>
-          <div className="account-values">
-            {ACCOUNT_VALUES.map((value) => (
-              <div className="account-value-row" key={value.titleKey}>
-                <span className="account-value-ico" aria-hidden="true">
-                  {value.icon}
-                </span>
-                <div>
-                  <div className="account-value-t">{t(value.titleKey)}</div>
-                  <div className="account-value-d">{t(value.descKey)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="account-reassure">
-            <ShieldCheck size={14} />
-            <span>{t("settings.account.reassure")}</span>
-          </div>
-          <button
-            type="button"
-            className="btn btn-primary block account-reveal"
-            onClick={() => setShowForm(true)}
-          >
-            <LogIn size={16} />
-            <span>{t("settings.account.signInOrUp")}</span>
-          </button>
-        </>
-      ) : (
-        <>
-          <div className="segmented account-pop-tabs">
-            <button type="button" className={mode === "signin" ? "active" : ""} onClick={() => switchMode("signin")}>
-              {t("settings.account.signIn")}
-            </button>
-            <button type="button" className={mode === "register" ? "active" : ""} onClick={() => switchMode("register")}>
-              {t("settings.account.createAccount")}
-            </button>
-          </div>
-          <form className="account-pop-form" onSubmit={submit}>
-        {mode === "register" ? (
-          <div className="account-field">
-            <label className="field-label" htmlFor="rail-account-name">
-              {t("settings.account.name")}
-            </label>
-            <input
-              id="rail-account-name"
-              className="input"
-              autoComplete="name"
-              value={name}
-              disabled={busy}
-              onChange={(event) => setName(event.currentTarget.value)}
-            />
-          </div>
-        ) : null}
+      <div className="account-pop-tabs">
+        <button type="button" className={mode === "signin" ? "active" : ""} onClick={() => switchMode("signin")}>
+          {t("settings.account.signIn")}
+        </button>
+        <button type="button" className={mode === "register" ? "active" : ""} onClick={() => switchMode("register")}>
+          {t("settings.account.createAccount")}
+        </button>
+      </div>
+      <form className="account-pop-form" onSubmit={submit}>
         <div className="account-field">
           <label className="field-label" htmlFor="rail-account-email">
             {t("settings.account.email")}
@@ -266,9 +233,22 @@ function AccountAuthForm() {
                 : t("settings.account.createAccount")}
           </span>
         </button>
-          </form>
-        </>
-      )}
+      </form>
+      <div className="account-or">{t("settings.account.or")}</div>
+      <div className="account-oauth">
+        <button type="button" className="btn btn-secondary block" disabled={busy} onClick={() => void startOAuth("google")}>
+          <GoogleMark />
+          <span>{t("settings.account.continueGoogle")}</span>
+        </button>
+        <button type="button" className="btn btn-secondary block" disabled={busy} onClick={() => void startOAuth("github")}>
+          <Github size={16} />
+          <span>{t("settings.account.continueGithub")}</span>
+        </button>
+      </div>
+      <div className="account-reassure">
+        <ShieldCheck size={14} />
+        <span>{t("settings.account.reassure")}</span>
+      </div>
     </div>
   );
 }
@@ -376,6 +356,7 @@ function VerifyPanel() {
           inputMode="numeric"
           maxLength={6}
           placeholder="000000"
+          aria-label={t("settings.account.codeAria")}
           value={code}
           disabled={verifying}
           onChange={(event) => setCode(event.currentTarget.value.replace(/\D/g, ""))}

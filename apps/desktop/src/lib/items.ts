@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatUnixTime,
   metadataString,
+  sanitizeErrorText,
 } from "./formatters";
 import { jobStepProgressPercent } from "./jobs";
 import type { TFunction } from "./i18n";
@@ -206,6 +207,56 @@ export function itemEmbeddingIndexMessage(
     : t("item.embedding.failed");
 }
 
+export function itemPlaybackPosition(record: api.ItemRecord): api.PlaybackPositionRecord | null {
+  const raw = record.metadata.playback_position;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const position = raw as Record<string, unknown>;
+  const positionSec = typeof position.position_sec === "number" ? position.position_sec : null;
+  if (positionSec === null || !Number.isFinite(positionSec) || positionSec < 1) {
+    return null;
+  }
+  if (isNearEndPosition(positionSec, record.duration_sec)) {
+    return null;
+  }
+  const timestamp =
+    typeof position.timestamp === "string" && position.timestamp.trim()
+      ? position.timestamp
+      : formatPlaybackTimestamp(positionSec);
+  const chunkId =
+    typeof position.chunk_id === "string" && position.chunk_id.trim()
+      ? position.chunk_id
+      : null;
+  const updatedAt = typeof position.updated_at === "number" ? position.updated_at : null;
+
+  return {
+    item_id: record.id,
+    position_sec: positionSec,
+    timestamp,
+    chunk_id: chunkId,
+    updated_at: updatedAt,
+  };
+}
+
+export function isNearEndPosition(positionSec: number, durationSec: number | null | undefined) {
+  if (!Number.isFinite(positionSec) || !durationSec || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return false;
+  }
+  const remainingSec = durationSec - positionSec;
+  return remainingSec <= 8 || positionSec / durationSec >= 0.98;
+}
+
+function formatPlaybackTimestamp(positionSec: number) {
+  const totalSeconds = Math.max(0, Math.floor(positionSec));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 export function mapItemRecord(
   record: api.ItemRecord,
   jobRecords: api.JobRecord[],
@@ -225,11 +276,12 @@ export function mapItemRecord(
     contentType: record.content_type,
     source: itemSourceLabel(record, t),
     sourceKind: itemSourceKind(record, rawPath),
-    duration: formatDuration(record.duration_sec),
-    indexedAt: formatUnixTime(record.indexed_at),
+    duration: formatDuration(record.duration_sec, t),
+    durationSec: record.duration_sec,
+    indexedAt: formatUnixTime(record.indexed_at, t),
     indexedAtEpoch: record.indexed_at,
     status,
-    error: record.error,
+    error: record.error ? sanitizeErrorText(record.error) : null,
     rawPath,
     originalUrl: itemOriginalUrl(record),
     color: itemColor(record.content_type),
@@ -241,6 +293,7 @@ export function mapItemRecord(
     visualIndexMessage: itemVisualIndexMessage(record, visualIndexStatus, t),
     embeddingIndexStatus,
     embeddingIndexMessage: itemEmbeddingIndexMessage(record, embeddingIndexStatus, t),
+    playbackPosition: itemPlaybackPosition(record),
     usage: record.usage,
   };
 }

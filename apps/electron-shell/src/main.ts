@@ -10,10 +10,13 @@ import {
   nativeImage,
   net,
   protocol,
+  safeStorage,
+  screen,
   shell,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,11 +28,13 @@ const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
 const cloudAccountOrigin = "https://accounts.cerul.ai";
 const defaultUpdateRepository = "cerul-ai/cerul-app";
+const apiStartupTimeoutMs = positiveIntegerEnv("CERUL_API_STARTUP_TIMEOUT_MS", 90_000);
+const apiOutputTailBytes = 32 * 1024;
 const contentSecurityPolicy = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "font-src 'self'",
+  "font-src 'self' data:",
   "img-src 'self' app: http://127.0.0.1:7777 data: blob:",
   "media-src 'self' http://127.0.0.1:7777 blob:",
   `connect-src 'self' http://127.0.0.1:7777 ${cloudAccountOrigin}`,
@@ -41,10 +46,12 @@ const contentSecurityPolicy = [
 
 let mainWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
+let menuBarWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let apiProcess: ChildProcessWithoutNullStreams | null = null;
 let ownsApiProcess = false;
 let isQuitting = false;
+let lastApiExit: ApiExitInfo | null = null;
 let mainWindowLoaded = false;
 let pendingDeepLink = firstDeepLinkArg(process.argv);
 let queuedMainRoute: string | null = null;
@@ -55,6 +62,11 @@ let lastFailedJobCount: number | null = null;
 const loginItemCliCommand = firstLoginItemCliCommand(process.argv);
 const stores = new Map<string, Record<string, unknown>>();
 const dirtyStores = new Set<string>();
+const secureTokenStorePath = "secure-tokens.json";
+let oauthCallbackServer: Server | null = null;
+let oauthCallbackPort: number | null = null;
+
+type OAuthProvider = "google" | "github";
 
 type GitHubRelease = {
   tag_name?: string;
@@ -71,6 +83,18 @@ type DesktopUpdateInfo = {
   name?: string;
   prerelease: boolean;
   publishedAt?: string;
+};
+
+type ApiOutputTail = {
+  stdout: string;
+  stderr: string;
+};
+
+type ApiExitInfo = {
+  pid: number | undefined;
+  code: number | null;
+  signal: string | null;
+  elapsedMs: number;
 };
 
 protocol.registerSchemesAsPrivileged([
@@ -140,6 +164,7 @@ app.on("before-quit", () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  stopOAuthCallbackServer();
   stopStatusMonitor();
   stopRustCore();
 });
@@ -341,6 +366,52 @@ function createOverlayWindow() {
   void overlayWindow.loadURL(`${appScheme}://${appHost}/overlay.html`);
 }
 
+function createMenuBarWindow() {
+  if (menuBarWindow) {
+    return menuBarWindow;
+  }
+  const isMac = process.platform === "darwin";
+  menuBarWindow = new BrowserWindow({
+    width: 332,
+    height: 312,
+    title: "Cerul",
+    icon: desktopAppIconPath(),
+    show: false,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    movable: true,
+    hasShadow: true,
+    roundedCorners: true,
+    vibrancy: isMac ? "popover" : undefined,
+    visualEffectState: "active",
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  secureDesktopWindow(menuBarWindow);
+  menuBarWindow.on("blur", () => {
+    menuBarWindow?.hide();
+  });
+  menuBarWindow.on("closed", () => {
+    menuBarWindow = null;
+  });
+  menuBarWindow.webContents.once("did-finish-load", () => {
+    console.log("cerul_electron_menubar_window_loaded");
+  });
+  menuBarWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
+    console.error(`Cerul menu bar window failed to load code=${code} url=${url}: ${description}`);
+  });
+  void menuBarWindow.loadURL(`${appScheme}://${appHost}/menubar.html`);
+  return menuBarWindow;
+}
+
 function secureDesktopWindow(window: BrowserWindow) {
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternalUrl(url)) {
@@ -367,14 +438,52 @@ function setupTray() {
   }
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 }));
   tray.setToolTip("Cerul");
+  tray.on("click", () => toggleMenuBarWindow());
   tray.setContextMenu(
     Menu.buildFromTemplate([
+      { label: "Mini Window", click: () => toggleMenuBarWindow({ forceShow: true }) },
       { label: "Open Cerul", click: () => focusMainWindow() },
       { label: "Search Overlay", click: () => showOverlay() },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
     ]),
   );
+}
+
+function toggleMenuBarWindow(options: { forceShow?: boolean } = {}) {
+  if (!tray) {
+    return;
+  }
+  const window = createMenuBarWindow();
+  if (!options.forceShow && window.isVisible()) {
+    window.hide();
+    return;
+  }
+  positionMenuBarWindow(window);
+  window.show();
+  window.focus();
+}
+
+function positionMenuBarWindow(window: BrowserWindow) {
+  if (!tray) {
+    return;
+  }
+  const trayBounds = tray.getBounds();
+  const windowBounds = window.getBounds();
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(trayBounds.x + trayBounds.width / 2),
+    y: Math.round(trayBounds.y + trayBounds.height / 2),
+  });
+  const workArea = display.workArea;
+  const centeredX = Math.round(trayBounds.x + trayBounds.width / 2 - windowBounds.width / 2);
+  const belowTray = Math.round(trayBounds.y + trayBounds.height + 8);
+  const aboveTray = Math.round(trayBounds.y - windowBounds.height - 8);
+  const x = Math.max(workArea.x + 8, Math.min(centeredX, workArea.x + workArea.width - windowBounds.width - 8));
+  const y =
+    belowTray + windowBounds.height <= workArea.y + workArea.height
+      ? belowTray
+      : Math.max(workArea.y + 8, aboveTray);
+  window.setBounds({ x, y, width: windowBounds.width, height: windowBounds.height });
 }
 
 function startStatusMonitor() {
@@ -582,7 +691,106 @@ function routeDeepLink(url?: string) {
   } else if (parsed.hostname === "settings") {
     const section = parsed.searchParams.get("section");
     openMainRoute(section ? `settings?section=${encodeURIComponent(section)}` : "settings");
+  } else if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
+    const params = new URLSearchParams({ section: "Usage" });
+    for (const key of ["provider", "code", "state", "error"]) {
+      const value = parsed.searchParams.get(key);
+      if (value) {
+        params.set(key, value);
+      }
+    }
+    openMainRoute(`settings?${params.toString()}`);
   }
+}
+
+async function startOAuthLogin(provider: OAuthProvider) {
+  if (provider !== "google" && provider !== "github") {
+    throw new Error("unsupported OAuth provider");
+  }
+  const redirectUri = await ensureOAuthCallbackServer();
+  const startUrl = new URL(`/v1/auth/oauth/${provider}/start`, cloudAccountOrigin);
+  startUrl.searchParams.set("redirect_uri", redirectUri);
+  await shell.openExternal(startUrl.toString());
+}
+
+async function ensureOAuthCallbackServer() {
+  if (oauthCallbackServer && oauthCallbackPort) {
+    return oauthCallbackRedirectUri(oauthCallbackPort);
+  }
+  const server = http.createServer((request, response) => {
+    handleOAuthCallbackRequest(request.url ?? "/", response);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      oauthCallbackServer = null;
+      oauthCallbackPort = null;
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("OAuth callback server did not bind a TCP port"));
+        return;
+      }
+      oauthCallbackServer = server;
+      oauthCallbackPort = address.port;
+      resolve();
+    });
+  });
+  return oauthCallbackRedirectUri(oauthCallbackPort!);
+}
+
+function handleOAuthCallbackRequest(rawUrl: string, response: http.ServerResponse) {
+  let url: URL;
+  try {
+    url = new URL(rawUrl, "http://127.0.0.1");
+  } catch {
+    writeOAuthCallbackResponse(response, 400, "Invalid OAuth callback URL.");
+    return;
+  }
+  if (url.pathname !== "/auth/callback") {
+    writeOAuthCallbackResponse(response, 404, "Not found.");
+    return;
+  }
+  const params = new URLSearchParams({ section: "Usage" });
+  for (const key of ["provider", "code", "state", "error"]) {
+    const value = url.searchParams.get(key);
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  openMainRoute(`settings?${params.toString()}`);
+  focusMainWindow();
+  writeOAuthCallbackResponse(response, 200, "Cerul sign-in is complete. You can return to the app.");
+}
+
+function writeOAuthCallbackResponse(response: http.ServerResponse, statusCode: number, message: string) {
+  response.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(`<!doctype html><meta charset="utf-8"><title>Cerul</title><p>${escapeHtml(message)}</p>`);
+}
+
+function oauthCallbackRedirectUri(port: number) {
+  return `http://127.0.0.1:${port}/auth/callback`;
+}
+
+function stopOAuthCallbackServer() {
+  oauthCallbackServer?.close();
+  oauthCallbackServer = null;
+  oauthCallbackPort = null;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function maybeRunRendererVideoSmoke() {
@@ -727,35 +935,67 @@ async function startRustCore() {
   }
 
   const env = { ...process.env, ...runtimeEnv(), CERUL_ELECTRON: "1" };
+  const outputTail: ApiOutputTail = { stdout: "", stderr: "" };
+  const startedAt = Date.now();
+  lastApiExit = null;
+  let binary: string;
   if (app.isPackaged) {
-    const binary = path.join(process.resourcesPath, "bin", executableName("cerul-api"));
+    binary = path.join(process.resourcesPath, "bin", executableName("cerul-api"));
     if (!fs.existsSync(binary)) {
       throw new Error(`packaged Cerul API binary is missing: ${binary}`);
     }
-    apiProcess = spawn(binary, [], { env, stdio: "pipe" });
+    apiProcess = spawnApiProcess(binary, env);
   } else {
-    const devBinary = path.join(repoRoot(), "target", "debug", executableName("cerul-api"));
-    if (!fs.existsSync(devBinary)) {
-      buildDevApiBinary(devBinary, env);
+    binary = path.join(repoRoot(), "target", "debug", executableName("cerul-api"));
+    if (!fs.existsSync(binary)) {
+      buildDevApiBinary(binary, env);
     }
-    apiProcess = spawn(devBinary, [], { cwd: repoRoot(), env, stdio: "pipe" });
+    apiProcess = spawnApiProcess(binary, env, repoRoot());
   }
 
   ownsApiProcess = true;
-  apiProcess.stdout.on("data", (chunk) => process.stdout.write(`[cerul-api] ${chunk}`));
-  apiProcess.stderr.on("data", (chunk) => process.stderr.write(`[cerul-api] ${chunk}`));
+  const launchedApiProcess = apiProcess;
+  apiProcess.stdout.on("data", (chunk) => {
+    outputTail.stdout = appendOutputTail(outputTail.stdout, chunk, apiOutputTailBytes);
+    process.stdout.write(`[cerul-api] ${chunk}`);
+  });
+  apiProcess.stderr.on("data", (chunk) => {
+    outputTail.stderr = appendOutputTail(outputTail.stderr, chunk, apiOutputTailBytes);
+    process.stderr.write(`[cerul-api] ${chunk}`);
+  });
   apiProcess.on("error", (error) => {
     console.error("failed to start Cerul local API", error);
   });
   apiProcess.on("exit", (code, signal) => {
+    lastApiExit = {
+      pid: launchedApiProcess.pid,
+      code,
+      signal,
+      elapsedMs: Date.now() - startedAt,
+    };
     if (!isQuitting) {
-      console.warn(`Cerul local API exited code=${code} signal=${signal}`);
+      console.warn(
+        `Cerul local API exited pid=${launchedApiProcess.pid ?? "unknown"} code=${code} signal=${signal} elapsed_ms=${lastApiExit.elapsedMs}`,
+      );
     }
     apiProcess = null;
     ownsApiProcess = false;
   });
 
-  await waitForApi(30_000);
+  try {
+    await waitForApi(apiStartupTimeoutMs, () => lastApiExit);
+  } catch (error) {
+    console.error(
+      collectApiStartupDiagnostics({
+        child: launchedApiProcess,
+        binary,
+        startedAt,
+        outputTail,
+        exitInfo: lastApiExit,
+      }),
+    );
+    throw error;
+  }
 }
 
 function stopRustCore() {
@@ -765,6 +1005,137 @@ function stopRustCore() {
   apiProcess.kill("SIGTERM");
   apiProcess = null;
   ownsApiProcess = false;
+}
+
+function spawnApiProcess(binary: string, env: NodeJS.ProcessEnv, cwd?: string) {
+  const options = { cwd, env, stdio: "pipe" as const };
+  const nofileLimit = positiveIntegerValue(env.CERUL_API_NOFILE_LIMIT, 8192);
+  if (
+    process.platform === "darwin" &&
+    env.CERUL_API_RAISE_NOFILE !== "0" &&
+    nofileLimit > 0
+  ) {
+    return spawn(
+      "/bin/zsh",
+      [
+        "-lc",
+        `ulimit -n ${nofileLimit} >/dev/null 2>&1 || true; exec "$0"`,
+        binary,
+      ],
+      options,
+    );
+  }
+  return spawn(binary, [], options);
+}
+
+function appendOutputTail(current: string, chunk: Buffer | string, maxChars: number) {
+  const next = current + (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+  return next.length > maxChars ? next.slice(-maxChars) : next;
+}
+
+function collectApiStartupDiagnostics({
+  child,
+  binary,
+  startedAt,
+  outputTail,
+  exitInfo,
+}: {
+  child: ChildProcessWithoutNullStreams;
+  binary: string;
+  startedAt: number;
+  outputTail: ApiOutputTail;
+  exitInfo: ApiExitInfo | null;
+}) {
+  const pid = child.pid;
+  const lines = [
+    "Cerul API startup diagnostics:",
+    `  health_url=${apiBaseUrl}/health`,
+    `  startup_timeout_ms=${apiStartupTimeoutMs}`,
+    `  pid=${pid ?? "unknown"}`,
+    `  binary=${binary}`,
+    `  elapsed_ms=${Date.now() - startedAt}`,
+    `  exit=${formatApiExit(exitInfo)}`,
+  ];
+
+  if (pid && processAlive(pid)) {
+    lines.push(diagnosticCommand("ps", ["-p", String(pid), "-o", "pid,ppid,stat,etime,rss,command"]));
+    lines.push(diagnosticCommand("lsof", ["-p", String(pid)]));
+    if (process.platform === "darwin" && process.env.CERUL_API_STARTUP_SAMPLE !== "0") {
+      lines.push(sampleProcessDiagnostic(pid));
+    }
+  } else {
+    lines.push("  process_alive=false");
+  }
+
+  lines.push(formatOutputTail("stdout", outputTail.stdout));
+  lines.push(formatOutputTail("stderr", outputTail.stderr));
+  return lines.join("\n");
+}
+
+function formatApiExit(exitInfo: ApiExitInfo | null) {
+  if (!exitInfo) {
+    return "not_observed";
+  }
+  return `pid=${exitInfo.pid ?? "unknown"} code=${exitInfo.code} signal=${exitInfo.signal} elapsed_ms=${exitInfo.elapsedMs}`;
+}
+
+function processAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function diagnosticCommand(command: string, args: string[]) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+    timeout: 3_000,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trimEnd();
+  if (result.error) {
+    return `$ ${command} ${args.join(" ")}\n${result.error.message}`;
+  }
+  return `$ ${command} ${args.join(" ")}\n${output || "<empty>"}`;
+}
+
+function sampleProcessDiagnostic(pid: number) {
+  const samplePath = path.join(os.tmpdir(), `cerul-api-${pid}-${Date.now()}.sample.txt`);
+  const result = spawnSync("sample", [String(pid), "1", "-file", samplePath], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+    timeout: 5_000,
+  });
+  let sample = "";
+  try {
+    sample = fs.readFileSync(samplePath, "utf8");
+  } catch {
+    sample = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  } finally {
+    try {
+      fs.unlinkSync(samplePath);
+    } catch {
+      // Best-effort diagnostic cleanup.
+    }
+  }
+
+  const excerpt = sample
+    .split(/\r?\n/)
+    .slice(0, 120)
+    .join("\n")
+    .trimEnd();
+  return [
+    `$ sample ${pid} 1`,
+    `dyld_start_observed=${sample.includes("_dyld_start")}`,
+    excerpt || "<empty>",
+  ].join("\n");
+}
+
+function formatOutputTail(label: string, text: string) {
+  const trimmed = text.trimEnd();
+  return `--- cerul-api ${label} tail ---\n${trimmed || "<empty>"}`;
 }
 
 function buildDevApiBinary(binary: string, env: NodeJS.ProcessEnv) {
@@ -832,15 +1203,23 @@ function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-async function waitForApi(timeoutMs: number) {
+async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
+    const observedExit = exitInfo?.();
+    if (observedExit) {
+      throw new Error(
+        `Cerul local API exited before becoming healthy at ${apiBaseUrl} (${formatApiExit(observedExit)})`,
+      );
+    }
     if (await apiIsHealthy(750)) {
       return;
     }
     await delay(250);
   }
-  throw new Error(`Cerul local API did not become healthy at ${apiBaseUrl}`);
+  throw new Error(
+    `Cerul local API did not become healthy at ${apiBaseUrl} within ${timeoutMs}ms`,
+  );
 }
 
 async function apiIsHealthy(timeoutMs: number) {
@@ -891,6 +1270,18 @@ function settingString(settings: Record<string, unknown>, key: string, fallback:
 function settingBoolean(settings: Record<string, unknown>, key: string, fallback: boolean) {
   const value = settings[key];
   return typeof value === "boolean" ? value : fallback;
+}
+
+function positiveIntegerEnv(key: string, fallback: number) {
+  return positiveIntegerValue(process.env[key], fallback);
+}
+
+function positiveIntegerValue(value: string | undefined, fallback: number) {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function runtimeEnv() {
@@ -1029,6 +1420,13 @@ function registerIpcHandlers() {
     dirtyStores.add(storePath);
   });
   ipcMain.handle("cerul:store-save", async (_event, storePath: string) => saveStore(storePath));
+  ipcMain.handle("cerul:secure-token-get", async (_event, key: string) => getSecureToken(key));
+  ipcMain.handle("cerul:secure-token-set", async (_event, key: string, value: string | null) => {
+    setSecureToken(key, value);
+  });
+  ipcMain.handle("cerul:oauth-start", async (_event, provider: OAuthProvider) => {
+    await startOAuthLogin(provider);
+  });
 }
 
 async function checkForGitHubReleaseUpdate(): Promise<DesktopUpdateInfo | null> {
@@ -1193,6 +1591,17 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
       return null;
     case "hide_overlay":
       overlayWindow?.hide();
+      return null;
+    case "hide_menubar":
+      menuBarWindow?.hide();
+      return null;
+    case "open_main_window":
+      menuBarWindow?.hide();
+      focusMainWindow();
+      return null;
+    case "show_search_overlay":
+      menuBarWindow?.hide();
+      showOverlay();
       return null;
     case "resize_overlay":
       resizeOverlay(Number(args.height ?? 0));
@@ -1481,6 +1890,62 @@ function saveStore(storePath: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(loadStore(storePath), null, 2));
   dirtyStores.delete(storePath);
+}
+
+function getSecureToken(key: string) {
+  const tokenKey = normalizeSecureTokenKey(key);
+  const store = loadStore(secureTokenStorePath);
+  const record = store[tokenKey];
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+  const encrypted = (record as { scheme?: unknown; value?: unknown }).value;
+  const scheme = (record as { scheme?: unknown }).scheme;
+  if (scheme !== "safeStorage:v1" || typeof encrypted !== "string") {
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return undefined;
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+  } catch {
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return undefined;
+  }
+}
+
+function setSecureToken(key: string, value: string | null) {
+  const tokenKey = normalizeSecureTokenKey(key);
+  const store = loadStore(secureTokenStorePath);
+  if (!value) {
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return;
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn("secure token storage is unavailable; token will not be persisted");
+    delete store[tokenKey];
+    dirtyStores.add(secureTokenStorePath);
+    saveStore(secureTokenStorePath);
+    return;
+  }
+  store[tokenKey] = {
+    scheme: "safeStorage:v1",
+    value: safeStorage.encryptString(value).toString("base64"),
+  };
+  dirtyStores.add(secureTokenStorePath);
+  saveStore(secureTokenStorePath);
+}
+
+function normalizeSecureTokenKey(key: string) {
+  if (!/^[A-Za-z0-9_.-]{1,80}$/.test(key)) {
+    throw new Error("invalid secure token key");
+  }
+  return key;
 }
 
 function delay(ms: number) {

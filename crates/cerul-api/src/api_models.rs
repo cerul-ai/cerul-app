@@ -89,7 +89,18 @@ pub(crate) fn selected_transcriber(paths: &AppPaths) -> anyhow::Result<ApiTransc
     } else {
         configured_model
     };
-    let provider = if is_gemini_audio_model(&model) {
+    let provider = if let Some(provider_id) =
+        crate::setting_string(paths, "asr_provider_id")?.filter(|id| !id.is_empty())
+    {
+        let provider = provider_by_id_for_type(
+            paths,
+            &provider_id,
+            &["openai", "openai-compatible", "gemini"],
+            "ASR",
+        )?;
+        ensure_asr_model_matches_provider(&provider, &model)?;
+        provider
+    } else if is_gemini_audio_model(&model) {
         provider_for_type(paths, "asr_provider_id", &["gemini"], "Gemini Audio ASR")?
     } else {
         provider_for_type(
@@ -149,8 +160,13 @@ pub(crate) fn profiled_embedder(
 }
 
 pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<QueryEmbedding> {
-    if effective_query_inference_mode(paths) == "local" {
-        let profile = cerul_storage::vectors::embedding_profile_for_inference_mode(paths, "local")?;
+    if effective_query_inference_mode(paths)? == "local" {
+        let profile =
+            cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(paths, "local")?;
+        anyhow::ensure!(
+            local_embedding_model_cached(paths)?,
+            "Local embedding model is not prepared yet; using text search fallback"
+        );
         let embedder = local_query_sidecar(paths)?;
         let mut vectors = embedder.embed_texts(&[query.to_string()])?;
         let vector = vectors
@@ -173,18 +189,67 @@ pub(crate) fn embed_query(paths: &AppPaths, query: &str) -> anyhow::Result<Query
     Ok(QueryEmbedding { vector, profile })
 }
 
-fn effective_query_inference_mode(paths: &AppPaths) -> String {
-    let runtime = crate::models::model_runtime_status(paths);
-    match query_inference_mode(paths, &runtime) {
-        Ok(mode) => mode,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "failed to evaluate local runtime readiness for query embedding; using remote"
-            );
-            "remote".to_string()
+fn local_embedding_model_cached(paths: &AppPaths) -> anyhow::Result<bool> {
+    let config = cerul_pipeline::mlx_sidecar::runtime_config(paths)?;
+    let model_path = Path::new(&config.embedding_model);
+    if model_path.exists() {
+        return Ok(true);
+    }
+
+    let repo_cache = config
+        .models_cache
+        .join("huggingface")
+        .join("hub")
+        .join(format!(
+            "models--{}",
+            config.embedding_model.replace('/', "--")
+        ));
+    if contains_incomplete_download(&repo_cache)? {
+        return Ok(false);
+    }
+
+    let snapshots = repo_cache.join("snapshots");
+    if !snapshots.is_dir() {
+        return Ok(false);
+    }
+
+    for entry in std::fs::read_dir(snapshots)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && directory_has_entries(&entry.path())? {
+            return Ok(true);
         }
     }
+    Ok(false)
+}
+
+fn contains_incomplete_download(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if entry.file_name().to_string_lossy().ends_with(".incomplete") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn directory_has_entries(path: &Path) -> anyhow::Result<bool> {
+    Ok(std::fs::read_dir(path)?.next().transpose()?.is_some())
+}
+
+fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
+    let runtime = crate::models::model_runtime_status(paths);
+    query_inference_mode(paths, &runtime)
 }
 
 fn query_inference_mode(
@@ -192,15 +257,23 @@ fn query_inference_mode(
     runtime: &crate::models::ModelRuntimeStatus,
 ) -> anyhow::Result<String> {
     let selected = selected_inference_mode(paths);
-    if selected != "local" {
-        return Ok(selected);
+    if selected == "remote" {
+        return Ok("remote".to_string());
     }
 
     crate::sync_deferred_embedding_rebuild_if_ready(paths, runtime)?;
-    if runtime.local_runtime_ready {
-        Ok("local".to_string())
-    } else {
-        Ok("remote".to_string())
+    match selected.as_str() {
+        "auto" if runtime.local_runtime_ready => Ok("local".to_string()),
+        "auto" => Ok("remote".to_string()),
+        "local" if runtime.local_runtime_ready => Ok("local".to_string()),
+        "local" => anyhow::bail!(
+            "Local-only smart processing is selected, but the local runtime is not ready: {}",
+            runtime
+                .local_runtime_error
+                .clone()
+                .unwrap_or_else(|| "local runtime unavailable".to_string())
+        ),
+        _ => Ok("remote".to_string()),
     }
 }
 
@@ -594,6 +667,50 @@ fn provider_for_type(
         })
 }
 
+fn provider_by_id_for_type(
+    paths: &AppPaths,
+    provider_id: &str,
+    allowed_types: &[&str],
+    capability: &str,
+) -> anyhow::Result<cerul_storage::providers::Provider> {
+    let provider = cerul_storage::providers::get_provider(paths, provider_id)?
+        .ok_or_else(|| anyhow::anyhow!("{capability} provider {provider_id} was not found"))?;
+    anyhow::ensure!(
+        allowed_types.contains(&provider.provider_type.as_str()),
+        "{capability} provider {} has unsupported type {}; expected one of {}",
+        provider.label,
+        provider.provider_type,
+        allowed_types.join(", ")
+    );
+    Ok(provider)
+}
+
+fn ensure_asr_model_matches_provider(
+    provider: &cerul_storage::providers::Provider,
+    model: &str,
+) -> anyhow::Result<()> {
+    let gemini_model = is_gemini_audio_model(model);
+    match provider.provider_type.as_str() {
+        "gemini" => anyhow::ensure!(
+            gemini_model,
+            "ASR provider {} is Gemini but selected model {} is not a Gemini audio model",
+            provider.label,
+            model
+        ),
+        "openai" => anyhow::ensure!(
+            !gemini_model,
+            "ASR provider {} is OpenAI but selected model {} requires a Gemini provider",
+            provider.label,
+            model
+        ),
+        // OpenAI-compatible gateways may intentionally expose provider-prefixed
+        // model ids behind the OpenAI transcription protocol.
+        "openai-compatible" => {}
+        _ => {}
+    }
+    Ok(())
+}
+
 fn missing_key_error(label: &str, capability: &str) -> anyhow::Error {
     anyhow::anyhow!("{capability} provider {label} has no API key configured")
 }
@@ -654,8 +771,8 @@ fn selected_inference_mode(paths: &AppPaths) -> String {
         .ok()
         .flatten()
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| value == "local")
-        .unwrap_or_else(|| "remote".to_string())
+        .filter(|value| value == "remote" || value == "local" || value == "auto")
+        .unwrap_or_else(|| "auto".to_string())
 }
 
 fn estimate_text_tokens(text: &str) -> u64 {
@@ -1016,7 +1133,7 @@ fn image_mime_type(path: &Path) -> &'static str {
 }
 
 fn is_gemini_audio_model(model: &str) -> bool {
-    model.starts_with("gemini-")
+    model.trim().to_ascii_lowercase().starts_with("gemini-")
 }
 
 fn env_setting(name: &str) -> Option<String> {
@@ -1078,6 +1195,19 @@ mod tests {
         assert!(supports_openai_segment_timestamps("whisper-1"));
         assert!(supports_openai_segment_timestamps("whisper-large-v3-turbo"));
         assert!(!supports_openai_segment_timestamps("gpt-4o-transcribe"));
+    }
+
+    #[test]
+    fn asr_provider_model_validation_matches_provider_protocol() {
+        let openai = provider("openai");
+        let gemini = provider("gemini");
+        let gateway = provider("openai-compatible");
+
+        assert!(ensure_asr_model_matches_provider(&openai, "whisper-1").is_ok());
+        assert!(ensure_asr_model_matches_provider(&openai, "gemini-2.5-flash").is_err());
+        assert!(ensure_asr_model_matches_provider(&gemini, "gemini-2.5-flash").is_ok());
+        assert!(ensure_asr_model_matches_provider(&gemini, "whisper-1").is_err());
+        assert!(ensure_asr_model_matches_provider(&gateway, "gemini-2.5-flash").is_ok());
     }
 
     #[test]
@@ -1204,14 +1334,14 @@ mod tests {
     }
 
     #[test]
-    fn query_embedding_uses_remote_until_local_runtime_ready() {
+    fn query_embedding_auto_uses_remote_until_local_runtime_ready() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+        set_setting(&paths, "inference_mode", serde_json::json!("auto"));
         set_setting(
             &paths,
             "embedding_profile_rebuild_deferred_mode",
-            serde_json::json!("local"),
+            serde_json::json!("auto"),
         );
 
         let mode = query_inference_mode(&paths, &local_runtime_status(false)).unwrap();
@@ -1219,8 +1349,34 @@ mod tests {
         assert_eq!(mode, "remote");
         assert_eq!(
             crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
-            Some("local".to_string())
+            Some("auto".to_string())
         );
+    }
+
+    fn provider(provider_type: &str) -> cerul_storage::providers::Provider {
+        cerul_storage::providers::Provider {
+            id: format!("provider-{provider_type}"),
+            provider_type: provider_type.to_string(),
+            label: provider_type.to_string(),
+            base_url: None,
+            status: cerul_storage::providers::PROVIDER_STATUS_READY.to_string(),
+            last_error: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn query_embedding_local_only_errors_until_local_runtime_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+
+        let error = query_inference_mode(&paths, &local_runtime_status(false)).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Local-only smart processing is selected"));
     }
 
     #[test]
@@ -1232,6 +1388,37 @@ mod tests {
         let mode = query_inference_mode(&paths, &local_runtime_status(true)).unwrap();
 
         assert_eq!(mode, "local");
+    }
+
+    #[test]
+    fn local_embedding_model_cache_requires_complete_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+
+        assert!(!local_embedding_model_cached(&paths).unwrap());
+
+        let repo_cache = paths
+            .models
+            .join("mlx")
+            .join("huggingface")
+            .join("hub")
+            .join("models--mlx-community--Qwen3-VL-Embedding-2B-6bit");
+        let snapshot = repo_cache.join("snapshots").join("test-snapshot");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        std::fs::write(snapshot.join("config.json"), "{}").unwrap();
+        std::fs::create_dir_all(repo_cache.join("blobs")).unwrap();
+
+        assert!(local_embedding_model_cached(&paths).unwrap());
+
+        std::fs::write(
+            repo_cache
+                .join("blobs")
+                .join("model.safetensors.incomplete"),
+            "",
+        )
+        .unwrap();
+
+        assert!(!local_embedding_model_cached(&paths).unwrap());
     }
 
     #[test]
