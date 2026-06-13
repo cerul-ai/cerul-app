@@ -475,8 +475,14 @@ export function videoSegmentUrl(chunkId: string) {
   return `${API_BASE_URL}/chunks/${encodeURIComponent(chunkId)}/video-segment`;
 }
 
-export function videoClipUrl(chunkId: string, paddingSec = 2) {
-  const params = new URLSearchParams({ padding_sec: String(paddingSec) });
+export function videoClipUrl(
+  chunkId: string,
+  opts: { beforeSec?: number; afterSec?: number; paddingSec?: number } = {},
+) {
+  const params = new URLSearchParams();
+  if (opts.beforeSec !== undefined) params.set("before_sec", String(opts.beforeSec));
+  if (opts.afterSec !== undefined) params.set("after_sec", String(opts.afterSec));
+  params.set("padding_sec", String(opts.paddingSec ?? 2));
   return `${API_BASE_URL}/chunks/${encodeURIComponent(chunkId)}/video-clip?${params.toString()}`;
 }
 

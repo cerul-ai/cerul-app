@@ -52,7 +52,6 @@ import {
   Plus,
   Podcast,
   RefreshCcw,
-  Scissors,
   ReceiptText,
   Search,
   Settings,
@@ -106,6 +105,11 @@ import {
 } from "./components/transcript";
 import { DetailIssuePanel } from "./components/detail-issue-panel";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "./components/player";
+import {
+  ClipExportButton,
+  resolveClipTarget as resolveClipTarget_,
+  type ClipTarget,
+} from "./components/clip-export-popover";
 import {
   ItemCard,
   ItemModalityIcon,
@@ -2633,23 +2637,6 @@ function downloadTextFile(filename: string, content: string, mime: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-// Download the cached video clip for a chunk. Shared by both detail screens;
-// each owns its own export status state.
-async function downloadVideoClip(chunkId: string, timestamp: string, t: TFunction): Promise<void> {
-  const response = await fetch(api.videoClipUrl(chunkId));
-  if (!response.ok) {
-    throw new Error(t("detail.action.exportFailed", { status: response.status }));
-  }
-  const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = `cerul-clip-${timestamp.replace(/:/g, "-")}.mp4`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
-}
 
 // Overflow menu in the detail header: whole-transcript exports plus the
 // lower-frequency maintenance actions (re-index, delete). Primary actions
@@ -2943,7 +2930,6 @@ function ResultDetail({
     status: "idle" | "locating" | "reindexing" | "deleting" | "queued" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
-  const [clipExportStatus, setClipExportStatus] = useState<"idle" | "exporting" | "done">("idle");
   const [readingMode, setReadingMode] = useState(false);
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
@@ -2959,7 +2945,19 @@ function ResultDetail({
     itemAction.status === "locating" ||
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting";
-  const canExportClip = item.contentType === "video" && Boolean(mediaState.chunkId);
+  // Resolve the chunk to clip from the LIVE playhead at the moment the export
+  // popover opens — not the stale currentTimestamp (which only moves on
+  // explicit seeks). Fixes clips/filenames always anchoring at 0:00.
+  function resolveClipTarget(): ClipTarget | null {
+    const video = videoRef.current;
+    // Use the live playhead once the video has actually moved; before that,
+    // fall back to the timestamp the screen opened at.
+    const liveSec =
+      video && Number.isFinite(video.currentTime) && video.currentTime > 0.1
+        ? video.currentTime
+        : parseTimestampSeconds(currentTimestamp);
+    return resolveClipTarget_(transcriptLines, liveSec);
+  }
   // Real sibling search hits for this item (passed down from the results
   // list). The previous implementation showed arbitrary transcript lines
   // labelled as "other matches".
@@ -2991,7 +2989,6 @@ function ResultDetail({
     setCurrentTimestamp(startTimestamp);
     setIsPlaying(true);
     setItemAction({ status: "idle", message: null });
-    setClipExportStatus("idle");
   }, [item.id, startTimestamp]);
 
   useEffect(() => {
@@ -3178,7 +3175,6 @@ function ResultDetail({
 
   function seekTo(timestamp: string) {
     setCurrentTimestamp(timestamp);
-    setClipExportStatus("idle");
     setIsPlaying(true);
     const targetSeconds = parseTimestampSeconds(timestamp);
     const nearestLine = transcriptLines
@@ -3190,34 +3186,6 @@ function ResultDetail({
       )[0];
     if (nearestLine) {
       setMediaState((current) => ({ ...current, chunkId: nearestLine.id }));
-    }
-  }
-
-  async function exportCurrentClip() {
-    if (!canExportClip || !mediaState.chunkId) {
-      return;
-    }
-    setClipExportStatus("exporting");
-    setItemAction({ status: "idle", message: null });
-    try {
-      const response = await fetch(api.videoClipUrl(mediaState.chunkId));
-      if (!response.ok) {
-        throw new Error(t("detail.action.exportFailed", { status: response.status }));
-      }
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = `cerul-clip-${currentTimestamp.replace(/:/g, "-")}.mp4`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
-      setClipExportStatus("done");
-      setItemAction({ status: "idle", message: t("detail.action.clipExported") });
-    } catch (error) {
-      setClipExportStatus("idle");
-      setItemAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -3331,23 +3299,11 @@ function ResultDetail({
               {item.originalUrl ? <ExternalLink size={15} /> : <Folder size={15} />}
               <span>{item.originalUrl ? t("detail.source.openOriginal") : t("detail.source.reveal")}</span>
             </button>
-            {item.contentType === "video" ? (
-              <button
-                className="btn btn-secondary sm"
-                type="button"
-                disabled={!canExportClip || itemBusy || clipExportStatus === "exporting"}
-                onClick={exportCurrentClip}
-              >
-                {clipExportStatus === "exporting" ? <Loader2 size={15} /> : <Scissors size={15} />}
-                <span>
-                  {clipExportStatus === "exporting"
-                    ? t("detail.action.exportingClip")
-                    : clipExportStatus === "done"
-                      ? t("detail.action.clipExported")
-                      : t("detail.action.exportClip")}
-                </span>
-              </button>
-            ) : null}
+            <ClipExportButton
+              contentType={item.contentType}
+              disabled={itemBusy}
+              resolveTarget={resolveClipTarget}
+            />
             <DetailActionsMenu
               onExportMarkdown={
                 transcriptLines.length > 0
@@ -4489,29 +4445,23 @@ function ItemDetail({
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
 
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
-  const [clipStatus, setClipStatus] = useState<"idle" | "exporting" | "done" | "error">("idle");
   const itemBusy =
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting" ||
     itemAction.status === "locating";
   const timestampLink = timestampDeepLink(item.id, currentTimestamp);
-  // Clip the chunk nearest the current playhead, not just the thumbnail chunk.
-  const clipChunkId = useMemo(() => {
-    const target = parseTimestampSeconds(currentTimestamp);
-    if (!Number.isFinite(target) || transcriptLines.length === 0) {
-      return playableChunkId;
-    }
-    return (
-      [...transcriptLines]
-        .filter((line) => Number.isFinite(parseTimestampSeconds(line.time)))
-        .sort(
-          (left, right) =>
-            Math.abs(parseTimestampSeconds(left.time) - target) -
-            Math.abs(parseTimestampSeconds(right.time) - target),
-        )[0]?.id ?? playableChunkId
-    );
-  }, [currentTimestamp, transcriptLines, playableChunkId]);
-  const canExportClip = item.contentType === "video" && Boolean(clipChunkId);
+  // Resolve the chunk to clip from the LIVE playhead when the export popover
+  // opens (falls back to currentTimestamp / the thumbnail chunk).
+  function resolveClipTarget(): ClipTarget | null {
+    const video = videoRef.current;
+    // Use the live playhead once the video has actually moved; before that,
+    // fall back to the timestamp the screen opened at.
+    const liveSec =
+      video && Number.isFinite(video.currentTime) && video.currentTime > 0.1
+        ? video.currentTime
+        : parseTimestampSeconds(currentTimestamp);
+    return resolveClipTarget_(transcriptLines, liveSec);
+  }
 
   useEffect(() => {
     if (copyStatus === "idle") {
@@ -4740,20 +4690,6 @@ function ItemDetail({
     }
   }
 
-  async function exportCurrentClip() {
-    if (!canExportClip || !clipChunkId) {
-      return;
-    }
-    setClipStatus("exporting");
-    setItemAction({ status: "idle", message: null });
-    try {
-      await downloadVideoClip(clipChunkId, currentTimestamp, t);
-      setClipStatus("done");
-    } catch (error) {
-      setClipStatus("idle");
-      setItemAction({ status: "error", message: errorMessage(error) });
-    }
-  }
 
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
   // full source video with Range support, so the loaded src is the whole file —
@@ -4820,23 +4756,11 @@ function ItemDetail({
               {item.originalUrl ? <ExternalLink size={15} /> : <Folder size={15} />}
               <span>{item.originalUrl ? t("detail.source.openOriginal") : t("detail.source.reveal")}</span>
             </button>
-            {item.contentType === "video" ? (
-              <button
-                className="btn btn-secondary sm"
-                type="button"
-                disabled={!canExportClip || itemBusy || clipStatus === "exporting"}
-                onClick={() => void exportCurrentClip()}
-              >
-                {clipStatus === "exporting" ? <Loader2 size={15} /> : <Scissors size={15} />}
-                <span>
-                  {clipStatus === "exporting"
-                    ? t("detail.action.exportingClip")
-                    : clipStatus === "done"
-                      ? t("detail.action.clipExported")
-                      : t("detail.action.exportClip")}
-                </span>
-              </button>
-            ) : null}
+            <ClipExportButton
+              contentType={item.contentType}
+              disabled={itemBusy}
+              resolveTarget={resolveClipTarget}
+            />
             <DetailActionsMenu
               onExportMarkdown={
                 transcriptLines.length > 0

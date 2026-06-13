@@ -95,6 +95,11 @@ export type TranscriptLine = {
   time: string;
   text: string;
   active?: boolean;
+  /** Exact chunk bounds (seconds) when known — drives the clip-export trim
+   * window and filename. Optional because fixtures/legacy paths only carry
+   * the formatted `time`. */
+  startSec?: number | null;
+  endSec?: number | null;
 };
 
 export type Item = {

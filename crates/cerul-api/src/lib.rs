@@ -117,7 +117,13 @@ pub struct ChunkRecord {
 
 #[derive(Debug, Deserialize)]
 struct VideoClipQuery {
+    /// Symmetric padding (legacy / fallback). Used for both sides when
+    /// before_sec/after_sec are absent.
     padding_sec: Option<f64>,
+    /// Seconds to extend before the chunk start (overrides padding_sec).
+    before_sec: Option<f64>,
+    /// Seconds to extend after the chunk end (overrides padding_sec).
+    after_sec: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -1357,10 +1363,12 @@ async fn get_chunk_video_clip(
     let Some(source) = video_clip_source_for_chunk(&state.paths, &id)? else {
         return Ok(not_found("video clip not found"));
     };
+    let fallback = query.padding_sec.unwrap_or(2.0);
     let (start_sec, duration_sec) = clip_window(
         source.start_sec,
         source.end_sec,
-        query.padding_sec.unwrap_or(2.0),
+        query.before_sec.unwrap_or(fallback),
+        query.after_sec.unwrap_or(fallback),
     );
     let clip_path = video_clip_cache_path(&state.paths, &id, start_sec, duration_sec);
 
@@ -2604,19 +2612,23 @@ fn video_clip_source_for_chunk(
     }
 }
 
-fn clip_window(start_sec: Option<f64>, end_sec: Option<f64>, padding_sec: f64) -> (f64, f64) {
+fn clip_window(
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    before_sec: f64,
+    after_sec: f64,
+) -> (f64, f64) {
     let start = start_sec.unwrap_or(0.0).max(0.0);
     let fallback_end = start + 12.0;
     let end = end_sec
         .filter(|end| end.is_finite() && *end > start)
         .unwrap_or(fallback_end);
-    let padding = if padding_sec.is_finite() {
-        padding_sec.clamp(0.0, 10.0)
-    } else {
-        2.0
-    };
-    let clipped_start = (start - padding).max(0.0);
-    let duration = (end + padding - clipped_start).clamp(1.0, 120.0);
+    // Per-side extension capped at 30s; total duration capped at 120s so a
+    // stray request can't ask ffmpeg for a giant clip.
+    let before = if before_sec.is_finite() { before_sec.clamp(0.0, 30.0) } else { 2.0 };
+    let after = if after_sec.is_finite() { after_sec.clamp(0.0, 30.0) } else { 2.0 };
+    let clipped_start = (start - before).max(0.0);
+    let duration = (end + after - clipped_start).clamp(1.0, 120.0);
     (clipped_start, duration)
 }
 
@@ -4368,10 +4380,16 @@ mod tests {
 
     #[test]
     fn clip_window_adds_padding_and_caps_duration() {
-        assert_eq!(clip_window(Some(10.0), Some(20.0), 2.0), (8.0, 14.0));
-        assert_eq!(clip_window(Some(1.0), Some(3.0), 5.0), (0.0, 8.0));
-        assert_eq!(clip_window(Some(0.0), None, 2.0), (0.0, 14.0));
-        assert_eq!(clip_window(Some(10.0), Some(400.0), 10.0), (0.0, 120.0));
+        // Symmetric (before == after) behaves like the old padding.
+        assert_eq!(clip_window(Some(10.0), Some(20.0), 2.0, 2.0), (8.0, 14.0));
+        assert_eq!(clip_window(Some(1.0), Some(3.0), 5.0, 5.0), (0.0, 8.0));
+        assert_eq!(clip_window(Some(0.0), None, 2.0, 2.0), (0.0, 14.0));
+        // Total duration capped at 120s.
+        assert_eq!(clip_window(Some(10.0), Some(400.0), 10.0, 10.0), (0.0, 120.0));
+        // Asymmetric before/after.
+        assert_eq!(clip_window(Some(60.0), Some(70.0), 10.0, 4.0), (50.0, 24.0));
+        // Per-side extension capped at 30s each.
+        assert_eq!(clip_window(Some(100.0), Some(110.0), 50.0, 50.0), (70.0, 70.0));
     }
 
     #[test]

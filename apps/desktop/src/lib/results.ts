@@ -162,6 +162,8 @@ export function mapChunkRecords(records: api.ChunkRecord[]): TranscriptLine[] {
         id: record.id,
         time: formatTimestamp(record.start_sec),
         text: record.text,
+        startSec: record.start_sec,
+        endSec: record.end_sec,
       },
     ];
   });
