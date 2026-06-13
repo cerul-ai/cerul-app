@@ -255,8 +255,13 @@ async fn run_clip_command(
     if copy_streams {
         command.args(["-c", "copy", "-avoid_negative_ts", "make_zero"]);
     } else {
+        // Re-encode fallback uses macOS's hardware H.264 encoder (VideoToolbox)
+        // instead of libx264: the bundled ffmpeg is an LGPL build with no x264
+        // (GPL), and VideoToolbox needs no licence and is faster. `-q:v` is its
+        // constant-quality control (resolution-independent), ~equivalent to the
+        // old x264 CRF 23.
         command.args([
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac",
+            "-c:v", "h264_videotoolbox", "-q:v", "60", "-c:a", "aac",
         ]);
     }
 
