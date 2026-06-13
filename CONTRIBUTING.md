@@ -1,7 +1,8 @@
 # Contributing to Cerul App
 
-Cerul App is Apache-2.0 licensed and currently in alpha. Contributions are
-welcome, but release-sensitive areas need extra care.
+Cerul App is licensed under the FSL-1.1-ALv2 (Functional Source License, which
+converts to Apache-2.0 two years after each release) and currently in alpha.
+Contributions are welcome, but release-sensitive areas need extra care.
 
 ## Development
 
@@ -50,7 +51,7 @@ service implementation stays private.
 
 ## Licensing
 
-New code should be compatible with Apache-2.0. New bundled binaries, model
+New code should be compatible with the FSL-1.1-ALv2 (and its Apache-2.0 future grant). New bundled binaries, model
 weights, Python wheels, or generated assets must be reviewed before release and
 documented in `THIRD_PARTY_LICENSES.md`.
 

@@ -18,7 +18,7 @@
   </p>
 
   <p>
-    <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-3b82f6?style=flat-square" /></a>
+    <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
     <img alt="Status" src="https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square" />
   </p>
@@ -167,4 +167,4 @@ scripts/smoke.sh
 
 ## 许可证
 
-[Apache 2.0](LICENSE) © Cerul.
+[FSL-1.1-ALv2](LICENSE) © Cerul. 源码可得;每个版本在发布两年后自动转为 Apache-2.0。

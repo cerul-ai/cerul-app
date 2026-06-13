@@ -1,6 +1,6 @@
 # Trademark Policy
 
-The Apache-2.0 license for Cerul App source code does not grant trademark
+The FSL-1.1-ALv2 license for Cerul App source code does not grant trademark
 rights.
 
 The following are Cerul AI marks:
