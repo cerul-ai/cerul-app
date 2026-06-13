@@ -63,6 +63,8 @@ export function CerulPlayer({
   const [hover, setHover] = useState<{ left: number; marker: PlayerMarker } | null>(null);
   // Real video aspect (w/h), once known; null → fall back to the CSS 16:9.
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
+  // Bumped on window resize so the stage size recomputes against the column.
+  const [resizeTick, setResizeTick] = useState(0);
 
   // Mirror the <video> element's state into React via its media events.
   useEffect(() => {
@@ -118,6 +120,12 @@ export function CerulPlayer({
       video.removeEventListener("volumechange", syncVolume);
     };
   }, [videoRef, src, onPlay, onPause]);
+
+  useEffect(() => {
+    const onResize = () => setResizeTick((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const pct = duration > 0 ? (time / duration) * 100 : 0;
 
@@ -307,18 +315,30 @@ export function CerulPlayer({
   const showMarkers = duration > 0 && markers.length > 0;
   const isMuted = muted || volume === 0;
 
-  // Landscape/square fills the column width; portrait is sized by height and
-  // centered so it doesn't become a thin strip in a wide box. Until the real
-  // ratio is known we keep the CSS 16:9 default.
-  const stageStyle: React.CSSProperties | undefined =
-    videoAspect === null
-      ? undefined
-      : videoAspect >= 1
-        ? { aspectRatio: String(videoAspect) }
-        : { aspectRatio: String(videoAspect), width: "auto", height: "min(70vh, 720px)", marginInline: "auto" };
+  // Adapt the whole player to the real video shape. The stage uses
+  // aspect-ratio (width-driven), so for a tall video we must bound the
+  // *container* width — otherwise the stage fills the column and the video
+  // becomes a thin strip while the controls bar stays full-width (mismatched).
+  // Landscape fills the column; portrait/tall caps by height and centres the
+  // whole player (stage + controls stay aligned).
+  const { cplayerStyle, stageStyle } = useMemo<{
+    cplayerStyle?: React.CSSProperties;
+    stageStyle?: React.CSSProperties;
+  }>(() => {
+    if (videoAspect === null) return {};
+    const stageStyle = { aspectRatio: String(videoAspect) };
+    const availW = containerRef.current?.parentElement?.clientWidth ?? 0;
+    const maxH = Math.min((typeof window !== "undefined" ? window.innerHeight : 900) * 0.7, 720);
+    if (availW <= 0 || availW / videoAspect <= maxH) {
+      return { stageStyle }; // fills the column
+    }
+    const width = Math.round(maxH * videoAspect);
+    return { cplayerStyle: { width: `${width}px`, marginInline: "auto" }, stageStyle };
+    // resizeTick forces a recompute on window resize / metadata load.
+  }, [videoAspect, resizeTick]);
 
   return (
-    <div className="cplayer" ref={containerRef}>
+    <div className="cplayer" ref={containerRef} style={cplayerStyle}>
       <div className="cplayer-stage" onClick={togglePlay} style={stageStyle}>
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} className="cplayer-video" playsInline src={src} aria-label={ariaLabel} />
