@@ -89,7 +89,7 @@ pub async fn search_fts_only(
     paths: &AppPaths,
     req: SearchRequest,
 ) -> anyhow::Result<Vec<SearchResult>> {
-    let limit = req.limit.max(1);
+    let limit = req.limit.clamp(1, 50);
     let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
     let results = hydrate(paths, &hits)?;
     Ok(dedupe_results(results, limit))
@@ -126,7 +126,7 @@ pub async fn search_with_vectors_for_profile(
         profile.output_dimension
     );
 
-    let limit = req.limit.max(1);
+    let limit = req.limit.clamp(1, 50);
     let retrieval_limit = retrieval_limit(limit);
     let collections = cerul_storage::vectors::collection_names(paths, profile);
     let (bm25_hits, text_hits, image_hits) = tokio::try_join!(

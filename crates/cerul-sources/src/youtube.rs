@@ -99,14 +99,12 @@ impl YouTube {
         phase: &str,
     ) -> anyhow::Result<std::process::Output> {
         command.kill_on_drop(true);
-        let output = match self.command_timeout {
-            Some(timeout) => tokio::time::timeout(timeout, command.output())
-                .await
-                .with_context(|| {
-                    format!("yt-dlp {phase} timed out after {}s", timeout.as_secs())
-                })?,
-            None => command.output().await,
-        };
+        let timeout = self
+            .command_timeout
+            .unwrap_or_else(|| crate::default_ytdlp_timeout(phase));
+        let output = tokio::time::timeout(timeout, command.output())
+            .await
+            .with_context(|| format!("yt-dlp {phase} timed out after {}s", timeout.as_secs()))?;
 
         output.with_context(|| format!("failed to run {}", self.ytdlp_path.display()))
     }

@@ -10,6 +10,17 @@ pub mod rss_podcast;
 pub mod web_video;
 pub mod youtube;
 
+/// Default wall-clock limits for yt-dlp subprocesses. Without a ceiling a
+/// hung yt-dlp (bot checks, stalled network) pins the calling HTTP request
+/// or indexing job forever. Explicit `timeout_sec` config still wins.
+pub(crate) fn default_ytdlp_timeout(phase: &str) -> std::time::Duration {
+    if phase.contains("discovery") {
+        std::time::Duration::from_secs(120)
+    } else {
+        std::time::Duration::from_secs(3600)
+    }
+}
+
 pub const REGISTERED_PLUGIN_TYPES: &[&str] = &[
     "folder_video",
     "folder_audio",

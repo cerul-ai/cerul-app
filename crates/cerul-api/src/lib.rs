@@ -640,8 +640,11 @@ async fn openapi_json() -> Json<Value> {
 
 async fn search(
     State(state): State<ApiState>,
-    Json(req): Json<cerul_search::SearchRequest>,
+    Json(mut req): Json<cerul_search::SearchRequest>,
 ) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
+    // The limit fans out 4x into vector + FTS retrieval and pre-allocates
+    // buffers; an unclamped client value is a one-request memory DoS.
+    req.limit = req.limit.clamp(1, 50);
     Ok(Json(search_records(&state.paths, req).await?))
 }
 
@@ -1340,6 +1343,7 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
         ORDER BY COALESCE(started_at, 0) DESC, id ASC
         "#,
     )?;
+    let mut usage_by_job = cerul_storage::usage_totals_by_job(&state.paths).unwrap_or_default();
     let rows = stmt.query_map([], |row| {
         let job_id: String = row.get(0)?;
         let job_type: String = row.get(2)?;
@@ -1355,14 +1359,18 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
             progress: row.get(7)?,
             stage: row.get(8)?,
             stage_message: row.get(9)?,
-            usage: cerul_storage::usage_totals_for_job(&state.paths, &job_id).unwrap_or_default(),
+            usage: cerul_storage::UsageTotals::default(),
             error_info: error
                 .as_deref()
                 .and_then(|message| classify_job_error(&job_type, message)),
         })
     })?;
 
-    Ok(Json(rows.collect::<Result<Vec<_>, _>>()?))
+    let mut jobs = rows.collect::<Result<Vec<_>, _>>()?;
+    for job in &mut jobs {
+        job.usage = usage_by_job.remove(&job.id).unwrap_or_default();
+    }
+    Ok(Json(jobs))
 }
 
 async fn usage_summary(
@@ -2416,8 +2424,11 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
 }
 
 fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
+    // Single GROUP BY query; per-item lookups opened one SQLite connection
+    // per row and made GET /items O(n) connections.
+    let mut totals = cerul_storage::usage_totals_by_item(paths).unwrap_or_default();
     for item in items {
-        item.usage = cerul_storage::usage_totals_for_item(paths, &item.id).unwrap_or_default();
+        item.usage = totals.remove(&item.id).unwrap_or_default();
     }
 }
 

@@ -307,14 +307,12 @@ impl WebVideo {
         phase: &str,
     ) -> anyhow::Result<std::process::Output> {
         command.kill_on_drop(true);
-        let output = match self.command_timeout {
-            Some(timeout) => tokio::time::timeout(timeout, command.output())
-                .await
-                .with_context(|| {
-                    format!("yt-dlp {phase} timed out after {}s", timeout.as_secs())
-                })?,
-            None => command.output().await,
-        };
+        let timeout = self
+            .command_timeout
+            .unwrap_or_else(|| crate::default_ytdlp_timeout(phase));
+        let output = tokio::time::timeout(timeout, command.output())
+            .await
+            .with_context(|| format!("yt-dlp {phase} timed out after {}s", timeout.as_secs()))?;
 
         output.with_context(|| format!("failed to run {}", self.ytdlp_path.display()))
     }
@@ -339,13 +337,13 @@ impl WebVideo {
             tokio::spawn(async move { collect_output(stderr, stderr_progress).await });
 
         let wait = child.wait();
-        let status = match self.command_timeout {
-            Some(timeout) => tokio::time::timeout(timeout, wait).await.with_context(|| {
-                format!("yt-dlp {phase} timed out after {}s", timeout.as_secs())
-            })?,
-            None => wait.await,
-        }
-        .with_context(|| format!("failed to wait for {}", self.ytdlp_path.display()))?;
+        let timeout = self
+            .command_timeout
+            .unwrap_or_else(|| crate::default_ytdlp_timeout(phase));
+        let status = tokio::time::timeout(timeout, wait)
+            .await
+            .with_context(|| format!("yt-dlp {phase} timed out after {}s", timeout.as_secs()))?
+            .with_context(|| format!("failed to wait for {}", self.ytdlp_path.display()))?;
 
         stdout_task
             .await
