@@ -33,5 +33,7 @@ export function sortLibraryItems(
   if (sortKey === "title") {
     return a.title.localeCompare(b.title);
   }
-  return 0;
+  // "recent": newest first by index time. Returning 0 made the default sort
+  // a no-op that depended on whatever order the API happened to return.
+  return (b.indexedAtEpoch ?? 0) - (a.indexedAtEpoch ?? 0);
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import * as api from "./lib/api";
+import { classifyWebVideoUrl } from "./lib/validation";
 import { cleanMediaTitle, compactPathParent, errorMessage } from "./lib/formatters";
 import { useI18n } from "./lib/i18n";
 import type { TFunction } from "./lib/i18n";
@@ -363,9 +364,16 @@ export function OverlayApp() {
     }
     setUrlQueue({ status: "queuing" });
     try {
-      const isYoutube = /(?:youtube\.com|youtu\.be)/i.test(url);
-      if (isYoutube) {
-        await api.addSource("youtube", { url, max_videos: 50 });
+      // Same classification as the Add-source dialog: a pasted single video
+      // used to be queued as a 50-video channel fetch.
+      const classified = classifyWebVideoUrl(url, t);
+      if (classified.ok) {
+        await api.addSource("web_video", {
+          url: classified.url,
+          platform: classified.platform,
+          source_kind: classified.sourceKind,
+          max_videos: classified.sourceKind === "author" ? 0 : 1,
+        });
       } else {
         await api.addSource("rss_podcast", { url, max_episodes: 50 });
       }

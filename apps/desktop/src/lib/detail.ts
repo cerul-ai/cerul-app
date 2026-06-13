@@ -9,7 +9,3 @@ export function timestampDeepLink(itemId: string, timestamp: string) {
 export function canOpenOriginalSource(item: Item) {
   return Boolean(item.originalUrl || item.rawPath);
 }
-
-export function originalSourceLabel(item: Item) {
-  return item.originalUrl ? "Open in original source" : "Show in Finder";
-}

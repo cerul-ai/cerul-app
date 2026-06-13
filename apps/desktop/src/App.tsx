@@ -941,19 +941,6 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
   return "Models";
 }
 
-function viewChromeLabel(view: View, settingsSection: string) {
-  if (view === "result-detail" || view === "item-detail") {
-    return "Item";
-  }
-  if (view === "settings") {
-    return `Settings · ${settingsSection}`;
-  }
-  if (view === "onboarding") {
-    return "Welcome";
-  }
-  return view[0].toUpperCase() + view.slice(1);
-}
-
 function visualFixtureModeEnabled() {
   const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
   const params = new URLSearchParams(queryString);
@@ -1170,6 +1157,18 @@ function AppWorkspace() {
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        // Don't stack a new dialog on top of an open modal or steal the
+        // shortcut while the user is typing in a field.
+        const target = event.target;
+        const inEditable =
+          target instanceof HTMLElement &&
+          (target.isContentEditable ||
+            target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.tagName === "SELECT");
+        if (hasOpenModalSurface() || inEditable) {
+          return;
+        }
         event.preventDefault();
         setShowAddSource(true);
       }
@@ -3762,6 +3761,16 @@ function MomentsScreen({
   const [message, setMessage] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
+  // Same 1.6s reset as the detail view; the button used to stay "Copied"
+  // forever, giving no feedback on subsequent copies.
+  useEffect(() => {
+    if (copyStatus === "idle") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
+
   const load = useCallback(async () => {
     if (visualFixtureMode) {
       setStatus("ready");
@@ -5262,9 +5271,15 @@ function ModelsSettings({
     void loadProviders();
   }, []);
 
+  // Both pollers skip ticks while the window is hidden — the settings
+  // screen used to keep hitting the API every 4-5s in the background (and
+  // kept firing failing requests while the core was offline).
   useEffect(() => {
     let cancelled = false;
     async function tick() {
+      if (document.hidden) {
+        return;
+      }
       try {
         const nextCatalog = await api.getModelCatalog();
         if (!cancelled) {
@@ -5276,15 +5291,23 @@ function ModelsSettings({
     }
     void tick();
     const interval = window.setInterval(() => void tick(), 4000);
+    const onVisible = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     async function tick() {
+      if (document.hidden) {
+        return;
+      }
       try {
         const summary = await api.usageSummary();
         if (!cancelled) {
@@ -6356,9 +6379,12 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
     message: string | null;
   }>({ status: "idle", message: null });
   const busy = action.status === "running";
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     void Promise.all([readStorageLocations(), api.storageUsage()])
       .then(([locationsValue, usageValue]) => {
         if (!cancelled) {
@@ -6367,12 +6393,16 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
         }
       })
       .catch((error) => {
-        console.warn("failed to read Cerul storage information", error);
+        // Surface the failure with a retry; the row otherwise sits on
+        // "loading" forever.
+        if (!cancelled) {
+          setLoadError(errorMessage(error));
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadAttempt]);
 
   async function refreshStorageUsage() {
     try {
@@ -6406,6 +6436,16 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
 
   return (
     <>
+      {loadError ? (
+        <InlineNotice
+          tone="error"
+          message={loadError}
+          action={{
+            label: t("common.retry"),
+            onClick: () => setLoadAttempt((attempt) => attempt + 1),
+          }}
+        />
+      ) : null}
       <SettingsGroup title={t("settings.storage.group.title")}>
         <SettingRow
           label={t("settings.storage.dataDir.label")}
