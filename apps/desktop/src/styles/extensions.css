@@ -1652,6 +1652,24 @@ body.overlay-body {
   overflow: hidden;
   background: #000;
 }
+/* Fullscreen: the container fills the screen as a column (video grows, the
+   control bar sits at the bottom). The stage drops its aspect-ratio /
+   max-height and just fills the remaining space; the video centres via
+   object-fit:contain. Inline sizing is dropped in JS while fullscreen. */
+.cplayer:fullscreen {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+.cplayer:fullscreen .cplayer-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  width: 100%;
+  aspect-ratio: auto;
+}
 .cplayer-video {
   position: absolute;
   inset: 0;

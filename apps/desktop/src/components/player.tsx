@@ -65,6 +65,10 @@ export function CerulPlayer({
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
   // Bumped on window resize so the stage size recomputes against the column.
   const [resizeTick, setResizeTick] = useState(0);
+  // In fullscreen the column-based sizing must be dropped — the stage should
+  // fill the screen (CSS :fullscreen handles the fill; we just stop applying
+  // the inline width/aspect that would otherwise leave dead space).
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Mirror the <video> element's state into React via its media events.
   useEffect(() => {
@@ -124,7 +128,12 @@ export function CerulPlayer({
   useEffect(() => {
     const onResize = () => setResizeTick((n) => n + 1);
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const onFsChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("fullscreenchange", onFsChange);
+    };
   }, []);
 
   const pct = duration > 0 ? (time / duration) * 100 : 0;
@@ -325,7 +334,9 @@ export function CerulPlayer({
     cplayerStyle?: React.CSSProperties;
     stageStyle?: React.CSSProperties;
   }>(() => {
-    if (videoAspect === null) return {};
+    // Fullscreen: drop all inline sizing so the CSS :fullscreen rules fill the
+    // screen and the video (object-fit:contain) centres on its own.
+    if (isFullscreen || videoAspect === null) return {};
     const stageStyle = { aspectRatio: String(videoAspect) };
     const availW = containerRef.current?.parentElement?.clientWidth ?? 0;
     const maxH = Math.min((typeof window !== "undefined" ? window.innerHeight : 900) * 0.7, 720);
@@ -335,7 +346,7 @@ export function CerulPlayer({
     const width = Math.round(maxH * videoAspect);
     return { cplayerStyle: { width: `${width}px`, marginInline: "auto" }, stageStyle };
     // resizeTick forces a recompute on window resize / metadata load.
-  }, [videoAspect, resizeTick]);
+  }, [videoAspect, resizeTick, isFullscreen]);
 
   return (
     <div className="cplayer" ref={containerRef} style={cplayerStyle}>
