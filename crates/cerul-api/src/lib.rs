@@ -2632,8 +2632,16 @@ fn clip_window(
         .unwrap_or(fallback_end);
     // Per-side extension capped at 30s; total duration capped at 120s so a
     // stray request can't ask ffmpeg for a giant clip.
-    let before = if before_sec.is_finite() { before_sec.clamp(0.0, 30.0) } else { 2.0 };
-    let after = if after_sec.is_finite() { after_sec.clamp(0.0, 30.0) } else { 2.0 };
+    let before = if before_sec.is_finite() {
+        before_sec.clamp(0.0, 30.0)
+    } else {
+        2.0
+    };
+    let after = if after_sec.is_finite() {
+        after_sec.clamp(0.0, 30.0)
+    } else {
+        2.0
+    };
     let clipped_start = (start - before).max(0.0);
     let duration = (end + after - clipped_start).clamp(1.0, 120.0);
     (clipped_start, duration)
@@ -4393,11 +4401,17 @@ mod tests {
         assert_eq!(clip_window(Some(1.0), Some(3.0), 5.0, 5.0), (0.0, 8.0));
         assert_eq!(clip_window(Some(0.0), None, 2.0, 2.0), (0.0, 14.0));
         // Total duration capped at 120s.
-        assert_eq!(clip_window(Some(10.0), Some(400.0), 10.0, 10.0), (0.0, 120.0));
+        assert_eq!(
+            clip_window(Some(10.0), Some(400.0), 10.0, 10.0),
+            (0.0, 120.0)
+        );
         // Asymmetric before/after.
         assert_eq!(clip_window(Some(60.0), Some(70.0), 10.0, 4.0), (50.0, 24.0));
         // Per-side extension capped at 30s each.
-        assert_eq!(clip_window(Some(100.0), Some(110.0), 50.0, 50.0), (70.0, 70.0));
+        assert_eq!(
+            clip_window(Some(100.0), Some(110.0), 50.0, 50.0),
+            (70.0, 70.0)
+        );
     }
 
     #[test]
