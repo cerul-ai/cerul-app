@@ -13,7 +13,7 @@
 //
 // When a real Developer ID identity IS provided, electron-builder signs the app
 // itself and this hook is a harmless no-op re-sign that we skip.
-const { execSync } = require("node:child_process");
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
 exports.default = async function afterPack(context) {
@@ -29,7 +29,9 @@ exports.default = async function afterPack(context) {
   const appName = `${context.packager.appInfo.productFilename}.app`;
   const appPath = path.join(context.appOutDir, appName);
 
-  execSync(`codesign --force --deep --sign - ${JSON.stringify(appPath)}`, {
+  // execFileSync: no shell, so paths containing $, backticks or spaces can't
+  // be expanded or split (JSON.stringify only escaped quotes/backslashes).
+  execFileSync("codesign", ["--force", "--deep", "--sign", "-", appPath], {
     stdio: "inherit",
   });
   console.log(`afterPack: deep ad-hoc signed ${appName}`);

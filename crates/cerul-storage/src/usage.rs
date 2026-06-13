@@ -226,6 +226,47 @@ pub fn usage_totals_for_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Us
     usage_totals(paths, Some("job_id"), Some(job_id), None)
 }
 
+/// Batched variant of the per-id totals: one GROUP BY query instead of one
+/// connection + query per row (list endpoints were N+1).
+pub fn usage_totals_by_item(
+    paths: &AppPaths,
+) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
+    usage_totals_grouped(paths, "item_id")
+}
+
+pub fn usage_totals_by_job(
+    paths: &AppPaths,
+) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
+    usage_totals_grouped(paths, "job_id")
+}
+
+fn usage_totals_grouped(
+    paths: &AppPaths,
+    column: &str,
+) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
+    anyhow::ensure!(matches!(column, "item_id" | "job_id"));
+    let conn = sqlite::open(paths)?;
+    let sql = format!(
+        r#"
+        SELECT {column}, COUNT(*), COALESCE(SUM(request_count), 0),
+               COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+               COALESCE(SUM(audio_seconds), 0), COALESCE(SUM(image_count), 0),
+               COALESCE(SUM(video_seconds), 0), COALESCE(SUM(estimated_usd), 0),
+               COALESCE(SUM(billed_credits), 0),
+               COALESCE(SUM(CASE WHEN estimated_usd IS NULL THEN 1 ELSE 0 END), 0)
+        FROM inference_usage_events
+        WHERE {column} IS NOT NULL
+        GROUP BY {column}
+        "#
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)?))
+    })?;
+    rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
+        .map_err(Into::into)
+}
+
 fn usage_breakdown(paths: &AppPaths, column: &str) -> anyhow::Result<Vec<UsageBreakdown>> {
     anyhow::ensure!(matches!(column, "capability" | "provider_mode"));
     let conn = sqlite::open(paths)?;

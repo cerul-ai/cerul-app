@@ -5,6 +5,7 @@
 import { AlertTriangle, Inbox, Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
+import { useT } from "../lib/i18n";
 
 export function InlineNotice({
   tone,
@@ -22,6 +23,7 @@ export function InlineNotice({
   detail?: string;
   detailLabel?: string;
 }) {
+  const t = useT();
   const [showDetail, setShowDetail] = useState(false);
   const hasDetail = Boolean(detail && detail !== message);
   return (
@@ -38,7 +40,7 @@ export function InlineNotice({
           aria-expanded={showDetail}
           onClick={() => setShowDetail((open) => !open)}
         >
-          {detailLabel ?? "Details"}
+          {detailLabel ?? t("common.details")}
         </button>
       ) : null}
       {action ? (

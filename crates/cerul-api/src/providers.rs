@@ -450,8 +450,10 @@ fn provider_test_request(
             )],
         }),
         "gemini" => Ok(ProviderTestRequest {
-            url: format!("{base_url}/models?key={}", api_key.trim()),
-            headers: Vec::new(),
+            // Header, not query string: keys in URLs leak into proxy and
+            // access logs (every other call path already uses the header).
+            url: format!("{base_url}/models"),
+            headers: vec![("x-goog-api-key".to_string(), api_key.trim().to_string())],
         }),
         "anthropic" => Ok(ProviderTestRequest {
             url: format!("{base_url}/v1/models"),
@@ -764,12 +766,20 @@ fn write_provider_key_fallbacks(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, serde_json::to_vec_pretty(keys)?)?;
+    // Write via temp + rename so a crash can't leave a truncated key file,
+    // and restrict permissions before the secret lands at its final path.
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(keys)?)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
     }
+    #[cfg(not(unix))]
+    tracing::warn!(
+        "provider key fallback file is stored without OS-level permission tightening on this platform"
+    );
+    fs::rename(&tmp, &path)?;
     Ok(())
 }
 
@@ -877,9 +887,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             gemini.url,
-            "https://generativelanguage.googleapis.com/v1beta/models?key=g"
+            "https://generativelanguage.googleapis.com/v1beta/models"
         );
-        assert!(gemini.headers.is_empty());
+        assert_eq!(
+            gemini.headers,
+            vec![("x-goog-api-key".to_string(), "g".to_string())]
+        );
 
         let anthropic =
             provider_test_request(&provider("anthropic", "https://api.anthropic.com"), "a")

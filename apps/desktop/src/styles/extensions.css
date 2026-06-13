@@ -972,6 +972,16 @@
   flex-direction: column;
   gap: var(--sp-2);
 }
+/* Term + description used to render with zero separation
+   ("Smart processingOn-device when it can..."). */
+.onboarding-model-stack > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.onboarding-model-stack > div > span { color: var(--text-muted); }
+/* Avoid a lone orphan character on the wrapped headline (中文孤字成行). */
+.onb-title { text-wrap: balance; }
 .step-dots {
   display: flex;
   align-items: center;
@@ -4312,4 +4322,43 @@ body.overlay-body {
 }
 .inline-notice-action:hover {
   background: var(--danger-soft);
+}
+
+
+/* ============================================================
+   A11Y · Focus-visible parity for custom controls
+   Keyboard navigation used to mix the brand focus ring with
+   the browser default outline on these six control families.
+   ============================================================ */
+.rail-item:focus-visible,
+.segmented button:focus-visible,
+.seg-btn-main:focus-visible,
+.menu button:focus-visible,
+.bottomnav button:focus-visible,
+.cplayer-btn:focus-visible,
+.cplayer-track:focus-visible,
+.cplayer-vol:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Confirm dialog: keep the danger icon vertically centred with the
+   kicker + title block instead of floating in the corner. */
+.confirm-dialog .dhead { align-items: center; gap: 14px; }
+
+/* ============================================================
+   MOTION · Global prefers-reduced-motion coverage
+   Individual gates existed for three animations; this block
+   covers the rest (skeleton shimmer, spinners, blinking caret,
+   dialog/drawer/menu entrances) in one place.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -357,12 +357,14 @@ impl Transcriber for RoutedApiTranscriber {
 
 impl Embedder for GeminiMultimodalEmbedder {
     fn embed_texts(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        texts
-            .iter()
-            .map(|text| {
-                self.embed_parts(self.document_text_parts(text), Some("RETRIEVAL_DOCUMENT"))
-            })
-            .collect()
+        // batchEmbedContents: one HTTP round-trip per 100 chunks instead of
+        // one per chunk (long videos produce hundreds of serial requests).
+        const BATCH_SIZE: usize = 100;
+        let mut vectors = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(BATCH_SIZE) {
+            vectors.extend(self.embed_text_batch(batch, Some("RETRIEVAL_DOCUMENT"))?);
+        }
+        Ok(vectors)
     }
 
     fn embed_images(&self, paths: &[PathBuf]) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -564,6 +566,67 @@ impl GeminiMultimodalEmbedder {
         } else {
             vec![json!({ "text": text })]
         }
+    }
+
+    fn embed_text_batch(
+        &self,
+        texts: &[String],
+        task_type: Option<&str>,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        let url = format!(
+            "{}/models/{}:batchEmbedContents",
+            provider_base_url(&self.provider)?,
+            self.model.trim_start_matches("models/")
+        );
+        let requests: Vec<Value> = texts
+            .iter()
+            .map(|text| {
+                gemini_embedding_request_body(
+                    &self.model,
+                    self.document_text_parts(text),
+                    self.output_dimension,
+                    task_type,
+                )
+            })
+            .collect();
+        let body = json!({ "requests": requests });
+        let client = http_client()?;
+        let response = send_json_with_retry(|| {
+            Ok(client
+                .post(&url)
+                .header("x-goog-api-key", self.api_key.trim())
+                .json(&body))
+        })?;
+        let embeddings = response
+            .get("embeddings")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("Gemini batch embedding response missing embeddings"))?;
+        anyhow::ensure!(
+            embeddings.len() == texts.len(),
+            "Gemini batch embedding returned {} vectors for {} inputs",
+            embeddings.len(),
+            texts.len()
+        );
+        embeddings
+            .iter()
+            .map(|entry| {
+                let values = entry
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| anyhow::anyhow!("Gemini embedding entry missing values"))?;
+                let vector = values
+                    .iter()
+                    .map(|value| value.as_f64().unwrap_or_default() as f32)
+                    .collect::<Vec<f32>>();
+                anyhow::ensure!(
+                    vector.len() == self.output_dimension as usize,
+                    "Gemini Embedding 2 returned {} dimensions, expected {}",
+                    vector.len(),
+                    self.output_dimension
+                );
+                Ok(vector)
+            })
+            .collect()
     }
 
     fn embed_parts(&self, parts: Vec<Value>, task_type: Option<&str>) -> anyhow::Result<Vec<f32>> {

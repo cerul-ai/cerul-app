@@ -1,3 +1,4 @@
+import { useRef } from "react";
 // Confirm dialog. Extracted from App.tsx (B13 Phase D).
 //
 // Props-driven; the host owns the open/close state via the `request`
@@ -7,7 +8,7 @@
 import { AlertTriangle, Trash2 } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { ConfirmRequest } from "../lib/types";
-import { useEscapeToClose } from "../lib/use-dismissable";
+import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 
 export function ConfirmDialog({
   request,
@@ -20,6 +21,8 @@ export function ConfirmDialog({
 }) {
   const t = useT();
   useEscapeToClose(onCancel, Boolean(request));
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(dialogRef, Boolean(request));
 
   if (!request) {
     return null;
@@ -28,6 +31,7 @@ export function ConfirmDialog({
   return (
     <div className="scrim" role="presentation" onMouseDown={onCancel}>
       <section
+        ref={dialogRef}
         className="dialog confirm-dialog"
         role="dialog"
         aria-modal="true"

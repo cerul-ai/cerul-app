@@ -66,8 +66,13 @@ export function formatTimestamp(seconds: number | null) {
     return "00:00";
   }
   const total = Math.round(seconds);
-  const minutes = Math.floor(total / 60);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
   const remaining = `${total % 60}`.padStart(2, "0");
+  // Match formatDuration above: a 2h video shows 1:32:30, not 92:30.
+  if (hours > 0) {
+    return `${hours}:${`${minutes}`.padStart(2, "0")}:${remaining}`;
+  }
   return `${minutes}:${remaining}`;
 }
 
@@ -157,4 +162,33 @@ export function extractChunkIdFromThumbnail(url: string | null): string | null {
   if (!url) return null;
   const match = url.match(/\/chunks\/([^/]+)\/frame/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform ?? "");
+
+/** Render a stored hotkey id ("Alt+Space") in the platform's idiom:
+ * mac users think in ⌥ Space, not Alt+Space. The stored value is unchanged —
+ * this is display-only. */
+export function formatHotkeyLabel(label: string): string {
+  if (!IS_MAC) {
+    return label;
+  }
+  return label
+    .split("+")
+    .map((part) => {
+      switch (part.trim()) {
+        case "Alt":
+          return "\u2325"; // ⌥
+        case "Cmd":
+          return "\u2318"; // ⌘
+        case "Ctrl":
+          return "\u2303"; // ⌃
+        case "Shift":
+          return "\u21e7"; // ⇧
+        default:
+          return part.trim();
+      }
+    })
+    .join(" ");
 }

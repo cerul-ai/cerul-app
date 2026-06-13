@@ -256,8 +256,12 @@ pub fn update_item_metadata<F>(paths: &AppPaths, item_id: &str, updater: F) -> a
 where
     F: FnOnce(&mut serde_json::Map<String, serde_json::Value>),
 {
-    let conn = sqlite::open(paths)?;
-    let current = conn
+    let mut conn = sqlite::open(paths)?;
+    // IMMEDIATE takes the write lock up front so the read-modify-write cannot
+    // interleave with another writer (e.g. playback PATCH vs. index workers)
+    // and silently drop one side's fields.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = tx
         .query_row(
             "SELECT metadata FROM items WHERE id = ?1",
             [item_id],
@@ -278,12 +282,13 @@ where
     updater(metadata.as_object_mut().expect("metadata is an object"));
 
     let serialized = serde_json::to_string(&metadata)?;
-    let updated = conn.execute(
+    let updated = tx.execute(
         "UPDATE items SET metadata = ?2 WHERE id = ?1",
         params![item_id, serialized],
     )?;
 
     anyhow::ensure!(updated == 1, "item not found: {item_id}");
+    tx.commit()?;
     Ok(())
 }
 

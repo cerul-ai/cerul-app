@@ -11,9 +11,10 @@ import {
   Wrench,
   X,
   Youtube,
+  Option,
 } from "lucide-react";
 import { useState } from "react";
-import { uniqueStrings } from "../lib/formatters";
+import { uniqueStrings, formatHotkeyLabel } from "../lib/formatters";
 import { useT } from "../lib/i18n";
 import type { OnboardingYoutubeChannel, ValidationState } from "../lib/types";
 import {
@@ -39,15 +40,14 @@ export function AccessibilityPermissionCallout() {
     <>
       <div className="hotkey-demo" aria-hidden="true">
         <div className="hotkey-demo__keys">
-          <kbd className="hotkey-demo__key">{t("onboarding.hotkey.altKey")}</kbd>
+          <kbd className="hotkey-demo__key">{formatHotkeyLabel(t("onboarding.hotkey.altKey"))}</kbd>
           <span>+</span>
           <kbd className="hotkey-demo__key">{t("onboarding.hotkey.spaceKey")}</kbd>
         </div>
-        <span className="hotkey-demo__caret" />
         <p className="hotkey-demo__caption">{t("onboarding.hotkey.caption")}</p>
       </div>
       <div className="permission-callout">
-        <Command size={18} />
+        <Option size={18} />
         <span>
           <strong>{t("onboarding.accessibility.title")}</strong>
           <small>{t("onboarding.accessibility.body")}</small>

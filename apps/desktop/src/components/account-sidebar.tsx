@@ -81,6 +81,14 @@ export function AccountRailButton() {
     }
   }, [hydrate]);
 
+  // Other surfaces (e.g. the Account & Usage card) can request the account
+  // popover without coupling to this component.
+  useEffect(() => {
+    const onOpenRequest = () => setOpen(true);
+    window.addEventListener("cerul:open-account", onOpenRequest);
+    return () => window.removeEventListener("cerul:open-account", onOpenRequest);
+  }, []);
+
   // Anchor the popover just above the button, left-aligned (works at any size).
   useEffect(() => {
     if (open && buttonRef.current) {

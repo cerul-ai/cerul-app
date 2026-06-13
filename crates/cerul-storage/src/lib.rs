@@ -22,8 +22,9 @@ pub use items::{
 };
 pub use paths::AppPaths;
 pub use usage::{
-    list_usage_events, record_usage_event, usage_summary, usage_totals_for_item,
-    usage_totals_for_job, NewUsageEvent, UsageBreakdown, UsageEvent, UsageSummary, UsageTotals,
+    list_usage_events, record_usage_event, usage_summary, usage_totals_by_item,
+    usage_totals_by_job, usage_totals_for_item, usage_totals_for_job, NewUsageEvent,
+    UsageBreakdown, UsageEvent, UsageSummary, UsageTotals,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

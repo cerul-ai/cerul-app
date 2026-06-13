@@ -12,6 +12,7 @@ import {
   protocol,
   safeStorage,
   screen,
+  session,
   shell,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -51,6 +52,7 @@ let tray: Tray | null = null;
 let apiProcess: ChildProcessWithoutNullStreams | null = null;
 let ownsApiProcess = false;
 let isQuitting = false;
+let apiRestartAttempts = 0;
 let lastApiExit: ApiExitInfo | null = null;
 let mainWindowLoaded = false;
 let pendingDeepLink = firstDeepLinkArg(process.argv);
@@ -143,6 +145,20 @@ app
     }
     setDockIcon();
     registerAppProtocol();
+    // Electron grants permission requests (camera, mic, geolocation, ...) by
+    // default; deny everything except the two benign permissions the app
+    // genuinely uses — clipboard *write* (copy citation / timestamp / Markdown)
+    // and player fullscreen. clipboard-read stays denied (reading the clipboard
+    // is the sensitive direction). A blanket deny here previously broke every
+    // copy-to-clipboard action, since navigator.clipboard.writeText needs the
+    // clipboard-sanitized-write permission.
+    const allowedPermissions = new Set(["clipboard-sanitized-write", "fullscreen"]);
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      callback(allowedPermissions.has(permission));
+    });
+    session.defaultSession.setPermissionCheckHandler((_webContents, permission) =>
+      allowedPermissions.has(permission),
+    );
     registerIpcHandlers();
     await startRustCore();
     createMainWindow();
@@ -155,6 +171,12 @@ app
   })
   .catch((error) => {
     console.error("Failed to start Cerul Electron shell", error);
+    // A packaged app has no visible stderr; without a dialog a startup
+    // failure looks like the icon bouncing once and vanishing.
+    dialog.showErrorBox(
+      "Cerul failed to start",
+      error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error),
+    );
     app.quit();
   });
 
@@ -162,11 +184,23 @@ app.on("before-quit", () => {
   isQuitting = true;
 });
 
-app.on("will-quit", () => {
+let coreShutdownComplete = false;
+
+app.on("will-quit", (event) => {
   globalShortcut.unregisterAll();
   stopOAuthCallbackServer();
   stopStatusMonitor();
-  stopRustCore();
+  flushDirtyStores();
+  if (!coreShutdownComplete && apiProcess && ownsApiProcess) {
+    // Wait for the backend (which in turn owns qdrant) to exit, escalating
+    // to SIGKILL after a grace period — fire-and-forget SIGTERM used to
+    // leave orphans whenever the process needed longer than the app.
+    event.preventDefault();
+    void stopRustCoreGracefully().finally(() => {
+      coreShutdownComplete = true;
+      app.quit();
+    });
+  }
 });
 
 app.on("window-all-closed", () => {
@@ -269,10 +303,56 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
   });
 }
 
+const WINDOW_STATE_STORE = "window-state";
+
+function savedMainWindowBounds(): Partial<Electron.Rectangle> {
+  const stored = loadStore(WINDOW_STATE_STORE)["mainBounds"];
+  if (!stored || typeof stored !== "object") {
+    return {};
+  }
+  const bounds = stored as Partial<Electron.Rectangle>;
+  if (
+    typeof bounds.width !== "number" ||
+    typeof bounds.height !== "number" ||
+    bounds.width < 600 ||
+    bounds.height < 400
+  ) {
+    return {};
+  }
+  // Only restore a position that is still on a connected display.
+  if (typeof bounds.x === "number" && typeof bounds.y === "number") {
+    const visible = screen.getAllDisplays().some((display) => {
+      const area = display.workArea;
+      return (
+        bounds.x! >= area.x - 50 &&
+        bounds.y! >= area.y - 50 &&
+        bounds.x! < area.x + area.width &&
+        bounds.y! < area.y + area.height
+      );
+    });
+    if (!visible) {
+      return { width: bounds.width, height: bounds.height };
+    }
+  }
+  return bounds;
+}
+
+function persistMainWindowBounds() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
+    return;
+  }
+  loadStore(WINDOW_STATE_STORE)["mainBounds"] = mainWindow.getNormalBounds();
+  dirtyStores.add(WINDOW_STATE_STORE);
+  saveStore(WINDOW_STATE_STORE);
+}
+
 function createMainWindow() {
+  const saved = savedMainWindowBounds();
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: saved.width ?? 1440,
+    height: saved.height ?? 920,
+    x: saved.x,
+    y: saved.y,
     minWidth: 1080,
     minHeight: 720,
     title: "Cerul",
@@ -287,6 +367,8 @@ function createMainWindow() {
   });
 
   secureDesktopWindow(mainWindow);
+  mainWindow.on("close", () => persistMainWindowBounds());
+  mainWindow.on("hide", () => persistMainWindowBounds());
   mainWindow.on("close", (event) => {
     if (isQuitting) {
       return;
@@ -692,6 +774,10 @@ function routeDeepLink(url?: string) {
     const section = parsed.searchParams.get("section");
     openMainRoute(section ? `settings?section=${encodeURIComponent(section)}` : "settings");
   } else if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
+    if (!oauthFlowPending()) {
+      return;
+    }
+    oauthFlowPendingUntil = 0;
     const params = new URLSearchParams({ section: "Usage" });
     for (const key of ["provider", "code", "state", "error"]) {
       const value = parsed.searchParams.get(key);
@@ -703,10 +789,21 @@ function routeDeepLink(url?: string) {
   }
 }
 
+// Only accept OAuth callbacks while a sign-in the user actually started is
+// in flight; the localhost listener and the cerul:// deep link are otherwise
+// open to any local process / website forging a login-CSRF callback.
+let oauthFlowPendingUntil = 0;
+const OAUTH_FLOW_WINDOW_MS = 10 * 60 * 1000;
+
+function oauthFlowPending() {
+  return Date.now() <= oauthFlowPendingUntil;
+}
+
 async function startOAuthLogin(provider: OAuthProvider) {
   if (provider !== "google" && provider !== "github") {
     throw new Error("unsupported OAuth provider");
   }
+  oauthFlowPendingUntil = Date.now() + OAUTH_FLOW_WINDOW_MS;
   const redirectUri = await ensureOAuthCallbackServer();
   const startUrl = new URL(`/v1/auth/oauth/${provider}/start`, cloudAccountOrigin);
   startUrl.searchParams.set("redirect_uri", redirectUri);
@@ -755,6 +852,10 @@ function handleOAuthCallbackRequest(rawUrl: string, response: http.ServerRespons
     writeOAuthCallbackResponse(response, 404, "Not found.");
     return;
   }
+  if (!oauthFlowPending()) {
+    writeOAuthCallbackResponse(response, 403, "No Cerul sign-in is in progress.");
+    return;
+  }
   const params = new URLSearchParams({ section: "Usage" });
   for (const key of ["provider", "code", "state", "error"]) {
     const value = url.searchParams.get(key);
@@ -762,9 +863,12 @@ function handleOAuthCallbackRequest(rawUrl: string, response: http.ServerRespons
       params.set(key, value);
     }
   }
+  oauthFlowPendingUntil = 0;
   openMainRoute(`settings?${params.toString()}`);
   focusMainWindow();
   writeOAuthCallbackResponse(response, 200, "Cerul sign-in is complete. You can return to the app.");
+  // One-shot: the flow is over, stop listening.
+  setImmediate(() => stopOAuthCallbackServer());
 }
 
 function writeOAuthCallbackResponse(response: http.ServerResponse, statusCode: number, message: string) {
@@ -980,10 +1084,24 @@ async function startRustCore() {
     }
     apiProcess = null;
     ownsApiProcess = false;
+    if (!isQuitting) {
+      // Restart with capped backoff: a dead backend used to leave the app
+      // running as a shell that could never search again.
+      const delay = Math.min(1000 * 2 ** apiRestartAttempts, 30000);
+      apiRestartAttempts += 1;
+      setTimeout(() => {
+        if (!isQuitting && !apiProcess) {
+          void startRustCore().catch((restartError) => {
+            console.error("Cerul local API restart failed", restartError);
+          });
+        }
+      }, delay);
+    }
   });
 
   try {
     await waitForApi(apiStartupTimeoutMs, () => lastApiExit);
+    apiRestartAttempts = 0;
   } catch (error) {
     console.error(
       collectApiStartupDiagnostics({
@@ -998,13 +1116,32 @@ async function startRustCore() {
   }
 }
 
-function stopRustCore() {
-  if (!apiProcess || !ownsApiProcess) {
+async function stopRustCoreGracefully(timeoutMs = 4000) {
+  const child = apiProcess;
+  if (!child || !ownsApiProcess) {
     return;
   }
-  apiProcess.kill("SIGTERM");
   apiProcess = null;
   ownsApiProcess = false;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }, timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
 }
 
 function spawnApiProcess(binary: string, env: NodeJS.ProcessEnv, cwd?: string) {
@@ -1334,15 +1471,32 @@ function setBundledExecutableEnv(env: NodeJS.ProcessEnv, key: string, binaryPath
   }
 }
 
+// Probe results are cached per (path, mtime): the synchronous spawn happens
+// on the startup path and a slow/hung binary used to block it for up to 8s
+// per probe, serially.
+const runnableBinaryCache = new Map<string, boolean>();
+
 function isRunnableBinary(binaryPath: string, probeArgs: string[]) {
   if (!fs.existsSync(binaryPath)) {
     return false;
   }
+  let cacheKey = binaryPath;
+  try {
+    cacheKey = `${binaryPath}:${fs.statSync(binaryPath).mtimeMs}`;
+  } catch {
+    // fall back to path-only key
+  }
+  const cached = runnableBinaryCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
   const result = spawnSync(binaryPath, probeArgs, {
     stdio: "ignore",
-    timeout: 8_000,
+    timeout: 3_000,
   });
-  return result.status === 0;
+  const runnable = result.status === 0;
+  runnableBinaryCache.set(cacheKey, runnable);
+  return runnable;
 }
 
 function targetTriple() {
@@ -1394,11 +1548,28 @@ function isPathInsideDirectory(filePath: string, directory: string) {
   return relative === "" || (relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+// Only frames belonging to the app shell (app:// in production, the vite
+// dev server in development) may call privileged IPC — secure-token-get
+// returns plaintext tokens and open-dialog/oauth-start act on the user's
+// behalf.
+function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent) {
+  const url = event.senderFrame?.url ?? "";
+  const trusted =
+    url.startsWith(`${appScheme}://`) ||
+    url.startsWith("http://127.0.0.1:1420") ||
+    url.startsWith("http://localhost:1420");
+  if (!trusted) {
+    throw new Error(`IPC call from untrusted sender: ${url || "<unknown>"}`);
+  }
+}
+
 function registerIpcHandlers() {
-  ipcMain.handle("cerul:invoke", async (_event, command: string, args?: Record<string, unknown>) =>
-    handleCommand(command, args ?? {}),
-  );
-  ipcMain.handle("cerul:open-dialog", async (_event, options) => {
+  ipcMain.handle("cerul:invoke", async (event, command: string, args?: Record<string, unknown>) => {
+    assertTrustedIpcSender(event);
+    return handleCommand(command, args ?? {});
+  });
+  ipcMain.handle("cerul:open-dialog", async (event, options) => {
+    assertTrustedIpcSender(event);
     const result = await dialog.showOpenDialog({
       properties: [
         options?.directory ? "openDirectory" : "openFile",
@@ -1409,22 +1580,33 @@ function registerIpcHandlers() {
     if (result.canceled) return null;
     return options?.multiple ? result.filePaths : result.filePaths[0] ?? null;
   });
-  ipcMain.handle("cerul:check-update", async () => {
+  ipcMain.handle("cerul:check-update", async (event) => {
+    assertTrustedIpcSender(event);
     return checkForGitHubReleaseUpdate();
   });
-  ipcMain.handle("cerul:store-get", async (_event, storePath: string, key: string) => {
+  ipcMain.handle("cerul:store-get", async (event, storePath: string, key: string) => {
+    assertTrustedIpcSender(event);
     return loadStore(storePath)[key];
   });
-  ipcMain.handle("cerul:store-set", async (_event, storePath: string, key: string, value: unknown) => {
+  ipcMain.handle("cerul:store-set", async (event, storePath: string, key: string, value: unknown) => {
+    assertTrustedIpcSender(event);
     loadStore(storePath)[key] = value;
     dirtyStores.add(storePath);
   });
-  ipcMain.handle("cerul:store-save", async (_event, storePath: string) => saveStore(storePath));
-  ipcMain.handle("cerul:secure-token-get", async (_event, key: string) => getSecureToken(key));
-  ipcMain.handle("cerul:secure-token-set", async (_event, key: string, value: string | null) => {
+  ipcMain.handle("cerul:store-save", async (event, storePath: string) => {
+    assertTrustedIpcSender(event);
+    saveStore(storePath);
+  });
+  ipcMain.handle("cerul:secure-token-get", async (event, key: string) => {
+    assertTrustedIpcSender(event);
+    return getSecureToken(key);
+  });
+  ipcMain.handle("cerul:secure-token-set", async (event, key: string, value: string | null) => {
+    assertTrustedIpcSender(event);
     setSecureToken(key, value);
   });
-  ipcMain.handle("cerul:oauth-start", async (_event, provider: OAuthProvider) => {
+  ipcMain.handle("cerul:oauth-start", async (event, provider: OAuthProvider) => {
+    assertTrustedIpcSender(event);
     await startOAuthLogin(provider);
   });
 }
@@ -1877,7 +2059,17 @@ function loadStore(storePath: string) {
   let value: Record<string, unknown> = {};
   try {
     value = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
-  } catch {
+  } catch (error) {
+    // Keep the corrupt file for forensics instead of silently wiping
+    // everything (this store may hold cloud login tokens).
+    if (fs.existsSync(file)) {
+      console.error(`store file is unreadable, moving aside: ${file}`, error);
+      try {
+        fs.renameSync(file, `${file}.corrupt`);
+      } catch {
+        // best effort
+      }
+    }
     value = {};
   }
   stores.set(storePath, value);
@@ -1888,8 +2080,21 @@ function saveStore(storePath: string) {
   if (!dirtyStores.has(storePath)) return;
   const file = storeFilePath(storePath);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(loadStore(storePath), null, 2));
+  // temp + rename: a crash mid-write must not truncate the store.
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(loadStore(storePath), null, 2));
+  fs.renameSync(tmp, file);
   dirtyStores.delete(storePath);
+}
+
+function flushDirtyStores() {
+  for (const storePath of [...dirtyStores]) {
+    try {
+      saveStore(storePath);
+    } catch (error) {
+      console.error(`failed to flush store ${storePath} on quit`, error);
+    }
+  }
 }
 
 function getSecureToken(key: string) {

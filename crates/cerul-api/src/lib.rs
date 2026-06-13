@@ -9,7 +9,7 @@ use std::{
 use axum::{
     body::Body,
     extract::{ConnectInfo, Path, Query, Request, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -20,8 +20,11 @@ use cerul_storage::AppPaths;
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tokio::io::AsyncSeekExt;
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 mod api_models;
 pub mod jobs;
@@ -337,7 +340,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/entities/:id", get(get_entity))
         .route("/weekly-review", get(weekly_review))
         .route("/items", get(list_items))
-        .route("/items/:id", get(get_item).delete(remove_item))
+        .route(
+            "/items/:id",
+            get(get_item).patch(update_item).delete(remove_item),
+        )
         .route(
             "/items/:id/playback",
             get(get_item_playback_position).patch(update_item_playback_position),
@@ -389,7 +395,24 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             state.clone(),
             require_remote_auth,
         ))
-        .layer(CorsLayer::permissive())
+        .layer(
+            // Browsers enforce CORS per-origin: only the packaged app shell and
+            // local dev servers may read responses. Never use `permissive()`
+            // here — combined with the loopback auth exemption it would let any
+            // website read and mutate the whole library via fetch().
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|origin, _| {
+                    origin.to_str().map(browser_origin_allowed).unwrap_or(false)
+                }))
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PATCH,
+                    Method::PUT,
+                    Method::DELETE,
+                ])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -476,6 +499,20 @@ pub fn configured_addr(paths: &AppPaths) -> anyhow::Result<SocketAddr> {
 }
 
 async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: Next) -> Response {
+    // Loopback requests skip key auth, so requests that originate from a
+    // browser context must prove they come from the app itself: a malicious
+    // website always carries its own `Origin`, and a DNS-rebinding page
+    // carries a foreign `Host`.
+    if let Some(origin) = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        if !browser_origin_allowed(origin) {
+            return forbidden_cross_origin();
+        }
+    }
+
     let remote_addr = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -484,6 +521,9 @@ async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: 
         .map(|addr| addr.ip().is_loopback())
         .unwrap_or(true)
     {
+        if !host_header_allowed(req.headers()) {
+            return forbidden_cross_origin();
+        }
         return next.run(req).await;
     }
 
@@ -499,6 +539,48 @@ async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: 
     }
 
     unauthorized_remote_api()
+}
+
+/// Origins allowed to talk to the local API from a browser-like context:
+/// the packaged Electron shell (`app://…`) and loopback-hosted dev servers.
+fn browser_origin_allowed(origin: &str) -> bool {
+    if origin.starts_with("app://") {
+        return true;
+    }
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    loopback_host(rest)
+}
+
+/// Reject loopback requests whose `Host` is not a loopback name —
+/// the signature of a DNS-rebinding attack.
+fn host_header_allowed(headers: &HeaderMap) -> bool {
+    match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(host) => loopback_host(host),
+    }
+}
+
+fn loopback_host(host_port: &str) -> bool {
+    if host_port == "[::1]" || host_port.starts_with("[::1]:") {
+        return true;
+    }
+    let host = host_port.split(':').next().unwrap_or(host_port);
+    matches!(host, "127.0.0.1" | "localhost")
+}
+
+fn forbidden_cross_origin() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "cross-origin requests to the Cerul API are not allowed"
+        })),
+    )
+        .into_response()
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -565,8 +647,11 @@ async fn openapi_json() -> Json<Value> {
 
 async fn search(
     State(state): State<ApiState>,
-    Json(req): Json<cerul_search::SearchRequest>,
+    Json(mut req): Json<cerul_search::SearchRequest>,
 ) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
+    // The limit fans out 4x into vector + FTS retrieval and pre-allocates
+    // buffers; an unclamped client value is a one-request memory DoS.
+    req.limit = req.limit.clamp(1, 50);
     Ok(Json(search_records(&state.paths, req).await?))
 }
 
@@ -962,6 +1047,39 @@ async fn list_items(State(state): State<ApiState>) -> ApiResult<Json<Vec<ItemRec
     Ok(Json(items))
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateItemRequest {
+    raw_path: Option<String>,
+}
+
+/// Currently supports relocating a media file that moved on disk: updates
+/// raw_path (after verifying the file exists) and clears a stale
+/// missing-file error so a subsequent re-index can run against it.
+async fn update_item(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateItemRequest>,
+) -> ApiResult<Json<ItemRecord>> {
+    if let Some(raw_path) = req.raw_path.as_deref() {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request("raw_path must not be empty"));
+        }
+        if !FsPath::new(trimmed).is_file() {
+            return Err(ApiError::bad_request(format!("file not found: {trimmed}")));
+        }
+        let conn = cerul_storage::sqlite::open(&state.paths)?;
+        let updated = conn.execute(
+            "UPDATE items SET raw_path = ?2, error = NULL WHERE id = ?1",
+            rusqlite::params![id.as_str(), trimmed],
+        )?;
+        if updated == 0 {
+            return Err(ApiError::not_found("item not found"));
+        }
+    }
+    get_item(State(state), Path(id)).await
+}
+
 async fn get_item(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -1088,6 +1206,21 @@ async fn cleanup_item_artifacts(
     .await?;
     remove_dir_if_exists(paths.cache.join("pipeline").join("frames").join(cache_key)).await?;
     remove_clip_cache_for_item(paths, &item.id).await?;
+    // Downloaded source media (youtube / web_video / rss enclosures) lives in
+    // the cache too and used to be left behind forever after deletion. Only
+    // delete raw_path when it actually sits inside our cache directory —
+    // never a user's own file.
+    if matches!(
+        item.source_type.as_str(),
+        "youtube" | "web_video" | "rss_podcast"
+    ) {
+        if let Some(raw_path) = item.raw_path.as_deref() {
+            let raw = FsPath::new(raw_path);
+            if raw.starts_with(&paths.cache) {
+                remove_file_if_exists(raw.to_path_buf()).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1265,6 +1398,7 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
         ORDER BY COALESCE(started_at, 0) DESC, id ASC
         "#,
     )?;
+    let mut usage_by_job = cerul_storage::usage_totals_by_job(&state.paths).unwrap_or_default();
     let rows = stmt.query_map([], |row| {
         let job_id: String = row.get(0)?;
         let job_type: String = row.get(2)?;
@@ -1280,14 +1414,18 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
             progress: row.get(7)?,
             stage: row.get(8)?,
             stage_message: row.get(9)?,
-            usage: cerul_storage::usage_totals_for_job(&state.paths, &job_id).unwrap_or_default(),
+            usage: cerul_storage::UsageTotals::default(),
             error_info: error
                 .as_deref()
                 .and_then(|message| classify_job_error(&job_type, message)),
         })
     })?;
 
-    Ok(Json(rows.collect::<Result<Vec<_>, _>>()?))
+    let mut jobs = rows.collect::<Result<Vec<_>, _>>()?;
+    for job in &mut jobs {
+        job.usage = usage_by_job.remove(&job.id).unwrap_or_default();
+    }
+    Ok(Json(jobs))
 }
 
 async fn usage_summary(
@@ -1793,16 +1931,28 @@ async fn list_settings(State(state): State<ApiState>) -> ApiResult<Json<BTreeMap
         Ok((key, parse_json(&value)))
     })?;
 
-    Ok(Json(
-        rows.collect::<Result<BTreeMap<_, _>, _>>()?
-            .into_iter()
-            .filter(|(key, _)| !is_hidden_setting(key))
-            .map(|(key, value)| {
-                let value = normalize_setting_value(&key, value);
-                (key, value)
-            })
-            .collect(),
-    ))
+    let all = rows.collect::<Result<BTreeMap<_, _>, _>>()?;
+    let remote_key_set = all
+        .get("remote_api_key")
+        .and_then(|value| value.as_str())
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false);
+
+    let mut visible: BTreeMap<String, Value> = all
+        .into_iter()
+        .filter(|(key, _)| !is_hidden_setting(key))
+        .map(|(key, value)| {
+            let value = normalize_setting_value(&key, value);
+            (key, value)
+        })
+        .collect();
+    // The key itself is write-only; expose only whether one is configured.
+    visible.insert(
+        "remote_api_key_set".to_string(),
+        Value::Bool(remote_key_set),
+    );
+
+    Ok(Json(visible))
 }
 
 async fn update_settings(
@@ -1867,8 +2017,12 @@ fn is_internal_setting(key: &str) -> bool {
     INTERNAL_SETTING_KEYS.contains(&key)
 }
 
+fn is_secret_setting(key: &str) -> bool {
+    SECRET_SETTING_KEYS.contains(&key)
+}
+
 fn is_hidden_setting(key: &str) -> bool {
-    is_legacy_cloud_setting(key) || is_internal_setting(key)
+    is_legacy_cloud_setting(key) || is_internal_setting(key) || is_secret_setting(key)
 }
 
 fn normalize_setting_value(key: &str, value: Value) -> Value {
@@ -2328,8 +2482,11 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
 }
 
 fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
+    // Single GROUP BY query; per-item lookups opened one SQLite connection
+    // per row and made GET /items O(n) connections.
+    let mut totals = cerul_storage::usage_totals_by_item(paths).unwrap_or_default();
     for item in items {
-        item.usage = cerul_storage::usage_totals_for_item(paths, &item.id).unwrap_or_default();
+        item.usage = totals.remove(&item.id).unwrap_or_default();
     }
 }
 
@@ -2592,11 +2749,14 @@ async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResu
     match parse_byte_range(range, len) {
         Ok(Some((start, end))) => {
             let byte_count = end - start + 1;
-            let mut bytes = vec![0; byte_count as usize];
+            // Stream instead of buffering: a wide range used to allocate the
+            // whole span (potentially gigabytes) in memory.
             file.seek(std::io::SeekFrom::Start(start)).await?;
-            file.read_exact(&mut bytes).await?;
+            let stream =
+                tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, byte_count));
 
-            let mut response = (StatusCode::PARTIAL_CONTENT, Body::from(bytes)).into_response();
+            let mut response =
+                (StatusCode::PARTIAL_CONTENT, Body::from_stream(stream)).into_response();
             response
                 .headers_mut()
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -2616,8 +2776,8 @@ async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResu
             Ok(response)
         }
         Ok(None) => {
-            let bytes = tokio::fs::read(path).await?;
-            let mut response = Body::from(bytes).into_response();
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let mut response = Body::from_stream(stream).into_response();
             response
                 .headers_mut()
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -2755,11 +2915,16 @@ fn parse_json(value: &str) -> Value {
 }
 
 fn new_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Timestamp alone can collide when ids are minted in a tight loop
+    // (same-nanosecond inserts abort the whole batch on the PRIMARY KEY).
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{prefix}-{nanos:x}")
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{nanos:x}-{seq:x}")
 }
 
 fn not_found(message: &str) -> Response {
@@ -2858,7 +3023,11 @@ const INDEXING_SCHEMA_VERSION: i32 = 3;
 const INTERNAL_SETTING_KEYS: &[&str] = &[
     DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
     INDEXING_SCHEMA_VERSION_SETTING,
+    // Computed flag returned by list_settings; never persisted.
+    "remote_api_key_set",
 ];
+/// Settings that clients may write but must never read back in plaintext.
+const SECRET_SETTING_KEYS: &[&str] = &["remote_api_key"];
 
 #[cfg(test)]
 mod tests {
@@ -4326,6 +4495,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_rss_source_discovers_limited_items_and_queues_audio_jobs() {
+        std::env::set_var("CERUL_ALLOW_LOCAL_FEEDS", "1");
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         let audio = temp.path().join("episode.mp3");
@@ -4389,6 +4559,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_rss_source_returns_title_image_and_episode_count() {
+        std::env::set_var("CERUL_ALLOW_LOCAL_FEEDS", "1");
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         let app = router_with_paths(paths);
@@ -4578,8 +4749,80 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
-            Some(&HeaderValue::from_static("*"))
+            Some(&HeaderValue::from_static("http://127.0.0.1:1420"))
         );
+    }
+
+    #[tokio::test]
+    async fn cors_blocks_foreign_web_origins() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        // Preflight from a malicious website must not be granted CORS.
+        let preflight = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/sources")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(preflight
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
+
+        // Simple (no-preflight) requests carrying a foreign Origin are
+        // rejected outright, even from loopback.
+        let simple = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(simple.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn settings_never_return_remote_api_key_plaintext() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"INSERT INTO settings (key, value, updated_at)
+                   VALUES ('remote_api_key', '"super-secret"', strftime('%s','now'))"#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let settings = response_json(response).await;
+        assert!(settings.get("remote_api_key").is_none());
+        assert_eq!(settings["remote_api_key_set"], true);
     }
 
     #[cfg(unix)]

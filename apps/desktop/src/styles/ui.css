@@ -92,6 +92,16 @@
 /* Long model names (e.g. "Gemini 3.5 Flash Video - usage-based") get an ellipsis
    instead of being hard-clipped mid-word. */
 .select { text-overflow: ellipsis; }
+/* Replace the native arrow with an on-brand chevron so dropdowns match the
+   rest of the control set (and adapt to the dark theme). */
+select.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238b93a1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
 .input.error, .textarea.error { border-color: var(--danger); }
 .input.error:focus { box-shadow: 0 0 0 3px var(--danger-soft); }
 .input:disabled, .textarea:disabled, .select:disabled {

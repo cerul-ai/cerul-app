@@ -66,11 +66,11 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
 import { useAuthStore } from "./lib/cloud/authStore";
-import { LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
+import { appLocaleTag, LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
 import {
   errorMessage,
   extractChunkIdFromThumbnail,
@@ -82,6 +82,7 @@ import {
   parseTimestampSeconds,
   pluralize,
   uniqueStrings,
+  formatHotkeyLabel,
 } from "./lib/formatters";
 import {
   resolveThemePreference,
@@ -93,7 +94,7 @@ import {
   EmptyState,
   InlineNotice,
 } from "./components/leaf";
-import { useClickOutside, useEscapeToClose } from "./lib/use-dismissable";
+import { useClickOutside, useEscapeToClose, useDialogFocus } from "./lib/use-dismissable";
 import {
   ProgressBar,
   StatusBadge,
@@ -941,19 +942,6 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
   return "Models";
 }
 
-function viewChromeLabel(view: View, settingsSection: string) {
-  if (view === "result-detail" || view === "item-detail") {
-    return "Item";
-  }
-  if (view === "settings") {
-    return `Settings · ${settingsSection}`;
-  }
-  if (view === "onboarding") {
-    return "Welcome";
-  }
-  return view[0].toUpperCase() + view.slice(1);
-}
-
 function visualFixtureModeEnabled() {
   const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
   const params = new URLSearchParams(queryString);
@@ -1054,32 +1042,25 @@ function AppWorkspace() {
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const lastSearchRef = useRef<{ query: string; retryWhenIdle: boolean } | null>(null);
+  // Monotonic token: every runSearch bumps it, stale responses are dropped.
+  const searchSeqRef = useRef(0);
 
   const visualFixtureMode = visualFixtureModeEnabled();
   const screenApiStatus: ApiStatus = visualFixtureMode ? "online" : apiStatus;
-  const visibleSources = visualFixtureMode
-    ? sources
-    : apiStatus === "online"
-      ? data.sources
-      : sources;
-  const visibleItems = visualFixtureMode
-    ? items
-    : apiStatus === "online"
-      ? data.items
-      : items;
-  const visibleResults = visualFixtureMode
-    ? results
-    : apiStatus === "online"
-      ? liveResults
-      : results;
+  // Demo fixtures are reserved for `?fixture=design`. When the core is
+  // offline we keep showing the last data we fetched (or empty states) —
+  // never fake content the user might mistake for their own library.
+  const visibleSources = visualFixtureMode ? sources : data.sources;
+  const visibleItems = visualFixtureMode ? items : data.items;
+  const visibleResults = visualFixtureMode ? results : liveResults;
   const visibleJobs = visualFixtureMode
     ? demoJobs
     : apiStatus === "online"
       ? data.jobs
       : [];
-  const themePreference = settingString(data.settings, "theme", "Dark");
-  const currentItem =
-    visibleItems.find((item) => item.id === selectedItemId) ?? visibleItems[0] ?? items[0];
+  // Follow the OS by default — first launch on a light-mode Mac used to open dark.
+  const themePreference = settingString(data.settings, "theme", "System");
+  const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
 
@@ -1178,6 +1159,18 @@ function AppWorkspace() {
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        // Don't stack a new dialog on top of an open modal or steal the
+        // shortcut while the user is typing in a field.
+        const target = event.target;
+        const inEditable =
+          target instanceof HTMLElement &&
+          (target.isContentEditable ||
+            target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.tagName === "SELECT");
+        if (hasOpenModalSurface() || inEditable) {
+          return;
+        }
         event.preventDefault();
         setShowAddSource(true);
       }
@@ -1219,6 +1212,49 @@ function AppWorkspace() {
     return () => window.clearInterval(intervalId);
   }, [apiStatus, activeJobCount]);
 
+  // Items/sources are mapped through t() at fetch time; re-map once when the
+  // user switches language so dates/status text don't stay in the old locale.
+  const { lang } = useLang();
+  const lastMappedLangRef = useRef(lang);
+  useEffect(() => {
+    if (lastMappedLangRef.current === lang) {
+      return;
+    }
+    lastMappedLangRef.current = lang;
+    if (!visualFixtureMode && apiStatus === "online") {
+      void refreshCoreData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
+
+  // Auto-reconnect: while the core is unreachable, keep probing with a
+  // capped exponential backoff instead of waiting for a manual Retry click.
+  useEffect(() => {
+    if (visualFixtureMode || apiStatus === "online") {
+      return;
+    }
+    let cancelled = false;
+    let attempt = 0;
+    let timeoutId = 0;
+
+    const probe = () => {
+      const delay = Math.min(2000 * 2 ** attempt, 15000);
+      attempt += 1;
+      timeoutId = window.setTimeout(() => {
+        void refreshCoreData().then((result) => {
+          if (!cancelled && result === null) probe();
+        });
+      }, delay);
+    };
+    probe();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiStatus, visualFixtureMode]);
+
   async function refreshCoreData(): Promise<AppData | null> {
     setApiError(null);
 
@@ -1248,9 +1284,12 @@ function AppWorkspace() {
       const pendingRetry = lastSearchRef.current;
       if (pendingRetry?.retryWhenIdle && !jobRecords.some(isActiveJob)) {
         lastSearchRef.current = { query: pendingRetry.query, retryWhenIdle: false };
+        const seqAtSchedule = searchSeqRef.current;
         api
           .search(pendingRetry.query, 20)
           .then((records) => {
+            // A newer user-initiated search supersedes this idle retry.
+            if (seqAtSchedule !== searchSeqRef.current) return;
             setLiveResults(mapSearchResults(records, mappedItems, t));
             lastSearchRef.current = {
               query: pendingRetry.query,
@@ -1380,6 +1419,8 @@ function AppWorkspace() {
     }
 
     rememberRecentSearch(trimmed);
+    const seq = ++searchSeqRef.current;
+    const isCurrent = () => seq === searchSeqRef.current;
     setIsSearching(true);
     setSearchError(null);
     try {
@@ -1391,12 +1432,15 @@ function AppWorkspace() {
       const itemsForResults = searchData.items;
       let retryWhenIndexSettles = searchIndexIsSettling(searchData);
       let found = await api.search(trimmed, 20);
+      if (!isCurrent()) return;
       setLiveResults(mapSearchResults(found, itemsForResults, t));
       if (found.length === 0 || retryWhenIndexSettles) {
         await wait(650);
+        if (!isCurrent()) return;
         const refreshed = await refreshCoreData();
         retryWhenIndexSettles = refreshed ? searchIndexIsSettling(refreshed) : retryWhenIndexSettles;
         found = await api.search(trimmed, 20);
+        if (!isCurrent()) return;
         setLiveResults(mapSearchResults(found, refreshed?.items ?? itemsForResults, t));
       }
       lastSearchRef.current = {
@@ -1404,10 +1448,11 @@ function AppWorkspace() {
         retryWhenIdle: retryWhenIndexSettles,
       };
     } catch (error) {
-      setSearchError(errorMessage(error));
-      setApiStatus("error");
+      // A failed search is a search-level problem; flipping the whole app
+      // into an offline/error state used to swap the UI to demo data.
+      if (isCurrent()) setSearchError(errorMessage(error));
     } finally {
-      setIsSearching(false);
+      if (isCurrent()) setIsSearching(false);
     }
   }
 
@@ -1644,10 +1689,23 @@ function AppWorkspace() {
             hasActiveJobs={visibleJobs.some(isActiveJob)}
           />
         ) : null}
-        {view === "result-detail" ? (
+        {view === "result-detail" && !currentItem ? (
+          <div className="screen">
+            <EmptyState
+              title={t("detail.notFound.title")}
+              body={t("detail.notFound.body")}
+              actionLabel={t("detail.notFound.back")}
+              onAction={() => navigate("library")}
+            />
+          </div>
+        ) : null}
+        {view === "result-detail" && currentItem ? (
           <ResultDetail
             item={currentItem}
             startChunkId={selectedChunkId}
+            moreMatches={
+              visibleResults.find((result) => result.id === selectedChunkId)?.moreMatches
+            }
             startTimestamp={selectedTimestamp ?? "00:00"}
             actionsEnabled={screenApiStatus === "online"}
             onLibrary={() => navigate("results")}
@@ -1710,7 +1768,17 @@ function AppWorkspace() {
             }
           />
         ) : null}
-        {view === "item-detail" ? (
+        {view === "item-detail" && !currentItem ? (
+          <div className="screen">
+            <EmptyState
+              title={t("detail.notFound.title")}
+              body={t("detail.notFound.body")}
+              actionLabel={t("detail.notFound.back")}
+              onAction={() => navigate("library")}
+            />
+          </div>
+        ) : null}
+        {view === "item-detail" && currentItem ? (
           <ItemDetail
             item={currentItem}
             apiStatus={screenApiStatus}
@@ -1804,6 +1872,10 @@ function AppWorkspace() {
           onOpenSettingsFix={(section) => {
             setShowJobsSheet(false);
             navigate("settings", { settingsSection: section });
+          }}
+          onOpenSources={() => {
+            setShowJobsSheet(false);
+            navigate("sources");
           }}
         />
       ) : null}
@@ -2042,7 +2114,7 @@ function HomeScreen({
               {statusLabel}
             </span>
           )}
-          <span className="faint home-hotkey">{t("home.hotkeyHint", { hotkey: globalHotkey })}</span>
+          <span className="faint home-hotkey">{t("home.hotkeyHint", { hotkey: formatHotkeyLabel(globalHotkey) })}</span>
         </div>
       </div>
 
@@ -2633,11 +2705,22 @@ function useItemMoments(item: Item, enabled: boolean) {
     };
   }, [enabled, item.id, visualFixtureMode]);
 
+  // Indexed lookups: the per-line linear scan made transcript rendering
+  // O(lines x moments).
+  const momentIndex = useMemo(() => {
+    const byChunk = new Map<string, api.MomentRecord>();
+    const byQuote = new Map<string, api.MomentRecord>();
+    for (const moment of moments) {
+      if (moment.chunk_id) byChunk.set(moment.chunk_id, moment);
+      byQuote.set(`${moment.timestamp}\u0000${moment.quote.trim()}`, moment);
+    }
+    return { byChunk, byQuote };
+  }, [moments]);
+
   function momentForLine(line: TranscriptLine) {
-    return moments.find(
-      (moment) =>
-        moment.chunk_id === line.id ||
-        (moment.timestamp === line.time && moment.quote.trim() === line.text.trim()),
+    return (
+      momentIndex.byChunk.get(line.id) ??
+      momentIndex.byQuote.get(`${line.time}\u0000${line.text.trim()}`)
     );
   }
 
@@ -2760,6 +2843,7 @@ function ResultDetail({
   item,
   startChunkId,
   startTimestamp,
+  moreMatches,
   actionsEnabled,
   onLibrary,
   onDeleteItem,
@@ -2769,6 +2853,7 @@ function ResultDetail({
   item: Item;
   startChunkId: string | null;
   startTimestamp: string;
+  moreMatches?: ResultMatch[];
   actionsEnabled: boolean;
   onLibrary: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
@@ -2816,18 +2901,25 @@ function ResultDetail({
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting";
   const canExportClip = item.contentType === "video" && Boolean(mediaState.chunkId);
-  const otherMatches = transcriptLines
-    .filter((line) => line.time !== startTimestamp)
-    .slice(0, 2)
-    .map((line) => line.time);
-  const playerMarkers: PlayerMarker[] = transcriptLines
-    .map((line) => ({
-      seconds: parseTimestampSeconds(line.time),
-      label: line.time,
-      text: line.text,
-      match: line.time === startTimestamp,
-    }))
-    .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
+  // Real sibling search hits for this item (passed down from the results
+  // list). The previous implementation showed arbitrary transcript lines
+  // labelled as "other matches".
+  const otherMatches = (moreMatches ?? [])
+    .map((match) => match.timestamp)
+    .filter((timestamp) => timestamp !== startTimestamp)
+    .slice(0, 3);
+  const playerMarkers: PlayerMarker[] = useMemo(
+    () =>
+      transcriptLines
+        .map((line) => ({
+          seconds: parseTimestampSeconds(line.time),
+          label: line.time,
+          text: line.text,
+          match: line.time === startTimestamp,
+        }))
+        .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
+    [transcriptLines, startTimestamp],
+  );
 
   usePlaybackPositionPersistence({
     itemId: item.id,
@@ -3071,10 +3163,18 @@ function ResultDetail({
       filters: [{ name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] }],
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
-      setItemAction({
-        status: "queued",
-        message: t("detail.locatedSource", { path: selected }),
-      });
+      try {
+        // Persist the new location and queue a re-index against it —
+        // previously the picked path was only echoed back as a message.
+        await api.updateItemRawPath(item.id, selected.trim());
+        await onReindexItem(item);
+        setItemAction({
+          status: "queued",
+          message: t("detail.locatedSource", { path: selected }),
+        });
+      } catch (error) {
+        setItemAction({ status: "error", message: errorMessage(error) });
+      }
       return;
     }
     setItemAction({ status: "idle", message: null });
@@ -3276,6 +3376,9 @@ function ResultDetail({
               <div className="row gap-2" style={{ alignItems: "center" }}>
                 {otherMatches.length > 0 && !readingMode ? (
                   <div className="row gap-1" aria-label={t("detail.otherMatches")}>
+                    <span className="faint" style={{ fontSize: 12 }}>
+                      {t("detail.otherMatches")}
+                    </span>
                     {otherMatches.map((timestamp) => (
                       <button
                         key={timestamp}
@@ -3370,6 +3473,10 @@ function VideoUnderstandingPanel({
     record: fixtureRecord ?? null,
     message: null,
   });
+  // Tracks the currently displayed item so long-running requests started
+  // for a previous item can detect they are stale.
+  const itemIdRef = useRef(item.id);
+  itemIdRef.current = item.id;
   const record = state.record;
   const isPending = state.status === "loading" || state.status === "analyzing";
   // Elapsed timer for the analyze run. The request is a single blocking call
@@ -3444,15 +3551,22 @@ function VideoUnderstandingPanel({
     if (!confirmed) {
       return;
     }
+    // The analyze POST can run for minutes while the panel stays mounted
+    // across item switches; pin the id so a finished analysis for item A
+    // can't be written into item B's panel (and its player chapters).
+    const analyzedItemId = item.id;
+    const isCurrent = () => analyzedItemId === itemIdRef.current;
     setState((current) => ({
       status: "analyzing",
       record: current.record,
       message: null,
     }));
     try {
-      const next = await api.analyzeItemUnderstanding(item.id);
+      const next = await api.analyzeItemUnderstanding(analyzedItemId);
+      if (!isCurrent()) return;
       setState({ status: "loaded", record: next, message: null });
     } catch (error) {
+      if (!isCurrent()) return;
       setState((current) => ({
         status: "error",
         record: current.record,
@@ -3652,6 +3766,16 @@ function MomentsScreen({
   );
   const [message, setMessage] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+
+  // Same 1.6s reset as the detail view; the button used to stay "Copied"
+  // forever, giving no feedback on subsequent copies.
+  useEffect(() => {
+    if (copyStatus === "idle") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
 
   const load = useCallback(async () => {
     if (visualFixtureMode) {
@@ -4259,9 +4383,17 @@ function ItemDetail({
     item,
     (visualFixtureMode || actionsEnabled) && chunkState.status === "loaded",
   );
-  const playerMarkers: PlayerMarker[] = transcriptLines
-    .map((line) => ({ seconds: parseTimestampSeconds(line.time), label: line.time, text: line.text }))
-    .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
+  const playerMarkers: PlayerMarker[] = useMemo(
+    () =>
+      transcriptLines
+        .map((line) => ({
+          seconds: parseTimestampSeconds(line.time),
+          label: line.time,
+          text: line.text,
+        }))
+        .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
+    [transcriptLines],
+  );
   const chunkValue =
     chunkState.status === "loaded"
       ? String(chunkState.lines.length)
@@ -4399,10 +4531,18 @@ function ItemDetail({
       filters: [{ name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] }],
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
-      setItemAction({
-        status: "queued",
-        message: t("detail.locatedSource", { path: selected }),
-      });
+      try {
+        // Persist the new location and queue a re-index against it —
+        // previously the picked path was only echoed back as a message.
+        await api.updateItemRawPath(item.id, selected.trim());
+        await onReindexItem(item);
+        setItemAction({
+          status: "queued",
+          message: t("detail.locatedSource", { path: selected }),
+        });
+      } catch (error) {
+        setItemAction({ status: "error", message: errorMessage(error) });
+      }
       return;
     }
     setItemAction({ status: "idle", message: null });
@@ -4860,17 +5000,22 @@ function GeneralSettings({
 }) {
   const t = useT();
   const { lang, setLang } = useLang();
-  const theme = settingString(settings, "theme", "Dark");
+  const theme = settingString(settings, "theme", "System");
   const globalHotkey = settingString(settings, "global_hotkey", "Alt+Space");
   const startAtLoginEnabled =
     daemonStatus?.installed ?? settingBoolean(settings, "start_at_login", true);
+  // The description explains what the toggle does; transient daemon status
+  // ("checking...") is appended only once it resolves to something useful.
   const startAtLoginStatus = daemonStatus
     ? daemonStatus.installed
       ? daemonStatus.path
         ? t("settings.general.daemon.installedAt", { path: daemonStatus.path })
         : t("settings.general.daemon.installed")
       : t("settings.general.daemon.notInstalled")
-    : t("settings.general.daemon.checking");
+    : null;
+  const startAtLoginDescription = startAtLoginStatus
+    ? `${t("settings.general.startAtLogin.description")} ${startAtLoginStatus}`
+    : t("settings.general.startAtLogin.description");
   const languageOptions: { value: string; label: string; disabled?: boolean }[] = [
     { value: "zh", label: t("settings.general.language.zh") },
     { value: "en", label: t("settings.general.language.en") },
@@ -4923,7 +5068,7 @@ function GeneralSettings({
       <SettingsGroup title={t("settings.general.startup")}>
         <SettingRow
           label={t("settings.general.startAtLogin")}
-          description={startAtLoginStatus}
+          description={startAtLoginDescription}
           control={
             <Toggle
               checked={startAtLoginEnabled}
@@ -4956,7 +5101,7 @@ function GeneralSettings({
             >
               {globalHotkeyOptions.map((option) => (
                 <option key={option} value={option}>
-                  {option}
+                  {formatHotkeyLabel(option)}
                 </option>
               ))}
             </select>
@@ -4987,6 +5132,16 @@ function IndexingSettings({
 }) {
   const t = useT();
   const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 4);
+  // Track the value locally while dragging; persist once on release —
+  // each tick used to fire a PATCH plus a 7-request full refresh.
+  const [jobsDraft, setJobsDraft] = useState<number | null>(null);
+  const shownJobs = jobsDraft ?? concurrentJobs;
+  const commitJobs = () => {
+    if (jobsDraft !== null && jobsDraft !== concurrentJobs) {
+      void onSettingsChange({ concurrent_jobs: jobsDraft });
+    }
+    setJobsDraft(null);
+  };
 
   return (
     <>
@@ -4997,15 +5152,18 @@ function IndexingSettings({
           control={
             <div className="col gap-2" style={{ alignItems: "flex-end" }}>
               <span className="chip neutral">
-                {concurrentJobs} {t("settings.indexing.concurrentJobs.unit")}
+                {shownJobs} {t("settings.indexing.concurrentJobs.unit")}
               </span>
               <input
                 type="range"
                 min={1}
                 max={4}
-                value={concurrentJobs}
+                value={shownJobs}
                 disabled={disabled}
-                onChange={(event) => void onSettingsChange({ concurrent_jobs: Number(event.currentTarget.value) })}
+                onChange={(event) => setJobsDraft(Number(event.currentTarget.value))}
+                onPointerUp={commitJobs}
+                onKeyUp={commitJobs}
+                onBlur={commitJobs}
               />
             </div>
           }
@@ -5124,9 +5282,15 @@ function ModelsSettings({
     void loadProviders();
   }, []);
 
+  // Both pollers skip ticks while the window is hidden — the settings
+  // screen used to keep hitting the API every 4-5s in the background (and
+  // kept firing failing requests while the core was offline).
   useEffect(() => {
     let cancelled = false;
     async function tick() {
+      if (document.hidden) {
+        return;
+      }
       try {
         const nextCatalog = await api.getModelCatalog();
         if (!cancelled) {
@@ -5138,15 +5302,23 @@ function ModelsSettings({
     }
     void tick();
     const interval = window.setInterval(() => void tick(), 4000);
+    const onVisible = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     async function tick() {
+      if (document.hidden) {
+        return;
+      }
       try {
         const summary = await api.usageSummary();
         if (!cancelled) {
@@ -5699,6 +5871,8 @@ function ProviderConnections({
 
   // P3 · The connection editor is a focused modal now, so Esc dismisses it.
   useEscapeToClose(closeForm, mode !== null);
+  const providerDialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(providerDialogRef, mode !== null);
 
   function openCreate() {
     setMode("create");
@@ -5862,9 +6036,9 @@ function ProviderConnections({
             : [
                 provider ? typeLabel(provider.type) : null,
                 host || null,
-                hasKey
-                  ? t("settings.models.capability.hasKey")
-                  : t("settings.models.capability.needsKey"),
+                // The status chip on the right already says "key needed";
+                // repeating it here read as two warnings per row.
+                hasKey ? t("settings.models.capability.hasKey") : null,
               ]
                 .filter(Boolean)
                 .join(" · ");
@@ -5939,6 +6113,7 @@ function ProviderConnections({
       {mode ? (
         <div className="scrim" role="presentation" onMouseDown={closeForm}>
           <section
+            ref={providerDialogRef}
             className="dialog provider-conn-dialog"
             role="dialog"
             aria-modal="true"
@@ -5974,6 +6149,7 @@ function ProviderConnections({
             <label>
               <span>{t("settings.models.providers.form.type")}</span>
               <select
+                className="select"
                 value={form.type}
                 disabled={disabled || mode === "edit"}
                 onChange={(event) => updateType(event.currentTarget.value as RemoteProviderType)}
@@ -6182,7 +6358,7 @@ function UsageValue({
         })
       : null,
     totals.input_tokens > 0
-      ? t("jobs.usage.inputTokens", { count: totals.input_tokens.toLocaleString() })
+      ? t("jobs.usage.inputTokens", { count: totals.input_tokens.toLocaleString(appLocaleTag()) })
       : null,
     totals.unpriced_events > 0 ? t("jobs.usage.unpriced", { count: totals.unpriced_events }) : null,
   ].filter(Boolean);
@@ -6215,9 +6391,12 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
     message: string | null;
   }>({ status: "idle", message: null });
   const busy = action.status === "running";
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     void Promise.all([readStorageLocations(), api.storageUsage()])
       .then(([locationsValue, usageValue]) => {
         if (!cancelled) {
@@ -6226,12 +6405,16 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
         }
       })
       .catch((error) => {
-        console.warn("failed to read Cerul storage information", error);
+        // Surface the failure with a retry; the row otherwise sits on
+        // "loading" forever.
+        if (!cancelled) {
+          setLoadError(errorMessage(error));
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadAttempt]);
 
   async function refreshStorageUsage() {
     try {
@@ -6265,6 +6448,16 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
 
   return (
     <>
+      {loadError ? (
+        <InlineNotice
+          tone="error"
+          message={loadError}
+          action={{
+            label: t("common.retry"),
+            onClick: () => setLoadAttempt((attempt) => attempt + 1),
+          }}
+        />
+      ) : null}
       <SettingsGroup title={t("settings.storage.group.title")}>
         <SettingRow
           label={t("settings.storage.dataDir.label")}
@@ -6340,7 +6533,9 @@ function AdvancedSettings({
 }) {
   const t = useT();
   const binding = settingString(settings, "api_binding", "127");
-  const remoteApiKey = settingString(settings, "remote_api_key", "");
+  // The key itself is write-only on the API; we only learn whether one exists.
+  const remoteApiKeySet = settings["remote_api_key_set"] === true;
+  const [remoteKeyDraft, setRemoteKeyDraft] = useState("");
   const logLevel = settingString(settings, "log_level", "info");
   const [logAction, setLogAction] = useState<{
     status: SettingsActionStatus;
@@ -6366,6 +6561,7 @@ function AdvancedSettings({
           description={t("settings.advanced.binding.description")}
           control={
             <select
+              className="select"
               value={binding}
               disabled={disabled}
               onChange={(event) => void onSettingsChange({ api_binding: event.currentTarget.value })}
@@ -6378,16 +6574,24 @@ function AdvancedSettings({
         {binding === "0" ? (
           <SettingRow
             label={t("settings.advanced.remoteKey.label")}
+            description={remoteApiKeySet ? t("settings.advanced.remoteKey.setHint") : undefined}
             control={
               <input
                 className="settings-input"
                 type="password"
-                value={remoteApiKey}
+                value={remoteKeyDraft}
                 disabled={disabled}
-                placeholder={t("settings.advanced.remoteKey.placeholder")}
-                onChange={(event) =>
-                  void onSettingsChange({ remote_api_key: event.currentTarget.value })
+                placeholder={
+                  remoteApiKeySet
+                    ? t("settings.advanced.remoteKey.placeholderSet")
+                    : t("settings.advanced.remoteKey.placeholder")
                 }
+                onChange={(event) => setRemoteKeyDraft(event.currentTarget.value)}
+                onBlur={() => {
+                  if (remoteKeyDraft.trim().length === 0) return;
+                  void onSettingsChange({ remote_api_key: remoteKeyDraft });
+                  setRemoteKeyDraft("");
+                }}
               />
             }
           />
@@ -6523,7 +6727,16 @@ function UsageSettings() {
               <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
             </>
           ) : (
-            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
+            <>
+              <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
+              <button
+                type="button"
+                className="btn btn-primary sm"
+                onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
+              >
+                {t("settings.account.signIn")}
+              </button>
+            </>
           )}
         </div>
         <div className="usage-card">

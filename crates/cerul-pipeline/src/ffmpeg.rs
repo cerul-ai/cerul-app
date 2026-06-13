@@ -4,7 +4,27 @@ use std::{
     process::Stdio,
 };
 
+use std::time::Duration;
+
 use tokio::process::Command;
+
+/// Hung ffmpeg on corrupt media used to pin an indexing job forever; every
+/// invocation now runs under a wall-clock ceiling and is killed on timeout.
+const FFMPEG_LONG_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const FFMPEG_CLIP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const FFMPEG_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn run_ffmpeg_with_timeout(
+    command: &mut Command,
+    label: &str,
+    timeout: Duration,
+) -> anyhow::Result<std::process::Output> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("ffmpeg {label} timed out after {}s", timeout.as_secs()))?
+        .map_err(anyhow::Error::from)
+}
 
 pub async fn extract_audio(video: &Path, out: &Path) -> anyhow::Result<()> {
     if out.exists() {
@@ -15,7 +35,8 @@ pub async fn extract_audio(video: &Path, out: &Path) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let output = Command::new(bundled_ffmpeg_path())
+    let mut command = Command::new(bundled_ffmpeg_path());
+    command
         .args(["-y", "-i"])
         .arg(video)
         .args([
@@ -31,9 +52,9 @@ pub async fn extract_audio(video: &Path, out: &Path) -> anyhow::Result<()> {
         ])
         .arg(out)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await?;
+        .stderr(Stdio::piped());
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "extract_audio", FFMPEG_LONG_TIMEOUT).await?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -59,16 +80,17 @@ pub async fn sample_frames(
     let frame_filter = format!(
         "fps=1/{interval_sec},scale='min(640,iw)':'min(640,ih)':force_original_aspect_ratio=decrease,setsar=1"
     );
-    let output = Command::new(bundled_ffmpeg_path())
+    let mut command = Command::new(bundled_ffmpeg_path());
+    command
         .args(["-y", "-i"])
         .arg(video)
         .args(["-vf", &frame_filter])
         .args(["-q:v", "3"])
         .arg(pattern)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await?;
+        .stderr(Stdio::piped());
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "sample_frames", FFMPEG_LONG_TIMEOUT).await?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -127,13 +149,14 @@ async fn remove_existing_frames(out_dir: &Path) -> anyhow::Result<()> {
 }
 
 pub async fn media_duration(path: &Path) -> anyhow::Result<f64> {
-    let output = Command::new(bundled_ffmpeg_path())
+    let mut command = Command::new(bundled_ffmpeg_path());
+    command
         .args(["-hide_banner", "-i"])
         .arg(path)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await?;
+        .stderr(Stdio::piped());
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "media_duration", FFMPEG_PROBE_TIMEOUT).await?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     parse_duration(&stderr).ok_or_else(|| {
         anyhow::anyhow!(
@@ -185,6 +208,16 @@ async fn run_clip_command(
 ) -> anyhow::Result<()> {
     let start = format!("{start_sec:.3}");
     let duration = format!("{duration_sec:.3}");
+    // Render into a unique temp file and rename into place: concurrent
+    // requests for the same uncached clip used to write the same path with
+    // `-y` simultaneously and could produce a corrupt mp4.
+    let tmp = out.with_file_name(format!(
+        "{}.{}.partial.mp4",
+        out.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("clip"),
+        std::process::id(),
+    ));
     let mut command = Command::new(bundled_ffmpeg_path());
     command
         .args(["-y", "-ss", &start, "-i"])
@@ -199,18 +232,26 @@ async fn run_clip_command(
         ]);
     }
 
-    let output = command
+    command
         .args(["-movflags", "+faststart"])
-        .arg(out)
+        .arg(&tmp)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await?;
+        .stderr(Stdio::piped());
+    let output = run_ffmpeg_with_timeout(&mut command, "export_clip", FFMPEG_CLIP_TIMEOUT).await;
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(error);
+        }
+    };
 
     if !output.status.success() {
+        let _ = tokio::fs::remove_file(&tmp).await;
         anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
+    tokio::fs::rename(&tmp, out).await?;
     Ok(())
 }
 

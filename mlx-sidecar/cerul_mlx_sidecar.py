@@ -46,6 +46,18 @@ QWEN3_VL_ALLOW_PATTERNS = [
 ORIGINAL_STDOUT = sys.stdout
 _STDOUT_LOCK = threading.Lock()
 
+# Supply-chain pinning: default models always resolve to a reviewed revision
+# instead of whatever the upstream repo's main branch points at today.
+# Custom model ids supplied by the user are downloaded at their latest
+# revision (documented behaviour).
+PINNED_MODEL_REVISIONS = {
+    DEFAULT_EMBEDDING_MODEL: "008fb7666d66aebeb3134aaec1d28f9806f81b6c",
+    DEFAULT_ASR_MODEL: "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+    DEFAULT_FORCED_ALIGNER_MODEL: "c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
+    DEFAULT_OCR_MODEL: "9c4f5209e57b31f4b9dfba735de3fb983739c9cc",
+    DEFAULT_WHISPER_MODEL: "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Cerul MLX JSONL sidecar")
@@ -91,7 +103,13 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
 
     from huggingface_hub import snapshot_download
 
-    return Path(snapshot_download(repo_id=model_id_or_path, allow_patterns=allow_patterns))
+    return Path(
+        snapshot_download(
+            repo_id=model_id_or_path,
+            revision=PINNED_MODEL_REVISIONS.get(model_id_or_path),
+            allow_patterns=allow_patterns,
+        )
+    )
 
 
 def patch_qwen3_vl_processor(processor: Any) -> list[str]:
@@ -338,7 +356,12 @@ class CerulMlxRuntime:
         return self._asr_model_obj, (self._asr_aligner_obj or self.args.forced_aligner_model)
 
     def transcribe(self, audio_path: str, language: str | None = None) -> dict[str, Any]:
-        if self.args.asr_model == "whisper-large-v3-turbo":
+        # Accept both the bare name and full repo ids: a user setting
+        # CERUL_MLX_ASR_MODEL to "mlx-community/whisper-large-v3-turbo" used
+        # to fall through and be loaded as Qwen3-ASR weights, crashing with
+        # no hint of the cause.
+        asr_model_name = self.args.asr_model.rsplit("/", 1)[-1].lower()
+        if asr_model_name.startswith("whisper"):
             return self.transcribe_with_mlx_whisper(audio_path, language)
 
         try:
@@ -377,8 +400,16 @@ class CerulMlxRuntime:
         try:
             import mlx_whisper
 
+            # When --asr-model itself names a whisper repo, honour it instead
+            # of silently substituting the default --whisper-model.
+            whisper_model = (
+                self.args.asr_model
+                if "whisper" in self.args.asr_model.rsplit("/", 1)[-1].lower()
+                and "/" in self.args.asr_model
+                else self.args.whisper_model
+            )
             kwargs: dict[str, Any] = {
-                "path_or_hf_repo": self.args.whisper_model,
+                "path_or_hf_repo": whisper_model,
                 "word_timestamps": True,
             }
             if language:
@@ -390,7 +421,7 @@ class CerulMlxRuntime:
             return {
                 "text": output.get("text") or " ".join(segment["text"] for segment in segments),
                 "segments": segments,
-                "model": self.args.whisper_model,
+                "model": whisper_model,
             }
         finally:
             self.release_transcription_runtime()
@@ -663,6 +694,17 @@ def heartbeat(request_id: Any, label: str, interval: float = 4.0):
 
 
 def main() -> int:
+    global ORIGINAL_STDOUT
+
+    # Take over file descriptor 1 entirely: keep a private dup for the JSONL
+    # protocol and point fd 1 at stderr. redirect_stdout() only swaps the
+    # Python-level sys.stdout object — MLX/Metal/tokenizers writing to fd 1
+    # via printf used to corrupt the protocol stream.
+    protocol_fd = os.dup(1)
+    os.dup2(2, 1)
+    ORIGINAL_STDOUT = os.fdopen(protocol_fd, "w", buffering=1)
+    sys.stdout = sys.stderr
+
     args = parse_args()
     configure_cache(args.models_cache)
     runtime = CerulMlxRuntime(args)

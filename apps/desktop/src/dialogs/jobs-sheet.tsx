@@ -1,3 +1,4 @@
+import { useRef } from "react";
 // Slide-out sheet listing indexing jobs. Extracted from App.tsx
 // (B13 Phase D).
 
@@ -21,7 +22,7 @@ import {
   jobUsageLabel,
 } from "../lib/jobs";
 import type { Item } from "../lib/types";
-import { useEscapeToClose } from "../lib/use-dismissable";
+import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { useNowSeconds } from "../lib/use-now";
 import { EmptyState } from "../components/leaf";
 import { ProgressBar, StatusBadge } from "../components/transcript";
@@ -32,15 +33,19 @@ export function JobsSheet({
   stepStarts,
   onClose,
   onOpenSettingsFix,
+  onOpenSources,
 }: {
   jobs: api.JobRecord[];
   items: Item[];
   stepStarts: Record<string, number>;
   onClose: () => void;
   onOpenSettingsFix: (section: string) => void;
+  onOpenSources?: () => void;
 }) {
   const t = useT();
   useEscapeToClose(onClose);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(dialogRef);
   const sortedJobs = [...jobs].sort((a, b) => {
     const activeDelta = Number(isActiveJob(b)) - Number(isActiveJob(a));
     if (activeDelta !== 0) {
@@ -107,14 +112,32 @@ export function JobsSheet({
             <>
               {job.error_info ? (
                 <div className="job-fix">
-                  <p>{job.error_info.message}</p>
-                  <button
-                    type="button"
-                    className="btn btn-primary sm"
-                    onClick={() => onOpenSettingsFix(job.error_info?.settings_section ?? "Models")}
-                  >
-                    {t("jobs.fixSettings")}
-                  </button>
+                  {/* Message localized client-side by error code so it follows
+                      the UI language (the API's friendly string is zh-only). */}
+                  <p>
+                    {t(`jobs.error.${job.error_info.code}`, {
+                      capability: jobTypeLabel(job.job_type, t),
+                    })}
+                  </p>
+                  {job.error_info.code === "source_unavailable" ? (
+                    onOpenSources ? (
+                      <button
+                        type="button"
+                        className="btn btn-primary sm"
+                        onClick={onOpenSources}
+                      >
+                        {t("jobs.viewSources")}
+                      </button>
+                    ) : null
+                  ) : job.error_info.code === "unknown_processing_error" ? null : (
+                    <button
+                      type="button"
+                      className="btn btn-primary sm"
+                      onClick={() => onOpenSettingsFix(job.error_info?.settings_section ?? "Models")}
+                    >
+                      {t("jobs.fixSettings")}
+                    </button>
+                  )}
                 </div>
               ) : null}
               {job.error ? (
@@ -137,6 +160,7 @@ export function JobsSheet({
   return (
     <div className="scrim sheet-backdrop" role="presentation" onMouseDown={onClose}>
       <aside
+        ref={dialogRef}
         className="drawer jobs-sheet"
         role="dialog"
         aria-modal="true"

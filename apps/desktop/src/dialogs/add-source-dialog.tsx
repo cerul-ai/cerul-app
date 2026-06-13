@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import * as api from "../lib/api";
 import { errorMessage, uniqueStrings } from "../lib/formatters";
 import { useT } from "../lib/i18n";
@@ -31,7 +31,7 @@ import {
 } from "../lib/validation";
 import { SourcePreview } from "../components/source-preview";
 import { openDialog } from "../lib/desktopHost";
-import { useEscapeToClose } from "../lib/use-dismissable";
+import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 
 const sourceTabs: {
   id: "folder" | "file" | "youtube" | "podcast";
@@ -73,6 +73,8 @@ export function AddSourceDialog({
     message: null,
   });
   useEscapeToClose(onClose);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(dialogRef);
 
   async function chooseFolder() {
     const selected = await openDialog({ directory: true, multiple: false }).catch(() => null);
@@ -222,6 +224,7 @@ export function AddSourceDialog({
   return (
     <div className="scrim" role="presentation">
       <section
+        ref={dialogRef}
         className="dialog"
         role="dialog"
         aria-modal="true"
