@@ -145,6 +145,11 @@ app
     }
     setDockIcon();
     registerAppProtocol();
+    // The app:// renderer is content-hashed, but a stale index.html cached in
+    // the userData partition would keep pointing at old asset hashes across
+    // restarts (a rebuild then appears to "not take effect"). Clear the HTTP
+    // cache on launch — cheap for a local file-backed app.
+    await session.defaultSession.clearCache();
     // Electron grants permission requests (camera, mic, geolocation, ...) by
     // default; deny everything except the two benign permissions the app
     // genuinely uses — clipboard *write* (copy citation / timestamp / Markdown)
@@ -296,6 +301,9 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
   }
   const headers = new Headers(response.headers);
   headers.set("Content-Security-Policy", contentSecurityPolicy);
+  // Never cache index.html so it always references the current (content-hashed)
+  // assets after a rebuild; the hashed assets themselves remain cacheable.
+  headers.set("Cache-Control", "no-store");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
