@@ -52,6 +52,7 @@ import {
   Plus,
   Podcast,
   RefreshCcw,
+  Scissors,
   ReceiptText,
   Search,
   Settings,
@@ -83,6 +84,7 @@ import {
   pluralize,
   uniqueStrings,
   formatHotkeyLabel,
+  buildMomentCitation,
 } from "./lib/formatters";
 import {
   resolveThemePreference,
@@ -109,6 +111,7 @@ import {
   ItemModalityIcon,
   ResultCard,
   ResultModalityIcon,
+  itemModalityLabel,
 } from "./components/cards";
 import { CoreBanner } from "./components/core-banner";
 import { SourceRow } from "./components/source-row";
@@ -2631,33 +2634,90 @@ function downloadTextFile(filename: string, content: string, mime: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function TranscriptExportButtons({ title, lines }: { title: string; lines: TranscriptLine[] }) {
-  const t = useT();
-  if (lines.length === 0) {
-    return null;
+// Download the cached video clip for a chunk. Shared by both detail screens;
+// each owns its own export status state.
+async function downloadVideoClip(chunkId: string, timestamp: string, t: TFunction): Promise<void> {
+  const response = await fetch(api.videoClipUrl(chunkId));
+  if (!response.ok) {
+    throw new Error(t("detail.action.exportFailed", { status: response.status }));
   }
-  const base = transcriptFilenameBase(title);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = `cerul-clip-${timestamp.replace(/:/g, "-")}.mp4`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
+}
+
+// Overflow menu in the detail header: whole-transcript exports plus the
+// lower-frequency maintenance actions (re-index, delete). Primary actions
+// (copy citation, open source, export clip) stay as visible buttons.
+function DetailActionsMenu({
+  onExportMarkdown,
+  onExportSrt,
+  onReindex,
+  onDelete,
+  busy = false,
+  reindexing = false,
+  deleting = false,
+}: {
+  onExportMarkdown?: () => void;
+  onExportSrt?: () => void;
+  onReindex: () => void;
+  onDelete: () => void;
+  busy?: boolean;
+  reindexing?: boolean;
+  deleting?: boolean;
+}) {
+  const t = useT();
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  useEscapeToClose(() => setOpen(false), open);
+  useClickOutside(ref, () => setOpen(false), open);
+  const run = (fn: () => void) => {
+    setOpen(false);
+    fn();
+  };
   return (
-    <>
+    <div className="row-actions" ref={ref}>
       <button
-        className="btn btn-secondary sm"
+        className="btn-icon"
         type="button"
-        onClick={() =>
-          downloadTextFile(`${base}.md`, transcriptToMarkdown(title, lines), "text/markdown;charset=utf-8")
-        }
+        aria-label={t("detail.moreActions")}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
       >
-        <Download size={15} />
-        <span>{t("detail.action.exportMarkdown")}</span>
+        <MoreHorizontal size={16} />
       </button>
-      <button
-        className="btn btn-secondary sm"
-        type="button"
-        onClick={() => downloadTextFile(`${base}.srt`, transcriptToSrt(lines), "text/plain;charset=utf-8")}
-      >
-        <Download size={15} />
-        <span>{t("detail.action.exportSrt")}</span>
-      </button>
-    </>
+      {open ? (
+        <div className="menu row-menu" role="menu">
+          {onExportMarkdown ? (
+            <button type="button" onClick={() => run(onExportMarkdown)}>
+              <Download size={15} />
+              <span>{t("detail.action.exportMarkdown")}</span>
+            </button>
+          ) : null}
+          {onExportSrt ? (
+            <button type="button" onClick={() => run(onExportSrt)}>
+              <Download size={15} />
+              <span>{t("detail.action.exportSrt")}</span>
+            </button>
+          ) : null}
+          <button type="button" disabled={busy} onClick={() => run(onReindex)}>
+            <RefreshCcw size={15} />
+            <span>{reindexing ? t("common.reindexing") : t("common.reindex")}</span>
+          </button>
+          <span className="msep" />
+          <button className="danger" type="button" disabled={busy} onClick={() => run(onDelete)}>
+            <Trash2 size={15} />
+            <span>{deleting ? t("common.deleting") : t("common.delete")}</span>
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -3103,7 +3163,14 @@ function ResultDetail({
 
   async function copyTimestampLink() {
     try {
-      await writeClipboardText(timestampLink);
+      const quote = transcriptLines.find((line) => line.time === currentTimestamp)?.text;
+      const citation = buildMomentCitation({
+        title: item.title,
+        timestamp: currentTimestamp,
+        quote,
+        link: item.originalUrl ?? timestampLink,
+      });
+      await writeClipboardText(citation);
       setCopyStatus("copied");
     } catch {
       setCopyStatus("error");
@@ -3265,6 +3332,50 @@ function ResultDetail({
               {item.originalUrl ? <ExternalLink size={15} /> : <Folder size={15} />}
               <span>{item.originalUrl ? t("detail.source.openOriginal") : t("detail.source.reveal")}</span>
             </button>
+            {item.contentType === "video" ? (
+              <button
+                className="btn btn-secondary sm"
+                type="button"
+                disabled={!canExportClip || itemBusy || clipExportStatus === "exporting"}
+                onClick={exportCurrentClip}
+              >
+                {clipExportStatus === "exporting" ? <Loader2 size={15} /> : <Scissors size={15} />}
+                <span>
+                  {clipExportStatus === "exporting"
+                    ? t("detail.action.exportingClip")
+                    : clipExportStatus === "done"
+                      ? t("detail.action.clipExported")
+                      : t("detail.action.exportClip")}
+                </span>
+              </button>
+            ) : null}
+            <DetailActionsMenu
+              onExportMarkdown={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.md`,
+                        transcriptToMarkdown(item.title, transcriptLines),
+                        "text/markdown;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onExportSrt={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.srt`,
+                        transcriptToSrt(transcriptLines),
+                        "text/plain;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onReindex={() => void reindexCurrentItem()}
+              onDelete={() => void deleteCurrentItem()}
+              busy={itemBusy}
+              reindexing={itemAction.status === "reindexing"}
+              deleting={itemAction.status === "deleting"}
+            />
           </div>
         </div>
       </div>
@@ -3329,35 +3440,10 @@ function ResultDetail({
               </div>
             )}
 
-            <div className="row gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
-              <TranscriptExportButtons title={item.title} lines={transcriptLines} />
-              {item.contentType === "video" ? (
-                <button
-                  className="btn btn-secondary sm"
-                  type="button"
-                  disabled={!canExportClip || itemBusy || clipExportStatus === "exporting"}
-                  onClick={exportCurrentClip}
-                >
-                  {clipExportStatus === "exporting" ? <Loader2 size={15} /> : <Download size={15} />}
-                  <span>
-                    {clipExportStatus === "exporting"
-                      ? t("detail.action.exportingClip")
-                      : clipExportStatus === "done"
-                        ? t("detail.action.clipExported")
-                        : t("detail.action.exportClip")}
-                  </span>
-                </button>
-              ) : null}
-              <button className="btn btn-secondary sm" type="button" disabled={itemBusy} onClick={() => void reindexCurrentItem()}>
-                {itemAction.status === "reindexing" ? <Loader2 size={15} /> : <RefreshCcw size={15} />}
-                <span>{itemAction.status === "reindexing" ? t("common.reindexing") : t("common.reindex")}</span>
-              </button>
-              <button className="btn btn-danger sm" type="button" disabled={itemBusy} onClick={() => void deleteCurrentItem()}>
-                {itemAction.status === "deleting" ? <Loader2 size={15} /> : <Trash2 size={15} />}
-                <span>{itemAction.status === "deleting" ? t("common.deleting") : t("common.delete")}</span>
-              </button>
-            </div>
-
+            {/* Header now owns copy/open-source/export-clip + the ⋯ menu
+                (export Markdown/SRT, re-index, delete). The old flat action
+                row that used to live here was removed in the detail-actions
+                redesign. */}
             <VideoUnderstandingPanel
               item={item}
               enabled={actionsEnabled}

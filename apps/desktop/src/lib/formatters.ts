@@ -192,3 +192,24 @@ export function formatHotkeyLabel(label: string): string {
     })
     .join(" ");
 }
+
+/** Build a copy-paste citation for a moment as Markdown: a quote (when we have
+ * the line), then the source + timestamp, then a link that works outside Cerul
+ * (the original URL when known, otherwise the in-app deep link). This is what
+ * turns "copy timestamp" from an internal-only deep link into something you can
+ * paste into a doc or message. */
+export function buildMomentCitation(opts: {
+  title: string;
+  timestamp: string;
+  quote?: string | null;
+  link: string;
+}): string {
+  const lines: string[] = [];
+  const quote = opts.quote?.trim();
+  if (quote) {
+    lines.push(`> ${quote}`, "");
+  }
+  lines.push(`— ${opts.title} @ ${opts.timestamp}`);
+  lines.push(opts.link);
+  return lines.join("\n");
+}

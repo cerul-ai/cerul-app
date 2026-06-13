@@ -25,6 +25,23 @@ import { ProgressBar, highlightSnippet } from "./transcript";
 
 // Single searchability chip summarising an item's state, mirroring the
 // redesign baseline (语音 + 画面可搜 / 仅语音可搜 / 索引中 · % / 处理失败).
+/** Just the searchable-modality label (speech / visual), independent of index
+ * status — for the detail subtitle, where indexed/failed status is shown
+ * separately. itemSearchability() below folds status in for library cards. */
+export function itemModalityLabel(item: Item, t: TFunction): string {
+  const hasVisual =
+    item.contentType === "image" ||
+    (item.contentType === "video" && item.visualIndexStatus === "indexed");
+  const hasSpeech = item.contentType === "video" || item.contentType === "audio";
+  if (hasVisual && hasSpeech) {
+    return t("library.itemCard.searchSpeechVisual");
+  }
+  if (hasVisual) {
+    return t("library.itemCard.searchVisualOnly");
+  }
+  return t("library.itemCard.searchSpeechOnly");
+}
+
 function itemSearchability(
   item: Item,
   t: TFunction,
