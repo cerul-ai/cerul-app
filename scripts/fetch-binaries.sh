@@ -128,6 +128,7 @@ expected_sha256() {
     qdrant-x86_64-unknown-linux-musl.tar.gz) echo "40a6af44f8a496560c9d2352b6b2a0ada816aa48d0781c68f602582e67b3aea0" ;;
     qdrant-x86_64-pc-windows-msvc.zip) echo "b2b262cba6f78cf4fa794ae78d73a8f70a221c93c76c75ac8fd6fe95d809b142" ;;
     ffmpeg-7.1-lgpl-macos-arm64.tar.gz) echo "157076bb3e83f31e7a39781200173eb730edafed9481ed5c5a3b3a2adee416fa" ;;
+    ffmpeg-7.1-lgpl-macos-x86_64.tar.gz) echo "a13c65f9986d970bb89eee172959aa5c6b09534e8c045575eeba1cdab444fd86" ;;
     *) return 1 ;;
   esac
 }
@@ -232,7 +233,8 @@ ffmpeg_url() {
   # source (no --enable-gpl, no x264) and hosted on the cerul-app releases, so
   # release installers never ship a GPL/system ffmpeg. Checksum-pinned above.
   case "$(target_os "$TARGET")-$(target_arch "$TARGET")" in
-    macos-aarch64) echo "https://github.com/cerul-ai/cerul-app/releases/download/vendor-ffmpeg-${FFMPEG_VERSION}-lgpl/ffmpeg-${FFMPEG_VERSION}-lgpl-macos-arm64.tar.gz" ;;
+    macos-aarch64) echo "https://github.com/cerul-ai/cerul-app/releases/download/ffmpeg-vendor-${FFMPEG_VERSION}-lgpl/ffmpeg-${FFMPEG_VERSION}-lgpl-macos-arm64.tar.gz" ;;
+    macos-x86_64) echo "https://github.com/cerul-ai/cerul-app/releases/download/ffmpeg-vendor-${FFMPEG_VERSION}-lgpl/ffmpeg-${FFMPEG_VERSION}-lgpl-macos-x86_64.tar.gz" ;;
     *) return 1 ;;
   esac
 }
