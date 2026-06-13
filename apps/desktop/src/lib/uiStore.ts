@@ -13,7 +13,10 @@ export type PersistedRoute = {
 
 export type PersistedUiState = {
   lastRoute?: PersistedRoute;
-  sidebarCollapsed?: boolean;
+  // Set once the user finishes (or re-runs) the onboarding wizard. When this is
+  // unset — a fresh install or after clearing local data — the app auto-opens
+  // onboarding on launch so the first-run intro is always shown.
+  hasCompletedOnboarding?: boolean;
 };
 
 let storePromise: Promise<DesktopStore | null> | null = null;
@@ -23,7 +26,7 @@ export async function loadPersistedUiState(): Promise<PersistedUiState> {
   if (store) {
     return {
       lastRoute: await store.get<PersistedRoute>("lastRoute"),
-      sidebarCollapsed: await store.get<boolean>("sidebarCollapsed"),
+      hasCompletedOnboarding: await store.get<boolean>("hasCompletedOnboarding"),
     };
   }
 
@@ -34,8 +37,8 @@ export async function persistLastRoute(route: PersistedRoute) {
   await persistUiPatch({ lastRoute: route });
 }
 
-export async function persistSidebarCollapsed(sidebarCollapsed: boolean) {
-  await persistUiPatch({ sidebarCollapsed });
+export async function persistOnboardingCompleted(hasCompletedOnboarding: boolean) {
+  await persistUiPatch({ hasCompletedOnboarding });
 }
 
 async function persistUiPatch(patch: PersistedUiState) {

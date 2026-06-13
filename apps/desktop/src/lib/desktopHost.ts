@@ -12,6 +12,15 @@ export type DesktopUpdate = {
   publishedAt?: string;
 } | null;
 
+// Drives the rail "Update" pill. Mirrors UpdaterState in the electron shell.
+// `available` works on any build (GitHub-release detection); the download/
+// install phases only occur once releases ship signed + a latest-mac.yml.
+export type DesktopUpdaterState =
+  | { phase: "idle" }
+  | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
+  | { phase: "downloading"; version: string; percent: number }
+  | { phase: "downloaded"; version: string };
+
 export type DesktopStore = {
   get<T>(key: string): Promise<T | undefined>;
   set<T>(key: string, value: T): Promise<void>;
@@ -22,6 +31,11 @@ type ElectronDesktopHost = {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openDialog(options: OpenDialogOptions): Promise<string | string[] | null>;
   checkForUpdate(): Promise<DesktopUpdate>;
+  updaterCheck(): Promise<DesktopUpdaterState>;
+  updaterGetState(): Promise<DesktopUpdaterState>;
+  updaterDownload(): Promise<DesktopUpdaterState>;
+  updaterInstall(): Promise<void>;
+  onUpdaterEvent(callback: (state: DesktopUpdaterState) => void): () => void;
   storeGet<T>(path: string, key: string): Promise<T | undefined>;
   storeSet<T>(path: string, key: string, value: T): Promise<void>;
   storeSave(path: string): Promise<void>;
@@ -64,6 +78,40 @@ export async function checkForDesktopUpdate(): Promise<DesktopUpdate> {
     return window.cerulDesktop.checkForUpdate();
   }
   return null;
+}
+
+export async function runDesktopUpdaterCheck(): Promise<DesktopUpdaterState> {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.updaterCheck();
+  }
+  return { phase: "idle" };
+}
+
+export async function getDesktopUpdaterState(): Promise<DesktopUpdaterState> {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.updaterGetState();
+  }
+  return { phase: "idle" };
+}
+
+export async function downloadDesktopUpdate(): Promise<DesktopUpdaterState> {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.updaterDownload();
+  }
+  return { phase: "idle" };
+}
+
+export async function installDesktopUpdate(): Promise<void> {
+  await window.cerulDesktop?.updaterInstall();
+}
+
+export function subscribeDesktopUpdater(
+  callback: (state: DesktopUpdaterState) => void,
+): () => void {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.onUpdaterEvent(callback);
+  }
+  return () => undefined;
 }
 
 export async function loadDesktopStore(path: string): Promise<DesktopStore | null> {

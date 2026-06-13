@@ -76,13 +76,6 @@ docs/
 *.zip
 .claude/
 
-# Local design / writing workspaces (never publish to the public repo)
-design/CerulAPP/
-design/cerul-brand/
-design/cerul-redesign/
-design/cerul_update/
-design/review-shots-*/
-design/shots/
-design/截图/
-design/*.html
+# Local design / writing workspace (never publish to the public repo)
+design/
 web-articles/
