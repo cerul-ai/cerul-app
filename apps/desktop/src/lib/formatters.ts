@@ -163,3 +163,32 @@ export function extractChunkIdFromThumbnail(url: string | null): string | null {
   const match = url.match(/\/chunks\/([^/]+)\/frame/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform ?? "");
+
+/** Render a stored hotkey id ("Alt+Space") in the platform's idiom:
+ * mac users think in ⌥ Space, not Alt+Space. The stored value is unchanged —
+ * this is display-only. */
+export function formatHotkeyLabel(label: string): string {
+  if (!IS_MAC) {
+    return label;
+  }
+  return label
+    .split("+")
+    .map((part) => {
+      switch (part.trim()) {
+        case "Alt":
+          return "\u2325"; // ⌥
+        case "Cmd":
+          return "\u2318"; // ⌘
+        case "Ctrl":
+          return "\u2303"; // ⌃
+        case "Shift":
+          return "\u21e7"; // ⇧
+        default:
+          return part.trim();
+      }
+    })
+    .join(" ");
+}

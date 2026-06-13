@@ -33,12 +33,14 @@ export function JobsSheet({
   stepStarts,
   onClose,
   onOpenSettingsFix,
+  onOpenSources,
 }: {
   jobs: api.JobRecord[];
   items: Item[];
   stepStarts: Record<string, number>;
   onClose: () => void;
   onOpenSettingsFix: (section: string) => void;
+  onOpenSources?: () => void;
 }) {
   const t = useT();
   useEscapeToClose(onClose);
@@ -110,14 +112,32 @@ export function JobsSheet({
             <>
               {job.error_info ? (
                 <div className="job-fix">
-                  <p>{job.error_info.message}</p>
-                  <button
-                    type="button"
-                    className="btn btn-primary sm"
-                    onClick={() => onOpenSettingsFix(job.error_info?.settings_section ?? "Models")}
-                  >
-                    {t("jobs.fixSettings")}
-                  </button>
+                  {/* Message localized client-side by error code so it follows
+                      the UI language (the API's friendly string is zh-only). */}
+                  <p>
+                    {t(`jobs.error.${job.error_info.code}`, {
+                      capability: jobTypeLabel(job.job_type, t),
+                    })}
+                  </p>
+                  {job.error_info.code === "source_unavailable" ? (
+                    onOpenSources ? (
+                      <button
+                        type="button"
+                        className="btn btn-primary sm"
+                        onClick={onOpenSources}
+                      >
+                        {t("jobs.viewSources")}
+                      </button>
+                    ) : null
+                  ) : job.error_info.code === "unknown_processing_error" ? null : (
+                    <button
+                      type="button"
+                      className="btn btn-primary sm"
+                      onClick={() => onOpenSettingsFix(job.error_info?.settings_section ?? "Models")}
+                    >
+                      {t("jobs.fixSettings")}
+                    </button>
+                  )}
                 </div>
               ) : null}
               {job.error ? (

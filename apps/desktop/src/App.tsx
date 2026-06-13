@@ -82,6 +82,7 @@ import {
   parseTimestampSeconds,
   pluralize,
   uniqueStrings,
+  formatHotkeyLabel,
 } from "./lib/formatters";
 import {
   resolveThemePreference,
@@ -1057,7 +1058,8 @@ function AppWorkspace() {
     : apiStatus === "online"
       ? data.jobs
       : [];
-  const themePreference = settingString(data.settings, "theme", "Dark");
+  // Follow the OS by default — first launch on a light-mode Mac used to open dark.
+  const themePreference = settingString(data.settings, "theme", "System");
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
@@ -1871,6 +1873,10 @@ function AppWorkspace() {
             setShowJobsSheet(false);
             navigate("settings", { settingsSection: section });
           }}
+          onOpenSources={() => {
+            setShowJobsSheet(false);
+            navigate("sources");
+          }}
         />
       ) : null}
       <ConfirmDialog
@@ -2108,7 +2114,7 @@ function HomeScreen({
               {statusLabel}
             </span>
           )}
-          <span className="faint home-hotkey">{t("home.hotkeyHint", { hotkey: globalHotkey })}</span>
+          <span className="faint home-hotkey">{t("home.hotkeyHint", { hotkey: formatHotkeyLabel(globalHotkey) })}</span>
         </div>
       </div>
 
@@ -4994,17 +5000,22 @@ function GeneralSettings({
 }) {
   const t = useT();
   const { lang, setLang } = useLang();
-  const theme = settingString(settings, "theme", "Dark");
+  const theme = settingString(settings, "theme", "System");
   const globalHotkey = settingString(settings, "global_hotkey", "Alt+Space");
   const startAtLoginEnabled =
     daemonStatus?.installed ?? settingBoolean(settings, "start_at_login", true);
+  // The description explains what the toggle does; transient daemon status
+  // ("checking...") is appended only once it resolves to something useful.
   const startAtLoginStatus = daemonStatus
     ? daemonStatus.installed
       ? daemonStatus.path
         ? t("settings.general.daemon.installedAt", { path: daemonStatus.path })
         : t("settings.general.daemon.installed")
       : t("settings.general.daemon.notInstalled")
-    : t("settings.general.daemon.checking");
+    : null;
+  const startAtLoginDescription = startAtLoginStatus
+    ? `${t("settings.general.startAtLogin.description")} ${startAtLoginStatus}`
+    : t("settings.general.startAtLogin.description");
   const languageOptions: { value: string; label: string; disabled?: boolean }[] = [
     { value: "zh", label: t("settings.general.language.zh") },
     { value: "en", label: t("settings.general.language.en") },
@@ -5057,7 +5068,7 @@ function GeneralSettings({
       <SettingsGroup title={t("settings.general.startup")}>
         <SettingRow
           label={t("settings.general.startAtLogin")}
-          description={startAtLoginStatus}
+          description={startAtLoginDescription}
           control={
             <Toggle
               checked={startAtLoginEnabled}
@@ -5090,7 +5101,7 @@ function GeneralSettings({
             >
               {globalHotkeyOptions.map((option) => (
                 <option key={option} value={option}>
-                  {option}
+                  {formatHotkeyLabel(option)}
                 </option>
               ))}
             </select>
@@ -6025,9 +6036,9 @@ function ProviderConnections({
             : [
                 provider ? typeLabel(provider.type) : null,
                 host || null,
-                hasKey
-                  ? t("settings.models.capability.hasKey")
-                  : t("settings.models.capability.needsKey"),
+                // The status chip on the right already says "key needed";
+                // repeating it here read as two warnings per row.
+                hasKey ? t("settings.models.capability.hasKey") : null,
               ]
                 .filter(Boolean)
                 .join(" · ");
@@ -6138,6 +6149,7 @@ function ProviderConnections({
             <label>
               <span>{t("settings.models.providers.form.type")}</span>
               <select
+                className="select"
                 value={form.type}
                 disabled={disabled || mode === "edit"}
                 onChange={(event) => updateType(event.currentTarget.value as RemoteProviderType)}
@@ -6549,6 +6561,7 @@ function AdvancedSettings({
           description={t("settings.advanced.binding.description")}
           control={
             <select
+              className="select"
               value={binding}
               disabled={disabled}
               onChange={(event) => void onSettingsChange({ api_binding: event.currentTarget.value })}
@@ -6714,7 +6727,16 @@ function UsageSettings() {
               <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
             </>
           ) : (
-            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
+            <>
+              <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
+              <button
+                type="button"
+                className="btn btn-primary sm"
+                onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
+              >
+                {t("settings.account.signIn")}
+              </button>
+            </>
           )}
         </div>
         <div className="usage-card">

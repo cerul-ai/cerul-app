@@ -200,6 +200,43 @@ export function CerulPlayer({
     setHover(nearest ? { left: (nearest.seconds / duration) * 100, marker: nearest } : null);
   };
 
+  const seekBy = (deltaSeconds: number) => {
+    const video = videoRef.current;
+    if (!video || !(duration > 0)) return;
+    video.currentTime = Math.min(duration, Math.max(0, video.currentTime + deltaSeconds));
+  };
+  const onTrackKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      seekBy(5);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      seekBy(-5);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      seekBy(Number.NEGATIVE_INFINITY);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      seekBy(Number.POSITIVE_INFINITY);
+    }
+  };
+  const adjustVolume = (delta: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const next = Math.min(1, Math.max(0, video.volume + delta));
+    video.volume = next;
+    video.muted = next === 0;
+  };
+  const onVolKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+      event.preventDefault();
+      adjustVolume(0.1);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+      event.preventDefault();
+      adjustVolume(-0.1);
+    }
+  };
+
   const onMarkerClick = useCallback(
     (marker: PlayerMarker) => {
       if (onSeekMarker) {
@@ -285,6 +322,14 @@ export function CerulPlayer({
             className={hasChapters ? "cplayer-track has-chapters" : "cplayer-track"}
             ref={trackRef}
             onPointerDown={onTrackDown}
+            role="slider"
+            tabIndex={0}
+            aria-label={ariaLabel}
+            aria-valuemin={0}
+            aria-valuemax={Math.round(duration)}
+            aria-valuenow={Math.round(time)}
+            aria-valuetext={fmtClock(time)}
+            onKeyDown={onTrackKeyDown}
           >
             {hasChapters ? (
               segments.map((segment) => (
@@ -333,7 +378,16 @@ export function CerulPlayer({
             >
               {isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}
             </button>
-            <div className="cplayer-voltrack" onPointerDown={onVolDown}>
+            <div
+              className="cplayer-voltrack"
+              onPointerDown={onVolDown}
+              role="slider"
+              tabIndex={0}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round((isMuted ? 0 : volume) * 100)}
+              onKeyDown={onVolKeyDown}
+            >
               <div className="cplayer-volfill" style={{ width: `${isMuted ? 0 : volume * 100}%` }} />
             </div>
           </div>

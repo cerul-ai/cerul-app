@@ -58,9 +58,10 @@ export function SourcePreview({
         )}
         <div>
           <strong>{title}</strong>
-          <span className="mono muted">
-            {validation.message} - {validDetail}
-          </span>
+          {/* Body copy, not code: the monospace dash-joined line read like
+              debug output. */}
+          <span className="muted">{validation.message}</span>
+          {validDetail ? <span className="muted">{validDetail}</span> : null}
         </div>
       </div>
     );
