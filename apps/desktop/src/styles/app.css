@@ -20,16 +20,37 @@
   transition: width var(--dur) var(--ease);
   flex: none;
 }
-.rail[data-collapsed="true"] { width: 60px; }
 .rail-top { padding: 6px 4px 16px; display: flex; align-items: center; gap: 6px; }
 .rail-brand { display: flex; align-items: center; gap: 9px; background: none; border: 0; cursor: pointer; padding: 4px 6px; border-radius: 9px; min-width: 0; }
 .rail-brand:hover { background: var(--surface-3); }
 .rail-brand .brand-mark { width: 24px; height: 24px; }
 .rail-wordmark { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
-.rail[data-collapsed="true"] .rail-wordmark { display: none; }
-.rail-collapse { margin-left: auto; flex: none; }
-.rail[data-collapsed="true"] .rail-top { flex-direction: column; gap: 2px; padding: 4px 4px 10px; }
-.rail[data-collapsed="true"] .rail-collapse { margin-left: 0; }
+/* Update pill — appears in the rail header only when a newer release exists. */
+.rail-update {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: filter var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.rail-update:hover { filter: brightness(1.08); }
+.rail-update:active { filter: brightness(0.96); }
+.rail-update[disabled] { cursor: default; opacity: 0.85; }
+.rail-update svg, .rail-update-label { color: #fff; }
 .brandmark { color: var(--accent); display: inline-grid; place-items: center; }
 /* BrandMark / BrandLogo render a brand asset sized at 100%×100%, so the wrapper must
    carry a definite size in every context (rail, empty states, overlay). Without
@@ -46,8 +67,6 @@
 .rail-status { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: 11px; color: var(--text-faint); }
 .rail-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
 .rail-status-dot[data-ok="true"] { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
-.rail[data-collapsed="true"] .rail-status { justify-content: center; padding: 8px 0 4px; }
-.rail[data-collapsed="true"] .rail-status .rail-label { display: none; }
 
 .rail-item {
   position: relative;
@@ -64,11 +83,6 @@
 .rail-item .rail-ind { display: none; }
 .rail-item.active svg { color: var(--accent); }
 .rail-label { overflow: hidden; }
-.rail[data-collapsed="true"] .rail-item { justify-content: center; padding: 0; gap: 0; }
-/* Icon-only when collapsed: without this the labels were clipped mid-word
-   ("Sear", "Libr", ...). Tooltips come from the buttons' title attribute. */
-.rail[data-collapsed="true"] .rail-item .rail-label { display: none; }
-.rail[data-collapsed="true"] .rail-item .rail-ind { left: -10px; }
 .badge-dot { position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 999px; background: var(--accent); border: 2px solid var(--bg-sunken); }
 .badge-count {
   position: absolute;
@@ -90,9 +104,6 @@
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1;
 }
-
-/* tooltips only when collapsed */
-.rail:not([data-collapsed="true"]) .tip::after { display: none; }
 
 /* ---------------- Content area ---------------- */
 .content { overflow-y: auto; overflow-x: hidden; height: 100vh; position: relative; }
@@ -486,10 +497,11 @@
 @media (max-width: 1000px) {
   .rail { width: 60px; }
   .rail .rail-label { display: none; }
-  .rail .rail-top { flex-direction: column; gap: 2px; }
-  .rail .rail-collapse { display: none; }
+  .rail .rail-top { flex-direction: column; gap: 6px; }
+  .rail .rail-update { margin-left: 0; padding: 0 6px; }
+  .rail .rail-update-label { display: none; }
   .rail .rail-item { justify-content: center; padding: 0; gap: 0; }
-  .rail:not([data-collapsed]) .tip::after, .rail .tip::after { display: block; }
+  .rail .tip::after { display: block; }
   .page { padding: 0 28px 80px; }
   .lib-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 }

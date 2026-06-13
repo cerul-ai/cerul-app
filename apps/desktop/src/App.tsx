@@ -202,20 +202,26 @@ import {
   timestampDeepLink,
 } from "./lib/detail";
 import { durationMinutes, sortLibraryItems } from "./lib/library";
-import { loadPersistedUiState, persistLastRoute, persistSidebarCollapsed } from "./lib/uiStore";
+import { loadPersistedUiState, persistLastRoute, persistOnboardingCompleted } from "./lib/uiStore";
 import type { PersistedRoute } from "./lib/uiStore";
 import {
   checkForDesktopUpdate,
+  downloadDesktopUpdate,
+  getDesktopUpdaterState,
   hasDesktopHost,
+  installDesktopUpdate,
   invokeHostCommand,
   openDialog,
+  runDesktopUpdaterCheck,
+  subscribeDesktopUpdater,
 } from "./lib/desktopHost";
-import type { DesktopUpdate } from "./lib/desktopHost";
+import type { DesktopUpdate, DesktopUpdaterState } from "./lib/desktopHost";
 
 // Top-level navigation. Sub-pages (`result-detail`, `item-detail`) are reached
 // by clicking a search result or library item, not from the sidebar.
-// `onboarding` is a one-time flow accessed via Settings → "Re-run onboarding"
-// after first launch, not a permanent destination.
+// `onboarding` auto-opens on a fresh/cleared install (no completed-onboarding
+// flag) and can be re-run later via Settings → "Re-run onboarding"; it is not a
+// permanent destination.
 // All valid View ids — broader than the sidebar so persisted routes for
 // sub-pages (result-detail, item-detail) and onboarding still rehydrate.
 const viewIds: View[] = [
@@ -949,10 +955,13 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
   return "Models";
 }
 
-function visualFixtureModeEnabled() {
+function hashQueryParam(name: string): string | null {
   const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
-  const params = new URLSearchParams(queryString);
-  return params.get("fixture") === "design";
+  return new URLSearchParams(queryString).get(name);
+}
+
+function visualFixtureModeEnabled() {
+  return hashQueryParam("fixture") === "design";
 }
 
 // Single source of truth for the non-online core-status wording, so the home
@@ -1029,7 +1038,7 @@ function AppWorkspace() {
   const [showAddSource, setShowAddSource] = useState(false);
   const [showJobsSheet, setShowJobsSheet] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [updaterState, setUpdaterState] = useState<DesktopUpdaterState>({ phase: "idle" });
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [settingsSection, setSettingsSection] = useState<string>(() =>
     normalizeSettingsSection(initialRoute.settingsSection),
@@ -1152,8 +1161,16 @@ function AppWorkspace() {
           return;
         }
 
-        if (typeof state.sidebarCollapsed === "boolean") {
-          setSidebarCollapsed(state.sidebarCollapsed);
+        // First run (a fresh or cleared install): no completed-onboarding flag,
+        // no persisted route, and no explicit deep link → open the onboarding
+        // intro rather than an empty home. Requiring no persisted route avoids
+        // forcing existing users (who predate this flag but have navigated
+        // before) back through onboarding on upgrade. The flag is set when the
+        // wizard finishes (startIndexingFromOnboarding) or via Settings →
+        // "Re-run onboarding".
+        if (!state.hasCompletedOnboarding && !state.lastRoute && !window.location.hash) {
+          setViewState("onboarding");
+          return;
         }
 
         if (!window.location.hash && state.lastRoute) {
@@ -1170,6 +1187,37 @@ function AppWorkspace() {
   useEffect(() => {
     void refreshCoreData();
   }, []);
+
+  // Desktop auto-update: subscribe to shell-pushed updater state, sync the
+  // current value, and kick a check. A periodic re-check keeps long sessions
+  // current. In the browser/fixture harness, ?fakeUpdate=<version> renders the
+  // pill without a desktop host so the flow stays reviewable.
+  useEffect(() => {
+    const fakeVersion = hashQueryParam("fakeUpdate");
+    if (fakeVersion) {
+      setUpdaterState({
+        phase: "available",
+        version: fakeVersion,
+        releaseUrl: "https://github.com/cerul-ai/cerul-app/releases",
+        canAutoInstall: false,
+      });
+      return;
+    }
+    if (visualFixtureMode || !hasDesktopHost()) {
+      return;
+    }
+    const unsubscribe = subscribeDesktopUpdater(setUpdaterState);
+    void getDesktopUpdaterState().then(setUpdaterState);
+    void runDesktopUpdaterCheck();
+    const intervalId = window.setInterval(
+      () => void runDesktopUpdaterCheck(),
+      6 * 60 * 60 * 1000,
+    );
+    return () => {
+      unsubscribe();
+      window.clearInterval(intervalId);
+    };
+  }, [visualFixtureMode]);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
@@ -1389,14 +1437,6 @@ function AppWorkspace() {
     window.location.hash = routeHash(restoredView, restoredRoute);
   }
 
-  function toggleSidebarCollapsed() {
-    setSidebarCollapsed((current) => {
-      const next = !current;
-      void persistSidebarCollapsed(next);
-      return next;
-    });
-  }
-
   function requestConfirm(options: ConfirmOptions) {
     return new Promise<boolean>((resolve) => {
       setConfirmRequest({ ...options, resolve });
@@ -1407,6 +1447,20 @@ function AppWorkspace() {
     const request = confirmRequest;
     setConfirmRequest(null);
     request?.resolve(confirmed);
+  }
+
+  async function handleUpdateActivate() {
+    if (updaterState.phase === "available") {
+      // No desktop host (browser/preview demo) → just open the download page.
+      if (!hasDesktopHost()) {
+        window.open(updaterState.releaseUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      const next = await downloadDesktopUpdate();
+      setUpdaterState(next);
+    } else if (updaterState.phase === "downloaded") {
+      await installDesktopUpdate();
+    }
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -1512,6 +1566,7 @@ function AppWorkspace() {
       await installDaemon();
       await refreshCoreData();
       setModelDownloadState({ status: "idle", error: null });
+      void persistOnboardingCompleted(true);
       navigate("home");
     } catch (error) {
       setModelDownloadState({ status: "error", error: errorMessage(error) });
@@ -1534,7 +1589,7 @@ function AppWorkspace() {
 
   return (
     <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
-      <aside className="rail" data-collapsed={sidebarCollapsed ? "true" : undefined}>
+      <aside className="rail">
         <div className="rail-top">
           <button
             className="rail-brand"
@@ -1545,14 +1600,38 @@ function AppWorkspace() {
             <BrandMark />
             <span className="rail-wordmark rail-label">Cerul</span>
           </button>
-          <button
-            className="btn-icon sm rail-collapse"
-            type="button"
-            aria-label={sidebarCollapsed ? t("shell.expandRail") : t("shell.collapseRail")}
-            onClick={toggleSidebarCollapsed}
-          >
-            <ChevronRight size={16} />
-          </button>
+          {updaterState.phase !== "idle" ? (
+            <button
+              className="rail-update"
+              type="button"
+              disabled={updaterState.phase === "downloading"}
+              title={
+                updaterState.phase === "downloading"
+                  ? t("shell.updateDownloadingTip")
+                  : updaterState.phase === "downloaded"
+                    ? t("shell.updateReadyTip", { version: updaterState.version })
+                    : t("shell.updateAvailableTip", { version: updaterState.version })
+              }
+              onClick={() => void handleUpdateActivate()}
+            >
+              {updaterState.phase === "downloading" ? (
+                <>
+                  <Loader2 size={13} className="spin" />
+                  <span className="rail-update-label">{updaterState.percent}%</span>
+                </>
+              ) : updaterState.phase === "downloaded" ? (
+                <>
+                  <RefreshCcw size={13} />
+                  <span className="rail-update-label">{t("shell.updateRestart")}</span>
+                </>
+              ) : (
+                <>
+                  <Download size={13} />
+                  <span className="rail-update-label">{t("shell.update")}</span>
+                </>
+              )}
+            </button>
+          ) : null}
         </div>
 
         <nav className="rail-nav" aria-label={t("nav.home")}>

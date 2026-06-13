@@ -17,7 +17,10 @@ for (const entry of ["main", "preload"]) {
     platform: "node",
     target: "node22",
     format: "cjs",
-    external: ["electron"],
+    // electron-updater is lazy-required at runtime (see getAutoUpdater in
+    // main.ts) and resolved from node_modules in the packaged app; keeping it
+    // external avoids bundling its dynamic requires.
+    external: ["electron", "electron-updater"],
     logLevel: "info",
     write: !checkOnly,
   });

@@ -21,6 +21,10 @@ import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+// Type-only: erased at runtime. The implementation is lazy-required in
+// getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
+// GitHub-release fallback instead of crashing the main process at load time.
+import type { AppUpdater } from "electron-updater";
 
 const apiBaseUrl = "http://127.0.0.1:7777";
 const appScheme = "app";
@@ -67,6 +71,10 @@ const dirtyStores = new Set<string>();
 const secureTokenStorePath = "secure-tokens.json";
 let oauthCallbackServer: Server | null = null;
 let oauthCallbackPort: number | null = null;
+let autoUpdaterInstance: AppUpdater | null = null;
+let autoUpdaterWired = false;
+let updateInstallRequested = false;
+let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
 
@@ -86,6 +94,15 @@ type DesktopUpdateInfo = {
   prerelease: boolean;
   publishedAt?: string;
 };
+
+// Drives the rail "Update" pill. `available` always works (GitHub-release
+// detection, signing-independent); `downloading`/`downloaded` only occur once
+// releases ship signed + a latest-mac.yml that electron-updater can apply.
+type UpdaterState =
+  | { phase: "idle" }
+  | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
+  | { phase: "downloading"; version: string; percent: number }
+  | { phase: "downloaded"; version: string };
 
 type ApiOutputTail = {
   stdout: string;
@@ -1592,6 +1609,24 @@ function registerIpcHandlers() {
     assertTrustedIpcSender(event);
     return checkForGitHubReleaseUpdate();
   });
+  ipcMain.handle("cerul:updater-check", async (event) => {
+    assertTrustedIpcSender(event);
+    await runDesktopUpdateCheck();
+    return latestUpdaterState;
+  });
+  ipcMain.handle("cerul:updater-get-state", async (event) => {
+    assertTrustedIpcSender(event);
+    return latestUpdaterState;
+  });
+  ipcMain.handle("cerul:updater-download", async (event) => {
+    assertTrustedIpcSender(event);
+    await startDesktopUpdateDownload();
+    return latestUpdaterState;
+  });
+  ipcMain.handle("cerul:updater-install", async (event) => {
+    assertTrustedIpcSender(event);
+    installDesktopUpdate();
+  });
   ipcMain.handle("cerul:store-get", async (event, storePath: string, key: string) => {
     assertTrustedIpcSender(event);
     return loadStore(storePath)[key];
@@ -1662,6 +1697,174 @@ async function checkForGitHubReleaseUpdate(): Promise<DesktopUpdateInfo | null> 
     }
   }
   return bestUpdate;
+}
+
+function updateRepository() {
+  return process.env.CERUL_UPDATE_REPOSITORY ?? defaultUpdateRepository;
+}
+
+function releasesPageUrl() {
+  return `https://github.com/${updateRepository()}/releases`;
+}
+
+function setUpdaterState(next: UpdaterState) {
+  latestUpdaterState = next;
+  // The renderer also pulls the current state on mount (cerul:updater-get-state)
+  // in case it subscribes after the first check emits.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("cerul:updater-event", next);
+  }
+}
+
+function getAutoUpdater(): AppUpdater | null {
+  if (autoUpdaterInstance) {
+    return autoUpdaterInstance;
+  }
+  try {
+    const mod = require("electron-updater") as typeof import("electron-updater");
+    autoUpdaterInstance = mod.autoUpdater;
+    return autoUpdaterInstance;
+  } catch (error) {
+    console.error("electron-updater unavailable; using release-page fallback", error);
+    return null;
+  }
+}
+
+function wireAutoUpdater(updater: AppUpdater) {
+  if (autoUpdaterWired) {
+    return;
+  }
+  autoUpdaterWired = true;
+  // User-driven: the pill triggers downloadUpdate(); we never auto-download.
+  updater.autoDownload = false;
+  updater.autoInstallOnAppQuit = true;
+  updater.on("update-available", (info) => {
+    setUpdaterState({
+      phase: "available",
+      version: normalizeVersion(info.version),
+      releaseUrl: releasesPageUrl(),
+      canAutoInstall: true,
+    });
+  });
+  updater.on("download-progress", (progress) => {
+    const version =
+      latestUpdaterState.phase === "available" || latestUpdaterState.phase === "downloading"
+        ? latestUpdaterState.version
+        : normalizeVersion(app.getVersion());
+    setUpdaterState({ phase: "downloading", version, percent: Math.round(progress.percent) });
+  });
+  updater.on("update-downloaded", (info) => {
+    updateInstallRequested = false;
+    setUpdaterState({ phase: "downloaded", version: normalizeVersion(info.version) });
+  });
+  updater.on("error", (error) => {
+    // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
+    // failure. Degrade to the GitHub-release fallback so the pill still lets the
+    // user grab the new version from the download page.
+    console.error("electron-updater error; falling back to release page", error);
+    const fallbackUrl =
+      latestUpdaterState.phase === "available" ? latestUpdaterState.releaseUrl : releasesPageUrl();
+    if (updateInstallRequested) {
+      updateInstallRequested = false;
+      void shell.openExternal(fallbackUrl);
+    }
+    void refreshManualUpdateState();
+  });
+}
+
+// Signing-independent detection (GitHub releases API) that works on today's
+// ad-hoc builds. Drives the "available" pill; never clobbers an in-flight
+// download/installed state.
+async function refreshManualUpdateState() {
+  let info: DesktopUpdateInfo | null = null;
+  try {
+    info = await checkForGitHubReleaseUpdate();
+  } catch (error) {
+    console.error("github update check failed", error);
+    return;
+  }
+  if (info) {
+    if (latestUpdaterState.phase === "idle" || latestUpdaterState.phase === "available") {
+      setUpdaterState({
+        phase: "available",
+        version: info.version,
+        releaseUrl: info.url,
+        canAutoInstall: false,
+      });
+    }
+  } else if (latestUpdaterState.phase === "available") {
+    setUpdaterState({ phase: "idle" });
+  }
+}
+
+async function runDesktopUpdateCheck() {
+  // Dev demo hook: CERUL_FAKE_UPDATE=<version> renders the pill without a real
+  // release so the flow is reviewable before signed releases exist.
+  const fake = process.env.CERUL_FAKE_UPDATE;
+  if (fake && !app.isPackaged) {
+    setUpdaterState({
+      phase: "available",
+      version: normalizeVersion(fake),
+      releaseUrl: releasesPageUrl(),
+      canAutoInstall: false,
+    });
+    return;
+  }
+
+  await refreshManualUpdateState();
+
+  // Opportunistic in-place updater — dormant until releases ship signed +
+  // notarized with a latest-mac.yml that Squirrel.Mac can apply. When that
+  // lands, these events upgrade the pill from "open download page" to a
+  // one-click download + restart-to-install.
+  if (!app.isPackaged) {
+    return;
+  }
+  const updater = getAutoUpdater();
+  if (!updater) {
+    return;
+  }
+  try {
+    wireAutoUpdater(updater);
+    await updater.checkForUpdates();
+  } catch (error) {
+    console.error("electron-updater check failed; release-page fallback active", error);
+  }
+}
+
+async function startDesktopUpdateDownload() {
+  if (latestUpdaterState.phase !== "available") {
+    return;
+  }
+  const { releaseUrl, canAutoInstall } = latestUpdaterState;
+  // Without a working in-place updater (today's builds), "update" means open the
+  // download page.
+  if (!canAutoInstall) {
+    await shell.openExternal(releaseUrl);
+    return;
+  }
+  const updater = getAutoUpdater();
+  if (!updater) {
+    await shell.openExternal(releaseUrl);
+    return;
+  }
+  updateInstallRequested = true;
+  try {
+    await updater.downloadUpdate();
+  } catch (error) {
+    console.error("electron-updater download failed; opening release page", error);
+    updateInstallRequested = false;
+    await shell.openExternal(releaseUrl);
+  }
+}
+
+function installDesktopUpdate() {
+  const updater = getAutoUpdater();
+  if (!updater) {
+    return;
+  }
+  // Window 'close' handlers flush persisted state before the relaunch.
+  updater.quitAndInstall();
 }
 
 function releaseVersionFromTag(tag: string | undefined) {
