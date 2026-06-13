@@ -1202,6 +1202,21 @@ async fn cleanup_item_artifacts(
     .await?;
     remove_dir_if_exists(paths.cache.join("pipeline").join("frames").join(cache_key)).await?;
     remove_clip_cache_for_item(paths, &item.id).await?;
+    // Downloaded source media (youtube / web_video / rss enclosures) lives in
+    // the cache too and used to be left behind forever after deletion. Only
+    // delete raw_path when it actually sits inside our cache directory —
+    // never a user's own file.
+    if matches!(
+        item.source_type.as_str(),
+        "youtube" | "web_video" | "rss_podcast"
+    ) {
+        if let Some(raw_path) = item.raw_path.as_deref() {
+            let raw = FsPath::new(raw_path);
+            if raw.starts_with(&paths.cache) {
+                remove_file_if_exists(raw.to_path_buf()).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2727,11 +2742,13 @@ async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResu
     match parse_byte_range(range, len) {
         Ok(Some((start, end))) => {
             let byte_count = end - start + 1;
-            let mut bytes = vec![0; byte_count as usize];
+            // Stream instead of buffering: a wide range used to allocate the
+            // whole span (potentially gigabytes) in memory.
             file.seek(std::io::SeekFrom::Start(start)).await?;
-            file.read_exact(&mut bytes).await?;
+            let stream = tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, byte_count));
 
-            let mut response = (StatusCode::PARTIAL_CONTENT, Body::from(bytes)).into_response();
+            let mut response =
+                (StatusCode::PARTIAL_CONTENT, Body::from_stream(stream)).into_response();
             response
                 .headers_mut()
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -2751,8 +2768,8 @@ async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResu
             Ok(response)
         }
         Ok(None) => {
-            let bytes = tokio::fs::read(path).await?;
-            let mut response = Body::from(bytes).into_response();
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let mut response = Body::from_stream(stream).into_response();
             response
                 .headers_mut()
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -2890,11 +2907,16 @@ fn parse_json(value: &str) -> Value {
 }
 
 fn new_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Timestamp alone can collide when ids are minted in a tight loop
+    // (same-nanosecond inserts abort the whole batch on the PRIMARY KEY).
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{prefix}-{nanos:x}")
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{nanos:x}-{seq:x}")
 }
 
 fn not_found(message: &str) -> Response {
@@ -4465,6 +4487,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_rss_source_discovers_limited_items_and_queues_audio_jobs() {
+        std::env::set_var("CERUL_ALLOW_LOCAL_FEEDS", "1");
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         let audio = temp.path().join("episode.mp3");
@@ -4528,6 +4551,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_rss_source_returns_title_image_and_episode_count() {
+        std::env::set_var("CERUL_ALLOW_LOCAL_FEEDS", "1");
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         let app = router_with_paths(paths);

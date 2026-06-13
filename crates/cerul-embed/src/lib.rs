@@ -1,3 +1,13 @@
+//! LEGACY — experimental in-process CPU embedding path (candle/fastembed).
+//!
+//! The production pipeline embeds via the API providers or the MLX sidecar
+//! and NEVER calls `init()` here, so `embed_texts`/`embed_images` always
+//! return "embedder not initialized" and callers fall back to FTS. The path
+//! is kept only for offline experiments behind
+//! `CERUL_ALLOW_LEGACY_CPU_EMBEDDING`; note its hardcoded 2048 dimensions do
+//! not match the default 3072-dim Gemini profile. Do not wire new callers to
+//! this crate.
+
 use std::{
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},

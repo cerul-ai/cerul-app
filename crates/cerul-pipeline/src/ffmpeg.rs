@@ -205,6 +205,14 @@ async fn run_clip_command(
 ) -> anyhow::Result<()> {
     let start = format!("{start_sec:.3}");
     let duration = format!("{duration_sec:.3}");
+    // Render into a unique temp file and rename into place: concurrent
+    // requests for the same uncached clip used to write the same path with
+    // `-y` simultaneously and could produce a corrupt mp4.
+    let tmp = out.with_file_name(format!(
+        "{}.{}.partial.mp4",
+        out.file_stem().and_then(|stem| stem.to_str()).unwrap_or("clip"),
+        std::process::id(),
+    ));
     let mut command = Command::new(bundled_ffmpeg_path());
     command
         .args(["-y", "-ss", &start, "-i"])
@@ -221,15 +229,24 @@ async fn run_clip_command(
 
     command
         .args(["-movflags", "+faststart"])
-        .arg(out)
+        .arg(&tmp)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let output = run_ffmpeg_with_timeout(&mut command, "export_clip", FFMPEG_CLIP_TIMEOUT).await?;
+    let output = run_ffmpeg_with_timeout(&mut command, "export_clip", FFMPEG_CLIP_TIMEOUT).await;
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(error);
+        }
+    };
 
     if !output.status.success() {
+        let _ = tokio::fs::remove_file(&tmp).await;
         anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
     }
 
+    tokio::fs::rename(&tmp, out).await?;
     Ok(())
 }
 

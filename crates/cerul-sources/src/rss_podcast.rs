@@ -151,16 +151,56 @@ impl SourcePlugin for RssPodcast {
     }
 }
 
+/// Local feeds (plain paths / file:// URLs) are a test and power-user
+/// affordance; the URL otherwise comes from API input, so remote locations
+/// are restricted to http(s) on non-internal hosts (SSRF + local file read).
+fn allow_local_feeds() -> bool {
+    std::env::var("CERUL_ALLOW_LOCAL_FEEDS").map_or(cfg!(test), |v| v == "1")
+}
+
+fn validate_remote_feed_url(location: &str) -> anyhow::Result<reqwest::Url> {
+    let url = reqwest::Url::parse(location)
+        .map_err(|_| anyhow::anyhow!("invalid feed URL: {location}"))?;
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https"),
+        "feed URL must be http(s): {location}"
+    );
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => {
+            anyhow::ensure!(
+                !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()),
+                "feed URL must not target an internal address: {location}"
+            );
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            anyhow::ensure!(
+                !(ip.is_loopback() || ip.is_unspecified()),
+                "feed URL must not target an internal address: {location}"
+            );
+        }
+        Some(url::Host::Domain(domain)) => {
+            anyhow::ensure!(
+                domain != "localhost",
+                "feed URL must not target an internal address: {location}"
+            );
+        }
+        None => anyhow::bail!("feed URL has no host: {location}"),
+    }
+    Ok(url)
+}
+
 async fn read_url_or_file(location: &str) -> anyhow::Result<Vec<u8>> {
-    if let Some(path) = file_url_path(location) {
-        return Ok(tokio::fs::read(path).await?);
+    if allow_local_feeds() {
+        if let Some(path) = file_url_path(location) {
+            return Ok(tokio::fs::read(path).await?);
+        }
+        if Path::new(location).is_file() {
+            return Ok(tokio::fs::read(location).await?);
+        }
     }
 
-    if Path::new(location).is_file() {
-        return Ok(tokio::fs::read(location).await?);
-    }
-
-    let bytes = reqwest::get(location)
+    let url = validate_remote_feed_url(location)?;
+    let bytes = reqwest::get(url)
         .await?
         .error_for_status()?
         .bytes()
@@ -169,22 +209,30 @@ async fn read_url_or_file(location: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 async fn download_url_or_file(location: &str, out: &Path) -> anyhow::Result<()> {
-    if let Some(path) = file_url_path(location) {
-        tokio::fs::copy(path, out).await?;
-        return Ok(());
+    if allow_local_feeds() {
+        if let Some(path) = file_url_path(location) {
+            tokio::fs::copy(path, out).await?;
+            return Ok(());
+        }
+        if Path::new(location).is_file() {
+            tokio::fs::copy(location, out).await?;
+            return Ok(());
+        }
     }
 
-    if Path::new(location).is_file() {
-        tokio::fs::copy(location, out).await?;
-        return Ok(());
+    let url = validate_remote_feed_url(location)?;
+    // Stream to disk: episodes can be hundreds of MB and used to be
+    // buffered fully in memory before writing.
+    use tokio::io::AsyncWriteExt;
+    let mut response = reqwest::get(url).await?.error_for_status()?;
+    let tmp = out.with_extension("partial");
+    let mut file = tokio::fs::File::create(&tmp).await?;
+    while let Some(chunk) = response.chunk().await? {
+        file.write_all(&chunk).await?;
     }
-
-    let bytes = reqwest::get(location)
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    tokio::fs::write(out, bytes).await?;
+    file.flush().await?;
+    drop(file);
+    tokio::fs::rename(&tmp, out).await?;
     Ok(())
 }
 
