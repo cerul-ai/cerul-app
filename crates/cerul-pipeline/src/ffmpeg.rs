@@ -53,7 +53,8 @@ pub async fn extract_audio(video: &Path, out: &Path) -> anyhow::Result<()> {
         .arg(out)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let output = run_ffmpeg_with_timeout(&mut command, "extract_audio", FFMPEG_LONG_TIMEOUT).await?;
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "extract_audio", FFMPEG_LONG_TIMEOUT).await?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -88,7 +89,8 @@ pub async fn sample_frames(
         .arg(pattern)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let output = run_ffmpeg_with_timeout(&mut command, "sample_frames", FFMPEG_LONG_TIMEOUT).await?;
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "sample_frames", FFMPEG_LONG_TIMEOUT).await?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -153,7 +155,8 @@ pub async fn media_duration(path: &Path) -> anyhow::Result<f64> {
         .arg(path)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let output = run_ffmpeg_with_timeout(&mut command, "media_duration", FFMPEG_PROBE_TIMEOUT).await?;
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "media_duration", FFMPEG_PROBE_TIMEOUT).await?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     parse_duration(&stderr).ok_or_else(|| {
         anyhow::anyhow!(
@@ -210,7 +213,9 @@ async fn run_clip_command(
     // `-y` simultaneously and could produce a corrupt mp4.
     let tmp = out.with_file_name(format!(
         "{}.{}.partial.mp4",
-        out.file_stem().and_then(|stem| stem.to_str()).unwrap_or("clip"),
+        out.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("clip"),
         std::process::id(),
     ));
     let mut command = Command::new(bundled_ffmpeg_path());
