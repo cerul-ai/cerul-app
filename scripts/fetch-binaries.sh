@@ -105,6 +105,58 @@ run() {
   fi
 }
 
+# Pinned third-party binary releases. These flow straight into the packaged
+# installers via extraResources, so they must be reproducible and verified —
+# `releases/latest` plus no checksum meant any compromised upstream release
+# would ship to users unnoticed.
+YTDLP_VERSION="${CERUL_YTDLP_VERSION:-2026.06.09}"
+QDRANT_VERSION="${CERUL_QDRANT_VERSION:-v1.18.2}"
+
+# sha256 per pinned asset. Update together with the versions above.
+expected_sha256() {
+  case "$1" in
+    yt-dlp_macos) echo "b82c3626952e6c14eaf654cc565866775ffd0b9ffb7021628ac59b42c2f4f244" ;;
+    yt-dlp_linux) echo "bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66" ;;
+    yt-dlp_linux_aarch64) echo "cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd" ;;
+    yt-dlp.exe) echo "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27" ;;
+    qdrant-aarch64-apple-darwin.tar.gz) echo "859f487e316ae1bda3b5d7c1e129a0a7344424d992503c188979ca6ac1b47253" ;;
+    qdrant-x86_64-apple-darwin.tar.gz) echo "d395eb3d96c2196bbb8c611b800842928fb8b4997924b585bf42ce0ceb90fa1f" ;;
+    qdrant-aarch64-unknown-linux-musl.tar.gz) echo "2ead5bb8206289b67c930f0eb29123228ddb43c2344551a0947cbc9046f92c6c" ;;
+    qdrant-x86_64-unknown-linux-musl.tar.gz) echo "40a6af44f8a496560c9d2352b6b2a0ada816aa48d0781c68f602582e67b3aea0" ;;
+    qdrant-x86_64-pc-windows-msvc.zip) echo "b2b262cba6f78cf4fa794ae78d73a8f70a221c93c76c75ac8fd6fe95d809b142" ;;
+    *) return 1 ;;
+  esac
+}
+
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+verify_download_checksum() {
+  local file="$1"
+  local url="$2"
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  local asset expected actual
+  asset="$(basename "$url")"
+  if ! expected="$(expected_sha256 "$asset")"; then
+    # Assets supplied via override URLs have no pinned checksum; allow them
+    # but make the gap visible in the build log.
+    echo "WARNING: no pinned sha256 for $asset; skipping verification" >&2
+    return 0
+  fi
+  actual="$(sha256_of "$file")"
+  if [ "$actual" != "$expected" ]; then
+    echo "Checksum mismatch for $asset" >&2
+    echo "  expected: $expected" >&2
+    echo "  actual:   $actual" >&2
+    return 1
+  fi
+}
+
 download() {
   local url="$1"
   local out="$2"
@@ -126,6 +178,10 @@ stage_from_archive() {
   if ! download "$url" "$archive"; then
     rm -rf "$tmp"
     return 1
+  fi
+  if ! verify_download_checksum "$archive" "$url"; then
+    rm -rf "$tmp"
+    exit 1
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     rm -rf "$tmp"
@@ -178,10 +234,10 @@ target_specific_qdrant_url() {
 
 ytdlp_url() {
   case "$(target_os "$TARGET")-$(target_arch "$TARGET")" in
-    macos-*) echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" ;;
-    linux-aarch64) echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64" ;;
-    linux-x86_64) echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" ;;
-    windows-*) echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" ;;
+    macos-*) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_macos" ;;
+    linux-aarch64) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux_aarch64" ;;
+    linux-x86_64) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" ;;
+    windows-*) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp.exe" ;;
     *) return 1 ;;
   esac
 }
@@ -195,11 +251,11 @@ qdrant_url() {
   fi
 
   case "$(target_os "$TARGET")-$(target_arch "$TARGET")" in
-    macos-aarch64) echo "https://github.com/qdrant/qdrant/releases/latest/download/qdrant-aarch64-apple-darwin.tar.gz" ;;
-    macos-x86_64) echo "https://github.com/qdrant/qdrant/releases/latest/download/qdrant-x86_64-apple-darwin.tar.gz" ;;
-    linux-aarch64) echo "https://github.com/qdrant/qdrant/releases/latest/download/qdrant-aarch64-unknown-linux-musl.tar.gz" ;;
-    linux-x86_64) echo "https://github.com/qdrant/qdrant/releases/latest/download/qdrant-x86_64-unknown-linux-musl.tar.gz" ;;
-    windows-x86_64) echo "https://github.com/qdrant/qdrant/releases/latest/download/qdrant-x86_64-pc-windows-msvc.zip" ;;
+    macos-aarch64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-aarch64-apple-darwin.tar.gz" ;;
+    macos-x86_64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-x86_64-apple-darwin.tar.gz" ;;
+    linux-aarch64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-aarch64-unknown-linux-musl.tar.gz" ;;
+    linux-x86_64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-x86_64-unknown-linux-musl.tar.gz" ;;
+    windows-x86_64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-x86_64-pc-windows-msvc.zip" ;;
     *) return 1 ;;
   esac
 }

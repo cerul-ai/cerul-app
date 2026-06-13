@@ -12,6 +12,7 @@ import {
   protocol,
   safeStorage,
   screen,
+  session,
   shell,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -51,6 +52,7 @@ let tray: Tray | null = null;
 let apiProcess: ChildProcessWithoutNullStreams | null = null;
 let ownsApiProcess = false;
 let isQuitting = false;
+let apiRestartAttempts = 0;
 let lastApiExit: ApiExitInfo | null = null;
 let mainWindowLoaded = false;
 let pendingDeepLink = firstDeepLinkArg(process.argv);
@@ -143,6 +145,13 @@ app
     }
     setDockIcon();
     registerAppProtocol();
+    // Electron grants permission requests (camera, mic, geolocation, ...) by
+    // default; nothing in the app needs them, so deny across the board as
+    // defense in depth against renderer-side XSS.
+    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+      callback(false);
+    });
+    session.defaultSession.setPermissionCheckHandler(() => false);
     registerIpcHandlers();
     await startRustCore();
     createMainWindow();
@@ -155,6 +164,12 @@ app
   })
   .catch((error) => {
     console.error("Failed to start Cerul Electron shell", error);
+    // A packaged app has no visible stderr; without a dialog a startup
+    // failure looks like the icon bouncing once and vanishing.
+    dialog.showErrorBox(
+      "Cerul failed to start",
+      error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error),
+    );
     app.quit();
   });
 
@@ -162,11 +177,22 @@ app.on("before-quit", () => {
   isQuitting = true;
 });
 
-app.on("will-quit", () => {
+let coreShutdownComplete = false;
+
+app.on("will-quit", (event) => {
   globalShortcut.unregisterAll();
   stopOAuthCallbackServer();
   stopStatusMonitor();
-  stopRustCore();
+  if (!coreShutdownComplete && apiProcess && ownsApiProcess) {
+    // Wait for the backend (which in turn owns qdrant) to exit, escalating
+    // to SIGKILL after a grace period — fire-and-forget SIGTERM used to
+    // leave orphans whenever the process needed longer than the app.
+    event.preventDefault();
+    void stopRustCoreGracefully().finally(() => {
+      coreShutdownComplete = true;
+      app.quit();
+    });
+  }
 });
 
 app.on("window-all-closed", () => {
@@ -692,6 +718,10 @@ function routeDeepLink(url?: string) {
     const section = parsed.searchParams.get("section");
     openMainRoute(section ? `settings?section=${encodeURIComponent(section)}` : "settings");
   } else if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
+    if (!oauthFlowPending()) {
+      return;
+    }
+    oauthFlowPendingUntil = 0;
     const params = new URLSearchParams({ section: "Usage" });
     for (const key of ["provider", "code", "state", "error"]) {
       const value = parsed.searchParams.get(key);
@@ -703,10 +733,21 @@ function routeDeepLink(url?: string) {
   }
 }
 
+// Only accept OAuth callbacks while a sign-in the user actually started is
+// in flight; the localhost listener and the cerul:// deep link are otherwise
+// open to any local process / website forging a login-CSRF callback.
+let oauthFlowPendingUntil = 0;
+const OAUTH_FLOW_WINDOW_MS = 10 * 60 * 1000;
+
+function oauthFlowPending() {
+  return Date.now() <= oauthFlowPendingUntil;
+}
+
 async function startOAuthLogin(provider: OAuthProvider) {
   if (provider !== "google" && provider !== "github") {
     throw new Error("unsupported OAuth provider");
   }
+  oauthFlowPendingUntil = Date.now() + OAUTH_FLOW_WINDOW_MS;
   const redirectUri = await ensureOAuthCallbackServer();
   const startUrl = new URL(`/v1/auth/oauth/${provider}/start`, cloudAccountOrigin);
   startUrl.searchParams.set("redirect_uri", redirectUri);
@@ -755,6 +796,10 @@ function handleOAuthCallbackRequest(rawUrl: string, response: http.ServerRespons
     writeOAuthCallbackResponse(response, 404, "Not found.");
     return;
   }
+  if (!oauthFlowPending()) {
+    writeOAuthCallbackResponse(response, 403, "No Cerul sign-in is in progress.");
+    return;
+  }
   const params = new URLSearchParams({ section: "Usage" });
   for (const key of ["provider", "code", "state", "error"]) {
     const value = url.searchParams.get(key);
@@ -762,9 +807,12 @@ function handleOAuthCallbackRequest(rawUrl: string, response: http.ServerRespons
       params.set(key, value);
     }
   }
+  oauthFlowPendingUntil = 0;
   openMainRoute(`settings?${params.toString()}`);
   focusMainWindow();
   writeOAuthCallbackResponse(response, 200, "Cerul sign-in is complete. You can return to the app.");
+  // One-shot: the flow is over, stop listening.
+  setImmediate(() => stopOAuthCallbackServer());
 }
 
 function writeOAuthCallbackResponse(response: http.ServerResponse, statusCode: number, message: string) {
@@ -980,10 +1028,24 @@ async function startRustCore() {
     }
     apiProcess = null;
     ownsApiProcess = false;
+    if (!isQuitting) {
+      // Restart with capped backoff: a dead backend used to leave the app
+      // running as a shell that could never search again.
+      const delay = Math.min(1000 * 2 ** apiRestartAttempts, 30000);
+      apiRestartAttempts += 1;
+      setTimeout(() => {
+        if (!isQuitting && !apiProcess) {
+          void startRustCore().catch((restartError) => {
+            console.error("Cerul local API restart failed", restartError);
+          });
+        }
+      }, delay);
+    }
   });
 
   try {
     await waitForApi(apiStartupTimeoutMs, () => lastApiExit);
+    apiRestartAttempts = 0;
   } catch (error) {
     console.error(
       collectApiStartupDiagnostics({
@@ -998,13 +1060,32 @@ async function startRustCore() {
   }
 }
 
-function stopRustCore() {
-  if (!apiProcess || !ownsApiProcess) {
+async function stopRustCoreGracefully(timeoutMs = 4000) {
+  const child = apiProcess;
+  if (!child || !ownsApiProcess) {
     return;
   }
-  apiProcess.kill("SIGTERM");
   apiProcess = null;
   ownsApiProcess = false;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }, timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
 }
 
 function spawnApiProcess(binary: string, env: NodeJS.ProcessEnv, cwd?: string) {
