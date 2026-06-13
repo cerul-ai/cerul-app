@@ -126,6 +126,9 @@ export type Item = {
   visualIndexMessage: string | null;
   embeddingIndexStatus: EmbeddingIndexStatus;
   embeddingIndexMessage: string | null;
+  // False only when the pipeline confirmed the video has no audio track
+  // (e.g. a screen recording). Absent/true for everything else.
+  hasAudio?: boolean;
   playbackPosition: api.PlaybackPositionRecord | null;
   usage: import("./api").UsageTotals;
 };
