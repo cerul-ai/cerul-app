@@ -285,6 +285,13 @@ export function itemEmbeddingIndexMessage(
     : t("item.embedding.failed");
 }
 
+// The pipeline records `has_audio: false` for video-only files (e.g. screen
+// recordings). Treat anything else — older items, audio, images, an absent
+// flag — as having audio so existing labels never regress.
+export function itemHasAudio(record: api.ItemRecord): boolean {
+  return record.metadata?.has_audio !== false;
+}
+
 export function itemPlaybackPosition(record: api.ItemRecord): api.PlaybackPositionRecord | null {
   const raw = record.metadata.playback_position;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -371,6 +378,7 @@ export function mapItemRecord(
     visualIndexMessage: itemVisualIndexMessage(record, visualIndexStatus, t),
     embeddingIndexStatus,
     embeddingIndexMessage: itemEmbeddingIndexMessage(record, embeddingIndexStatus, t),
+    hasAudio: itemHasAudio(record),
     playbackPosition: itemPlaybackPosition(record),
     usage: record.usage,
   };

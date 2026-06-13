@@ -166,6 +166,34 @@ pub async fn media_duration(path: &Path) -> anyhow::Result<f64> {
     })
 }
 
+/// Best-effort check for whether `video` carries at least one audio stream.
+///
+/// We don't bundle `ffprobe`, so this parses `ffmpeg -i` stderr the same way
+/// [`media_duration`] does. Returns `Ok(false)` for a readable container that
+/// simply has no audio (e.g. a screen recording); it only errors when ffmpeg
+/// can't be launched at all. Callers should treat an error as "assume audio"
+/// so a probe hiccup never silently skips transcription on a normal video.
+pub async fn probe_has_audio(video: &Path) -> anyhow::Result<bool> {
+    let mut command = Command::new(bundled_ffmpeg_path());
+    command
+        .args(["-hide_banner", "-i"])
+        .arg(video)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let output =
+        run_ffmpeg_with_timeout(&mut command, "probe_has_audio", FFMPEG_PROBE_TIMEOUT).await?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(stderr_reports_audio_stream(&stderr))
+}
+
+fn stderr_reports_audio_stream(stderr: &str) -> bool {
+    // Stream lines look like: "Stream #0:1(eng): Audio: aac (LC), 48000 Hz".
+    stderr.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("Stream #") && trimmed.contains("Audio:")
+    })
+}
+
 async fn collect_frames(out_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut frames = Vec::new();
     let mut entries = tokio::fs::read_dir(out_dir).await?;
@@ -375,6 +403,15 @@ mod tests {
         assert_eq!(parse_duration(output), Some(141.01));
     }
 
+    #[test]
+    fn detects_audio_stream_from_ffmpeg_streams() {
+        let with_audio = "  Stream #0:0(und): Video: h264, 1920x1080\n  Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo";
+        // Matches the user's screen-recording case: a video stream, no audio.
+        let video_only = "  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), none, 3840x2160, 600 tbr";
+        assert!(stderr_reports_audio_stream(with_audio));
+        assert!(!stderr_reports_audio_stream(video_only));
+    }
+
     #[tokio::test]
     async fn ffmpeg_extract_audio() {
         let temp = tempfile::tempdir().unwrap();
@@ -386,6 +423,19 @@ mod tests {
 
         assert!(audio.is_file());
         assert!(audio.metadata().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn ffmpeg_probe_has_audio() {
+        let temp = tempfile::tempdir().unwrap();
+        let with_audio = temp.path().join("with-audio.mp4");
+        let silent = temp.path().join("silent.mp4");
+
+        create_sample_video(&with_audio).await.unwrap(); // has a sine audio track
+        create_static_video(&silent).await.unwrap(); // video-only, no audio
+
+        assert!(probe_has_audio(&with_audio).await.unwrap());
+        assert!(!probe_has_audio(&silent).await.unwrap());
     }
 
     #[tokio::test]

@@ -363,74 +363,97 @@ impl VideoPipeline {
             .join("frames")
             .join(&cache_key);
 
-        self.report_progress(item_id, "extracting_audio", 0.12, "Extracting audio");
-        ffmpeg::extract_audio(&video_path, &audio_path).await?;
         self.report_progress(item_id, "sampling_frames", 0.18, "Sampling visual frames");
         let frames =
             ffmpeg::sample_frames(&video_path, &frames_dir, self.frame_interval_sec).await?;
         let keyframes = keyframe_chunks(&frames, self.frame_interval_sec);
 
-        let transcriber = Arc::clone(&self.transcriber);
-        let audio_for_transcribe = audio_path.clone();
-        let progress = Arc::clone(&self.progress);
-        let progress_item_id = item_id.to_string();
-        self.report_progress(item_id, "transcribing", 0.25, "Transcribing audio");
-        // Whole-file transcription reports no real sub-progress, so ease the
-        // bar forward on an elapsed-time estimate to show the job is alive.
-        let tick_stop = Arc::new(AtomicBool::new(false));
-        let tick_handle = {
-            let tick_stop = Arc::clone(&tick_stop);
-            let tick_progress = Arc::clone(&self.progress);
-            let tick_item_id = item_id.to_string();
-            thread::spawn(move || {
-                let started = Instant::now();
-                while !tick_stop.load(Ordering::Relaxed) {
-                    thread::sleep(Duration::from_secs(2));
-                    if tick_stop.load(Ordering::Relaxed) {
-                        break;
+        // Audio is optional. Many screen recordings (and capture tools'
+        // intermediate files) are video-only, so probe before extracting: a
+        // missing audio track now yields a visual-only index instead of a hard
+        // "Output file #0 does not contain any stream" failure. Persist the
+        // verdict so the UI can label the item as picture-searchable only.
+        let has_audio = ffmpeg::probe_has_audio(&video_path).await.unwrap_or(true);
+        cerul_storage::update_item_metadata(&self.paths, item_id, |metadata| {
+            metadata.insert("has_audio".to_string(), serde_json::Value::Bool(has_audio));
+        })?;
+
+        let segments = if has_audio {
+            self.report_progress(item_id, "extracting_audio", 0.12, "Extracting audio");
+            ffmpeg::extract_audio(&video_path, &audio_path).await?;
+
+            let transcriber = Arc::clone(&self.transcriber);
+            let audio_for_transcribe = audio_path.clone();
+            let progress = Arc::clone(&self.progress);
+            let progress_item_id = item_id.to_string();
+            self.report_progress(item_id, "transcribing", 0.25, "Transcribing audio");
+            // Whole-file transcription reports no real sub-progress, so ease the
+            // bar forward on an elapsed-time estimate to show the job is alive.
+            let tick_stop = Arc::new(AtomicBool::new(false));
+            let tick_handle = {
+                let tick_stop = Arc::clone(&tick_stop);
+                let tick_progress = Arc::clone(&self.progress);
+                let tick_item_id = item_id.to_string();
+                thread::spawn(move || {
+                    let started = Instant::now();
+                    while !tick_stop.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_secs(2));
+                        if tick_stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let elapsed = started.elapsed().as_secs_f64();
+                        let eased = 1.0 - (-elapsed / 150.0).exp();
+                        tick_progress.update(
+                            &tick_item_id,
+                            "transcribing",
+                            0.25 + eased * 0.33,
+                            "Transcribing audio",
+                        );
                     }
-                    let elapsed = started.elapsed().as_secs_f64();
-                    let eased = 1.0 - (-elapsed / 150.0).exp();
-                    tick_progress.update(
-                        &tick_item_id,
+                })
+            };
+            let transcription = tokio::task::spawn_blocking(move || {
+                let callback: TranscriptionProgress = Arc::new(move |percent| {
+                    let bounded = percent.clamp(0, 100) as f64 / 100.0;
+                    progress.update(
+                        &progress_item_id,
                         "transcribing",
-                        0.25 + eased * 0.33,
+                        0.25 + (bounded * 0.35),
                         "Transcribing audio",
                     );
-                }
+                });
+                transcriber.transcribe(&audio_for_transcribe, Some(callback))
             })
+            .await;
+            tick_stop.store(true, Ordering::Relaxed);
+            let _ = tick_handle.join();
+            let segments = transcription??;
+            self.release_runtime_models(
+                ModelReleaseScope::Transcription,
+                item_id,
+                "transcription complete",
+            );
+            let audio_seconds = audio_seconds_from_segments(&segments);
+            self.record_asr_usage(
+                item_id,
+                audio_seconds,
+                "succeeded",
+                json!({
+                    "segments": segments.len(),
+                    "source": "indexing",
+                }),
+            );
+            segments
+        } else {
+            tracing::info!(item_id, "video has no audio stream; indexing visual frames only");
+            self.report_progress(
+                item_id,
+                "transcribing",
+                0.60,
+                "No audio track — indexing visuals only",
+            );
+            Vec::new()
         };
-        let transcription = tokio::task::spawn_blocking(move || {
-            let callback: TranscriptionProgress = Arc::new(move |percent| {
-                let bounded = percent.clamp(0, 100) as f64 / 100.0;
-                progress.update(
-                    &progress_item_id,
-                    "transcribing",
-                    0.25 + (bounded * 0.35),
-                    "Transcribing audio",
-                );
-            });
-            transcriber.transcribe(&audio_for_transcribe, Some(callback))
-        })
-        .await;
-        tick_stop.store(true, Ordering::Relaxed);
-        let _ = tick_handle.join();
-        let segments = transcription??;
-        self.release_runtime_models(
-            ModelReleaseScope::Transcription,
-            item_id,
-            "transcription complete",
-        );
-        let audio_seconds = audio_seconds_from_segments(&segments);
-        self.record_asr_usage(
-            item_id,
-            audio_seconds,
-            "succeeded",
-            json!({
-                "segments": segments.len(),
-                "source": "indexing",
-            }),
-        );
         self.report_progress(
             item_id,
             "chunking_transcript",
@@ -1463,6 +1486,18 @@ mod tests {
         }
     }
 
+    struct UnexpectedTranscriber;
+
+    impl Transcriber for UnexpectedTranscriber {
+        fn transcribe(
+            &self,
+            _audio_path: &Path,
+            _progress: Option<TranscriptionProgress>,
+        ) -> anyhow::Result<Vec<Segment>> {
+            unreachable!("transcription must be skipped for a video with no audio track")
+        }
+    }
+
     struct FakeEmbedder;
 
     impl Embedder for FakeEmbedder {
@@ -1661,6 +1696,58 @@ mod tests {
         assert!(stages.iter().any(
             |(stage, progress)| stage == "completed" && (*progress - 1.0).abs() < f64::EPSILON
         ));
+    }
+
+    #[tokio::test]
+    async fn process_video_item_indexes_video_without_audio() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let videos = temp.path().join("videos");
+        std::fs::create_dir(&videos).unwrap();
+        let video = videos.join("silent.mp4");
+        create_silent_video(&video).await.unwrap();
+        insert_source_and_item(&paths, &videos, &video);
+
+        // UnexpectedTranscriber panics if invoked — proving transcription is
+        // skipped entirely when there's no audio track to transcribe.
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        )
+        .with_frame_interval_sec(2);
+        let summary = pipeline.process_video_item("item-1").await.unwrap();
+
+        // No transcript, but frames are still sampled and embedded for visual search.
+        assert_eq!(summary.transcript_chunks, 0);
+        assert_eq!(summary.text_vectors, 0);
+        assert!(summary.sampled_frames > 0);
+        assert_eq!(summary.image_vectors, summary.sampled_frames);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM items WHERE id = 'item-1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "indexed");
+
+        let metadata: String = conn
+            .query_row("SELECT metadata FROM items WHERE id = 'item-1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["has_audio"].as_bool(), Some(false));
+
+        let keyframe_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'keyframe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(keyframe_count, summary.image_vectors as i64);
     }
 
     #[tokio::test]
@@ -2151,6 +2238,33 @@ mod tests {
         if !output.status.success() {
             anyhow::bail!(
                 "ffmpeg sample video generation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn create_silent_video(path: &Path) -> anyhow::Result<()> {
+        let output = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=10:size=64x64:rate=10",
+                "-c:v",
+                "mpeg4",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(path)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "ffmpeg silent video generation failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }

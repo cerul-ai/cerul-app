@@ -32,7 +32,8 @@ export function itemModalityLabel(item: Item, t: TFunction): string {
   const hasVisual =
     item.contentType === "image" ||
     (item.contentType === "video" && item.visualIndexStatus === "indexed");
-  const hasSpeech = item.contentType === "video" || item.contentType === "audio";
+  const hasSpeech =
+    (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
   if (hasVisual && hasSpeech) {
     return t("library.itemCard.searchSpeechVisual");
   }
@@ -69,7 +70,8 @@ function itemSearchability(
   const hasVisual =
     item.contentType === "image" ||
     (item.contentType === "video" && item.visualIndexStatus === "indexed");
-  const hasSpeech = item.contentType === "video" || item.contentType === "audio";
+  const hasSpeech =
+    (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
   if (hasVisual && hasSpeech) {
     return { label: t("library.itemCard.searchSpeechVisual"), tone: "accent" };
   }
