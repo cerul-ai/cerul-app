@@ -83,6 +83,7 @@ import {
   pluralize,
   uniqueStrings,
   formatHotkeyLabel,
+  buildMomentCitation,
 } from "./lib/formatters";
 import {
   resolveThemePreference,
@@ -105,10 +106,16 @@ import {
 import { DetailIssuePanel } from "./components/detail-issue-panel";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "./components/player";
 import {
+  ClipExportButton,
+  resolveClipTarget as resolveClipTarget_,
+  type ClipTarget,
+} from "./components/clip-export-popover";
+import {
   ItemCard,
   ItemModalityIcon,
   ResultCard,
   ResultModalityIcon,
+  itemModalityLabel,
 } from "./components/cards";
 import { CoreBanner } from "./components/core-banner";
 import { SourceRow } from "./components/source-row";
@@ -1785,7 +1792,6 @@ function AppWorkspace() {
             actionsEnabled={screenApiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             onBack={() => navigate("library")}
-            modelLabel={asrModelLabel(settingString(data.settings, "asr_model", "whisper-1"))}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
               await refreshCoreData();
@@ -2631,33 +2637,73 @@ function downloadTextFile(filename: string, content: string, mime: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function TranscriptExportButtons({ title, lines }: { title: string; lines: TranscriptLine[] }) {
+
+// Overflow menu in the detail header: whole-transcript exports plus the
+// lower-frequency maintenance actions (re-index, delete). Primary actions
+// (copy citation, open source, export clip) stay as visible buttons.
+function DetailActionsMenu({
+  onExportMarkdown,
+  onExportSrt,
+  onReindex,
+  onDelete,
+  busy = false,
+  reindexing = false,
+  deleting = false,
+}: {
+  onExportMarkdown?: () => void;
+  onExportSrt?: () => void;
+  onReindex: () => void;
+  onDelete: () => void;
+  busy?: boolean;
+  reindexing?: boolean;
+  deleting?: boolean;
+}) {
   const t = useT();
-  if (lines.length === 0) {
-    return null;
-  }
-  const base = transcriptFilenameBase(title);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  useEscapeToClose(() => setOpen(false), open);
+  useClickOutside(ref, () => setOpen(false), open);
+  const run = (fn: () => void) => {
+    setOpen(false);
+    fn();
+  };
   return (
-    <>
+    <div className="row-actions" ref={ref}>
       <button
-        className="btn btn-secondary sm"
+        className="btn-icon"
         type="button"
-        onClick={() =>
-          downloadTextFile(`${base}.md`, transcriptToMarkdown(title, lines), "text/markdown;charset=utf-8")
-        }
+        aria-label={t("detail.moreActions")}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
       >
-        <Download size={15} />
-        <span>{t("detail.action.exportMarkdown")}</span>
+        <MoreHorizontal size={16} />
       </button>
-      <button
-        className="btn btn-secondary sm"
-        type="button"
-        onClick={() => downloadTextFile(`${base}.srt`, transcriptToSrt(lines), "text/plain;charset=utf-8")}
-      >
-        <Download size={15} />
-        <span>{t("detail.action.exportSrt")}</span>
-      </button>
-    </>
+      {open ? (
+        <div className="menu row-menu" role="menu">
+          {onExportMarkdown ? (
+            <button type="button" onClick={() => run(onExportMarkdown)}>
+              <Download size={15} />
+              <span>{t("detail.action.exportMarkdown")}</span>
+            </button>
+          ) : null}
+          {onExportSrt ? (
+            <button type="button" onClick={() => run(onExportSrt)}>
+              <Download size={15} />
+              <span>{t("detail.action.exportSrt")}</span>
+            </button>
+          ) : null}
+          <button type="button" disabled={busy} onClick={() => run(onReindex)}>
+            <RefreshCcw size={15} />
+            <span>{reindexing ? t("common.reindexing") : t("common.reindex")}</span>
+          </button>
+          <span className="msep" />
+          <button className="danger" type="button" disabled={busy} onClick={() => run(onDelete)}>
+            <Trash2 size={15} />
+            <span>{deleting ? t("common.deleting") : t("common.delete")}</span>
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2884,7 +2930,6 @@ function ResultDetail({
     status: "idle" | "locating" | "reindexing" | "deleting" | "queued" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
-  const [clipExportStatus, setClipExportStatus] = useState<"idle" | "exporting" | "done">("idle");
   const [readingMode, setReadingMode] = useState(false);
   const detailIssue = itemDetailIssue(item, t);
   const transcriptLines =
@@ -2900,7 +2945,19 @@ function ResultDetail({
     itemAction.status === "locating" ||
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting";
-  const canExportClip = item.contentType === "video" && Boolean(mediaState.chunkId);
+  // Resolve the chunk to clip from the LIVE playhead at the moment the export
+  // popover opens — not the stale currentTimestamp (which only moves on
+  // explicit seeks). Fixes clips/filenames always anchoring at 0:00.
+  function resolveClipTarget(): ClipTarget | null {
+    const video = videoRef.current;
+    // Use the live playhead once the video has actually moved; before that,
+    // fall back to the timestamp the screen opened at.
+    const liveSec =
+      video && Number.isFinite(video.currentTime) && video.currentTime > 0.1
+        ? video.currentTime
+        : parseTimestampSeconds(currentTimestamp);
+    return resolveClipTarget_(transcriptLines, liveSec);
+  }
   // Real sibling search hits for this item (passed down from the results
   // list). The previous implementation showed arbitrary transcript lines
   // labelled as "other matches".
@@ -2932,7 +2989,6 @@ function ResultDetail({
     setCurrentTimestamp(startTimestamp);
     setIsPlaying(true);
     setItemAction({ status: "idle", message: null });
-    setClipExportStatus("idle");
   }, [item.id, startTimestamp]);
 
   useEffect(() => {
@@ -3103,7 +3159,14 @@ function ResultDetail({
 
   async function copyTimestampLink() {
     try {
-      await writeClipboardText(timestampLink);
+      const quote = transcriptLines.find((line) => line.time === currentTimestamp)?.text;
+      const citation = buildMomentCitation({
+        title: item.title,
+        timestamp: currentTimestamp,
+        quote,
+        link: item.originalUrl ?? timestampLink,
+      });
+      await writeClipboardText(citation);
       setCopyStatus("copied");
     } catch {
       setCopyStatus("error");
@@ -3112,7 +3175,6 @@ function ResultDetail({
 
   function seekTo(timestamp: string) {
     setCurrentTimestamp(timestamp);
-    setClipExportStatus("idle");
     setIsPlaying(true);
     const targetSeconds = parseTimestampSeconds(timestamp);
     const nearestLine = transcriptLines
@@ -3124,34 +3186,6 @@ function ResultDetail({
       )[0];
     if (nearestLine) {
       setMediaState((current) => ({ ...current, chunkId: nearestLine.id }));
-    }
-  }
-
-  async function exportCurrentClip() {
-    if (!canExportClip || !mediaState.chunkId) {
-      return;
-    }
-    setClipExportStatus("exporting");
-    setItemAction({ status: "idle", message: null });
-    try {
-      const response = await fetch(api.videoClipUrl(mediaState.chunkId));
-      if (!response.ok) {
-        throw new Error(t("detail.action.exportFailed", { status: response.status }));
-      }
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = `cerul-clip-${currentTimestamp.replace(/:/g, "-")}.mp4`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
-      setClipExportStatus("done");
-      setItemAction({ status: "idle", message: t("detail.action.clipExported") });
-    } catch (error) {
-      setClipExportStatus("idle");
-      setItemAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -3265,6 +3299,38 @@ function ResultDetail({
               {item.originalUrl ? <ExternalLink size={15} /> : <Folder size={15} />}
               <span>{item.originalUrl ? t("detail.source.openOriginal") : t("detail.source.reveal")}</span>
             </button>
+            <ClipExportButton
+              contentType={item.contentType}
+              disabled={itemBusy}
+              resolveTarget={resolveClipTarget}
+            />
+            <DetailActionsMenu
+              onExportMarkdown={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.md`,
+                        transcriptToMarkdown(item.title, transcriptLines),
+                        "text/markdown;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onExportSrt={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.srt`,
+                        transcriptToSrt(transcriptLines),
+                        "text/plain;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onReindex={() => void reindexCurrentItem()}
+              onDelete={() => void deleteCurrentItem()}
+              busy={itemBusy}
+              reindexing={itemAction.status === "reindexing"}
+              deleting={itemAction.status === "deleting"}
+            />
           </div>
         </div>
       </div>
@@ -3329,35 +3395,10 @@ function ResultDetail({
               </div>
             )}
 
-            <div className="row gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
-              <TranscriptExportButtons title={item.title} lines={transcriptLines} />
-              {item.contentType === "video" ? (
-                <button
-                  className="btn btn-secondary sm"
-                  type="button"
-                  disabled={!canExportClip || itemBusy || clipExportStatus === "exporting"}
-                  onClick={exportCurrentClip}
-                >
-                  {clipExportStatus === "exporting" ? <Loader2 size={15} /> : <Download size={15} />}
-                  <span>
-                    {clipExportStatus === "exporting"
-                      ? t("detail.action.exportingClip")
-                      : clipExportStatus === "done"
-                        ? t("detail.action.clipExported")
-                        : t("detail.action.exportClip")}
-                  </span>
-                </button>
-              ) : null}
-              <button className="btn btn-secondary sm" type="button" disabled={itemBusy} onClick={() => void reindexCurrentItem()}>
-                {itemAction.status === "reindexing" ? <Loader2 size={15} /> : <RefreshCcw size={15} />}
-                <span>{itemAction.status === "reindexing" ? t("common.reindexing") : t("common.reindex")}</span>
-              </button>
-              <button className="btn btn-danger sm" type="button" disabled={itemBusy} onClick={() => void deleteCurrentItem()}>
-                {itemAction.status === "deleting" ? <Loader2 size={15} /> : <Trash2 size={15} />}
-                <span>{itemAction.status === "deleting" ? t("common.deleting") : t("common.delete")}</span>
-              </button>
-            </div>
-
+            {/* Header now owns copy/open-source/export-clip + the ⋯ menu
+                (export Markdown/SRT, re-index, delete). The old flat action
+                row that used to live here was removed in the detail-actions
+                redesign. */}
             <VideoUnderstandingPanel
               item={item}
               enabled={actionsEnabled}
@@ -4335,7 +4376,6 @@ function ItemDetail({
   apiStatus,
   actionsEnabled,
   startTimestamp,
-  modelLabel,
   onBack,
   onDeleteItem,
   onReindexItem,
@@ -4345,7 +4385,6 @@ function ItemDetail({
   apiStatus: ApiStatus;
   actionsEnabled: boolean;
   startTimestamp: string;
-  modelLabel: string;
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
@@ -4394,12 +4433,6 @@ function ItemDetail({
         .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
     [transcriptLines],
   );
-  const chunkValue =
-    chunkState.status === "loaded"
-      ? String(chunkState.lines.length)
-      : item.status === "indexing"
-        ? t("itemDetail.chunks.processing")
-        : String(transcript.length);
   // Show a real inline video player whenever we have any chunk to point
   // at: prefer the existing thumbnail chunk (so we can use the same chunk
   // id used for the keyframe), otherwise use the first transcript line.
@@ -4410,6 +4443,33 @@ function ItemDetail({
         null
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const itemBusy =
+    itemAction.status === "reindexing" ||
+    itemAction.status === "deleting" ||
+    itemAction.status === "locating";
+  const timestampLink = timestampDeepLink(item.id, currentTimestamp);
+  // Resolve the chunk to clip from the LIVE playhead when the export popover
+  // opens (falls back to currentTimestamp / the thumbnail chunk).
+  function resolveClipTarget(): ClipTarget | null {
+    const video = videoRef.current;
+    // Use the live playhead once the video has actually moved; before that,
+    // fall back to the timestamp the screen opened at.
+    const liveSec =
+      video && Number.isFinite(video.currentTime) && video.currentTime > 0.1
+        ? video.currentTime
+        : parseTimestampSeconds(currentTimestamp);
+    return resolveClipTarget_(transcriptLines, liveSec);
+  }
+
+  useEffect(() => {
+    if (copyStatus === "idle") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
 
   usePlaybackPositionPersistence({
     itemId: item.id,
@@ -4611,6 +4671,26 @@ function ItemDetail({
     }
   }
 
+  async function copyCitation() {
+    try {
+      const quote = transcriptLines.find((line) => line.time === currentTimestamp)?.text;
+      const citation = buildMomentCitation({
+        title: item.title,
+        timestamp: currentTimestamp,
+        quote,
+        link: item.originalUrl ?? timestampLink,
+      });
+      await writeClipboardText(citation);
+      setCopyStatus("copied");
+    } catch (error) {
+      // Surface the failure (the header button has no error affordance, so a
+      // failed copy used to look like nothing happened).
+      setCopyStatus("error");
+      setItemAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
   // full source video with Range support, so the loaded src is the whole file —
   // we just move currentTime. Drives the transcript rows and the Gemini chapters
@@ -4646,13 +4726,70 @@ function ItemDetail({
           <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
           <span>{t("library.heading")}</span>
         </button>
-        <h1 className="page-h1" style={{ marginTop: 12 }}>{item.title}</h1>
-        <p className="page-sub">
-          {item.source} ·{" "}
-          {item.indexedAtEpoch === null
-            ? t("detail.notIndexed")
-            : t("detail.indexedAt", { when: item.indexedAt })}
-        </p>
+        <div
+          className="row"
+          style={{ alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginTop: 12 }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <h1 className="page-h1">{item.title}</h1>
+            {/* One inline subtitle (source · duration · searchable · indexed),
+                replacing the old 6-row table that exposed chunk count / model
+                / per-item $. */}
+            <p className="page-sub">
+              {item.source} · <span className="mono">{item.duration}</span> · {itemModalityLabel(item, t)} ·{" "}
+              {item.indexedAtEpoch === null
+                ? t("detail.notIndexed")
+                : t("detail.indexedAt", { when: item.indexedAt })}
+            </p>
+          </div>
+          <div className="row gap-2" style={{ flex: "none" }}>
+            <button className="btn btn-ghost sm" type="button" onClick={() => void copyCitation()}>
+              {copyStatus === "copied" ? <Check size={15} /> : <Copy size={15} />}
+              <span>{copyStatus === "copied" ? t("detail.copy.copied") : t("detail.copy.label")}</span>
+            </button>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={!canOpenOriginalSource(item) || itemBusy}
+              onClick={() => void openOriginalSource()}
+            >
+              {item.originalUrl ? <ExternalLink size={15} /> : <Folder size={15} />}
+              <span>{item.originalUrl ? t("detail.source.openOriginal") : t("detail.source.reveal")}</span>
+            </button>
+            <ClipExportButton
+              contentType={item.contentType}
+              disabled={itemBusy}
+              resolveTarget={resolveClipTarget}
+            />
+            <DetailActionsMenu
+              onExportMarkdown={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.md`,
+                        transcriptToMarkdown(item.title, transcriptLines),
+                        "text/markdown;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onExportSrt={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.srt`,
+                        transcriptToSrt(transcriptLines),
+                        "text/plain;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onReindex={() => void reindexCurrentItem()}
+              onDelete={() => void deleteCurrentItem()}
+              busy={itemBusy}
+              reindexing={itemAction.status === "reindexing"}
+              deleting={itemAction.status === "deleting"}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="detail-split">
@@ -4695,32 +4832,11 @@ function ItemDetail({
               </button>
             </div>
           )}
-          <div className="proptable" style={{ marginTop: 16 }}>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.source")}</span>
-              <span className="v">{item.source}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.ingested")}</span>
-              <span className="v">{item.indexedAtEpoch === null ? t("detail.notIndexed") : item.indexedAt}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.duration")}</span>
-              <span className="v mono">{item.duration}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.chunks")}</span>
-              <span className="v mono">{chunkValue}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.usage")}</span>
-              <span className="v mono">{formatUsd(item.usage.estimated_usd)}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.model")}</span>
-              <span className="v">{modelLabel}</span>
-            </div>
-          </div>
+          {/* The 6-row metadata table (source / ingested / duration / chunks /
+              usage / model) was removed: source·duration·searchable·indexed now
+              live in the header subtitle, and chunk count / per-item $ / model
+              were internal/diagnostic noise. Per-item spend lives in
+              Settings → Account & Usage. */}
         </div>
         <div className="detail-transcript">
           <VideoUnderstandingPanel
@@ -6247,13 +6363,6 @@ function providerStatusLabel(status: api.ProviderRecord["status"], t: TFunction)
     return t("settings.models.providers.status.error");
   }
   return t("settings.models.providers.status.unconfigured");
-}
-
-function asrModelLabel(modelId: string) {
-  if (modelId === "gpt-4o-transcribe") return "GPT-4o transcribe";
-  if (modelId === "gpt-4o-mini-transcribe") return "GPT-4o mini transcribe";
-  if (modelId.startsWith("gemini-")) return "Gemini Audio";
-  return "Whisper API";
 }
 
 function ScanThisMacControl({ disabled }: { disabled: boolean }) {

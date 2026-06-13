@@ -61,6 +61,8 @@ export function CerulPlayer({
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [hover, setHover] = useState<{ left: number; marker: PlayerMarker } | null>(null);
+  // Real video aspect (w/h), once known; null → fall back to the CSS 16:9.
+  const [videoAspect, setVideoAspect] = useState<number | null>(null);
 
   // Mirror the <video> element's state into React via its media events.
   useEffect(() => {
@@ -82,13 +84,26 @@ export function CerulPlayer({
       setMuted(video.muted);
       setVolume(video.volume);
     };
+    // Adapt the stage to the real video shape so vertical / square / ultrawide
+    // sources don't sit as a thin strip in a fixed 16:9 box. Clamped so an
+    // extreme ratio can't blow up the layout; object-fit:contain still
+    // letterboxes anything outside the clamp (never stretches).
+    const syncAspect = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        const ratio = video.videoWidth / video.videoHeight;
+        setVideoAspect(Math.min(2.5, Math.max(0.5, ratio)));
+      }
+    };
     syncDuration();
     syncVolume();
+    syncAspect();
     setPlaying(!video.paused);
     setTime(video.currentTime);
     video.addEventListener("timeupdate", syncTime);
     video.addEventListener("durationchange", syncDuration);
     video.addEventListener("loadedmetadata", syncDuration);
+    video.addEventListener("loadedmetadata", syncAspect);
+    video.addEventListener("resize", syncAspect);
     video.addEventListener("play", syncPlay);
     video.addEventListener("pause", syncPause);
     video.addEventListener("volumechange", syncVolume);
@@ -96,6 +111,8 @@ export function CerulPlayer({
       video.removeEventListener("timeupdate", syncTime);
       video.removeEventListener("durationchange", syncDuration);
       video.removeEventListener("loadedmetadata", syncDuration);
+      video.removeEventListener("loadedmetadata", syncAspect);
+      video.removeEventListener("resize", syncAspect);
       video.removeEventListener("play", syncPlay);
       video.removeEventListener("pause", syncPause);
       video.removeEventListener("volumechange", syncVolume);
@@ -290,9 +307,19 @@ export function CerulPlayer({
   const showMarkers = duration > 0 && markers.length > 0;
   const isMuted = muted || volume === 0;
 
+  // Landscape/square fills the column width; portrait is sized by height and
+  // centered so it doesn't become a thin strip in a wide box. Until the real
+  // ratio is known we keep the CSS 16:9 default.
+  const stageStyle: React.CSSProperties | undefined =
+    videoAspect === null
+      ? undefined
+      : videoAspect >= 1
+        ? { aspectRatio: String(videoAspect) }
+        : { aspectRatio: String(videoAspect), width: "auto", height: "min(70vh, 720px)", marginInline: "auto" };
+
   return (
     <div className="cplayer" ref={containerRef}>
-      <div className="cplayer-stage" onClick={togglePlay}>
+      <div className="cplayer-stage" onClick={togglePlay} style={stageStyle}>
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} className="cplayer-video" playsInline src={src} aria-label={ariaLabel} />
         {!playing ? (

@@ -1633,15 +1633,6 @@ body.overlay-body {
   background: var(--surface-3);
   overflow: hidden;
 }
-.detail-video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  background: #000;
-}
-
 /* ---- Custom video player chrome (CerulPlayer) ----
    Intentionally dark + theme-independent, like a conventional video player.
    Steel scrubber maps to --accent; transcript markers sit on the track. */
@@ -1654,6 +1645,9 @@ body.overlay-body {
 .cplayer-stage {
   position: relative;
   aspect-ratio: 16 / 9;
+  /* Bounds the square/portrait cases so a tall video can't run off-screen;
+     the stage's aspect-ratio is set from the real video shape at runtime. */
+  max-height: min(70vh, 720px);
   cursor: pointer;
   overflow: hidden;
   background: #000;
@@ -4360,5 +4354,192 @@ body.overlay-body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================
+   CLIP EXPORT POPOVER  (.clip-export-wrap / .clip-pop)
+   Trim popover: aspect-adaptive video preview + drag in/out
+   handles + 1s before/after steppers. Anchored under the
+   "导出片段" button in the detail header.
+   ============================================================ */
+.clip-export-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.clip-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: menu-in var(--dur-fast) var(--ease);
+  text-align: left;
+}
+/* preview = fixed letterbox stage; the <video> fits any aspect (contain) */
+.clip-prev {
+  position: relative;
+  height: 196px;
+  border-radius: var(--r-md);
+  background: #0e1013;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.clip-frame {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #15181d;
+}
+.clip-tlabel {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+.clip-track {
+  position: relative;
+  height: 42px;
+  margin: 12px 0 5px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  touch-action: none;
+  user-select: none;
+}
+.clip-base {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(90deg, var(--surface-3) 0 5px, transparent 5px 10px);
+}
+.clip-sel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+}
+.clip-handle {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: var(--accent);
+  border-radius: 5px;
+  cursor: ew-resize;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.22);
+  touch-action: none;
+}
+.clip-handle::after {
+  content: "";
+  display: block;
+  width: 2px;
+  height: 18px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 2px;
+}
+.clip-handle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.clip-read {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 12px 0 2px;
+}
+.clip-range {
+  font-size: 16px;
+  color: var(--text);
+}
+.clip-range b {
+  color: var(--accent);
+}
+.clip-dur {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.clip-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 12px 0;
+}
+.clip-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.clip-ctl {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.clip-ctl button {
+  width: 30px;
+  height: 28px;
+  border: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+.clip-ctl button:hover {
+  background: var(--surface-3);
+}
+.clip-ctl button:disabled {
+  color: var(--line-strong);
+  cursor: default;
+  background: var(--surface);
+}
+.clip-ctl .mono {
+  min-width: 42px;
+  text-align: center;
+  font-size: 12.5px;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+.clip-err {
+  font-size: 12px;
+  color: var(--danger);
+  margin: 6px 0 0;
+}
+.clip-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+.clip-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+@media (prefers-reduced-motion: reduce) {
+  .clip-pop {
+    animation-duration: 0.01ms;
   }
 }
