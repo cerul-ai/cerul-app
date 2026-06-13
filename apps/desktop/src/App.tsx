@@ -4732,8 +4732,11 @@ function ItemDetail({
       });
       await writeClipboardText(citation);
       setCopyStatus("copied");
-    } catch {
+    } catch (error) {
+      // Surface the failure (the header button has no error affordance, so a
+      // failed copy used to look like nothing happened).
       setCopyStatus("error");
+      setItemAction({ status: "error", message: errorMessage(error) });
     }
   }
 
