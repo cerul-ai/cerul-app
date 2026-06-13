@@ -1788,7 +1788,6 @@ function AppWorkspace() {
             actionsEnabled={screenApiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             onBack={() => navigate("library")}
-            modelLabel={asrModelLabel(settingString(data.settings, "asr_model", "whisper-1"))}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
               await refreshCoreData();
@@ -4421,7 +4420,6 @@ function ItemDetail({
   apiStatus,
   actionsEnabled,
   startTimestamp,
-  modelLabel,
   onBack,
   onDeleteItem,
   onReindexItem,
@@ -4431,7 +4429,6 @@ function ItemDetail({
   apiStatus: ApiStatus;
   actionsEnabled: boolean;
   startTimestamp: string;
-  modelLabel: string;
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
@@ -4480,12 +4477,6 @@ function ItemDetail({
         .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
     [transcriptLines],
   );
-  const chunkValue =
-    chunkState.status === "loaded"
-      ? String(chunkState.lines.length)
-      : item.status === "indexing"
-        ? t("itemDetail.chunks.processing")
-        : String(transcript.length);
   // Show a real inline video player whenever we have any chunk to point
   // at: prefer the existing thumbnail chunk (so we can use the same chunk
   // id used for the keyframe), otherwise use the first transcript line.
@@ -4496,6 +4487,39 @@ function ItemDetail({
         null
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [clipStatus, setClipStatus] = useState<"idle" | "exporting" | "done" | "error">("idle");
+  const itemBusy =
+    itemAction.status === "reindexing" ||
+    itemAction.status === "deleting" ||
+    itemAction.status === "locating";
+  const timestampLink = timestampDeepLink(item.id, currentTimestamp);
+  // Clip the chunk nearest the current playhead, not just the thumbnail chunk.
+  const clipChunkId = useMemo(() => {
+    const target = parseTimestampSeconds(currentTimestamp);
+    if (!Number.isFinite(target) || transcriptLines.length === 0) {
+      return playableChunkId;
+    }
+    return (
+      [...transcriptLines]
+        .filter((line) => Number.isFinite(parseTimestampSeconds(line.time)))
+        .sort(
+          (left, right) =>
+            Math.abs(parseTimestampSeconds(left.time) - target) -
+            Math.abs(parseTimestampSeconds(right.time) - target),
+        )[0]?.id ?? playableChunkId
+    );
+  }, [currentTimestamp, transcriptLines, playableChunkId]);
+  const canExportClip = item.contentType === "video" && Boolean(clipChunkId);
+
+  useEffect(() => {
+    if (copyStatus === "idle") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
 
   usePlaybackPositionPersistence({
     itemId: item.id,
@@ -4697,6 +4721,37 @@ function ItemDetail({
     }
   }
 
+  async function copyCitation() {
+    try {
+      const quote = transcriptLines.find((line) => line.time === currentTimestamp)?.text;
+      const citation = buildMomentCitation({
+        title: item.title,
+        timestamp: currentTimestamp,
+        quote,
+        link: item.originalUrl ?? timestampLink,
+      });
+      await writeClipboardText(citation);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
+  }
+
+  async function exportCurrentClip() {
+    if (!canExportClip || !clipChunkId) {
+      return;
+    }
+    setClipStatus("exporting");
+    setItemAction({ status: "idle", message: null });
+    try {
+      await downloadVideoClip(clipChunkId, currentTimestamp, t);
+      setClipStatus("done");
+    } catch (error) {
+      setClipStatus("idle");
+      setItemAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
   // full source video with Range support, so the loaded src is the whole file —
   // we just move currentTime. Drives the transcript rows and the Gemini chapters
@@ -4732,13 +4787,82 @@ function ItemDetail({
           <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
           <span>{t("library.heading")}</span>
         </button>
-        <h1 className="page-h1" style={{ marginTop: 12 }}>{item.title}</h1>
-        <p className="page-sub">
-          {item.source} ·{" "}
-          {item.indexedAtEpoch === null
-            ? t("detail.notIndexed")
-            : t("detail.indexedAt", { when: item.indexedAt })}
-        </p>
+        <div
+          className="row"
+          style={{ alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginTop: 12 }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <h1 className="page-h1">{item.title}</h1>
+            {/* One inline subtitle (source · duration · searchable · indexed),
+                replacing the old 6-row table that exposed chunk count / model
+                / per-item $. */}
+            <p className="page-sub">
+              {item.source} · <span className="mono">{item.duration}</span> · {itemModalityLabel(item, t)} ·{" "}
+              {item.indexedAtEpoch === null
+                ? t("detail.notIndexed")
+                : t("detail.indexedAt", { when: item.indexedAt })}
+            </p>
+          </div>
+          <div className="row gap-2" style={{ flex: "none" }}>
+            <button className="btn btn-ghost sm" type="button" onClick={() => void copyCitation()}>
+              {copyStatus === "copied" ? <Check size={15} /> : <Copy size={15} />}
+              <span>{copyStatus === "copied" ? t("detail.copy.copied") : t("detail.copy.label")}</span>
+            </button>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={!canOpenOriginalSource(item) || itemBusy}
+              onClick={() => void openOriginalSource()}
+            >
+              {item.originalUrl ? <ExternalLink size={15} /> : <Folder size={15} />}
+              <span>{item.originalUrl ? t("detail.source.openOriginal") : t("detail.source.reveal")}</span>
+            </button>
+            {item.contentType === "video" ? (
+              <button
+                className="btn btn-secondary sm"
+                type="button"
+                disabled={!canExportClip || itemBusy || clipStatus === "exporting"}
+                onClick={() => void exportCurrentClip()}
+              >
+                {clipStatus === "exporting" ? <Loader2 size={15} /> : <Scissors size={15} />}
+                <span>
+                  {clipStatus === "exporting"
+                    ? t("detail.action.exportingClip")
+                    : clipStatus === "done"
+                      ? t("detail.action.clipExported")
+                      : t("detail.action.exportClip")}
+                </span>
+              </button>
+            ) : null}
+            <DetailActionsMenu
+              onExportMarkdown={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.md`,
+                        transcriptToMarkdown(item.title, transcriptLines),
+                        "text/markdown;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onExportSrt={
+                transcriptLines.length > 0
+                  ? () =>
+                      downloadTextFile(
+                        `${transcriptFilenameBase(item.title)}.srt`,
+                        transcriptToSrt(transcriptLines),
+                        "text/plain;charset=utf-8",
+                      )
+                  : undefined
+              }
+              onReindex={() => void reindexCurrentItem()}
+              onDelete={() => void deleteCurrentItem()}
+              busy={itemBusy}
+              reindexing={itemAction.status === "reindexing"}
+              deleting={itemAction.status === "deleting"}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="detail-split">
@@ -4781,32 +4905,11 @@ function ItemDetail({
               </button>
             </div>
           )}
-          <div className="proptable" style={{ marginTop: 16 }}>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.source")}</span>
-              <span className="v">{item.source}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.ingested")}</span>
-              <span className="v">{item.indexedAtEpoch === null ? t("detail.notIndexed") : item.indexedAt}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.duration")}</span>
-              <span className="v mono">{item.duration}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.chunks")}</span>
-              <span className="v mono">{chunkValue}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.usage")}</span>
-              <span className="v mono">{formatUsd(item.usage.estimated_usd)}</span>
-            </div>
-            <div className="proprow">
-              <span className="k">{t("itemDetail.metric.model")}</span>
-              <span className="v">{modelLabel}</span>
-            </div>
-          </div>
+          {/* The 6-row metadata table (source / ingested / duration / chunks /
+              usage / model) was removed: source·duration·searchable·indexed now
+              live in the header subtitle, and chunk count / per-item $ / model
+              were internal/diagnostic noise. Per-item spend lives in
+              Settings → Account & Usage. */}
         </div>
         <div className="detail-transcript">
           <VideoUnderstandingPanel
@@ -6333,13 +6436,6 @@ function providerStatusLabel(status: api.ProviderRecord["status"], t: TFunction)
     return t("settings.models.providers.status.error");
   }
   return t("settings.models.providers.status.unconfigured");
-}
-
-function asrModelLabel(modelId: string) {
-  if (modelId === "gpt-4o-transcribe") return "GPT-4o transcribe";
-  if (modelId === "gpt-4o-mini-transcribe") return "GPT-4o mini transcribe";
-  if (modelId.startsWith("gemini-")) return "Gemini Audio";
-  return "Whisper API";
 }
 
 function ScanThisMacControl({ disabled }: { disabled: boolean }) {
