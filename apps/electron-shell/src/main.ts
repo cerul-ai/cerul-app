@@ -183,6 +183,7 @@ app.on("will-quit", (event) => {
   globalShortcut.unregisterAll();
   stopOAuthCallbackServer();
   stopStatusMonitor();
+  flushDirtyStores();
   if (!coreShutdownComplete && apiProcess && ownsApiProcess) {
     // Wait for the backend (which in turn owns qdrant) to exit, escalating
     // to SIGKILL after a grace period — fire-and-forget SIGTERM used to
@@ -295,10 +296,56 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
   });
 }
 
+const WINDOW_STATE_STORE = "window-state";
+
+function savedMainWindowBounds(): Partial<Electron.Rectangle> {
+  const stored = loadStore(WINDOW_STATE_STORE)["mainBounds"];
+  if (!stored || typeof stored !== "object") {
+    return {};
+  }
+  const bounds = stored as Partial<Electron.Rectangle>;
+  if (
+    typeof bounds.width !== "number" ||
+    typeof bounds.height !== "number" ||
+    bounds.width < 600 ||
+    bounds.height < 400
+  ) {
+    return {};
+  }
+  // Only restore a position that is still on a connected display.
+  if (typeof bounds.x === "number" && typeof bounds.y === "number") {
+    const visible = screen.getAllDisplays().some((display) => {
+      const area = display.workArea;
+      return (
+        bounds.x! >= area.x - 50 &&
+        bounds.y! >= area.y - 50 &&
+        bounds.x! < area.x + area.width &&
+        bounds.y! < area.y + area.height
+      );
+    });
+    if (!visible) {
+      return { width: bounds.width, height: bounds.height };
+    }
+  }
+  return bounds;
+}
+
+function persistMainWindowBounds() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
+    return;
+  }
+  loadStore(WINDOW_STATE_STORE)["mainBounds"] = mainWindow.getNormalBounds();
+  dirtyStores.add(WINDOW_STATE_STORE);
+  saveStore(WINDOW_STATE_STORE);
+}
+
 function createMainWindow() {
+  const saved = savedMainWindowBounds();
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: saved.width ?? 1440,
+    height: saved.height ?? 920,
+    x: saved.x,
+    y: saved.y,
     minWidth: 1080,
     minHeight: 720,
     title: "Cerul",
@@ -313,6 +360,8 @@ function createMainWindow() {
   });
 
   secureDesktopWindow(mainWindow);
+  mainWindow.on("close", () => persistMainWindowBounds());
+  mainWindow.on("hide", () => persistMainWindowBounds());
   mainWindow.on("close", (event) => {
     if (isQuitting) {
       return;
@@ -1415,15 +1464,32 @@ function setBundledExecutableEnv(env: NodeJS.ProcessEnv, key: string, binaryPath
   }
 }
 
+// Probe results are cached per (path, mtime): the synchronous spawn happens
+// on the startup path and a slow/hung binary used to block it for up to 8s
+// per probe, serially.
+const runnableBinaryCache = new Map<string, boolean>();
+
 function isRunnableBinary(binaryPath: string, probeArgs: string[]) {
   if (!fs.existsSync(binaryPath)) {
     return false;
   }
+  let cacheKey = binaryPath;
+  try {
+    cacheKey = `${binaryPath}:${fs.statSync(binaryPath).mtimeMs}`;
+  } catch {
+    // fall back to path-only key
+  }
+  const cached = runnableBinaryCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
   const result = spawnSync(binaryPath, probeArgs, {
     stdio: "ignore",
-    timeout: 8_000,
+    timeout: 3_000,
   });
-  return result.status === 0;
+  const runnable = result.status === 0;
+  runnableBinaryCache.set(cacheKey, runnable);
+  return runnable;
 }
 
 function targetTriple() {
@@ -1475,11 +1541,28 @@ function isPathInsideDirectory(filePath: string, directory: string) {
   return relative === "" || (relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+// Only frames belonging to the app shell (app:// in production, the vite
+// dev server in development) may call privileged IPC — secure-token-get
+// returns plaintext tokens and open-dialog/oauth-start act on the user's
+// behalf.
+function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent) {
+  const url = event.senderFrame?.url ?? "";
+  const trusted =
+    url.startsWith(`${appScheme}://`) ||
+    url.startsWith("http://127.0.0.1:1420") ||
+    url.startsWith("http://localhost:1420");
+  if (!trusted) {
+    throw new Error(`IPC call from untrusted sender: ${url || "<unknown>"}`);
+  }
+}
+
 function registerIpcHandlers() {
-  ipcMain.handle("cerul:invoke", async (_event, command: string, args?: Record<string, unknown>) =>
-    handleCommand(command, args ?? {}),
-  );
-  ipcMain.handle("cerul:open-dialog", async (_event, options) => {
+  ipcMain.handle("cerul:invoke", async (event, command: string, args?: Record<string, unknown>) => {
+    assertTrustedIpcSender(event);
+    return handleCommand(command, args ?? {});
+  });
+  ipcMain.handle("cerul:open-dialog", async (event, options) => {
+    assertTrustedIpcSender(event);
     const result = await dialog.showOpenDialog({
       properties: [
         options?.directory ? "openDirectory" : "openFile",
@@ -1490,22 +1573,33 @@ function registerIpcHandlers() {
     if (result.canceled) return null;
     return options?.multiple ? result.filePaths : result.filePaths[0] ?? null;
   });
-  ipcMain.handle("cerul:check-update", async () => {
+  ipcMain.handle("cerul:check-update", async (event) => {
+    assertTrustedIpcSender(event);
     return checkForGitHubReleaseUpdate();
   });
-  ipcMain.handle("cerul:store-get", async (_event, storePath: string, key: string) => {
+  ipcMain.handle("cerul:store-get", async (event, storePath: string, key: string) => {
+    assertTrustedIpcSender(event);
     return loadStore(storePath)[key];
   });
-  ipcMain.handle("cerul:store-set", async (_event, storePath: string, key: string, value: unknown) => {
+  ipcMain.handle("cerul:store-set", async (event, storePath: string, key: string, value: unknown) => {
+    assertTrustedIpcSender(event);
     loadStore(storePath)[key] = value;
     dirtyStores.add(storePath);
   });
-  ipcMain.handle("cerul:store-save", async (_event, storePath: string) => saveStore(storePath));
-  ipcMain.handle("cerul:secure-token-get", async (_event, key: string) => getSecureToken(key));
-  ipcMain.handle("cerul:secure-token-set", async (_event, key: string, value: string | null) => {
+  ipcMain.handle("cerul:store-save", async (event, storePath: string) => {
+    assertTrustedIpcSender(event);
+    saveStore(storePath);
+  });
+  ipcMain.handle("cerul:secure-token-get", async (event, key: string) => {
+    assertTrustedIpcSender(event);
+    return getSecureToken(key);
+  });
+  ipcMain.handle("cerul:secure-token-set", async (event, key: string, value: string | null) => {
+    assertTrustedIpcSender(event);
     setSecureToken(key, value);
   });
-  ipcMain.handle("cerul:oauth-start", async (_event, provider: OAuthProvider) => {
+  ipcMain.handle("cerul:oauth-start", async (event, provider: OAuthProvider) => {
+    assertTrustedIpcSender(event);
     await startOAuthLogin(provider);
   });
 }
@@ -1958,7 +2052,17 @@ function loadStore(storePath: string) {
   let value: Record<string, unknown> = {};
   try {
     value = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
-  } catch {
+  } catch (error) {
+    // Keep the corrupt file for forensics instead of silently wiping
+    // everything (this store may hold cloud login tokens).
+    if (fs.existsSync(file)) {
+      console.error(`store file is unreadable, moving aside: ${file}`, error);
+      try {
+        fs.renameSync(file, `${file}.corrupt`);
+      } catch {
+        // best effort
+      }
+    }
     value = {};
   }
   stores.set(storePath, value);
@@ -1969,8 +2073,21 @@ function saveStore(storePath: string) {
   if (!dirtyStores.has(storePath)) return;
   const file = storeFilePath(storePath);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(loadStore(storePath), null, 2));
+  // temp + rename: a crash mid-write must not truncate the store.
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(loadStore(storePath), null, 2));
+  fs.renameSync(tmp, file);
   dirtyStores.delete(storePath);
+}
+
+function flushDirtyStores() {
+  for (const storePath of [...dirtyStores]) {
+    try {
+      saveStore(storePath);
+    } catch (error) {
+      console.error(`failed to flush store ${storePath} on quit`, error);
+    }
+  }
 }
 
 function getSecureToken(key: string) {

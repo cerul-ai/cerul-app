@@ -1,9 +1,13 @@
+# Fully pinned: the sidecar's behaviour depends on exact runtime versions
+# (numpy 2.x-style major bumps changed behaviour silently before). `mlx` is
+# listed explicitly instead of riding along as a transitive dependency.
+mlx==0.31.2
 mlx-embeddings==0.1.0
 mlx-lm==0.29.4
 mlx-vlm==0.5.0
 mlx-whisper==0.4.3
 mlx-qwen3-asr==0.3.5
-numpy
-pillow
-soundfile
-huggingface-hub
+numpy==2.4.6
+pillow==12.2.0
+soundfile==0.13.1
+huggingface-hub==1.16.1

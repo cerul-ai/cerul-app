@@ -356,7 +356,12 @@ class CerulMlxRuntime:
         return self._asr_model_obj, (self._asr_aligner_obj or self.args.forced_aligner_model)
 
     def transcribe(self, audio_path: str, language: str | None = None) -> dict[str, Any]:
-        if self.args.asr_model == "whisper-large-v3-turbo":
+        # Accept both the bare name and full repo ids: a user setting
+        # CERUL_MLX_ASR_MODEL to "mlx-community/whisper-large-v3-turbo" used
+        # to fall through and be loaded as Qwen3-ASR weights, crashing with
+        # no hint of the cause.
+        asr_model_name = self.args.asr_model.rsplit("/", 1)[-1].lower()
+        if asr_model_name.startswith("whisper"):
             return self.transcribe_with_mlx_whisper(audio_path, language)
 
         try:
@@ -395,8 +400,16 @@ class CerulMlxRuntime:
         try:
             import mlx_whisper
 
+            # When --asr-model itself names a whisper repo, honour it instead
+            # of silently substituting the default --whisper-model.
+            whisper_model = (
+                self.args.asr_model
+                if "whisper" in self.args.asr_model.rsplit("/", 1)[-1].lower()
+                and "/" in self.args.asr_model
+                else self.args.whisper_model
+            )
             kwargs: dict[str, Any] = {
-                "path_or_hf_repo": self.args.whisper_model,
+                "path_or_hf_repo": whisper_model,
                 "word_timestamps": True,
             }
             if language:
@@ -408,7 +421,7 @@ class CerulMlxRuntime:
             return {
                 "text": output.get("text") or " ".join(segment["text"] for segment in segments),
                 "segments": segments,
-                "model": self.args.whisper_model,
+                "model": whisper_model,
             }
         finally:
             self.release_transcription_runtime()

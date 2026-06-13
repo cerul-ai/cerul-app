@@ -55,11 +55,20 @@
       },
       {
         "from": "../../third-party",
-        "to": "third-party"
+        "to": "third-party",
+        "filter": [
+          "**/*",
+          "!lib",
+          "!lib/**"
+        ]
       },
       {
         "from": "../../mlx-sidecar",
-        "to": "mlx-sidecar"
+        "to": "mlx-sidecar",
+        "filter": [
+          "cerul_mlx_sidecar.py",
+          "requirements.txt"
+        ]
       }
     ],
     "mac": {

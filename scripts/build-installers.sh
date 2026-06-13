@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Installer builds enforce pinned third-party binaries (see fetch-binaries.sh).
+export CERUL_RELEASE_BUILD=1
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=""
 DEBUG=0

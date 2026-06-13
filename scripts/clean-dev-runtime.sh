@@ -43,7 +43,9 @@ terminate_pid() {
   fi
   echo "Stopping orphan $label process pid=$pid" >&2
   kill "$pid" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
+  # 8s grace before SIGKILL: qdrant is a database with a WAL mid-flush;
+  # killing it after 1s risked storage corruption.
+  for _ in $(seq 1 40); do
     if ! kill -0 "$pid" 2>/dev/null; then
       return
     fi

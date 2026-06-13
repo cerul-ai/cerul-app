@@ -427,6 +427,13 @@ stage_ffmpeg() {
       stage_macos_runtime_libraries "$FFMPEG_OUT" "$FFMPEG_OUT"
     fi
   else
+    if [ "${CERUL_RELEASE_BUILD:-0}" = "1" ]; then
+      # Release builds must not ship whatever ffmpeg happens to be on the
+      # build machine's PATH: it's unreproducible and Homebrew builds are
+      # typically GPL (x264) — a licence conflict in an Apache-2.0 installer.
+      echo "Release builds require CERUL_FFMPEG_URL (PATH fallback disabled)." >&2
+      return 1
+    fi
     local src
     src="$(command -v "$FFMPEG_EXE" || true)"
     if [ -z "$src" ]; then

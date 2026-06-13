@@ -295,7 +295,17 @@ impl MlxSidecar {
 
             let response: SidecarResponse = serde_json::from_value(value)
                 .with_context(|| format!("invalid MLX sidecar response: {line}"))?;
-            if response.id != id {
+            if response.id != Some(id) {
+                // A null-id error means the sidecar could not parse our
+                // request line at all — waiting for "our" id would idle out
+                // 180s later and needlessly kill the warm sidecar.
+                if response.id.is_none() && !response.ok {
+                    let error = response
+                        .error
+                        .map(|err| err.message)
+                        .unwrap_or_else(|| "request rejected".to_string());
+                    anyhow::bail!("MLX sidecar rejected the {method} request: {error}");
+                }
                 continue;
             }
             if response.ok {
@@ -439,7 +449,8 @@ struct SidecarProcess {
 
 #[derive(Debug, Deserialize)]
 struct SidecarResponse {
-    id: u64,
+    // None when the sidecar could not parse the request and echoes id: null.
+    id: Option<u64>,
     ok: bool,
     result: Option<Value>,
     error: Option<SidecarError>,
