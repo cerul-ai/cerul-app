@@ -39,6 +39,7 @@ export function CerulPlayer({
   markers = [],
   chapters = [],
   ariaLabel,
+  fallbackDurationSec,
   onPlay,
   onPause,
   onSeekMarker,
@@ -48,6 +49,9 @@ export function CerulPlayer({
   markers?: PlayerMarker[];
   chapters?: PlayerChapter[];
   ariaLabel?: string;
+  /** Known media length, shown until the <video> reports its own duration —
+   * avoids the "0:00 / 0:00" flash before metadata loads. */
+  fallbackDurationSec?: number | null;
   onPlay?: () => void;
   onPause?: () => void;
   onSeekMarker?: (marker: PlayerMarker) => void;
@@ -56,7 +60,9 @@ export function CerulPlayer({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const fallbackDuration =
+    fallbackDurationSec && fallbackDurationSec > 0 ? fallbackDurationSec : 0;
+  const [duration, setDuration] = useState(fallbackDuration);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -77,7 +83,13 @@ export function CerulPlayer({
       return;
     }
     const syncTime = () => setTime(video.currentTime);
-    const syncDuration = () => setDuration(Number.isFinite(video.duration) ? video.duration : 0);
+    // Only upgrade to the real duration once known; never reset to 0, so the
+    // fallback (known media length) stays visible until then.
+    const syncDuration = () => {
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        setDuration(video.duration);
+      }
+    };
     const syncPlay = () => {
       setPlaying(true);
       onPlay?.();
@@ -124,6 +136,12 @@ export function CerulPlayer({
       video.removeEventListener("volumechange", syncVolume);
     };
   }, [videoRef, src, onPlay, onPause]);
+
+  // On item/src change, show the known length immediately; the video's real
+  // duration upgrades it once metadata loads.
+  useEffect(() => {
+    setDuration(fallbackDuration);
+  }, [src, fallbackDuration]);
 
   useEffect(() => {
     const onResize = () => setResizeTick((n) => n + 1);
