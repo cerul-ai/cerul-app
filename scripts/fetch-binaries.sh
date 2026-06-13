@@ -111,6 +111,9 @@ run() {
 # would ship to users unnoticed.
 YTDLP_VERSION="${CERUL_YTDLP_VERSION:-2026.06.09}"
 QDRANT_VERSION="${CERUL_QDRANT_VERSION:-v1.18.2}"
+# Cerul-vendored, self-contained LGPL ffmpeg (built from official source with no
+# --enable-gpl / x264, hosted on the cerul-app releases). See ffmpeg_url().
+FFMPEG_VERSION="${CERUL_FFMPEG_VERSION:-7.1}"
 
 # sha256 per pinned asset. Update together with the versions above.
 expected_sha256() {
@@ -124,6 +127,7 @@ expected_sha256() {
     qdrant-aarch64-unknown-linux-musl.tar.gz) echo "2ead5bb8206289b67c930f0eb29123228ddb43c2344551a0947cbc9046f92c6c" ;;
     qdrant-x86_64-unknown-linux-musl.tar.gz) echo "40a6af44f8a496560c9d2352b6b2a0ada816aa48d0781c68f602582e67b3aea0" ;;
     qdrant-x86_64-pc-windows-msvc.zip) echo "b2b262cba6f78cf4fa794ae78d73a8f70a221c93c76c75ac8fd6fe95d809b142" ;;
+    ffmpeg-7.1-lgpl-macos-arm64.tar.gz) echo "157076bb3e83f31e7a39781200173eb730edafed9481ed5c5a3b3a2adee416fa" ;;
     *) return 1 ;;
   esac
 }
@@ -224,7 +228,13 @@ ffmpeg_url() {
     return 0
   fi
 
-  return 1
+  # Default: Cerul-vendored, self-contained LGPL ffmpeg built from official
+  # source (no --enable-gpl, no x264) and hosted on the cerul-app releases, so
+  # release installers never ship a GPL/system ffmpeg. Checksum-pinned above.
+  case "$(target_os "$TARGET")-$(target_arch "$TARGET")" in
+    macos-aarch64) echo "https://github.com/cerul-ai/cerul-app/releases/download/vendor-ffmpeg-${FFMPEG_VERSION}-lgpl/ffmpeg-${FFMPEG_VERSION}-lgpl-macos-arm64.tar.gz" ;;
+    *) return 1 ;;
+  esac
 }
 
 target_specific_qdrant_url() {
