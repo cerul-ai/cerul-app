@@ -2365,7 +2365,15 @@ body.overlay-body {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
+  /* contain (not cover) so vertical / square frames show in full instead of
+     being cropped to a middle strip; a 16:9 frame still fills the 16:9 box. */
+  object-fit: contain;
+}
+/* Dark letterbox backdrop behind a contained frame — invisible for 16:9
+   (frame fills), neat bars for vertical/square. */
+.thumb.has-image,
+.item-thumb.has-image {
+  background-color: #14171c;
 }
 .thumb svg,
 .item-thumb svg {

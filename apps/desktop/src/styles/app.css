@@ -219,7 +219,10 @@
 .continue-card .continue-thumb img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+}
+.continue-card .continue-thumb.has-image {
+  background-color: #14171c;
 }
 .continue-play {
   position: absolute;
