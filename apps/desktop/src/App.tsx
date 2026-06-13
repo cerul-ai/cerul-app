@@ -66,7 +66,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
 import { useAuthStore } from "./lib/cloud/authStore";
@@ -1687,6 +1687,9 @@ function AppWorkspace() {
           <ResultDetail
             item={currentItem}
             startChunkId={selectedChunkId}
+            moreMatches={
+              visibleResults.find((result) => result.id === selectedChunkId)?.moreMatches
+            }
             startTimestamp={selectedTimestamp ?? "00:00"}
             actionsEnabled={screenApiStatus === "online"}
             onLibrary={() => navigate("results")}
@@ -2682,11 +2685,22 @@ function useItemMoments(item: Item, enabled: boolean) {
     };
   }, [enabled, item.id, visualFixtureMode]);
 
+  // Indexed lookups: the per-line linear scan made transcript rendering
+  // O(lines x moments).
+  const momentIndex = useMemo(() => {
+    const byChunk = new Map<string, api.MomentRecord>();
+    const byQuote = new Map<string, api.MomentRecord>();
+    for (const moment of moments) {
+      if (moment.chunk_id) byChunk.set(moment.chunk_id, moment);
+      byQuote.set(`${moment.timestamp}\u0000${moment.quote.trim()}`, moment);
+    }
+    return { byChunk, byQuote };
+  }, [moments]);
+
   function momentForLine(line: TranscriptLine) {
-    return moments.find(
-      (moment) =>
-        moment.chunk_id === line.id ||
-        (moment.timestamp === line.time && moment.quote.trim() === line.text.trim()),
+    return (
+      momentIndex.byChunk.get(line.id) ??
+      momentIndex.byQuote.get(`${line.time}\u0000${line.text.trim()}`)
     );
   }
 
@@ -2809,6 +2823,7 @@ function ResultDetail({
   item,
   startChunkId,
   startTimestamp,
+  moreMatches,
   actionsEnabled,
   onLibrary,
   onDeleteItem,
@@ -2818,6 +2833,7 @@ function ResultDetail({
   item: Item;
   startChunkId: string | null;
   startTimestamp: string;
+  moreMatches?: ResultMatch[];
   actionsEnabled: boolean;
   onLibrary: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
@@ -2865,18 +2881,25 @@ function ResultDetail({
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting";
   const canExportClip = item.contentType === "video" && Boolean(mediaState.chunkId);
-  const otherMatches = transcriptLines
-    .filter((line) => line.time !== startTimestamp)
-    .slice(0, 2)
-    .map((line) => line.time);
-  const playerMarkers: PlayerMarker[] = transcriptLines
-    .map((line) => ({
-      seconds: parseTimestampSeconds(line.time),
-      label: line.time,
-      text: line.text,
-      match: line.time === startTimestamp,
-    }))
-    .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
+  // Real sibling search hits for this item (passed down from the results
+  // list). The previous implementation showed arbitrary transcript lines
+  // labelled as "other matches".
+  const otherMatches = (moreMatches ?? [])
+    .map((match) => match.timestamp)
+    .filter((timestamp) => timestamp !== startTimestamp)
+    .slice(0, 3);
+  const playerMarkers: PlayerMarker[] = useMemo(
+    () =>
+      transcriptLines
+        .map((line) => ({
+          seconds: parseTimestampSeconds(line.time),
+          label: line.time,
+          text: line.text,
+          match: line.time === startTimestamp,
+        }))
+        .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
+    [transcriptLines, startTimestamp],
+  );
 
   usePlaybackPositionPersistence({
     itemId: item.id,
@@ -3120,10 +3143,18 @@ function ResultDetail({
       filters: [{ name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] }],
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
-      setItemAction({
-        status: "queued",
-        message: t("detail.locatedSource", { path: selected }),
-      });
+      try {
+        // Persist the new location and queue a re-index against it —
+        // previously the picked path was only echoed back as a message.
+        await api.updateItemRawPath(item.id, selected.trim());
+        await onReindexItem(item);
+        setItemAction({
+          status: "queued",
+          message: t("detail.locatedSource", { path: selected }),
+        });
+      } catch (error) {
+        setItemAction({ status: "error", message: errorMessage(error) });
+      }
       return;
     }
     setItemAction({ status: "idle", message: null });
@@ -3325,6 +3356,9 @@ function ResultDetail({
               <div className="row gap-2" style={{ alignItems: "center" }}>
                 {otherMatches.length > 0 && !readingMode ? (
                   <div className="row gap-1" aria-label={t("detail.otherMatches")}>
+                    <span className="faint" style={{ fontSize: 12 }}>
+                      {t("detail.otherMatches")}
+                    </span>
                     {otherMatches.map((timestamp) => (
                       <button
                         key={timestamp}
@@ -3419,6 +3453,10 @@ function VideoUnderstandingPanel({
     record: fixtureRecord ?? null,
     message: null,
   });
+  // Tracks the currently displayed item so long-running requests started
+  // for a previous item can detect they are stale.
+  const itemIdRef = useRef(item.id);
+  itemIdRef.current = item.id;
   const record = state.record;
   const isPending = state.status === "loading" || state.status === "analyzing";
   // Elapsed timer for the analyze run. The request is a single blocking call
@@ -3493,15 +3531,22 @@ function VideoUnderstandingPanel({
     if (!confirmed) {
       return;
     }
+    // The analyze POST can run for minutes while the panel stays mounted
+    // across item switches; pin the id so a finished analysis for item A
+    // can't be written into item B's panel (and its player chapters).
+    const analyzedItemId = item.id;
+    const isCurrent = () => analyzedItemId === itemIdRef.current;
     setState((current) => ({
       status: "analyzing",
       record: current.record,
       message: null,
     }));
     try {
-      const next = await api.analyzeItemUnderstanding(item.id);
+      const next = await api.analyzeItemUnderstanding(analyzedItemId);
+      if (!isCurrent()) return;
       setState({ status: "loaded", record: next, message: null });
     } catch (error) {
+      if (!isCurrent()) return;
       setState((current) => ({
         status: "error",
         record: current.record,
@@ -4308,9 +4353,17 @@ function ItemDetail({
     item,
     (visualFixtureMode || actionsEnabled) && chunkState.status === "loaded",
   );
-  const playerMarkers: PlayerMarker[] = transcriptLines
-    .map((line) => ({ seconds: parseTimestampSeconds(line.time), label: line.time, text: line.text }))
-    .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0);
+  const playerMarkers: PlayerMarker[] = useMemo(
+    () =>
+      transcriptLines
+        .map((line) => ({
+          seconds: parseTimestampSeconds(line.time),
+          label: line.time,
+          text: line.text,
+        }))
+        .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
+    [transcriptLines],
+  );
   const chunkValue =
     chunkState.status === "loaded"
       ? String(chunkState.lines.length)
@@ -4448,10 +4501,18 @@ function ItemDetail({
       filters: [{ name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] }],
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
-      setItemAction({
-        status: "queued",
-        message: t("detail.locatedSource", { path: selected }),
-      });
+      try {
+        // Persist the new location and queue a re-index against it —
+        // previously the picked path was only echoed back as a message.
+        await api.updateItemRawPath(item.id, selected.trim());
+        await onReindexItem(item);
+        setItemAction({
+          status: "queued",
+          message: t("detail.locatedSource", { path: selected }),
+        });
+      } catch (error) {
+        setItemAction({ status: "error", message: errorMessage(error) });
+      }
       return;
     }
     setItemAction({ status: "idle", message: null });
@@ -5036,6 +5097,16 @@ function IndexingSettings({
 }) {
   const t = useT();
   const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 4);
+  // Track the value locally while dragging; persist once on release —
+  // each tick used to fire a PATCH plus a 7-request full refresh.
+  const [jobsDraft, setJobsDraft] = useState<number | null>(null);
+  const shownJobs = jobsDraft ?? concurrentJobs;
+  const commitJobs = () => {
+    if (jobsDraft !== null && jobsDraft !== concurrentJobs) {
+      void onSettingsChange({ concurrent_jobs: jobsDraft });
+    }
+    setJobsDraft(null);
+  };
 
   return (
     <>
@@ -5046,15 +5117,18 @@ function IndexingSettings({
           control={
             <div className="col gap-2" style={{ alignItems: "flex-end" }}>
               <span className="chip neutral">
-                {concurrentJobs} {t("settings.indexing.concurrentJobs.unit")}
+                {shownJobs} {t("settings.indexing.concurrentJobs.unit")}
               </span>
               <input
                 type="range"
                 min={1}
                 max={4}
-                value={concurrentJobs}
+                value={shownJobs}
                 disabled={disabled}
-                onChange={(event) => void onSettingsChange({ concurrent_jobs: Number(event.currentTarget.value) })}
+                onChange={(event) => setJobsDraft(Number(event.currentTarget.value))}
+                onPointerUp={commitJobs}
+                onKeyUp={commitJobs}
+                onBlur={commitJobs}
               />
             </div>
           }

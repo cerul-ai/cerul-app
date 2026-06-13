@@ -4,23 +4,46 @@
 // must stay quiet while any surface is open — they coordinate through
 // hasOpenModalSurface() in App.tsx, which checks the DOM for open surfaces.
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 
+// Stack of currently-open dismissable surfaces. Escape only closes the most
+// recently opened one; without this, a confirm dialog stacked on top of a
+// form dialog used to close both at once and lose the user's input.
+const escapeStack: Array<{ close: () => void }> = [];
+let escapeListenerAttached = false;
+
+function onGlobalEscape(event: KeyboardEvent) {
+  if (event.key !== "Escape" || escapeStack.length === 0) {
+    return;
+  }
+  event.preventDefault();
+  escapeStack[escapeStack.length - 1].close();
+}
+
+function ensureEscapeListener() {
+  if (!escapeListenerAttached) {
+    window.addEventListener("keydown", onGlobalEscape);
+    escapeListenerAttached = true;
+  }
+}
+
 export function useEscapeToClose(onClose: () => void, enabled = true) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
     if (!enabled) {
       return;
     }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, enabled]);
+    ensureEscapeListener();
+    const entry = { close: () => closeRef.current() };
+    escapeStack.push(entry);
+    return () => {
+      const index = escapeStack.indexOf(entry);
+      if (index >= 0) escapeStack.splice(index, 1);
+    };
+  }, [enabled]);
 }
 
 export function useClickOutside(

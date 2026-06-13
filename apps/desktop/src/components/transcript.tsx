@@ -1,6 +1,6 @@
 // Transcript list + loading skeleton. Extracted from App.tsx (B13 Phase B).
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { CircleDot } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
 import { parseTimestampSeconds } from "../lib/formatters";
@@ -29,6 +29,11 @@ export function TranscriptList({
   // big detail view doesn't re-render on every timeupdate, and we only re-render
   // when the highlighted line actually changes.
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Timestamps parsed once per transcript, not once per line per timeupdate.
+  const lineStarts = useMemo(
+    () => lines.map((line) => ({ id: line.id, start: parseTimestampSeconds(line.time) })),
+    [lines],
+  );
   useEffect(() => {
     const video = videoRef?.current;
     if (!video) {
@@ -39,11 +44,10 @@ export function TranscriptList({
       const seconds = video.currentTime;
       let id: string | null = null;
       let best = -1;
-      for (const line of lines) {
-        const start = parseTimestampSeconds(line.time);
-        if (Number.isFinite(start) && start <= seconds + 0.05 && start >= best) {
-          best = start;
-          id = line.id;
+      for (const entry of lineStarts) {
+        if (Number.isFinite(entry.start) && entry.start <= seconds + 0.05 && entry.start >= best) {
+          best = entry.start;
+          id = entry.id;
         }
       }
       setActiveId((prev) => (prev === id ? prev : id));
@@ -55,41 +59,58 @@ export function TranscriptList({
       video.removeEventListener("timeupdate", recompute);
       video.removeEventListener("seeking", recompute);
     };
-  }, [videoRef, videoReady, lines]);
+  }, [videoRef, videoReady, lineStarts]);
 
   return (
     <div className="seg-line transcript">
-      {lines.map((line) => {
-        // Prefer the live playhead; fall back to activeTime (e.g. before the
-        // video is ready, or in fixtures with no real playback).
-        const isActive = activeId ? line.id === activeId : line.time === activeTime;
-        return (
-          <div
-            key={line.id}
-            className={[
-              "seg-btn",
-              isActive ? "selected hot" : "",
-              line.time === matchTime ? "accent matched" : "",
-            ].filter(Boolean).join(" ")}
-          >
-            <button
-              type="button"
-              className="seg-btn-main"
-              onClick={() => onSeek?.(line.time)}
-            >
-              <span className="ts mono">
-                {line.time === matchTime ? <CircleDot size={12} /> : null}
-                {line.time}
-              </span>
-              <p className="seg-text">{line.text}</p>
-            </button>
-            {renderAction ? <span className="seg-action">{renderAction(line)}</span> : null}
-          </div>
-        );
-      })}
+      {lines.map((line) => (
+        <TranscriptRow
+          key={line.id}
+          line={line}
+          // Prefer the live playhead; fall back to activeTime (e.g. before the
+          // video is ready, or in fixtures with no real playback).
+          isActive={activeId ? line.id === activeId : line.time === activeTime}
+          isMatch={line.time === matchTime}
+          onSeek={onSeek}
+          renderAction={renderAction}
+        />
+      ))}
     </div>
   );
 }
+
+// Memoized so a playhead move re-renders only the rows whose highlight
+// changed instead of reconciling thousands of rows per timeupdate.
+const TranscriptRow = memo(function TranscriptRow({
+  line,
+  isActive,
+  isMatch,
+  onSeek,
+  renderAction,
+}: {
+  line: TranscriptLine;
+  isActive: boolean;
+  isMatch: boolean;
+  onSeek?: (timestamp: string) => void;
+  renderAction?: (line: TranscriptLine) => ReactNode;
+}) {
+  return (
+    <div
+      className={["seg-btn", isActive ? "selected hot" : "", isMatch ? "accent matched" : ""]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <button type="button" className="seg-btn-main" onClick={() => onSeek?.(line.time)}>
+        <span className="ts mono">
+          {isMatch ? <CircleDot size={12} /> : null}
+          {line.time}
+        </span>
+        <p className="seg-text">{line.text}</p>
+      </button>
+      {renderAction ? <span className="seg-action">{renderAction(line)}</span> : null}
+    </div>
+  );
+});
 
 export function TranscriptSkeleton() {
   const t = useT();

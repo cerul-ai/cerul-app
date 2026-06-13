@@ -9,7 +9,7 @@
 // effects keep working untouched; this component renders that <video> (sans
 // native controls) and mirrors its state via media events for the UI.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { useT } from "../lib/i18n";
 
@@ -151,6 +151,12 @@ export function CerulPlayer({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
+  // Sorted copy so hover lookup is a binary search instead of scanning
+  // every marker on each mousemove.
+  const sortedMarkers = useMemo(
+    () => [...markers].sort((a, b) => a.seconds - b.seconds),
+    [markers],
+  );
   const onTrackMove = (event: React.MouseEvent) => {
     const track = trackRef.current;
     if (!track || !(duration > 0) || (markers.length === 0 && !hasChapters)) {
@@ -158,13 +164,22 @@ export function CerulPlayer({
     }
     const rect = track.getBoundingClientRect();
     const ratio = (event.clientX - rect.left) / rect.width;
+    const target = ratio * duration;
+    let lo = 0;
+    let hi = sortedMarkers.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedMarkers[mid].seconds < target) lo = mid + 1;
+      else hi = mid;
+    }
     let nearest: PlayerMarker | null = null;
     let best = 0.025;
-    for (const marker of markers) {
-      const distance = Math.abs(marker.seconds / duration - ratio);
+    for (const candidate of [sortedMarkers[lo - 1], sortedMarkers[lo]]) {
+      if (!candidate) continue;
+      const distance = Math.abs(candidate.seconds / duration - ratio);
       if (distance < best) {
         best = distance;
-        nearest = marker;
+        nearest = candidate;
       }
     }
     if (!nearest && hasChapters) {
@@ -183,16 +198,19 @@ export function CerulPlayer({
     setHover(nearest ? { left: (nearest.seconds / duration) * 100, marker: nearest } : null);
   };
 
-  const onMarkerClick = (marker: PlayerMarker) => {
-    if (onSeekMarker) {
-      onSeekMarker(marker);
-      return;
-    }
-    const video = videoRef.current;
-    if (video) {
-      video.currentTime = marker.seconds;
-    }
-  };
+  const onMarkerClick = useCallback(
+    (marker: PlayerMarker) => {
+      if (onSeekMarker) {
+        onSeekMarker(marker);
+        return;
+      }
+      const video = videoRef.current;
+      if (video) {
+        video.currentTime = marker.seconds;
+      }
+    },
+    [onSeekMarker, videoRef],
+  );
 
   const toggleMute = () => {
     const video = videoRef.current;
@@ -284,21 +302,9 @@ export function CerulPlayer({
             ) : (
               <div className="cplayer-fill" style={{ width: `${pct}%` }} />
             )}
-            {showMarkers
-              ? markers.map((marker, index) => (
-                  <button
-                    key={`${marker.seconds}-${index}`}
-                    type="button"
-                    className={marker.match ? "cplayer-mark match" : "cplayer-mark"}
-                    style={{ left: `${(marker.seconds / duration) * 100}%` }}
-                    aria-label={marker.label}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onMarkerClick(marker);
-                    }}
-                  />
-                ))
-              : null}
+            {showMarkers ? (
+              <MarkerLayer markers={markers} duration={duration} onMarkerClick={onMarkerClick} />
+            ) : null}
             <div className="cplayer-knob" style={{ left: `${pct}%` }} />
           </div>
         </div>
@@ -342,3 +348,34 @@ export function CerulPlayer({
     </div>
   );
 }
+
+// Isolated marker buttons: timeupdate fires ~4x/second and re-renders the
+// player, but the (potentially thousands of) marker nodes only depend on the
+// transcript and duration, so they are memoized out of that hot path.
+const MarkerLayer = memo(function MarkerLayer({
+  markers,
+  duration,
+  onMarkerClick,
+}: {
+  markers: PlayerMarker[];
+  duration: number;
+  onMarkerClick: (marker: PlayerMarker) => void;
+}) {
+  return (
+    <>
+      {markers.map((marker, index) => (
+        <button
+          key={`${marker.seconds}-${index}`}
+          type="button"
+          className={marker.match ? "cplayer-mark match" : "cplayer-mark"}
+          style={{ left: `${(marker.seconds / duration) * 100}%` }}
+          aria-label={marker.label}
+          onClick={(event) => {
+            event.stopPropagation();
+            onMarkerClick(marker);
+          }}
+        />
+      ))}
+    </>
+  );
+});

@@ -340,7 +340,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/entities/:id", get(get_entity))
         .route("/weekly-review", get(weekly_review))
         .route("/items", get(list_items))
-        .route("/items/:id", get(get_item).delete(remove_item))
+        .route(
+            "/items/:id",
+            get(get_item).patch(update_item).delete(remove_item),
+        )
         .route(
             "/items/:id/playback",
             get(get_item_playback_position).patch(update_item_playback_position),
@@ -1038,6 +1041,39 @@ async fn list_items(State(state): State<ApiState>) -> ApiResult<Json<Vec<ItemRec
     attach_item_usage(&state.paths, &mut items);
 
     Ok(Json(items))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateItemRequest {
+    raw_path: Option<String>,
+}
+
+/// Currently supports relocating a media file that moved on disk: updates
+/// raw_path (after verifying the file exists) and clears a stale
+/// missing-file error so a subsequent re-index can run against it.
+async fn update_item(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateItemRequest>,
+) -> ApiResult<Json<ItemRecord>> {
+    if let Some(raw_path) = req.raw_path.as_deref() {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request("raw_path must not be empty"));
+        }
+        if !FsPath::new(trimmed).is_file() {
+            return Err(ApiError::bad_request(format!("file not found: {trimmed}")));
+        }
+        let conn = cerul_storage::sqlite::open(&state.paths)?;
+        let updated = conn.execute(
+            "UPDATE items SET raw_path = ?2, error = NULL WHERE id = ?1",
+            rusqlite::params![id.as_str(), trimmed],
+        )?;
+        if updated == 0 {
+            return Err(ApiError::not_found("item not found"));
+        }
+    }
+    get_item(State(state), Path(id)).await
 }
 
 async fn get_item(

@@ -482,6 +482,14 @@ export async function deleteItem(id: string) {
   });
 }
 
+export async function updateItemRawPath(id: string, rawPath: string) {
+  return fetchJson<ItemRecord>(`/items/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw_path: rawPath }),
+  });
+}
+
 export async function reindexItem(id: string) {
   return fetchJson<{ status: string; id: string; queued_job: boolean }>(
     `/items/${encodeURIComponent(id)}/reindex`,
