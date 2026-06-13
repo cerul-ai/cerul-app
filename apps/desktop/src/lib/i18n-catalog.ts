@@ -990,7 +990,7 @@ export const en: Record<string, string> = {
   "results.status.filteredHits": "{count} of {total} hits",
   "results.status.hits": "{count} hits",
   "results.notice.demo": "Showing demo results until Cerul Core is reachable.",
-  "results.summary.count": "{count} of {total} hit",
+  "results.summary.count": "{count} of {total} hits",
   "common.clearFilters": "Clear filters",
   "results.list.aria": "Search results",
   "results.empty.initial.title": "Search your media memory",

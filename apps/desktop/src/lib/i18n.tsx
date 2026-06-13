@@ -37,6 +37,13 @@ function interpolate(template: string, vars?: TVars): string {
 
 // Pure lookup with English fallback, then the raw key so missing strings are
 // visible rather than silently blank.
+/** BCP-47 tag for the app language — for number/date formatting outside of
+ * React context. Falls back to the stored preference. */
+export function appLocaleTag(): string {
+  const lang = document.documentElement.getAttribute("lang") ?? readStoredLang();
+  return lang === "zh" ? "zh-CN" : "en-US";
+}
+
 export function translate(lang: Lang, key: string, vars?: TVars): string {
   const table = catalogs[lang] ?? en;
   const template = table[key] ?? en[key] ?? key;

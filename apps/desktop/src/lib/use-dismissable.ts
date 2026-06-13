@@ -65,3 +65,56 @@ export function useClickOutside(
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [ref, onClose, enabled]);
 }
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Dialog focus management: move focus into the surface on open, keep Tab
+// cycling inside it, and hand focus back to the trigger on close. Without
+// this, aria-modal dialogs left focus on the background page.
+export function useDialogFocus(ref: RefObject<HTMLElement | null>, enabled = true) {
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const node = ref.current;
+    if (!node) {
+      return;
+    }
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusables = () =>
+      [...node.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
+        (el) => el.offsetParent !== null,
+      );
+    const first = focusables()[0];
+    if (first) {
+      first.focus();
+    } else {
+      node.tabIndex = -1;
+      node.focus();
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Tab") {
+        return;
+      }
+      const items = focusables();
+      if (items.length === 0) {
+        return;
+      }
+      const firstItem = items[0];
+      const lastItem = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === firstItem) {
+        event.preventDefault();
+        lastItem.focus();
+      } else if (!event.shiftKey && document.activeElement === lastItem) {
+        event.preventDefault();
+        firstItem.focus();
+      }
+    }
+    node.addEventListener("keydown", onKeyDown);
+    return () => {
+      node.removeEventListener("keydown", onKeyDown);
+      previous?.focus();
+    };
+  }, [ref, enabled]);
+}

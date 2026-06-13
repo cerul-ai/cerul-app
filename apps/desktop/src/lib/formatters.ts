@@ -66,8 +66,13 @@ export function formatTimestamp(seconds: number | null) {
     return "00:00";
   }
   const total = Math.round(seconds);
-  const minutes = Math.floor(total / 60);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
   const remaining = `${total % 60}`.padStart(2, "0");
+  // Match formatDuration above: a 2h video shows 1:32:30, not 92:30.
+  if (hours > 0) {
+    return `${hours}:${`${minutes}`.padStart(2, "0")}:${remaining}`;
+  }
   return `${minutes}:${remaining}`;
 }
 

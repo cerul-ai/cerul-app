@@ -4,6 +4,7 @@
 // providerStatusLabel convention in App.tsx) so the jobs sheet renders in the
 // user's language. Unknown job types / stages fall back gracefully.
 
+import { appLocaleTag } from "./i18n";
 import type { TFunction } from "./i18n";
 import type * as api from "./api";
 import { formatDuration, formatUsd } from "./formatters";
@@ -241,7 +242,7 @@ export function jobUsageLabel(job: api.JobRecord, t: TFunction) {
     );
   }
   if (usage.input_tokens > 0) {
-    parts.push(t("jobs.usage.inputTokens", { count: usage.input_tokens.toLocaleString() }));
+    parts.push(t("jobs.usage.inputTokens", { count: usage.input_tokens.toLocaleString(appLocaleTag()) }));
   }
   if (usage.unpriced_events > 0) {
     parts.push(t("jobs.usage.unpriced", { count: usage.unpriced_events }));

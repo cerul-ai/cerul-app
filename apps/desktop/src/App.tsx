@@ -70,7 +70,7 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
 import { useAuthStore } from "./lib/cloud/authStore";
-import { LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
+import { appLocaleTag, LangProvider, useLang, useT, type TFunction } from "./lib/i18n";
 import {
   errorMessage,
   extractChunkIdFromThumbnail,
@@ -93,7 +93,7 @@ import {
   EmptyState,
   InlineNotice,
 } from "./components/leaf";
-import { useClickOutside, useEscapeToClose } from "./lib/use-dismissable";
+import { useClickOutside, useEscapeToClose, useDialogFocus } from "./lib/use-dismissable";
 import {
   ProgressBar,
   StatusBadge,
@@ -1210,6 +1210,21 @@ function AppWorkspace() {
     }, 2500);
     return () => window.clearInterval(intervalId);
   }, [apiStatus, activeJobCount]);
+
+  // Items/sources are mapped through t() at fetch time; re-map once when the
+  // user switches language so dates/status text don't stay in the old locale.
+  const { lang } = useLang();
+  const lastMappedLangRef = useRef(lang);
+  useEffect(() => {
+    if (lastMappedLangRef.current === lang) {
+      return;
+    }
+    lastMappedLangRef.current = lang;
+    if (!visualFixtureMode && apiStatus === "online") {
+      void refreshCoreData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
 
   // Auto-reconnect: while the core is unreachable, keep probing with a
   // capped exponential backoff instead of waiting for a manual Retry click.
@@ -5822,6 +5837,8 @@ function ProviderConnections({
 
   // P3 · The connection editor is a focused modal now, so Esc dismisses it.
   useEscapeToClose(closeForm, mode !== null);
+  const providerDialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(providerDialogRef, mode !== null);
 
   function openCreate() {
     setMode("create");
@@ -6062,6 +6079,7 @@ function ProviderConnections({
       {mode ? (
         <div className="scrim" role="presentation" onMouseDown={closeForm}>
           <section
+            ref={providerDialogRef}
             className="dialog provider-conn-dialog"
             role="dialog"
             aria-modal="true"
@@ -6305,7 +6323,7 @@ function UsageValue({
         })
       : null,
     totals.input_tokens > 0
-      ? t("jobs.usage.inputTokens", { count: totals.input_tokens.toLocaleString() })
+      ? t("jobs.usage.inputTokens", { count: totals.input_tokens.toLocaleString(appLocaleTag()) })
       : null,
     totals.unpriced_events > 0 ? t("jobs.usage.unpriced", { count: totals.unpriced_events }) : null,
   ].filter(Boolean);

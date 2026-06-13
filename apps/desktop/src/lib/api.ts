@@ -1,5 +1,13 @@
 const API_BASE_URL = "http://127.0.0.1:7777";
 
+import { appLocaleTag } from "./i18n";
+
+function coreUnreachableMessage(): string {
+  return appLocaleTag() === "zh-CN"
+    ? "Cerul Core 暂时无法连接。"
+    : "Cerul Core is not reachable yet.";
+}
+
 export type SourceRecord = {
   id: string;
   type: string;
@@ -625,13 +633,20 @@ export async function updateSettings(settings: SettingsMap) {
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+  } catch {
+    // Network-level failure (core not running / connection refused). The
+    // browser's raw "Failed to fetch" is neither localized nor actionable.
+    throw new Error(coreUnreachableMessage());
+  }
 
   if (!response.ok) {
     const body = await response.text();

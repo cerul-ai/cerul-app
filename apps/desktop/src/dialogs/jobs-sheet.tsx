@@ -1,3 +1,4 @@
+import { useRef } from "react";
 // Slide-out sheet listing indexing jobs. Extracted from App.tsx
 // (B13 Phase D).
 
@@ -21,7 +22,7 @@ import {
   jobUsageLabel,
 } from "../lib/jobs";
 import type { Item } from "../lib/types";
-import { useEscapeToClose } from "../lib/use-dismissable";
+import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { useNowSeconds } from "../lib/use-now";
 import { EmptyState } from "../components/leaf";
 import { ProgressBar, StatusBadge } from "../components/transcript";
@@ -41,6 +42,8 @@ export function JobsSheet({
 }) {
   const t = useT();
   useEscapeToClose(onClose);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useDialogFocus(dialogRef);
   const sortedJobs = [...jobs].sort((a, b) => {
     const activeDelta = Number(isActiveJob(b)) - Number(isActiveJob(a));
     if (activeDelta !== 0) {
@@ -137,6 +140,7 @@ export function JobsSheet({
   return (
     <div className="scrim sheet-backdrop" role="presentation" onMouseDown={onClose}>
       <aside
+        ref={dialogRef}
         className="drawer jobs-sheet"
         role="dialog"
         aria-modal="true"
