@@ -129,23 +129,83 @@ function urlHostMatches(value: string, hosts: string[]) {
   }
 }
 
+// Pipeline failures arrive as raw ffmpeg/backend stderr. We never want to dump
+// that at the user, so map the few recurring shapes to a plain-language reason.
+// Returns null when nothing specific matches, so the caller falls back to the
+// source-kind branches (missing file / unavailable source / generic).
+export type FailureReason = "no_audio" | "unreadable_media" | "ffmpeg_unavailable";
+
+export function classifyFailureReason(rawError: string): FailureReason | null {
+  const e = rawError.toLowerCase();
+  if (!e) {
+    return null;
+  }
+  // ffmpeg wrote an audio-only output but the input carried no audio stream
+  // to map (common for screen-recording captures, which keep audio separate).
+  if (
+    e.includes("does not contain any stream") ||
+    e.includes("output file is empty") ||
+    e.includes("stream map") ||
+    /\bno audio\b/.test(e)
+  ) {
+    return "no_audio";
+  }
+  // Container can't be parsed: unfinalised/corrupt file (e.g. an in-progress
+  // Screen Studio recording with no moov atom -> "Duration: N/A").
+  if (
+    e.includes("could not find codec parameters") ||
+    e.includes("moov atom not found") ||
+    e.includes("invalid data found") ||
+    e.includes("unspecified pixel format") ||
+    e.includes("duration: n/a")
+  ) {
+    return "unreadable_media";
+  }
+  // The bundled ffmpeg itself is missing / not launchable.
+  if (e.includes("ffmpeg") && (e.includes("enoent") || e.includes("not found") || e.includes("no such file"))) {
+    return "ffmpeg_unavailable";
+  }
+  return null;
+}
+
 export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
   const error = item.error?.trim() ?? "";
   if (item.status !== "failed" && !error) {
     return null;
+  }
+  const rawError = error || null;
+
+  // A classified pipeline failure is more accurate than the source-kind guess:
+  // a local file that ffmpeg can't transcribe is NOT "missing", so this takes
+  // precedence over the missing-file branch below.
+  const reason = classifyFailureReason(error);
+  if (reason) {
+    return {
+      kind: "failed",
+      title: t(`item.issue.${reason}.title`),
+      message: t(`item.issue.${reason}.message`),
+      // Re-indexing won't fix a file with no audio / a broken container, so for
+      // local files point at the file instead; otherwise allow a retry.
+      primaryAction: reason === "no_audio" || reason === "unreadable_media"
+        ? item.rawPath
+          ? "locate"
+          : null
+        : "reindex",
+      removeLabel: t("item.issue.removeLabel"),
+      rawError,
+    };
   }
 
   if (item.sourceKind === "folder" || item.rawPath) {
     return {
       kind: "missing-file",
       title: t("item.issue.missingFile.title"),
-      message:
-        error ||
-        t("item.issue.missingFile.message", {
-          path: item.rawPath ?? t("item.issue.missingFile.pathFallback"),
-        }),
+      message: t("item.issue.missingFile.message", {
+        path: item.rawPath ?? t("item.issue.missingFile.pathFallback"),
+      }),
       primaryAction: "locate",
       removeLabel: t("item.issue.removeLabel"),
+      rawError,
     };
   }
 
@@ -153,9 +213,10 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
     return {
       kind: "source-unavailable",
       title: t("item.issue.youtube.title"),
-      message: error || t("item.issue.youtube.message"),
+      message: t("item.issue.youtube.message"),
       primaryAction: "open-original",
       removeLabel: t("item.issue.removeLabel"),
+      rawError,
     };
   }
 
@@ -163,18 +224,20 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
     return {
       kind: "source-unavailable",
       title: t("item.issue.webVideo.title"),
-      message: error || t("item.issue.webVideo.message"),
+      message: t("item.issue.webVideo.message"),
       primaryAction: "open-original",
       removeLabel: t("item.issue.removeLabel"),
+      rawError,
     };
   }
 
   return {
     kind: "failed",
     title: t("item.issue.failed.title"),
-    message: error || t("item.issue.failed.message"),
+    message: t("item.issue.failed.message"),
     primaryAction: "reindex",
     removeLabel: t("item.issue.removeLabel"),
+    rawError,
   };
 }
 

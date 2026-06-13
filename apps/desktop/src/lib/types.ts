@@ -136,6 +136,10 @@ export type DetailIssue = {
   message: string;
   primaryAction: "locate" | "open-original" | "reindex" | null;
   removeLabel: string;
+  // Raw backend/ffmpeg error, surfaced in a collapsible "technical details"
+  // section instead of being dumped into `message`. Null when there's no
+  // underlying log (e.g. a clean source-unavailable case).
+  rawError: string | null;
 };
 
 export type Source = {

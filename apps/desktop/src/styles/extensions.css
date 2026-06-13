@@ -793,28 +793,104 @@
    ============================================================ */
 .detail-issue {
   display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--danger);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 580px;
+  padding: var(--sp-4);
+  border: 1px solid var(--danger-line);
   border-radius: var(--r-md);
   background: var(--danger-soft);
   color: var(--text);
   font-size: var(--fs-meta);
+  text-align: left;
 }
-.detail-issue > div:first-of-type {
-  display: grid;
-  min-width: 0;
+.detail-issue-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--danger);
+}
+.detail-issue-head strong {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text);
+}
+.detail-issue-message {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+/* Collapsible raw ffmpeg/backend log — readable on demand, never dumped. */
+.detail-issue-tech {
+  margin: 0;
+}
+.detail-issue-tech summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+.detail-issue-tech summary::-webkit-details-marker {
+  display: none;
+}
+.detail-issue-tech-label::before {
+  content: "▸ ";
+  color: var(--text-faint);
+}
+.detail-issue-tech[open] .detail-issue-tech-label::before {
+  content: "▾ ";
+}
+.detail-issue-copy {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.detail-issue-copy:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.detail-issue-raw {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 150px;
+  overflow: auto;
 }
 .detail-issue-actions {
   display: flex;
-  flex: none;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--sp-2);
-  margin-left: auto;
   flex-wrap: wrap;
+}
+.detail-issue-actions .btn-danger {
+  margin-left: auto;
+}
+/* Failed-state media slot: let the issue card size to its content instead of
+   being squashed into the 16:9 player frame (.video-frame-unavailable). */
+.detail-media-issue {
+  display: flex;
+  width: 100%;
 }
 
 /* ============================================================

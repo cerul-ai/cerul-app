@@ -5,7 +5,8 @@
 // are enabled. Renders a banner with a primary action (locate / open
 // original / re-index) plus a destructive "remove from library" button.
 
-import { AlertTriangle, ExternalLink, Folder, Loader2, RefreshCcw, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Check, Copy, ExternalLink, Folder, Loader2, RefreshCcw, Trash2 } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { DetailIssue } from "../lib/types";
 
@@ -29,10 +30,21 @@ export function DetailIssuePanel({
   onRemove: () => void;
 }) {
   const t = useT();
+  const [copied, setCopied] = useState(false);
   const busy =
     actionStatus === "locating" ||
     actionStatus === "reindexing" ||
     actionStatus === "deleting";
+
+  function copyRawError() {
+    if (!issue.rawError) {
+      return;
+    }
+    void navigator.clipboard?.writeText(issue.rawError).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  }
   const primaryLabel =
     issue.primaryAction === "locate"
       ? t("detail.issue.locate")
@@ -62,11 +74,30 @@ export function DetailIssuePanel({
 
   return (
     <div className="detail-issue" role="alert">
-      <AlertTriangle size={24} />
-      <div>
+      <div className="detail-issue-head">
+        <AlertTriangle size={20} />
         <strong>{issue.title}</strong>
-        <span>{issue.message}</span>
       </div>
+      <p className="detail-issue-message">{issue.message}</p>
+      {issue.rawError ? (
+        <details className="detail-issue-tech">
+          <summary>
+            <span className="detail-issue-tech-label">{t("detail.issue.tech")}</span>
+            <button
+              className="detail-issue-copy"
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                copyRawError();
+              }}
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+              <span>{copied ? t("detail.issue.copied") : t("detail.issue.copy")}</span>
+            </button>
+          </summary>
+          <pre className="detail-issue-raw mono">{issue.rawError}</pre>
+        </details>
+      ) : null}
       <div className="detail-issue-actions">
         {primaryLabel ? (
           <button

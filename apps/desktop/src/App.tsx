@@ -3357,8 +3357,7 @@ function ResultDetail({
               <span className="mono faint" style={{ fontSize: 12 }}>{item.duration}</span>
             </div>
             {detailIssue ? (
-              <div className="video-frame thumb video-frame-unavailable">
-                <div className="stripes" aria-hidden="true" />
+              <div className="detail-media-issue">
                 <DetailIssuePanel
                   issue={detailIssue}
                   actionStatus={itemAction.status}
@@ -4806,7 +4805,7 @@ function ItemDetail({
       <div className="detail-split">
         <div className="detail-media">
           {detailIssue ? (
-            <div className={`video-frame ${item.color} video-frame-unavailable`}>
+            <div className="detail-media-issue">
               <DetailIssuePanel
                 issue={detailIssue}
                 actionStatus={itemAction.status}
