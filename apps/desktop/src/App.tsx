@@ -1054,32 +1054,24 @@ function AppWorkspace() {
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const lastSearchRef = useRef<{ query: string; retryWhenIdle: boolean } | null>(null);
+  // Monotonic token: every runSearch bumps it, stale responses are dropped.
+  const searchSeqRef = useRef(0);
 
   const visualFixtureMode = visualFixtureModeEnabled();
   const screenApiStatus: ApiStatus = visualFixtureMode ? "online" : apiStatus;
-  const visibleSources = visualFixtureMode
-    ? sources
-    : apiStatus === "online"
-      ? data.sources
-      : sources;
-  const visibleItems = visualFixtureMode
-    ? items
-    : apiStatus === "online"
-      ? data.items
-      : items;
-  const visibleResults = visualFixtureMode
-    ? results
-    : apiStatus === "online"
-      ? liveResults
-      : results;
+  // Demo fixtures are reserved for `?fixture=design`. When the core is
+  // offline we keep showing the last data we fetched (or empty states) —
+  // never fake content the user might mistake for their own library.
+  const visibleSources = visualFixtureMode ? sources : data.sources;
+  const visibleItems = visualFixtureMode ? items : data.items;
+  const visibleResults = visualFixtureMode ? results : liveResults;
   const visibleJobs = visualFixtureMode
     ? demoJobs
     : apiStatus === "online"
       ? data.jobs
       : [];
   const themePreference = settingString(data.settings, "theme", "Dark");
-  const currentItem =
-    visibleItems.find((item) => item.id === selectedItemId) ?? visibleItems[0] ?? items[0];
+  const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
 
@@ -1219,6 +1211,34 @@ function AppWorkspace() {
     return () => window.clearInterval(intervalId);
   }, [apiStatus, activeJobCount]);
 
+  // Auto-reconnect: while the core is unreachable, keep probing with a
+  // capped exponential backoff instead of waiting for a manual Retry click.
+  useEffect(() => {
+    if (visualFixtureMode || apiStatus === "online") {
+      return;
+    }
+    let cancelled = false;
+    let attempt = 0;
+    let timeoutId = 0;
+
+    const probe = () => {
+      const delay = Math.min(2000 * 2 ** attempt, 15000);
+      attempt += 1;
+      timeoutId = window.setTimeout(() => {
+        void refreshCoreData().then((result) => {
+          if (!cancelled && result === null) probe();
+        });
+      }, delay);
+    };
+    probe();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiStatus, visualFixtureMode]);
+
   async function refreshCoreData(): Promise<AppData | null> {
     setApiError(null);
 
@@ -1248,9 +1268,12 @@ function AppWorkspace() {
       const pendingRetry = lastSearchRef.current;
       if (pendingRetry?.retryWhenIdle && !jobRecords.some(isActiveJob)) {
         lastSearchRef.current = { query: pendingRetry.query, retryWhenIdle: false };
+        const seqAtSchedule = searchSeqRef.current;
         api
           .search(pendingRetry.query, 20)
           .then((records) => {
+            // A newer user-initiated search supersedes this idle retry.
+            if (seqAtSchedule !== searchSeqRef.current) return;
             setLiveResults(mapSearchResults(records, mappedItems, t));
             lastSearchRef.current = {
               query: pendingRetry.query,
@@ -1380,6 +1403,8 @@ function AppWorkspace() {
     }
 
     rememberRecentSearch(trimmed);
+    const seq = ++searchSeqRef.current;
+    const isCurrent = () => seq === searchSeqRef.current;
     setIsSearching(true);
     setSearchError(null);
     try {
@@ -1391,12 +1416,15 @@ function AppWorkspace() {
       const itemsForResults = searchData.items;
       let retryWhenIndexSettles = searchIndexIsSettling(searchData);
       let found = await api.search(trimmed, 20);
+      if (!isCurrent()) return;
       setLiveResults(mapSearchResults(found, itemsForResults, t));
       if (found.length === 0 || retryWhenIndexSettles) {
         await wait(650);
+        if (!isCurrent()) return;
         const refreshed = await refreshCoreData();
         retryWhenIndexSettles = refreshed ? searchIndexIsSettling(refreshed) : retryWhenIndexSettles;
         found = await api.search(trimmed, 20);
+        if (!isCurrent()) return;
         setLiveResults(mapSearchResults(found, refreshed?.items ?? itemsForResults, t));
       }
       lastSearchRef.current = {
@@ -1404,10 +1432,11 @@ function AppWorkspace() {
         retryWhenIdle: retryWhenIndexSettles,
       };
     } catch (error) {
-      setSearchError(errorMessage(error));
-      setApiStatus("error");
+      // A failed search is a search-level problem; flipping the whole app
+      // into an offline/error state used to swap the UI to demo data.
+      if (isCurrent()) setSearchError(errorMessage(error));
     } finally {
-      setIsSearching(false);
+      if (isCurrent()) setIsSearching(false);
     }
   }
 
@@ -1644,7 +1673,17 @@ function AppWorkspace() {
             hasActiveJobs={visibleJobs.some(isActiveJob)}
           />
         ) : null}
-        {view === "result-detail" ? (
+        {view === "result-detail" && !currentItem ? (
+          <div className="screen">
+            <EmptyState
+              title={t("detail.notFound.title")}
+              body={t("detail.notFound.body")}
+              actionLabel={t("detail.notFound.back")}
+              onAction={() => navigate("library")}
+            />
+          </div>
+        ) : null}
+        {view === "result-detail" && currentItem ? (
           <ResultDetail
             item={currentItem}
             startChunkId={selectedChunkId}
@@ -1710,7 +1749,17 @@ function AppWorkspace() {
             }
           />
         ) : null}
-        {view === "item-detail" ? (
+        {view === "item-detail" && !currentItem ? (
+          <div className="screen">
+            <EmptyState
+              title={t("detail.notFound.title")}
+              body={t("detail.notFound.body")}
+              actionLabel={t("detail.notFound.back")}
+              onAction={() => navigate("library")}
+            />
+          </div>
+        ) : null}
+        {view === "item-detail" && currentItem ? (
           <ItemDetail
             item={currentItem}
             apiStatus={screenApiStatus}
@@ -6340,7 +6389,9 @@ function AdvancedSettings({
 }) {
   const t = useT();
   const binding = settingString(settings, "api_binding", "127");
-  const remoteApiKey = settingString(settings, "remote_api_key", "");
+  // The key itself is write-only on the API; we only learn whether one exists.
+  const remoteApiKeySet = settings["remote_api_key_set"] === true;
+  const [remoteKeyDraft, setRemoteKeyDraft] = useState("");
   const logLevel = settingString(settings, "log_level", "info");
   const [logAction, setLogAction] = useState<{
     status: SettingsActionStatus;
@@ -6378,16 +6429,24 @@ function AdvancedSettings({
         {binding === "0" ? (
           <SettingRow
             label={t("settings.advanced.remoteKey.label")}
+            description={remoteApiKeySet ? t("settings.advanced.remoteKey.setHint") : undefined}
             control={
               <input
                 className="settings-input"
                 type="password"
-                value={remoteApiKey}
+                value={remoteKeyDraft}
                 disabled={disabled}
-                placeholder={t("settings.advanced.remoteKey.placeholder")}
-                onChange={(event) =>
-                  void onSettingsChange({ remote_api_key: event.currentTarget.value })
+                placeholder={
+                  remoteApiKeySet
+                    ? t("settings.advanced.remoteKey.placeholderSet")
+                    : t("settings.advanced.remoteKey.placeholder")
                 }
+                onChange={(event) => setRemoteKeyDraft(event.currentTarget.value)}
+                onBlur={() => {
+                  if (remoteKeyDraft.trim().length === 0) return;
+                  void onSettingsChange({ remote_api_key: remoteKeyDraft });
+                  setRemoteKeyDraft("");
+                }}
               />
             }
           />

@@ -9,7 +9,7 @@ use std::{
 use axum::{
     body::Body,
     extract::{ConnectInfo, Path, Query, Request, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -21,7 +21,10 @@ use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 mod api_models;
 pub mod jobs;
@@ -389,7 +392,24 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             state.clone(),
             require_remote_auth,
         ))
-        .layer(CorsLayer::permissive())
+        .layer(
+            // Browsers enforce CORS per-origin: only the packaged app shell and
+            // local dev servers may read responses. Never use `permissive()`
+            // here — combined with the loopback auth exemption it would let any
+            // website read and mutate the whole library via fetch().
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|origin, _| {
+                    origin.to_str().map(browser_origin_allowed).unwrap_or(false)
+                }))
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PATCH,
+                    Method::PUT,
+                    Method::DELETE,
+                ])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -476,6 +496,16 @@ pub fn configured_addr(paths: &AppPaths) -> anyhow::Result<SocketAddr> {
 }
 
 async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: Next) -> Response {
+    // Loopback requests skip key auth, so requests that originate from a
+    // browser context must prove they come from the app itself: a malicious
+    // website always carries its own `Origin`, and a DNS-rebinding page
+    // carries a foreign `Host`.
+    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if !browser_origin_allowed(origin) {
+            return forbidden_cross_origin();
+        }
+    }
+
     let remote_addr = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -484,6 +514,9 @@ async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: 
         .map(|addr| addr.ip().is_loopback())
         .unwrap_or(true)
     {
+        if !host_header_allowed(req.headers()) {
+            return forbidden_cross_origin();
+        }
         return next.run(req).await;
     }
 
@@ -499,6 +532,48 @@ async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: 
     }
 
     unauthorized_remote_api()
+}
+
+/// Origins allowed to talk to the local API from a browser-like context:
+/// the packaged Electron shell (`app://…`) and loopback-hosted dev servers.
+fn browser_origin_allowed(origin: &str) -> bool {
+    if origin.starts_with("app://") {
+        return true;
+    }
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    loopback_host(rest)
+}
+
+/// Reject loopback requests whose `Host` is not a loopback name —
+/// the signature of a DNS-rebinding attack.
+fn host_header_allowed(headers: &HeaderMap) -> bool {
+    match headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(host) => loopback_host(host),
+    }
+}
+
+fn loopback_host(host_port: &str) -> bool {
+    if host_port == "[::1]" || host_port.starts_with("[::1]:") {
+        return true;
+    }
+    let host = host_port.split(':').next().unwrap_or(host_port);
+    matches!(host, "127.0.0.1" | "localhost")
+}
+
+fn forbidden_cross_origin() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "cross-origin requests to the Cerul API are not allowed"
+        })),
+    )
+        .into_response()
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -1793,16 +1868,25 @@ async fn list_settings(State(state): State<ApiState>) -> ApiResult<Json<BTreeMap
         Ok((key, parse_json(&value)))
     })?;
 
-    Ok(Json(
-        rows.collect::<Result<BTreeMap<_, _>, _>>()?
-            .into_iter()
-            .filter(|(key, _)| !is_hidden_setting(key))
-            .map(|(key, value)| {
-                let value = normalize_setting_value(&key, value);
-                (key, value)
-            })
-            .collect(),
-    ))
+    let all = rows.collect::<Result<BTreeMap<_, _>, _>>()?;
+    let remote_key_set = all
+        .get("remote_api_key")
+        .and_then(|value| value.as_str())
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false);
+
+    let mut visible: BTreeMap<String, Value> = all
+        .into_iter()
+        .filter(|(key, _)| !is_hidden_setting(key))
+        .map(|(key, value)| {
+            let value = normalize_setting_value(&key, value);
+            (key, value)
+        })
+        .collect();
+    // The key itself is write-only; expose only whether one is configured.
+    visible.insert("remote_api_key_set".to_string(), Value::Bool(remote_key_set));
+
+    Ok(Json(visible))
 }
 
 async fn update_settings(
@@ -1867,8 +1951,12 @@ fn is_internal_setting(key: &str) -> bool {
     INTERNAL_SETTING_KEYS.contains(&key)
 }
 
+fn is_secret_setting(key: &str) -> bool {
+    SECRET_SETTING_KEYS.contains(&key)
+}
+
 fn is_hidden_setting(key: &str) -> bool {
-    is_legacy_cloud_setting(key) || is_internal_setting(key)
+    is_legacy_cloud_setting(key) || is_internal_setting(key) || is_secret_setting(key)
 }
 
 fn normalize_setting_value(key: &str, value: Value) -> Value {
@@ -2858,7 +2946,11 @@ const INDEXING_SCHEMA_VERSION: i32 = 3;
 const INTERNAL_SETTING_KEYS: &[&str] = &[
     DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
     INDEXING_SCHEMA_VERSION_SETTING,
+    // Computed flag returned by list_settings; never persisted.
+    "remote_api_key_set",
 ];
+/// Settings that clients may write but must never read back in plaintext.
+const SECRET_SETTING_KEYS: &[&str] = &["remote_api_key"];
 
 #[cfg(test)]
 mod tests {
@@ -4578,8 +4670,80 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
-            Some(&HeaderValue::from_static("*"))
+            Some(&HeaderValue::from_static("http://127.0.0.1:1420"))
         );
+    }
+
+    #[tokio::test]
+    async fn cors_blocks_foreign_web_origins() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        // Preflight from a malicious website must not be granted CORS.
+        let preflight = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/sources")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(preflight
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
+
+        // Simple (no-preflight) requests carrying a foreign Origin are
+        // rejected outright, even from loopback.
+        let simple = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(simple.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn settings_never_return_remote_api_key_plaintext() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"INSERT INTO settings (key, value, updated_at)
+                   VALUES ('remote_api_key', '"super-secret"', strftime('%s','now'))"#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let settings = response_json(response).await;
+        assert!(settings.get("remote_api_key").is_none());
+        assert_eq!(settings["remote_api_key_set"], true);
     }
 
     #[cfg(unix)]
