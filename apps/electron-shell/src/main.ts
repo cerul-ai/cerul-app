@@ -146,12 +146,19 @@ app
     setDockIcon();
     registerAppProtocol();
     // Electron grants permission requests (camera, mic, geolocation, ...) by
-    // default; nothing in the app needs them, so deny across the board as
-    // defense in depth against renderer-side XSS.
-    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
-      callback(false);
+    // default; deny everything except the two benign permissions the app
+    // genuinely uses — clipboard *write* (copy citation / timestamp / Markdown)
+    // and player fullscreen. clipboard-read stays denied (reading the clipboard
+    // is the sensitive direction). A blanket deny here previously broke every
+    // copy-to-clipboard action, since navigator.clipboard.writeText needs the
+    // clipboard-sanitized-write permission.
+    const allowedPermissions = new Set(["clipboard-sanitized-write", "fullscreen"]);
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      callback(allowedPermissions.has(permission));
     });
-    session.defaultSession.setPermissionCheckHandler(() => false);
+    session.defaultSession.setPermissionCheckHandler((_webContents, permission) =>
+      allowedPermissions.has(permission),
+    );
     registerIpcHandlers();
     await startRustCore();
     createMainWindow();
