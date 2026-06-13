@@ -20,7 +20,7 @@ use cerul_storage::AppPaths;
 use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::AsyncSeekExt;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
@@ -503,7 +503,11 @@ async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: 
     // browser context must prove they come from the app itself: a malicious
     // website always carries its own `Origin`, and a DNS-rebinding page
     // carries a foreign `Host`.
-    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+    if let Some(origin) = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
         if !browser_origin_allowed(origin) {
             return forbidden_cross_origin();
         }
@@ -1943,7 +1947,10 @@ async fn list_settings(State(state): State<ApiState>) -> ApiResult<Json<BTreeMap
         })
         .collect();
     // The key itself is write-only; expose only whether one is configured.
-    visible.insert("remote_api_key_set".to_string(), Value::Bool(remote_key_set));
+    visible.insert(
+        "remote_api_key_set".to_string(),
+        Value::Bool(remote_key_set),
+    );
 
     Ok(Json(visible))
 }
@@ -2745,7 +2752,8 @@ async fn video_file_response(path: &str, range: Option<&HeaderValue>) -> ApiResu
             // Stream instead of buffering: a wide range used to allocate the
             // whole span (potentially gigabytes) in memory.
             file.seek(std::io::SeekFrom::Start(start)).await?;
-            let stream = tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, byte_count));
+            let stream =
+                tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, byte_count));
 
             let mut response =
                 (StatusCode::PARTIAL_CONTENT, Body::from_stream(stream)).into_response();

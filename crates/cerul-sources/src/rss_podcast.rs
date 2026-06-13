@@ -200,11 +200,7 @@ async fn read_url_or_file(location: &str) -> anyhow::Result<Vec<u8>> {
     }
 
     let url = validate_remote_feed_url(location)?;
-    let bytes = reqwest::get(url)
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let bytes = reqwest::get(url).await?.error_for_status()?.bytes().await?;
     Ok(bytes.to_vec())
 }
 

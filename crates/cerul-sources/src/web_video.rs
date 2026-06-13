@@ -501,7 +501,7 @@ fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
                 canonical_url: parsed.to_string(),
             });
         }
-        if host == "space.bilibili.com" && path_parts.first().is_some() {
+        if host == "space.bilibili.com" && !path_parts.is_empty() {
             let canonical_url = ensure_path_suffix(parsed, "video");
             return Ok(ClassifiedWebVideo {
                 platform: WebVideoPlatform::Bilibili,
