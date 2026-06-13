@@ -18,7 +18,7 @@
   </p>
 
   <p>
-    <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-3b82f6?style=flat-square" /></a>
+    <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
     <img alt="Status" src="https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square" />
   </p>
@@ -32,7 +32,7 @@
 <br />
 
 > [!NOTE]
-> **Alpha.** Cerul App is the open-source, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.1-alpha.3**. The core is functional — desktop shell, local API, indexing pipeline, hybrid search, overlay, and tray all run today. Signed public installers are still release-gated; for now you build and run from source unless a GitHub Release explicitly lists an installer as signed/notarized. See [Status & roadmap](#status--roadmap).
+> **Alpha.** Cerul App is the source-available, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.1-alpha.3**. The core is functional — desktop shell, local API, indexing pipeline, hybrid search, overlay, and tray all run today. Signed public installers are still release-gated; for now you build and run from source unless a GitHub Release explicitly lists an installer as signed/notarized. See [Status & roadmap](#status--roadmap).
 
 ## Why Cerul App
 
@@ -149,7 +149,7 @@ Want it ready-to-install? Star and watch the repo — first signed builds will s
 
 ## How this fits with Cerul
 
-Cerul App is the **open-source, self-hosted** layer of the [Cerul](https://github.com/cerul-ai/cerul) platform — run it on your own machine with your own keys. [Cerul Cloud](https://cerul.ai) is the hosted service for teams that want managed indexing, the video search API, and account-backed sync. The app works fully standalone; the Cloud account is optional. The Cerul Cloud account backend is not included in this repository; the desktop client only calls its public account API when you sign in.
+Cerul App is the **source-available, self-hosted** layer of the [Cerul](https://github.com/cerul-ai/cerul) platform — run it on your own machine with your own keys. [Cerul Cloud](https://cerul.ai) is the hosted service for teams that want managed indexing, the video search API, and account-backed sync. The app works fully standalone; the Cloud account is optional. The Cerul Cloud account backend is not included in this repository; the desktop client only calls its public account API when you sign in.
 
 ## Project governance
 
@@ -167,4 +167,4 @@ scripts/smoke.sh
 
 ## License
 
-[Apache 2.0](LICENSE) © Cerul.
+[FSL-1.1-ALv2](LICENSE) © Cerul. Source-available; each release converts to Apache-2.0 two years after it ships.

@@ -33,7 +33,7 @@ Release builds may copy these generated artifacts into the app bundle:
 | `ffmpeg` | staged by `scripts/fetch-binaries.sh` | Must be LGPL-compatible for commercial distribution | Confirm build flags do not enable GPL components such as x264/x265 or other `--enable-gpl` features. |
 | `yt-dlp` | official GitHub releases | Unlicense | Keep an update path because site extractors become stale. |
 | `qdrant` | official Qdrant releases | Apache-2.0 | Verify platform artifact and bundled path before installer release. |
-| `cerul-api` | built from this repository | Apache-2.0 | Built and staged by `apps/electron-shell/scripts/stage-cerul-api.mjs`. |
+| `cerul-api` | built from this repository | FSL-1.1-ALv2 | Built and staged by `apps/electron-shell/scripts/stage-cerul-api.mjs`. |
 
 ## Local Model Runtime
 

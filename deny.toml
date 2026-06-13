@@ -10,6 +10,9 @@ ignore = [
 [licenses]
 confidence-threshold = 0.8
 allow = [
+  # Cerul's own workspace crates (source-available); the rest below are
+  # third-party dependency licenses we permit.
+  "LicenseRef-FSL-1.1-ALv2",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
