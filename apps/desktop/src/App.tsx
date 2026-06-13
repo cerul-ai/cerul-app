@@ -3377,6 +3377,7 @@ function ResultDetail({
                 markers={playerMarkers}
                 chapters={playerChapters}
                 ariaLabel={t("itemDetail.player.aria", { title: item.title })}
+                fallbackDurationSec={item.durationSec}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onSeekMarker={(marker) => seekTo(marker.label)}
@@ -4824,6 +4825,7 @@ function ItemDetail({
               markers={playerMarkers}
               chapters={playerChapters}
               ariaLabel={t("itemDetail.player.aria", { title: item.title })}
+              fallbackDurationSec={item.durationSec}
               onSeekMarker={(marker) => seekTo(marker.label)}
             />
           ) : (
