@@ -955,6 +955,14 @@ function visualFixtureModeEnabled() {
   return params.get("fixture") === "design";
 }
 
+// Single source of truth for the non-online core-status wording, so the home
+// status line and the rail footer never contradict each other (one used to
+// say "正在启动" while the other said "核心离线" for the same state). The
+// CoreBanner keeps its own prominent starting→unresponsive escalation.
+function coreStatusText(status: ApiStatus, t: TFunction): string {
+  return status === "connecting" ? t("shell.coreConnecting") : t("shell.coreOffline");
+}
+
 // Tracks, per running job, the wall-clock second its current coarse step began.
 // The backend only timestamps the whole job, so we observe step transitions here
 // to drive a "this step: M:SS" readout. A job's timer resets when its step
@@ -1603,7 +1611,9 @@ function AppWorkspace() {
               aria-hidden="true"
             />
             <span className="rail-label">
-              {screenApiStatus === "online" ? t("shell.coreLocal") : t("shell.coreOffline")}
+              {screenApiStatus === "online"
+                ? t("shell.coreLocal")
+                : coreStatusText(screenApiStatus, t)}
             </span>
           </div>
         </div>
@@ -2011,7 +2021,7 @@ function HomeScreen({
         ? searchDisabled
           ? t("home.status.indexingFirst")
           : t("home.status.indexedCount", { count: indexedCount })
-        : t("home.status.coreStarting");
+        : coreStatusText(apiStatus, t);
 
   function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
     if (searchDisabled) {
