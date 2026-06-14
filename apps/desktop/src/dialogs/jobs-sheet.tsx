@@ -2,7 +2,7 @@ import { useRef } from "react";
 // Slide-out sheet listing indexing jobs. Extracted from App.tsx
 // (B13 Phase D).
 
-import { X } from "lucide-react";
+import { Pause, Play, Trash2, X } from "lucide-react";
 import * as api from "../lib/api";
 import { formatUsd } from "../lib/formatters";
 import { useT } from "../lib/i18n";
@@ -31,6 +31,10 @@ export function JobsSheet({
   jobs,
   items,
   stepStarts,
+  paused = false,
+  controlsEnabled = true,
+  onTogglePause,
+  onCancelJob,
   onClose,
   onOpenSettingsFix,
   onOpenSources,
@@ -38,6 +42,10 @@ export function JobsSheet({
   jobs: api.JobRecord[];
   items: Item[];
   stepStarts: Record<string, number>;
+  paused?: boolean;
+  controlsEnabled?: boolean;
+  onTogglePause?: () => void;
+  onCancelJob?: (job: api.JobRecord) => void;
   onClose: () => void;
   onOpenSettingsFix: (section: string) => void;
   onOpenSources?: () => void;
@@ -101,6 +109,18 @@ export function JobsSheet({
           <div className="row gap-2">
             <strong className="clamp1 grow">{jobItemTitle(job, items, t)}</strong>
             <StatusBadge status={badgeStatus} label={jobDisplayStatus(job, t)} />
+            {onCancelJob && controlsEnabled && job.item_id &&
+            (isRunning || job.status === "queued" || isFailed) ? (
+              <button
+                type="button"
+                className="btn-icon sm job-cancel"
+                aria-label={t("jobs.cancelAria")}
+                title={t("jobs.cancelAria")}
+                onClick={() => onCancelJob(job)}
+              >
+                <Trash2 size={14} />
+              </button>
+            ) : null}
           </div>
           <span className="muted">{jobTypeLabel(job.job_type, t)}</span>
           {/* ④ A failed card no longer carries a frozen 0% progress bar — progress
@@ -168,12 +188,22 @@ export function JobsSheet({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="drawer-head dialog-header">
-          <div>
+          <div className="grow">
             <p className="section-label eyebrow">{t("jobs.eyebrow")}</p>
             <h2 id="jobs-title" className="drawer-title">
               {title}
             </h2>
           </div>
+          {onTogglePause && controlsEnabled ? (
+            <button
+              type="button"
+              className={paused ? "btn btn-primary sm jobs-pause" : "btn btn-secondary sm jobs-pause"}
+              onClick={onTogglePause}
+            >
+              {paused ? <Play size={14} /> : <Pause size={14} />}
+              <span>{paused ? t("jobs.resume") : t("jobs.pause")}</span>
+            </button>
+          ) : null}
           <button
             className="btn-icon"
             type="button"
@@ -185,6 +215,12 @@ export function JobsSheet({
         </header>
 
         <div className="drawer-body jobs-body">
+          {paused ? (
+            <div className="jobs-paused-note">
+              <Pause size={13} />
+              <span>{t("jobs.pausedNote")}</span>
+            </div>
+          ) : null}
           {activeJobs.length > 0 ? (
             <section className={activeCostUsd > 0 ? "jobs-cost-card" : "jobs-cost-card local"}>
               <div className="jobs-cost-main">

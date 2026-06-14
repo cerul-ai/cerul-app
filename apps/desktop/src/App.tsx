@@ -1086,6 +1086,16 @@ function AppWorkspace() {
       : [];
   // Follow the OS by default — first launch on a light-mode Mac used to open dark.
   const themePreference = settingString(data.settings, "theme", "System");
+  // Global indexing pause (the worker skips queued jobs while this is on).
+  const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
+  // The Tasks drawer hides jobs whose item no longer exists, so cancelling a task
+  // (which deletes its item) makes it disappear even though the job row lingers in
+  // the DB. Fixture mode shows demo jobs verbatim.
+  const drawerJobs = visualFixtureMode
+    ? visibleJobs
+    : visibleJobs.filter(
+        (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
+      );
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
@@ -1962,9 +1972,35 @@ function AppWorkspace() {
       ) : null}
       {showJobsSheet ? (
         <JobsSheet
-          jobs={visibleJobs}
+          jobs={drawerJobs}
           items={visibleItems}
           stepStarts={stepStarts}
+          paused={indexingPaused}
+          controlsEnabled={screenApiStatus === "online"}
+          onTogglePause={async () => {
+            try {
+              await api.updateSettings({ indexing_paused: !indexingPaused });
+              await refreshCoreData();
+            } catch (error) {
+              console.warn("failed to toggle indexing pause", error);
+            }
+          }}
+          onCancelJob={async (job) => {
+            const confirmed = await requestConfirm({
+              title: t("jobs.confirm.cancel.title"),
+              body: t("jobs.confirm.cancel.body"),
+              confirmLabel: t("jobs.confirm.cancel.confirm"),
+            });
+            if (!confirmed || !job.item_id) {
+              return;
+            }
+            try {
+              await api.deleteItem(job.item_id);
+              await refreshCoreData();
+            } catch (error) {
+              console.warn("failed to cancel job", error);
+            }
+          }}
           onClose={() => setShowJobsSheet(false)}
           onOpenSettingsFix={(section) => {
             setShowJobsSheet(false);

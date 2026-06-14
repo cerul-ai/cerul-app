@@ -509,3 +509,22 @@
 [data-theme="dark"] .item-proc-pill { background: rgba(15, 18, 22, 0.7); }
 .item-proc-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); animation: cerDot 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .item-proc-dot { animation: none; } }
+
+/* ---- Tasks drawer controls: pause/resume + per-task cancel (frontend) ---- */
+.jobs-pause { flex: none; align-self: center; }
+.job-cancel { flex: none; }
+.job-cancel:hover { color: var(--danger); background: var(--danger-soft); }
+.jobs-paused-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border-radius: var(--r-md);
+  background: var(--warn-tint);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.jobs-paused-note svg { flex: none; }
