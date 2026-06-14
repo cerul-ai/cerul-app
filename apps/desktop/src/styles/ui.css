@@ -187,8 +187,11 @@ button.chip { appearance: none; border: 0; cursor: pointer; font-family: inherit
 .switch input:focus-visible ~ .track { box-shadow: var(--focus-ring); }
 
 /* ---------- Progress ---------- */
-.progress { height: 5px; background: var(--surface-3); border-radius: 999px; overflow: hidden; }
-.progress .bar { height: 100%; background: var(--accent); border-radius: 999px; transition: width var(--dur) var(--ease); }
+.progress { display: block; height: 5px; background: var(--surface-3); border-radius: 999px; overflow: hidden; }
+/* display:block is load-bearing: ProgressBar renders the fill as a <span>, which
+   defaults to inline — and inline elements ignore width/height, collapsing the
+   bar to 0×0 (an empty track with no fill). Block makes the width:X% apply. */
+.progress .bar { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width var(--dur) var(--ease); }
 /* Animated variant: a sheen sweeps the filled portion so a running job reads as
    alive even while the value sits still between progress updates. */
 .progress.animated .bar {
