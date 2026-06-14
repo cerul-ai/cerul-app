@@ -8,6 +8,7 @@
 import { useEffect, useRef } from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
 import * as api from "../lib/api";
+import { formatUsd } from "../lib/formatters";
 import { useT } from "../lib/i18n";
 import { isActiveJob } from "../lib/items";
 import {
@@ -58,6 +59,14 @@ export function IndexingStrip({
   }
 
   const queued = active.length - running.length;
+  // Incurred remote spend across the active batch — $0.00 while everything is
+  // on-device (handoff: the cost reads green right in the banner, not only in
+  // the Tasks drawer).
+  const activeCostUsd = active.reduce(
+    (sum, job) => sum + (job.usage?.estimated_usd ?? 0),
+    0,
+  );
+  const costScope = activeCostUsd > 0 ? t("indexing.strip.remoteCost") : t("indexing.strip.localCost");
   // Step-based aggregate: queued jobs count as 0 so the bar represents the whole
   // active batch, not only the currently running subset.
   const avgStepPercent =
@@ -106,7 +115,10 @@ export function IndexingStrip({
             {[repTitle, stageMessage].filter(Boolean).join(" · ")}
           </span>
         ) : null}
-        <ProgressBar value={Math.round(avgStepPercent)} animated={running.length > 0} />
+        <span className="indexing-strip__track">
+          <ProgressBar value={Math.round(avgStepPercent)} animated={running.length > 0} />
+          <span className="indexing-strip__pct mono">{Math.round(avgStepPercent)}%</span>
+        </span>
       </span>
       <span className="indexing-strip__side mono">
         {stalled ? (
@@ -123,6 +135,7 @@ export function IndexingStrip({
             {eta ? <span className="faint">{eta}</span> : null}
           </>
         )}
+        <span className="indexing-strip__cost">{formatUsd(activeCostUsd)} · {costScope}</span>
       </span>
       <ChevronRight size={16} aria-hidden="true" />
     </button>

@@ -1,0 +1,511 @@
+/* ============================================================
+   CERUL · LUMINOUS HANDOFF
+   Faithful reproduction of design/design_handoff_cerul.
+   Onboarding · empty states · library indexing · floating cards.
+   Loaded last so it layers over the base component library.
+   ============================================================ */
+
+/* ---------- Keyframes (handoff motion spec) ---------- */
+@keyframes cerSheen {
+  0%   { transform: translateX(-130%); opacity: 0; }
+  12%  { opacity: 1; }
+  45%  { transform: translateX(230%); opacity: 1; }
+  54%, 100% { transform: translateX(230%); opacity: 0; }
+}
+@keyframes cerFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@keyframes cerSpin { to { transform: rotate(360deg); } }
+@keyframes cerShimmer { 0% { background-position: -360px 0; } 100% { background-position: 360px 0; } }
+@keyframes cerScan { 0% { transform: translateY(-100%); } 100% { transform: translateY(560%); } }
+@keyframes cerDot { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+@keyframes cerRise { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cer-sheen, .cer-float, .cer-spin, .cer-shimmer, .cer-scan, .cer-dot { animation: none !important; }
+}
+
+/* ---------- Floating white card (handoff card-sh + top hairline) ----------
+   The signature surface that lifts off the luminous background. */
+.float-card {
+  background: var(--surface);
+  border: 1px solid var(--card-hairline);
+  border-radius: var(--r-lg);
+  box-shadow: var(--card-sh);
+}
+.float-card.lift { box-shadow: var(--card-sh-lift); }
+[data-theme="dark"] .float-card { background: rgba(30, 36, 44, 0.6); }
+
+/* ---------- App / logo tile (Luminous white squircle, Graphite silver) ---------- */
+.logo-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 18px;
+  background: linear-gradient(150deg, #ffffff, #eef0f3);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 0 0 1px rgba(28, 40, 60, 0.05),
+    0 16px 32px -10px rgba(28, 40, 60, 0.3);
+}
+[data-theme="dark"] .logo-tile {
+  background: linear-gradient(150deg, #f2f4f6, #aeb6c0);
+  box-shadow: 0 0 40px -4px rgba(90, 134, 184, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+/* Sheen sweep across the mark. */
+.logo-tile .sheen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: cerSheen 4.8s ease-in-out infinite;
+  pointer-events: none;
+}
+.logo-tile svg { fill: #1c2229; }
+[data-theme="dark"] .logo-tile svg { fill: #1c2229; }
+
+/* Soft steel glow disc behind the welcome logo (no concentric rings). */
+.logo-glow {
+  position: absolute;
+  width: 212px;
+  height: 212px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(62, 107, 157, 0.11), rgba(62, 107, 157, 0) 66%);
+  pointer-events: none;
+}
+
+/* ---------- Mono eyebrow (uppercase steel) ---------- */
+.mono-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.mono-eyebrow .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+
+/* ============================================================
+   ONBOARDING — 3-step welcome flow (handoff section B)
+   ============================================================ */
+/* Window background = the Luminous / Graphite surface. */
+.onb {
+  background:
+    radial-gradient(680px 360px at 50% 4%, #ffffff, rgba(255, 255, 255, 0) 66%),
+    linear-gradient(180deg, #fafbfc, #eef1f4);
+}
+[data-theme="dark"] .onb {
+  background:
+    radial-gradient(700px 380px at 50% -10%, #222933, transparent 62%),
+    radial-gradient(440px 240px at 82% 4%, rgba(90, 134, 184, 0.22), transparent 58%),
+    linear-gradient(180deg, #14181d, #0d1014);
+}
+.onb-card.onb-card-wide { max-width: 600px; }
+.onb-stage { animation: cerRise 0.42s var(--ease) both; }
+
+/* ---- Progress: 3 inert dots + a steel pill that springs to the active step ---- */
+.onb-progress {
+  position: relative;
+  display: flex;
+  justify-content: flex-start;
+  gap: 13px;
+  width: 47px;
+  height: 7px;
+  margin: 0 auto 30px;
+}
+.onb-progress-dot { width: 7px; height: 7px; border-radius: 999px; background: #cfd6df; flex: none; }
+[data-theme="dark"] .onb-progress-dot { background: rgba(255, 255, 255, 0.18); }
+.onb-progress-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 7px;
+  border-radius: 9px;
+  background: var(--accent);
+  box-shadow: 0 1px 3px rgba(62, 107, 157, 0.45);
+  transition: left 0.42s cubic-bezier(0.5, 1.4, 0.4, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .onb-progress-pill { transition: none; }
+  .onb-stage { animation: none; }
+}
+
+/* ---- Shared step typography ---- */
+.onb-step { display: flex; flex-direction: column; align-items: center; }
+.onb-h3 {
+  margin: 0 0 10px;
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+.onb-lead {
+  margin: 0 auto 18px;
+  max-width: 40ch;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* ---- Step 0: welcome ---- */
+.onb-logo-wrap { position: relative; display: grid; place-items: center; height: 128px; margin-bottom: 2px; }
+.onb-logo-tile { width: 72px; height: 72px; }
+.onb-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  width: max-content;
+  margin: 0 auto 20px;
+  padding: 9px 14px;
+  border-radius: 11px;
+}
+.onb-kbd {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 0 rgba(28, 40, 60, 0.06);
+}
+.onb-shortcut-plus { color: var(--text-faint); font-size: 13px; }
+.onb-shortcut-label { color: var(--text-faint); font-size: 13px; margin-left: 2px; }
+
+/* ---- Step 1: add-source illustration (floating files over a steel folder) ---- */
+.onb-illo { position: relative; height: 132px; width: 220px; margin: 2px auto 10px; }
+.onb-illo-source .onb-folder {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 96px;
+  height: 60px;
+  border-radius: 4px 12px 12px 12px;
+  background: linear-gradient(180deg, #e9f1fb, #d6e4f4);
+  border: 1px solid var(--accent-line-soft);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.onb-illo-source .onb-folder::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 8px;
+  width: 38px;
+  height: 9px;
+  border-radius: 5px 5px 0 0;
+  background: #d6e4f4;
+  border: 1px solid var(--accent-line-soft);
+  border-bottom: 0;
+}
+.onb-illo-source .onb-folder svg { fill: var(--accent); }
+.onb-file {
+  position: absolute;
+  width: 74px;
+  height: 48px;
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: var(--card-sh);
+  border: 1px solid var(--card-hairline);
+  display: grid;
+  place-items: center;
+}
+.onb-file-l { left: 16px; top: 4px; animation: cerFloatL 4s ease-in-out infinite; }
+.onb-file-r { right: 12px; top: 0; animation: cerFloatR 4s ease-in-out infinite 0.6s; }
+.onb-file-c { left: 50%; margin-left: -37px; top: 24px; z-index: 2; box-shadow: var(--card-sh-lift); animation: cerFloatC 4s ease-in-out infinite 0.3s; }
+.onb-play {
+  width: 0; height: 0;
+  border-style: solid;
+  border-width: 6px 0 6px 10px;
+  border-color: transparent transparent transparent var(--accent);
+  margin-left: 2px;
+}
+.onb-play-lg { border-width: 8px 0 8px 13px; border-color: transparent transparent transparent #fff; }
+@keyframes cerFloatL { 0%, 100% { transform: rotate(-7deg) translateY(0); } 50% { transform: rotate(-7deg) translateY(-5px); } }
+@keyframes cerFloatR { 0%, 100% { transform: rotate(6deg) translateY(0); } 50% { transform: rotate(6deg) translateY(-5px); } }
+@keyframes cerFloatC { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@media (prefers-reduced-motion: reduce) {
+  .onb-file-l, .onb-file-r, .onb-file-c { animation: none; }
+}
+
+/* The two real pickers, stacked, with a labelled divider between them. */
+.onb-source-pickers { width: 100%; max-width: 460px; margin: 4px auto 0; display: flex; flex-direction: column; gap: 14px; text-align: left; }
+.onb-source-pickers .onboarding-picker { margin: 0; }
+.onb-source-sep { display: flex; align-items: center; gap: 12px; color: var(--text-faint); font-size: 11px; font-family: var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.onb-source-sep::before, .onb-source-sep::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* ---- Step 2: smart-processing illustration ---- */
+.onb-illo-smart { display: flex; align-items: center; justify-content: center; gap: 14px; width: auto; height: 100px; }
+.onb-frame {
+  position: relative;
+  width: 108px;
+  height: 68px;
+  border-radius: 10px;
+  background: linear-gradient(160deg, #33404e, #1c2229);
+  display: grid;
+  place-items: center;
+  box-shadow: var(--card-sh);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.onb-arrow { color: var(--accent); display: grid; place-items: center; flex: none; }
+.onb-transcript {
+  position: relative;
+  width: 120px;
+  height: 80px;
+  border-radius: 10px;
+  padding: 12px 11px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.onb-tline { height: 6px; border-radius: 3px; background: var(--hair-2); }
+.onb-tline.hot { background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent-line-soft); width: 78%; }
+.onb-tline.short { width: 56%; }
+.onb-scan {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 24px;
+  background: linear-gradient(180deg, rgba(62, 107, 157, 0.18), transparent);
+  animation: cerScan 2.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .onb-scan { animation: none; } }
+.onb-local-badge {
+  position: absolute;
+  right: 6px; bottom: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--success);
+  background: var(--success-tint);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.onb-chips { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin: 4px 0 18px; }
+.onb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.onb-detail-stack { width: 100%; max-width: 430px; margin: 0 auto; display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.onb-detail-row { display: flex; gap: 11px; padding: 10px 4px; }
+.onb-detail-icon { color: var(--accent); margin-top: 1px; flex: none; }
+.onb-detail-text strong { display: block; font-size: 13px; font-weight: 600; }
+.onb-detail-text span { font-size: 12.5px; color: var(--text-muted); line-height: 1.5; }
+.onb-cost { margin: 14px 0 0; font-size: 12.5px; color: var(--text-faint); }
+.onb-cost-amt { color: var(--success); font-weight: 700; }
+
+/* ============================================================
+   EMPTY STATE — drag zone · example chips · result preview (handoff §3)
+   ============================================================ */
+.home-empty { max-width: 760px; padding-top: 44px; }
+.home-empty-head { text-align: center; margin-bottom: 22px; }
+.home-empty-title { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 12px 0 10px; line-height: 1.16; text-wrap: balance; }
+.home-empty-body { font-size: 14px; color: var(--text-muted); max-width: 52ch; margin: 0 auto; line-height: 1.55; }
+
+/* ---- Drag zone ---- */
+.drag-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 30px 24px;
+  border: 1.5px dashed var(--accent-line-soft);
+  border-radius: 14px;
+  background: rgba(62, 107, 157, 0.035);
+  text-align: center;
+  transition: border-color 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              background 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.drag-zone.over {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 18px 40px -16px rgba(62, 107, 157, 0.5);
+}
+.drag-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--card-hairline);
+  box-shadow: var(--card-sh);
+  color: var(--accent);
+}
+.drag-text strong { display: block; font-size: 14px; font-weight: 600; }
+.drag-text small { display: block; font-size: 12px; color: var(--text-faint); margin-top: 3px; font-family: var(--font-mono); }
+.drag-actions { display: flex; gap: 10px; margin-top: 4px; flex-wrap: wrap; justify-content: center; }
+
+/* ---- Example query chips ---- */
+.example-chips { display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; margin: 22px 0 14px; }
+.example-chip {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-1);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.example-chip:hover { border-color: var(--accent-line-soft); color: var(--text); }
+.example-chip.active { background: var(--accent-tint); color: var(--accent); border-color: var(--accent-line-soft); }
+
+/* ---- Result preview card ---- */
+.result-preview { padding: 16px; }
+.preview-ghost { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 26px; color: var(--text-faint); font-size: 13px; }
+.preview-ghost svg { color: var(--accent); flex: none; }
+.preview-grid { display: grid; grid-template-columns: 152px 1fr; gap: 16px; }
+.preview-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: linear-gradient(160deg, #33404e, #1c2229);
+  display: grid;
+  place-items: center;
+}
+.preview-play {
+  width: 0; height: 0;
+  border-style: solid;
+  border-width: 9px 0 9px 15px;
+  border-color: transparent transparent transparent rgba(255, 255, 255, 0.92);
+  margin-left: 3px;
+}
+.preview-ts { position: absolute; right: 6px; bottom: 6px; font-size: 10.5px; color: #fff; background: rgba(0, 0, 0, 0.62); padding: 1px 5px; border-radius: 4px; }
+.preview-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.preview-row1 { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.preview-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; }
+.preview-row1 .chip { flex: none; }
+.preview-meta { font-size: 12px; color: var(--text-faint); }
+.preview-snippet { font-size: 13px; line-height: 1.6; color: var(--text-muted); margin: 2px 0 0; }
+.preview-snippet mark { background: var(--accent-tint); color: var(--accent); border-radius: 4px; padding: 0 2px; font-weight: 500; }
+.preview-jump {
+  align-self: flex-start;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.preview-jump:hover { color: var(--accent-hover); }
+
+/* ---- Copper chip (podcast / visually-searchable only) ---- */
+.chip.copper { background: var(--copper-soft); color: var(--accent-2); }
+
+/* ============================================================
+   LIBRARY INDEXING — banner · processing card · cost panel (handoff §4)
+   ============================================================ */
+/* ---- Unified indexing banner: calm STEEL, not amber ---- */
+.indexing-strip {
+  border-color: var(--accent-line-soft);
+  background: linear-gradient(180deg, #fbfcfe, #f3f7fb);
+}
+.indexing-strip:hover { background: linear-gradient(180deg, #f5f9fd, #ecf3fa); }
+.indexing-strip:focus-visible { outline-color: var(--accent); }
+[data-theme="dark"] .indexing-strip {
+  background: rgba(40, 48, 60, 0.55);
+  border-color: var(--accent-line-soft);
+  backdrop-filter: blur(10px);
+}
+[data-theme="dark"] .indexing-strip:hover { background: rgba(48, 58, 72, 0.62); }
+.indexing-strip__spin { color: var(--accent); }
+.indexing-strip__step { border-color: var(--accent-line-soft); color: var(--accent); }
+.indexing-strip .progress { background: var(--accent-tint); }
+.indexing-strip .progress .bar,
+.indexing-strip .progress.animated .bar {
+  background: var(--accent);
+  background-image: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 55%, white) 50%,
+    var(--accent) 100%
+  );
+}
+.indexing-strip__track { display: flex; align-items: center; gap: 9px; }
+.indexing-strip__track .progress { flex: 1; }
+.indexing-strip__pct { flex: none; font-size: 11px; color: var(--accent); font-weight: 600; min-width: 34px; text-align: right; }
+.indexing-strip__cost { color: var(--success); font-weight: 600; }
+
+/* ---- Tasks drawer cost panel: success-tinted while everything is local ---- */
+.jobs-cost-card.local { background: var(--success-tint); border-color: var(--success-line); }
+.jobs-cost-card.local .jobs-cost-label { color: var(--success); }
+.jobs-cost-card.local .jobs-cost-value { color: var(--success); font-size: 22px; }
+
+/* ---- Elegant processing card (shimmer header + ring + pill) ---- */
+.item-thumb.indexing { background: linear-gradient(135deg, #eef1f5, #e3e8ef); }
+[data-theme="dark"] .item-thumb.indexing { background: linear-gradient(135deg, #232a33, #1a1f26); }
+.item-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.55) 50%, transparent 70%);
+  background-size: 300px 100%;
+  animation: cerShimmer 1.8s linear infinite;
+  pointer-events: none;
+}
+[data-theme="dark"] .item-shimmer {
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.08) 50%, transparent 70%);
+  background-size: 280px 100%;
+}
+@media (prefers-reduced-motion: reduce) { .item-shimmer { animation: none; } }
+.item-ring {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 3px solid var(--accent);
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  animation: cerSpin 1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .item-ring { animation: none; } }
+.item-proc-pill {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.86);
+  padding: 3px 9px;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(28, 40, 60, 0.08);
+}
+[data-theme="dark"] .item-proc-pill { background: rgba(15, 18, 22, 0.7); }
+.item-proc-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); animation: cerDot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .item-proc-dot { animation: none; } }

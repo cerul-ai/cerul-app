@@ -23,6 +23,7 @@
 
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   ChevronDown,
   ChevronRight,
@@ -36,6 +37,7 @@ import {
   FileAudio,
   FileVideo,
   Folder,
+  FolderDown,
   HardDrive,
   Image as ImageIcon,
   Info,
@@ -2003,6 +2005,166 @@ function formatWeeklyHours(seconds: number) {
   return `${minutes}m`;
 }
 
+// Illustrative example searches for the first-run empty state. These are demo
+// placeholders (no index exists yet) that show the user what a result will look
+// like — copy mirrors design_handoff_cerul §3.
+const HOME_EMPTY_EXAMPLES = [
+  {
+    chip: "test-time compute 是怎么讲的",
+    title: "Karpathy — Software Is Changing Again",
+    source: "Andrej Karpathy",
+    duration: "1:18:22",
+    at: "12:34",
+    tag: "indexed" as const,
+    snippet: [
+      { t: "…我们可以多花一点 " },
+      { t: "test-time compute", hl: true },
+      { t: " 来换取更好的 " },
+      { t: "retrieval quality", hl: true },
+      { t: "…" },
+    ],
+  },
+  {
+    chip: "API-first 媒体系统的架构",
+    title: "API-first Media Systems",
+    source: "Talks 2026",
+    duration: "42:50",
+    at: "04:18",
+    tag: "indexed" as const,
+    snippet: [
+      { t: "…把每段视频暴露成一个 " },
+      { t: "API", hl: true },
+      { t: " 端点，检索就是一次普通的 " },
+      { t: "query", hl: true },
+      { t: "…" },
+    ],
+  },
+  {
+    chip: "讲 multimodal search 的片段",
+    title: "Multimodal Search Review",
+    source: "Research Notes",
+    duration: "38:40",
+    at: "27:02",
+    tag: "visual" as const,
+    snippet: [
+      { t: "…画面里出现的 " },
+      { t: "multimodal", hl: true },
+      { t: " 结果也能被 " },
+      { t: "search", hl: true },
+      { t: " 命中…" },
+    ],
+  },
+];
+
+// First-run empty state (handoff §3): an inviting drag zone, clickable example
+// chips, and a result-preview card that shows what indexing will surface.
+function HomeEmptyState({ onAddSource }: { onAddSource: () => void }) {
+  const t = useT();
+  const [dragOver, setDragOver] = useState(false);
+  const [active, setActive] = useState<number | null>(null);
+  const ex = active !== null ? HOME_EMPTY_EXAMPLES[active] : null;
+  return (
+    <div className="page home-empty">
+      <div className="home-empty-head">
+        <span className="mono-eyebrow">
+          <span className="dot" />
+          {t("home.emptyHero.eyebrow")}
+        </span>
+        <h1 className="home-empty-title">{t("home.emptyHero.title")}</h1>
+        <p className="home-empty-body">{t("home.emptyHero.body")}</p>
+      </div>
+
+      <div
+        className={dragOver ? "drag-zone over" : "drag-zone"}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragOver(false);
+          onAddSource();
+        }}
+      >
+        <span className="drag-icon">
+          <FolderDown size={22} />
+        </span>
+        <div className="drag-text">
+          <strong>{t("home.emptyHero.dragTitle")}</strong>
+          <small>{t("home.emptyHero.dragHint")}</small>
+        </div>
+        <div className="drag-actions">
+          <button className="btn btn-primary" type="button" onClick={onAddSource}>
+            <Folder size={16} />
+            <span>{t("onboarding.folder.choose")}</span>
+          </button>
+          <button className="btn btn-secondary" type="button" onClick={onAddSource}>
+            <Youtube size={16} />
+            <span>{t("home.emptyHero.followYoutube")}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="example-chips" role="group" aria-label={t("home.emptyHero.examplesAria")}>
+        {HOME_EMPTY_EXAMPLES.map((example, index) => (
+          <button
+            key={example.title}
+            type="button"
+            className={active === index ? "example-chip active" : "example-chip"}
+            aria-pressed={active === index}
+            onClick={() => setActive(index)}
+          >
+            {example.chip}
+          </button>
+        ))}
+      </div>
+
+      <div className="result-preview float-card lift">
+        {ex ? (
+          <div className="preview-grid">
+            <div className="preview-thumb">
+              <span className="preview-play" aria-hidden="true" />
+              <span className="preview-ts mono">{ex.at}</span>
+            </div>
+            <div className="preview-main">
+              <div className="preview-row1">
+                <strong className="preview-title">{ex.title}</strong>
+                <span className={ex.tag === "visual" ? "chip copper" : "chip success"}>
+                  {ex.tag === "visual"
+                    ? t("home.emptyHero.tagVisual")
+                    : t("home.emptyHero.tagIndexed")}
+                </span>
+              </div>
+              <div className="preview-meta mono">
+                {ex.source} · {ex.duration}
+              </div>
+              <p className="preview-snippet">
+                {ex.snippet.map((part, index) =>
+                  part.hl ? (
+                    <mark key={index}>{part.t}</mark>
+                  ) : (
+                    <span key={index}>{part.t}</span>
+                  ),
+                )}
+              </p>
+              <button className="preview-jump" type="button" onClick={onAddSource}>
+                <Play size={13} />
+                <span>{t("home.emptyHero.jumpTo", { ts: ex.at })}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="preview-ghost">
+            <ArrowRight size={16} />
+            <span>{t("home.emptyHero.previewGhost")}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function HomeScreen({
   query,
   setQuery,
@@ -2130,27 +2292,7 @@ function HomeScreen({
   }, [apiStatus, indexedCount, activeJobs.length]);
 
   if (!hasSources && apiStatus === "online") {
-    return (
-      <div className="page">
-        <div className="state" style={{ marginTop: 96 }}>
-          <div className="state-icon">
-            <BrandMark />
-          </div>
-          <div className="state-title">{t("home.empty.title")}</div>
-          <div className="state-sub">{t("home.empty.body")}</div>
-          <div className="row gap-2" style={{ marginTop: 4 }}>
-            <button className="btn btn-primary" type="button" onClick={onAddSource}>
-              <Plus size={16} />
-              <span>{t("home.empty.addFirst")}</span>
-            </button>
-            <button className="btn btn-secondary" type="button" onClick={onOpenModelSettings}>
-              <Wrench size={16} />
-              <span>{t("home.empty.configureModels")}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+    return <HomeEmptyState onAddSource={onAddSource} />;
   }
 
   return (
