@@ -6,20 +6,49 @@
   grid-template-columns: auto 1fr;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-app);
+  position: relative;
+  /* Luminous: top-centre white glow over a soft vertical gradient. The rail and
+     content are transparent so the two areas read as one continuous surface. */
+  background:
+    radial-gradient(680px 360px at 50% 4%, #ffffff, rgba(255, 255, 255, 0) 66%),
+    linear-gradient(180deg, #fafbfc, #eef1f4);
 }
+/* Graphite: deep base + ambient top glow + a steel brand halo. */
+[data-theme="dark"] .app {
+  background:
+    radial-gradient(700px 380px at 50% -10%, #222933, transparent 62%),
+    radial-gradient(440px 240px at 82% 4%, rgba(90, 134, 184, 0.22), transparent 58%),
+    linear-gradient(180deg, #14181d, #0d1014);
+}
+/* Brushed-metal grain — dark only, sits above the gradient, below the UI. */
+[data-theme="dark"] .app::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--noise);
+  background-size: 160px;
+  opacity: 0.55;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  z-index: 0;
+}
+.app > .rail,
+.app > .content { position: relative; z-index: 1; }
 
 /* ---------------- Rail ---------------- */
 .rail {
   width: 220px;
-  background: var(--bg-sunken);
-  border-right: 1px solid var(--line-strong);
+  /* Transparent so the .app luminous gradient flows continuously into the rail;
+     a near-invisible hairline is the only thing splitting rail from content. */
+  background: transparent;
+  border-right: 1px solid rgba(28, 40, 60, 0.06);
   display: flex;
   flex-direction: column;
   padding: 10px 10px 12px;
   transition: width var(--dur) var(--ease);
   flex: none;
 }
+[data-theme="dark"] .rail { border-right-color: rgba(255, 255, 255, 0.06); }
 .rail-top { padding: 6px 4px 16px; display: flex; align-items: center; gap: 6px; }
 .rail-brand { display: flex; align-items: center; gap: 9px; background: none; border: 0; cursor: pointer; padding: 4px 6px; border-radius: 9px; min-width: 0; }
 .rail-brand:hover { background: var(--surface-3); }
@@ -66,7 +95,8 @@
 .rail-sep { height: 1px; background: var(--line); margin: 8px 6px; }
 .rail-status { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: 11px; color: var(--text-faint); }
 .rail-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.rail-status-dot[data-ok="true"] { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.rail-status-dot[data-ok="true"] { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); animation: cerDot 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .rail-status-dot[data-ok="true"] { animation: none; } }
 
 .rail-item {
   position: relative;
@@ -79,7 +109,8 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .rail-item:hover { background: var(--surface-3); color: var(--text); }
-.rail-item.active { color: var(--accent); background: var(--surface); box-shadow: var(--shadow-1); }
+/* Active = steel text on a steel-soft tint with a soft steel hairline (handoff). */
+.rail-item.active { color: var(--accent); background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent-line-soft); }
 .rail-item .rail-ind { display: none; }
 .rail-item.active svg { color: var(--accent); }
 .rail-label { overflow: hidden; }

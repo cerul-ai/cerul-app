@@ -302,8 +302,28 @@ export function ItemCard({
           </>
         ) : (
           <>
-            <span className={`item-thumb thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
-              {item.thumbnailUrl ? (
+            <span
+              className={`item-thumb thumb ${
+                item.status === "indexing"
+                  ? "indexing"
+                  : item.thumbnailUrl
+                    ? "has-image"
+                    : item.color
+              }`}
+            >
+              {item.status === "indexing" ? (
+                <>
+                  {/* Elegant processing card (handoff §4): shimmer sweep over a
+                      light gradient, a centred spinning ring, and a top-left
+                      processing pill — instead of a bare modality icon. */}
+                  <span className="item-shimmer" aria-hidden="true" />
+                  <span className="item-ring" aria-hidden="true" />
+                  <span className="item-proc-pill mono">
+                    <span className="item-proc-dot" />
+                    {t("library.status.indexing")}
+                  </span>
+                </>
+              ) : item.thumbnailUrl ? (
                 <img src={item.thumbnailUrl} alt="" loading="lazy" />
               ) : (
                 <ItemModalityIcon item={item} size={22} />

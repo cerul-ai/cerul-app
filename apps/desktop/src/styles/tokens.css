@@ -59,6 +59,18 @@
   /* ---- App-icon container gradients (brushed silver / graphite) ---- */
   --icon-grad-silver:   linear-gradient(150deg, #f3f4f6, #cdd2d9);
   --icon-grad-graphite: linear-gradient(155deg, #3a3f49, #15171c);
+
+  /* ---- Luminous handoff: floating-card elevation (shared) ----
+     Designed to read against the layered light background so white cards
+     genuinely lift off the surface (handoff design_handoff_cerul). */
+  --card-sh:      0 1px 2px rgba(28, 40, 60, 0.05), 0 14px 30px -12px rgba(28, 40, 60, 0.22);
+  --card-sh-lift: 0 2px 4px rgba(28, 40, 60, 0.06), 0 26px 48px -16px rgba(28, 40, 60, 0.32);
+  --win-sh:       0 36px 80px -28px rgba(22, 32, 52, 0.42), 0 10px 24px -10px rgba(22, 32, 52, 0.20);
+  /* Top-highlight hairline that rims floating white cards. */
+  --card-hairline: rgba(255, 255, 255, 0.85);
+
+  /* Brushed-metal grain (used in dark Graphite only). */
+  --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 /* ============================================================
@@ -68,15 +80,18 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  /* Surfaces — cool desktop gray with white cards floating on it */
-  --bg-app:      #e9ebee;   /* desktop / content well */
-  --bg-sunken:   #e9ebee;   /* rail shares the app gray, split by a border */
+  /* Surfaces — luminous near-white; the layered gradient lives on .app so
+     white cards float. These solids approximate the gradient for the few
+     spots that need a flat colour (frosted topbar, badge cut-outs). */
+  --bg-app:      #eef1f4;   /* gradient base / content well */
+  --bg-sunken:   #eef1f4;   /* rail shares the same luminous surface */
   --surface:     #ffffff;   /* cards, panels, popovers */
-  --surface-2:   #f4f6f8;   /* inset fields, secondary surface */
+  --surface-2:   #f4f6f8;   /* inset fields, secondary surface (inset) */
   --surface-3:   #eaeef2;   /* hover / pressed fills */
+  --hair-2:      #eef1f5;   /* skeleton / placeholder fills */
 
   /* Hairlines */
-  --line:        #e2e6eb;   /* card / panel hairlines */
+  --line:        #e6e9ee;   /* card / panel hairlines (handoff: hair) */
   --line-strong: #d5dae0;   /* rail divider, stronger separators */
 
   /* Text — cool metal neutrals */
@@ -92,8 +107,10 @@
   --accent-soft:   rgba(62, 107, 157, 0.10); /* tint fill */
   --accent-soft-2: rgba(62, 107, 157, 0.16);
   --accent-line:   rgba(62, 107, 157, 0.40);
-  --accent-tint:   #eef4fb;  /* solid steel tint — selected rows / active line */
+  --accent-line-soft: #d4e0ee; /* soft steel hairline — active nav / chips / drag zone (handoff: steel-line) */
+  --accent-tint:   #eef4fb;  /* solid steel tint — selected rows / active line (handoff: steel-soft) */
   --accent-2:      #a06f39;  /* warm copper — podcast modality only */
+  --copper-soft:   #f3ebe0;  /* copper tint background (podcast/audio-only) */
 
   /* Status — pills use tint + line + text together */
   --success:      #2e7d56;
@@ -170,6 +187,15 @@
   --shadow-1: none;
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
   --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.55);
+
+  /* Graphite elevation — deep shadow, faint glass rim (no white hairline) */
+  --card-sh:      0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 40px -16px rgba(0, 0, 0, 0.6);
+  --card-sh-lift: 0 2px 6px rgba(0, 0, 0, 0.45), 0 30px 60px -18px rgba(0, 0, 0, 0.68);
+  --win-sh:       0 40px 90px -30px rgba(0, 0, 0, 0.7), 0 12px 28px -12px rgba(0, 0, 0, 0.5);
+  --card-hairline: rgba(255, 255, 255, 0.07);
+  --hair-2:        rgba(255, 255, 255, 0.08);
+  --accent-line-soft: rgba(143, 176, 216, 0.30);
+  --copper-soft:   rgba(202, 160, 102, 0.14);
 
   --scrim: rgba(0, 0, 0, 0.55);
 

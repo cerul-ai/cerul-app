@@ -186,7 +186,7 @@ export function JobsSheet({
 
         <div className="drawer-body jobs-body">
           {activeJobs.length > 0 ? (
-            <section className="jobs-cost-card">
+            <section className={activeCostUsd > 0 ? "jobs-cost-card" : "jobs-cost-card local"}>
               <div className="jobs-cost-main">
                 <span className="jobs-cost-label">{t("jobs.cost.title")}</span>
                 <strong className="jobs-cost-value mono">{formatUsd(activeCostUsd)}</strong>
