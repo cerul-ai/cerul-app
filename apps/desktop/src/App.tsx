@@ -7029,8 +7029,12 @@ function AdvancedSettings({
           className="btn btn-secondary sm"
           type="button"
           onClick={() => {
-            // Mark onboarding as not completed so the next launch re-runs it.
-            void persistLastRoute({ view: "onboarding" });
+            // Route straight to the onboarding wizard via the hash. The previous
+            // version only persisted the route and reloaded, but the reload kept
+            // the current #settings hash — which takes priority on launch — so the
+            // button appeared to do nothing. Setting the hash before reloading is
+            // what actually navigates (and the reload resets the wizard to step 0).
+            window.location.hash = routeHash("onboarding");
             window.location.reload();
           }}
         >
