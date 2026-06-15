@@ -79,6 +79,10 @@
           "cerul_mlx_sidecar.py",
           "requirements.txt"
         ]
+      },
+      {
+        "from": "mlx-runtime",
+        "to": "mlx-runtime"
       }
     ],
     "mac": {

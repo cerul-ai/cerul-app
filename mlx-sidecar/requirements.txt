@@ -3,7 +3,7 @@
 # listed explicitly instead of riding along as a transitive dependency.
 mlx==0.31.2
 mlx-embeddings==0.1.0
-mlx-lm==0.29.4
+mlx-lm==0.31.3
 mlx-vlm==0.5.0
 mlx-whisper==0.4.3
 mlx-qwen3-asr==0.3.5
