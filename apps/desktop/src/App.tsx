@@ -652,6 +652,20 @@ function AppWorkspace() {
     return () => window.clearTimeout(id);
   }, [lm.ready, lm.dismissReady]);
 
+  // First-run cold start: a packaged app's core takes a few seconds to come up
+  // while macOS verifies the bundle. If the user reached the onboarding
+  // "core unreachable" error during that window, clear it once the core is
+  // online so the step un-sticks on its own (the Start button re-enables too).
+  useEffect(() => {
+    if (
+      apiStatus === "online" &&
+      modelDownloadState.status === "error" &&
+      modelDownloadState.error === t("common.coreUnreachable")
+    ) {
+      setModelDownloadState({ status: "idle", error: null });
+    }
+  }, [apiStatus, modelDownloadState, t]);
+
   useEffect(() => {
     function handleOAuthRoute(route: RouteState) {
       if (!route.oauthProvider && !route.oauthCode && !route.oauthState && !route.oauthError) {

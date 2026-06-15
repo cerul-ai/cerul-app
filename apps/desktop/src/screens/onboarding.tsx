@@ -109,11 +109,12 @@ function AddSourceStep({
 // three local-first chips and the $0.00 cost line.
 function SmartStep({
   modelDownloadState,
+  apiStatus,
 }: {
   modelDownloadState: { status: string; error: string | null };
+  apiStatus: ApiStatus;
 }) {
   const t = useT();
-  const [costPre, costPost] = t("onboarding.smart.cost").split("$0.00");
   const chips = [
     { icon: "🔒", label: t("onboarding.smart.chipLocal") },
     { icon: "⚡", label: t("onboarding.smart.chipSearch") },
@@ -163,11 +164,12 @@ function SmartStep({
           </div>
         ))}
       </div>
-      <p className="onb-cost mono">
-        {costPre}
-        {costPost !== undefined ? <b className="onb-cost-amt">$0.00</b> : null}
-        {costPost}
-      </p>
+      {apiStatus !== "online" && modelDownloadState.status !== "error" ? (
+        <p className="onb-connecting mono">
+          <span className="onb-connecting-dot" aria-hidden="true" />
+          {t("onboarding.smart.connecting")}
+        </p>
+      ) : null}
       {modelDownloadState.error ? (
         <InlineNotice tone="error" message={modelDownloadState.error} />
       ) : null}
@@ -249,7 +251,9 @@ export function Onboarding({
                 setYoutubeChannels={setYoutubeChannels}
               />
             ) : null}
-            {clamped === 2 ? <SmartStep modelDownloadState={modelDownloadState} /> : null}
+            {clamped === 2 ? (
+              <SmartStep modelDownloadState={modelDownloadState} apiStatus={apiStatus} />
+            ) : null}
           </div>
 
           <div className="onb-actions">
