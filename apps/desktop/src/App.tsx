@@ -23,6 +23,7 @@
 
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   ChevronDown,
   ChevronRight,
@@ -36,6 +37,7 @@ import {
   FileAudio,
   FileVideo,
   Folder,
+  FolderDown,
   HardDrive,
   Image as ImageIcon,
   Info,
@@ -134,11 +136,14 @@ import {
 } from "./lib/validation";
 import { ConfirmDialog } from "./dialogs/confirm-dialog";
 import { JobsSheet } from "./dialogs/jobs-sheet";
+import { LocalModelConsent } from "./components/local-model-consent";
+import { useLocalModelConsent } from "./lib/use-local-model-consent";
 import { IndexingStrip } from "./components/indexing-strip";
 import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
+import { brandAssets } from "./lib/brand";
 import { AccountRailButton } from "./components/account-sidebar";
 import type {
   ApiStatus,
@@ -469,478 +474,10 @@ function searchIndexIsSettling(data: AppData) {
   );
 }
 
-const results: Result[] = [
-  {
-    id: "chunk-1",
-    itemId: "item-1",
-    title: "Karpathy - Software Is Changing Again",
-    source: "YouTube / Andrej Karpathy",
-    timestamp: "12:34",
-    indexedAtEpoch: 1780444800,
-    duration: "1:18:22",
-    snippet:
-      "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    color: "mint",
-    thumbnailUrl: null,
-    confidence: "high",
-    confidenceLabel: "Best",
-    score: 0.048,
-    scoreLabel: "Match 100%",
-    scoreTitle: "Model similarity score",
-    chunkType: "transcript",
-    moreMatches: [
-      {
-        id: "chunk-1-2",
-        timestamp: "18:02",
-        snippet:
-          "If the answer is difficult, test-time compute lets the system search longer before committing.",
-        confidence: "medium",
-        confidenceLabel: "Strong",
-        scoreLabel: "Match 74%",
-        scoreTitle: "Model similarity score",
-      },
-      {
-        id: "chunk-1-3",
-        timestamp: "41:27",
-        snippet:
-          "You can think of the runtime budget as part of the interface, not just the model.",
-        confidence: "medium",
-        confidenceLabel: "Strong",
-        scoreLabel: "Match 68%",
-        scoreTitle: "Model similarity score",
-      },
-      {
-        id: "chunk-1-4",
-        timestamp: "52:09",
-        snippet:
-          "The UI should cite the exact moment because the useful unit is a clip, not a whole file.",
-        confidence: "low",
-        confidenceLabel: "Review",
-        scoreLabel: "Match 41%",
-        scoreTitle: "Model similarity score",
-      },
-    ],
-  },
-  {
-    id: "chunk-2",
-    itemId: "item-2",
-    title: "API-first Media Systems",
-    source: "Folders / Talks 2026",
-    timestamp: "34:10",
-    indexedAtEpoch: 1780358400,
-    duration: "49:08",
-    snippet:
-      "A media memory layer needs exact phrase search and semantic retrieval because users remember both words and scenes.",
-    color: "amber",
-    thumbnailUrl: null,
-    confidence: "medium",
-    confidenceLabel: "Strong",
-    score: 0.031,
-    scoreLabel: "Match 65%",
-    scoreTitle: "Model similarity score",
-    chunkType: "transcript",
-    moreMatches: [
-      {
-        id: "chunk-2-2",
-        timestamp: "37:44",
-        snippet:
-          "When search crosses transcript and frames, the result card needs to explain why it matched.",
-        confidence: "low",
-        confidenceLabel: "Review",
-        scoreLabel: "Match 48%",
-        scoreTitle: "Model similarity score",
-      },
-    ],
-  },
-  {
-    id: "chunk-3",
-    itemId: "item-3",
-    title: "Podcast - Agents in Production",
-    source: "Podcast RSS / Engineering Notes",
-    timestamp: "08:52",
-    indexedAtEpoch: 1778544000,
-    duration: "56:41",
-    snippet:
-      "The agent should cite the moment in the source, not just return an answer without a timestamp.",
-    color: "rose",
-    thumbnailUrl: null,
-    confidence: "low",
-    confidenceLabel: "Review",
-    score: 0.018,
-    scoreLabel: "Match 38%",
-    scoreTitle: "Model similarity score",
-    chunkType: "transcript",
-    moreMatches: [],
-  },
-];
 
-const emptyUsageTotals: api.UsageTotals = {
-  event_count: 0,
-  request_count: 0,
-  input_tokens: 0,
-  output_tokens: 0,
-  audio_seconds: 0,
-  image_count: 0,
-  video_seconds: 0,
-  estimated_usd: 0,
-  billed_credits: 0,
-  unpriced_events: 0,
-};
-
-const items: Item[] = [
-  {
-    id: "item-1",
-    title: "Karpathy — Software Is Changing Again",
-    sourceId: "source-2",
-    contentType: "video",
-    source: "Andrej Karpathy",
-    sourceKind: "youtube",
-    duration: "1:18:22",
-    durationSec: 4702,
-    indexedAt: "今天",
-    indexedAtEpoch: 1780444800,
-    status: "indexed",
-    error: null,
-    rawPath: null,
-    originalUrl: "https://www.youtube.com/watch?v=demo-karpathy",
-    color: "mint",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: {
-      item_id: "item-1",
-      position_sec: 754,
-      timestamp: "12:34",
-      chunk_id: null,
-      updated_at: 1780448400,
-    },
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-2",
-    title: "API-first Media Systems",
-    sourceId: "source-1",
-    contentType: "video",
-    source: "Talks 2026",
-    sourceKind: "folder",
-    duration: "49:08",
-    durationSec: 2948,
-    indexedAt: "昨天",
-    indexedAtEpoch: 1780358400,
-    status: "indexing",
-    error: null,
-    rawPath: "~/Movies/conferences/local-first-ai-systems.mp4",
-    originalUrl: null,
-    color: "amber",
-    thumbnailUrl: null,
-    progress: 0.42,
-    progressLabel: "42%",
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: "pending",
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-3",
-    title: "Agents in Production",
-    sourceId: "source-3",
-    contentType: "audio",
-    source: "Engineering Notes",
-    sourceKind: "podcast",
-    duration: "56:41",
-    durationSec: 3401,
-    indexedAt: "5月12日",
-    indexedAtEpoch: 1778544000,
-    status: "indexed",
-    error: null,
-    rawPath: null,
-    originalUrl: "https://example.com/engineering-notes/agents-in-production",
-    color: "rose",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-4",
-    title: "Multimodal Search Review",
-    sourceId: "source-1",
-    contentType: "video",
-    source: "Design Reviews",
-    sourceKind: "folder",
-    duration: "23:12",
-    durationSec: 1392,
-    indexedAt: "5月11日",
-    indexedAtEpoch: 1778457600,
-    status: "failed",
-    error: "The original file moved or was deleted from ~/Movies/design-reviews/multimodal-search-review.mp4.",
-    rawPath: "~/Movies/design-reviews/multimodal-search-review.mp4",
-    originalUrl: null,
-    color: "steel",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-5",
-    title: "Deleted YouTube Lecture",
-    sourceId: "source-2",
-    contentType: "video",
-    source: "Andrej Karpathy",
-    sourceKind: "youtube",
-    duration: "41:05",
-    durationSec: 2465,
-    indexedAt: "5月10日",
-    indexedAtEpoch: 1778371200,
-    status: "failed",
-    error: "yt-dlp fetch failed: video unavailable or private.",
-    rawPath: null,
-    originalUrl: "https://www.youtube.com/watch?v=deleted-demo",
-    color: "mint",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-];
-
-const sources: Source[] = [
-  {
-    id: "source-1",
-    type: "folder",
-    name: "~/Movies/conferences",
-    status: "active",
-    items: 82,
-    lastPolled: "2 min ago",
-    error: null,
-  },
-  {
-    id: "source-2",
-    type: "youtube",
-    name: "Andrej Karpathy",
-    status: "active",
-    items: 24,
-    lastPolled: "1 h ago",
-    error: null,
-  },
-  {
-    id: "source-3",
-    type: "podcast",
-    name: "Engineering Notes",
-    status: "paused",
-    items: 17,
-    lastPolled: "Yesterday",
-    error: null,
-  },
-  {
-    id: "source-4",
-    type: "folder",
-    name: "~/Movies/archive-drive",
-    status: "error",
-    items: 9,
-    lastPolled: "May 12",
-    error: "Cerul cannot reach this folder. Locate the drive or remove the source.",
-  },
-];
-
-const demoJobs: api.JobRecord[] = [
-  {
-    id: "job-1",
-    item_id: "item-2",
-    job_type: "index_video",
-    status: "running",
-    started_at: Math.floor(Date.now() / 1000) - 75,
-    finished_at: null,
-    error: null,
-    progress: 0.42,
-    stage: "transcribing",
-    stage_message: "Transcribing audio",
-    usage: emptyUsageTotals,
-    error_info: null,
-  },
-  {
-    id: "job-2",
-    item_id: "item-4",
-    job_type: "index_video",
-    status: "failed",
-    started_at: null,
-    finished_at: null,
-    error: "The source file is missing.",
-    progress: 1,
-    stage: "failed",
-    stage_message: "Index failed",
-    usage: emptyUsageTotals,
-    error_info: {
-      code: "source_unavailable",
-      capability: "视频索引",
-      settings_section: "Models",
-      message: "来源暂时不可访问，可能是私有、地区限制或文件已移动。",
-    },
-  },
-];
-
-const demoMoments: api.MomentRecord[] = [
-  {
-    id: "moment-1",
-    item_id: "item-1",
-    chunk_id: "sample-2",
-    start_sec: 754,
-    end_sec: null,
-    timestamp: "12:34",
-    title: "Software Is Changing Again",
-    quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    note: null,
-    created_at: Math.floor(Date.now() / 1000) - 3600,
-  },
-  {
-    id: "moment-2",
-    item_id: "item-2",
-    chunk_id: "sample-3",
-    start_sec: 782,
-    end_sec: null,
-    timestamp: "13:02",
-    title: "API-first Media Systems",
-    quote: "Search quality improves when lexical recall and semantic retrieval are evaluated separately.",
-    note: null,
-    created_at: Math.floor(Date.now() / 1000) - 7200,
-  },
-];
-
-const demoEntities: api.EntitySummary[] = [
-  { id: "andrej-karpathy", label: "Andrej Karpathy", kind: "person_or_entity", mention_count: 6, item_count: 2 },
-  { id: "test-time-compute", label: "test-time compute", kind: "topic", mention_count: 5, item_count: 2 },
-  { id: "retrieval-quality", label: "retrieval quality", kind: "topic", mention_count: 4, item_count: 3 },
-];
-
-const demoEntityDetail: api.EntityDetail = {
-  entity: demoEntities[1],
-  mentions: [
-    {
-      entity_id: "test-time-compute",
-      label: "test-time compute",
-      kind: "topic",
-      item_id: "item-1",
-      item_title: "Software Is Changing Again",
-      chunk_id: "sample-2",
-      timestamp: "12:34",
-      start_sec: 754,
-      quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    },
-    {
-      entity_id: "test-time-compute",
-      label: "test-time compute",
-      kind: "topic",
-      item_id: "item-2",
-      item_title: "API-first Media Systems",
-      chunk_id: "sample-3",
-      timestamp: "13:02",
-      start_sec: 782,
-      quote: "The retrieval layer becomes part of the reasoning loop when answers cite exact moments.",
-    },
-  ],
-};
-
-const demoVideoUnderstanding: api.VideoUnderstandingRecord = {
-  item_id: "item-1",
-  provider_id: "fixture",
-  model_id: "qwen3-vl-fixture",
-  status: "completed",
-  summary:
-    "A discussion of test-time compute, retrieval quality, and how timestamped media evidence changes search workflows.",
-  chapters: [
-    {
-      start_sec: 730,
-      end_sec: 820,
-      title: "Test-time compute",
-      summary: "Reasoning budget can be spent after the prompt arrives.",
-    },
-    {
-      start_sec: 900,
-      end_sec: 1020,
-      title: "Retrieval as evidence",
-      summary: "Answers are grounded by exact transcript moments.",
-    },
-  ],
-  events: [
-    {
-      start_sec: 754,
-      end_sec: 790,
-      caption: "The speaker explains why test-time compute changes answer quality.",
-      visual: null,
-      audio: null,
-      actions: ["explains"],
-      entities: ["test-time compute"],
-      confidence: 0.91,
-    },
-  ],
-  topics: ["test-time compute", "retrieval quality", "media memory"],
-  searchable_text: null,
-  error: null,
-  created_at: Math.floor(Date.now() / 1000) - 3600,
-  updated_at: Math.floor(Date.now() / 1000) - 1800,
-};
-
-const demoUsageSummary: api.UsageSummary = {
-  total: { ...emptyUsageTotals, event_count: 18, request_count: 18, estimated_usd: 0.42, billed_credits: 42 },
-  remote: { ...emptyUsageTotals, event_count: 7, request_count: 7, estimated_usd: 0.42, billed_credits: 42 },
-  local: { ...emptyUsageTotals, event_count: 11, request_count: 11, estimated_usd: 0, billed_credits: 0 },
-  by_capability: [
-    { key: "asr", totals: { ...emptyUsageTotals, event_count: 6, request_count: 6, estimated_usd: 0.12 } },
-    { key: "embedding", totals: { ...emptyUsageTotals, event_count: 9, request_count: 9, estimated_usd: 0.18 } },
-    { key: "video_understanding", totals: { ...emptyUsageTotals, event_count: 3, request_count: 3, estimated_usd: 0.12 } },
-  ],
-};
-
-const transcript: TranscriptLine[] = [
-  {
-    id: "sample-1",
-    time: "12:10",
-    text: "Before we talk about search quality, we need to separate lexical recall from semantic recall.",
-  },
-  {
-    id: "sample-2",
-    time: "12:34",
-    text: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    active: true,
-  },
-  {
-    id: "sample-3",
-    time: "13:02",
-    text: "This changes how we evaluate memory products because the retrieval layer becomes part of the reasoning loop.",
-  },
-  {
-    id: "sample-4",
-    time: "13:41",
-    text: "If the citation lands on the wrong moment, the user loses trust even when the answer sounds plausible.",
-  },
-];
+// Fallback transcript shown before the real lines load (or when the core is
+// offline) — intentionally empty so the UI never shows placeholder content.
+const transcript: TranscriptLine[] = [];
 
 const settingsSections = ["Models", "Usage", "General", "Indexing", "Storage", "Advanced", "About"] as const;
 type SettingsSection = (typeof settingsSections)[number];
@@ -958,10 +495,6 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
 function hashQueryParam(name: string): string | null {
   const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
   return new URLSearchParams(queryString).get(name);
-}
-
-function visualFixtureModeEnabled() {
-  return hashQueryParam("fixture") === "design";
 }
 
 // Single source of truth for the non-online core-status wording, so the home
@@ -1031,9 +564,7 @@ function AppWorkspace() {
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(
     initialRoute.timestamp,
   );
-  const [query, setQuery] = useState(() =>
-    visualFixtureModeEnabled() ? "test-time compute" : "",
-  );
+  const [query, setQuery] = useState("");
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [showAddSource, setShowAddSource] = useState(false);
   const [showJobsSheet, setShowJobsSheet] = useState(false);
@@ -1069,24 +600,71 @@ function AppWorkspace() {
   // Monotonic token: every runSearch bumps it, stale responses are dropped.
   const searchSeqRef = useRef(0);
 
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const screenApiStatus: ApiStatus = visualFixtureMode ? "online" : apiStatus;
-  // Demo fixtures are reserved for `?fixture=design`. When the core is
-  // offline we keep showing the last data we fetched (or empty states) —
-  // never fake content the user might mistake for their own library.
-  const visibleSources = visualFixtureMode ? sources : data.sources;
-  const visibleItems = visualFixtureMode ? items : data.items;
-  const visibleResults = visualFixtureMode ? results : liveResults;
-  const visibleJobs = visualFixtureMode
-    ? demoJobs
-    : apiStatus === "online"
-      ? data.jobs
-      : [];
+  // When the core is offline we keep showing the last data we fetched (or empty
+  // states) — never fake content the user might mistake for their own library.
+  const visibleSources = data.sources;
+  const visibleItems = data.items;
+  const visibleResults = liveResults;
+  const visibleJobs = apiStatus === "online" ? data.jobs : [];
   // Follow the OS by default — first launch on a light-mode Mac used to open dark.
   const themePreference = settingString(data.settings, "theme", "System");
+  // Global indexing pause (the worker skips queued jobs while this is on).
+  const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
+  // The Tasks drawer hides jobs whose item no longer exists, so cancelling a task
+  // (which deletes its item) makes it disappear even though the job row lingers in
+  // the DB.
+  const drawerJobs = visibleJobs.filter(
+    (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
+  );
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
+
+  // First-run on-device-model consent + download. Fetches capability and shows
+  // the dialog once, gated on `local_models_prompted` so it never re-prompts —
+  // and never fires before the core's capability route exists, because the
+  // capability fetch simply rejects until then.
+  const lmTrigger =
+    apiStatus === "online" &&
+    view !== "onboarding" &&
+    !settingBoolean(data.settings, "local_models_prompted", false);
+  const lm = useLocalModelConsent({ trigger: lmTrigger });
+  const handleLmAgree = useCallback(() => {
+    lm.agree();
+    void api
+      .updateSettings({ inference_mode: "local", local_models_prompted: true })
+      .then(() => refreshCoreData())
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lm.agree]);
+  const handleLmDecline = useCallback(() => {
+    lm.decline();
+    void api
+      .updateSettings({ inference_mode: "remote", local_models_prompted: true })
+      .then(() => refreshCoreData())
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lm.decline]);
+  // Auto-dismiss the "models ready" toast after a few seconds.
+  useEffect(() => {
+    if (!lm.ready) return;
+    const id = window.setTimeout(() => lm.dismissReady(), 6000);
+    return () => window.clearTimeout(id);
+  }, [lm.ready, lm.dismissReady]);
+
+  // First-run cold start: a packaged app's core takes a few seconds to come up
+  // while macOS verifies the bundle. If the user reached the onboarding
+  // "core unreachable" error during that window, clear it once the core is
+  // online so the step un-sticks on its own (the Start button re-enables too).
+  useEffect(() => {
+    if (
+      apiStatus === "online" &&
+      modelDownloadState.status === "error" &&
+      modelDownloadState.error === t("common.coreUnreachable")
+    ) {
+      setModelDownloadState({ status: "idle", error: null });
+    }
+  }, [apiStatus, modelDownloadState, t]);
 
   useEffect(() => {
     function handleOAuthRoute(route: RouteState) {
@@ -1203,7 +781,7 @@ function AppWorkspace() {
       });
       return;
     }
-    if (visualFixtureMode || !hasDesktopHost()) {
+    if (!hasDesktopHost()) {
       return;
     }
     const unsubscribe = subscribeDesktopUpdater(setUpdaterState);
@@ -1217,7 +795,7 @@ function AppWorkspace() {
       unsubscribe();
       window.clearInterval(intervalId);
     };
-  }, [visualFixtureMode]);
+  }, []);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
@@ -1284,7 +862,7 @@ function AppWorkspace() {
       return;
     }
     lastMappedLangRef.current = lang;
-    if (!visualFixtureMode && apiStatus === "online") {
+    if (apiStatus === "online") {
       void refreshCoreData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1293,7 +871,7 @@ function AppWorkspace() {
   // Auto-reconnect: while the core is unreachable, keep probing with a
   // capped exponential backoff instead of waiting for a manual Retry click.
   useEffect(() => {
-    if (visualFixtureMode || apiStatus === "online") {
+    if (apiStatus === "online") {
       return;
     }
     let cancelled = false;
@@ -1316,7 +894,7 @@ function AppWorkspace() {
       window.clearTimeout(timeoutId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiStatus, visualFixtureMode]);
+  }, [apiStatus]);
 
   async function refreshCoreData(): Promise<AppData | null> {
     setApiError(null);
@@ -1476,13 +1054,6 @@ function AppWorkspace() {
 
   async function runSearch(value: string) {
     const trimmed = value.trim();
-    if (visualFixtureMode) {
-      setQuery(trimmed || value);
-      setLiveResults(results);
-      setSearchError(null);
-      navigate("results", {});
-      return;
-    }
     if (!trimmed) {
       return;
     }
@@ -1683,16 +1254,29 @@ function AppWorkspace() {
             <span className="rail-label">{t("nav.settings")}</span>
           </button>
           <AccountRailButton />
+          {lm.minimized && lm.download?.phase === "downloading" ? (
+            <button
+              type="button"
+              className="rail-dl-pill"
+              onClick={lm.reopen}
+              title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+            >
+              <span className="ring" aria-hidden="true" />
+              <span className="rail-label clamp1">
+                {t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+              </span>
+            </button>
+          ) : null}
           <div className="rail-status mono">
             <span
               className="rail-status-dot"
-              data-ok={screenApiStatus === "online" ? "true" : undefined}
+              data-ok={apiStatus === "online" ? "true" : undefined}
               aria-hidden="true"
             />
             <span className="rail-label">
-              {screenApiStatus === "online"
+              {apiStatus === "online"
                 ? t("shell.coreLocal")
-                : coreStatusText(screenApiStatus, t)}
+                : coreStatusText(apiStatus, t)}
             </span>
           </div>
         </div>
@@ -1726,7 +1310,7 @@ function AppWorkspace() {
       </div>
 
       <main className="content">
-        {screenApiStatus !== "online" ? (
+        {apiStatus !== "online" ? (
           <CoreBanner
             status={apiStatus}
             error={apiError}
@@ -1737,7 +1321,7 @@ function AppWorkspace() {
           <Onboarding
             step={onboardingStep}
             setStep={setOnboardingStep}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             folders={onboardingFolders}
             setFolders={setOnboardingFolders}
             youtubeChannels={onboardingYoutubeChannels}
@@ -1759,7 +1343,7 @@ function AppWorkspace() {
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             onOpenModelSettings={() => navigate("settings", { settingsSection: "Models" })}
             globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
           />
@@ -1780,7 +1364,7 @@ function AppWorkspace() {
             results={visibleResults}
             isSearching={isSearching}
             error={searchError}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
             hasActiveJobs={visibleJobs.some(isActiveJob)}
           />
@@ -1803,7 +1387,7 @@ function AppWorkspace() {
               visibleResults.find((result) => result.id === selectedChunkId)?.moreMatches
             }
             startTimestamp={selectedTimestamp ?? "00:00"}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onLibrary={() => navigate("results")}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
@@ -1822,7 +1406,7 @@ function AppWorkspace() {
             items={visibleItems}
             jobs={visibleJobs}
             stepStarts={stepStarts}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
@@ -1844,7 +1428,7 @@ function AppWorkspace() {
         ) : null}
         {view === "moments" ? (
           <MomentsScreen
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onOpenItem={(moment) =>
               navigate("item-detail", { itemId: moment.item_id, timestamp: moment.timestamp })
             }
@@ -1853,7 +1437,7 @@ function AppWorkspace() {
         {view === "entity-detail" ? (
           <EntityDetailScreen
             entityId={selectedItemId}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onBack={() => navigate("library")}
             onOpenMention={(mention) =>
               navigate("item-detail", {
@@ -1877,8 +1461,8 @@ function AppWorkspace() {
         {view === "item-detail" && currentItem ? (
           <ItemDetail
             item={currentItem}
-            apiStatus={screenApiStatus}
-            actionsEnabled={screenApiStatus === "online"}
+            apiStatus={apiStatus}
+            actionsEnabled={apiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             onBack={() => navigate("library")}
             onDeleteItem={async (itemToDelete) => {
@@ -1896,7 +1480,7 @@ function AppWorkspace() {
         {view === "sources" ? (
           <SourcesScreen
             sources={visibleSources}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onPauseSource={async (source) => {
               await api.pauseSource(source.id);
@@ -1918,7 +1502,7 @@ function AppWorkspace() {
           <SettingsScreen
             section={settingsSection}
             setSection={setSettingsSection}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             settings={data.settings}
             daemonStatus={data.daemonStatus}
             version={data.version}
@@ -1960,9 +1544,35 @@ function AppWorkspace() {
       ) : null}
       {showJobsSheet ? (
         <JobsSheet
-          jobs={visibleJobs}
+          jobs={drawerJobs}
           items={visibleItems}
           stepStarts={stepStarts}
+          paused={indexingPaused}
+          controlsEnabled={apiStatus === "online"}
+          onTogglePause={async () => {
+            try {
+              await api.updateSettings({ indexing_paused: !indexingPaused });
+              await refreshCoreData();
+            } catch (error) {
+              console.warn("failed to toggle indexing pause", error);
+            }
+          }}
+          onCancelJob={async (job) => {
+            const confirmed = await requestConfirm({
+              title: t("jobs.confirm.cancel.title"),
+              body: t("jobs.confirm.cancel.body"),
+              confirmLabel: t("jobs.confirm.cancel.confirm"),
+            });
+            if (!confirmed || !job.item_id) {
+              return;
+            }
+            try {
+              await api.deleteItem(job.item_id);
+              await refreshCoreData();
+            } catch (error) {
+              console.warn("failed to cancel job", error);
+            }
+          }}
           onClose={() => setShowJobsSheet(false)}
           onOpenSettingsFix={(section) => {
             setShowJobsSheet(false);
@@ -1979,6 +1589,21 @@ function AppWorkspace() {
         onCancel={() => resolveConfirm(false)}
         onConfirm={() => resolveConfirm(true)}
       />
+      {lm.show && !lm.minimized ? (
+        <LocalModelConsent
+          capability={lm.capability}
+          download={lm.download}
+          onAgree={handleLmAgree}
+          onDecline={handleLmDecline}
+          onBackground={lm.background}
+        />
+      ) : null}
+      {lm.ready ? (
+        <button type="button" className="toast lm-toast" onClick={lm.dismissReady}>
+          <Check size={15} />
+          <span>{t("localModel.ready.toast")}</span>
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -2001,6 +1626,58 @@ function formatWeeklyHours(seconds: number) {
     return `${hours}h`;
   }
   return `${minutes}m`;
+}
+
+// First-run empty state: an inviting drag zone and the two ways to add a
+// source. No placeholder results — the page stays honest until the user's own
+// content is indexed.
+function HomeEmptyState({ onAddSource }: { onAddSource: () => void }) {
+  const t = useT();
+  const [dragOver, setDragOver] = useState(false);
+  return (
+    <div className="page home-empty">
+      <div className="home-empty-head">
+        <span className="mono-eyebrow">
+          <span className="dot" />
+          {t("home.emptyHero.eyebrow")}
+        </span>
+        <h1 className="home-empty-title">{t("home.emptyHero.title")}</h1>
+        <p className="home-empty-body">{t("home.emptyHero.body")}</p>
+      </div>
+
+      <div
+        className={dragOver ? "drag-zone over" : "drag-zone"}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragOver(false);
+          onAddSource();
+        }}
+      >
+        <span className="drag-icon">
+          <FolderDown size={22} />
+        </span>
+        <div className="drag-text">
+          <strong>{t("home.emptyHero.dragTitle")}</strong>
+          <small>{t("home.emptyHero.dragHint")}</small>
+        </div>
+        <div className="drag-actions">
+          <button className="btn btn-primary" type="button" onClick={onAddSource}>
+            <Folder size={16} />
+            <span>{t("onboarding.folder.choose")}</span>
+          </button>
+          <button className="btn btn-secondary" type="button" onClick={onAddSource}>
+            <Youtube size={16} />
+            <span>{t("home.emptyHero.followYoutube")}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function HomeScreen({
@@ -2044,22 +1721,7 @@ function HomeScreen({
   const recentIndexed = [...items]
     .sort((left, right) => (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0))
     .slice(0, 4);
-  const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
-    visualFixtureModeEnabled()
-      ? {
-          week_start: 0,
-          indexed_items: 4,
-          indexed_seconds: 6 * 3600 + 12 * 60,
-          watched_percent: 40,
-          topics: [
-            { id: "test-time-compute", label: "test-time compute", count: 5 },
-            { id: "retrieval-quality", label: "retrieval quality", count: 4 },
-            { id: "media-memory", label: "media memory", count: 3 },
-          ],
-          has_data: true,
-        }
-      : null,
-  );
+  const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(null);
   // Weekly review is kept but lives off the default home (完整版 baseline has no
   // weekly card) — surfaced on demand via the "本周回顾" toggle in the recent header.
   const [showWeekly, setShowWeekly] = useState(false);
@@ -2113,7 +1775,7 @@ function HomeScreen({
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureModeEnabled() || apiStatus !== "online") {
+    if (apiStatus !== "online") {
       return;
     }
     api
@@ -2130,34 +1792,14 @@ function HomeScreen({
   }, [apiStatus, indexedCount, activeJobs.length]);
 
   if (!hasSources && apiStatus === "online") {
-    return (
-      <div className="page">
-        <div className="state" style={{ marginTop: 96 }}>
-          <div className="state-icon">
-            <BrandMark />
-          </div>
-          <div className="state-title">{t("home.empty.title")}</div>
-          <div className="state-sub">{t("home.empty.body")}</div>
-          <div className="row gap-2" style={{ marginTop: 4 }}>
-            <button className="btn btn-primary" type="button" onClick={onAddSource}>
-              <Plus size={16} />
-              <span>{t("home.empty.addFirst")}</span>
-            </button>
-            <button className="btn btn-secondary" type="button" onClick={onOpenModelSettings}>
-              <Wrench size={16} />
-              <span>{t("home.empty.configureModels")}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+    return <HomeEmptyState onAddSource={onAddSource} />;
   }
 
   return (
     <div className="page home-page" style={{ maxWidth: 920 }}>
       <div className="home-search-stage">
         <div className="home-hero-mark" aria-hidden="true">
-          <BrandMark variant="color" />
+          <img className="home-hero-icon" src={brandAssets.appIcon} alt="" />
         </div>
         <h1>{t("home.heading")}</h1>
         <p className="muted home-summary">
@@ -2322,35 +1964,48 @@ function ContinueWatchingCard({
     positionSec != null && item.durationSec
       ? Math.min(100, Math.max(2, (positionSec / item.durationSec) * 100))
       : null;
-  const metaParts = [itemKindLabel(item, t), item.source].filter(Boolean);
-  if (timestamp) {
-    metaParts.push(t("home.continueAt", { at: timestamp, total: item.duration }));
-  }
+  const remaining =
+    positionSec != null && item.durationSec
+      ? formatDuration(Math.max(0, item.durationSec - positionSec))
+      : null;
+  const sourceLabel = item.source || t("home.continueLocal");
   return (
-    <button className="card hover continue-card" type="button" onClick={onOpen}>
-      <span className={`continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
-        {item.thumbnailUrl ? (
-          <img src={item.thumbnailUrl} alt="" loading="lazy" />
-        ) : (
-          <ItemModalityIcon item={item} size={26} />
-        )}
-        <span className="continue-play" aria-hidden="true">
-          <Play size={18} fill="currentColor" />
-        </span>
-        {item.contentType !== "image" && item.duration ? (
-          <small className="thumb-duration mono">{item.duration}</small>
-        ) : null}
-        {progressPct != null ? (
-          <span className="continue-progress" aria-hidden="true">
-            <span style={{ width: `${progressPct}%` }} />
+    <button className="cw-banner" type="button" onClick={onOpen} title={t("home.continueResume")}>
+      {item.thumbnailUrl ? (
+        <img className="cw-bg" src={item.thumbnailUrl} alt="" loading="lazy" />
+      ) : null}
+      <span className="cw-noise" aria-hidden="true" />
+      <span className="cw-glow" aria-hidden="true" />
+      <span className="cw-scrim" aria-hidden="true" />
+      <span className="cw-play" aria-hidden="true">
+        <Play size={20} fill="currentColor" />
+      </span>
+      <span className="cw-badge mono">
+        <span className="cw-badge-dot" aria-hidden="true" />
+        {sourceLabel}
+      </span>
+      {item.duration ? <span className="cw-dur mono">{item.duration}</span> : null}
+      <span className="cw-bottom">
+        <span className="cw-info">
+          <strong className="cw-title clamp1">{item.title}</strong>
+          <span className="cw-meta">
+            {timestamp
+              ? `${t("home.continueAt", { at: timestamp, total: item.duration })}${
+                  remaining ? ` · ${t("home.continueRemaining", { remaining })}` : ""
+                }`
+              : itemKindLabel(item, t)}
           </span>
-        ) : null}
+        </span>
+        <span className="cw-resume">
+          <Play size={13} fill="currentColor" />
+          {t("home.continuePlay")}
+        </span>
       </span>
-      <span className="continue-body">
-        <strong className="clamp1 continue-title">{item.title}</strong>
-        <span className="continue-meta clamp1">{metaParts.join(" · ")}</span>
-        <span className="continue-cta">{t("home.continueResume")}</span>
-      </span>
+      {progressPct != null ? (
+        <span className="cw-bar" aria-hidden="true">
+          <span style={{ width: `${progressPct}%` }} />
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -2797,32 +2452,21 @@ function DetailActionsMenu({
 }
 
 function useItemMoments(item: Item, enabled: boolean) {
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
-    visualFixtureMode ? demoMoments.filter((moment) => moment.item_id === item.id) : [],
-  );
+  const [moments, setMoments] = useState<api.MomentRecord[]>([]);
   const [pendingLineId, setPendingLineId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    if (visualFixtureMode) {
-      setMoments((current) => current.filter((moment) => moment.item_id === item.id));
-      return;
-    }
     if (!enabled) {
       setMoments([]);
       return;
     }
     const records = await api.listMoments();
     setMoments(records.filter((moment) => moment.item_id === item.id));
-  }, [enabled, item.id, visualFixtureMode]);
+  }, [enabled, item.id]);
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureMode) {
-      setMoments(demoMoments.filter((moment) => moment.item_id === item.id));
-      return;
-    }
     if (!enabled) {
       setMoments([]);
       return;
@@ -2838,7 +2482,7 @@ function useItemMoments(item: Item, enabled: boolean) {
     return () => {
       cancelled = true;
     };
-  }, [enabled, item.id, visualFixtureMode]);
+  }, [enabled, item.id]);
 
   // Indexed lookups: the per-line linear scan made transcript rendering
   // O(lines x moments).
@@ -2867,29 +2511,6 @@ function useItemMoments(item: Item, enabled: boolean) {
     setMessage(null);
     try {
       const existing = momentForLine(line);
-      if (visualFixtureMode) {
-        const startSec = parseTimestampSeconds(line.time);
-        setMoments((current) =>
-          existing
-            ? current.filter((moment) => moment.id !== existing.id)
-            : [
-                ...current,
-                {
-                  id: `fixture-${line.id}`,
-                  item_id: item.id,
-                  chunk_id: line.id,
-                  start_sec: Number.isFinite(startSec) ? startSec : null,
-                  end_sec: null,
-                  timestamp: line.time,
-                  title: item.title,
-                  quote: line.text,
-                  note: null,
-                  created_at: Math.floor(Date.now() / 1000),
-                },
-              ],
-        );
-        return;
-      }
       if (existing) {
         await api.deleteMoment(existing.id);
       } else {
@@ -3081,15 +2702,6 @@ function ResultDetail({
   }, [item.id, startTimestamp]);
 
   useEffect(() => {
-    if (visualFixtureModeEnabled()) {
-      setMediaState({
-        status: "ready",
-        chunkId: startChunkId,
-        lines: transcript,
-        message: null,
-      });
-      return;
-    }
     if (!actionsEnabled) {
       setMediaState({ status: "idle", chunkId: null, lines: transcript, message: null });
       return;
@@ -3584,14 +3196,12 @@ function VideoUnderstandingPanel({
   onSeek,
   requestConfirm,
   onChapters,
-  fixtureRecord,
 }: {
   item: Item;
   enabled: boolean;
   onSeek?: (timestamp: string) => void;
   requestConfirm: RequestConfirm;
   onChapters?: (chapters: api.VideoUnderstandingChapter[]) => void;
-  fixtureRecord?: api.VideoUnderstandingRecord | null;
 }) {
   const t = useT();
   const [state, setState] = useState<{
@@ -3599,8 +3209,8 @@ function VideoUnderstandingPanel({
     record: api.VideoUnderstandingRecord | null;
     message: string | null;
   }>({
-    status: fixtureRecord ? "loaded" : "idle",
-    record: fixtureRecord ?? null,
+    status: "idle",
+    record: null,
     message: null,
   });
   // Tracks the currently displayed item so long-running requests started
@@ -3615,10 +3225,6 @@ function VideoUnderstandingPanel({
   const [analyzeElapsedMs, setAnalyzeElapsedMs] = useState(0);
 
   useEffect(() => {
-    if (fixtureRecord) {
-      setState({ status: "loaded", record: fixtureRecord, message: null });
-      return;
-    }
     if (!enabled || item.contentType !== "video") {
       setState({ status: "idle", record: null, message: null });
       return;
@@ -3646,7 +3252,7 @@ function VideoUnderstandingPanel({
     return () => {
       cancelled = true;
     };
-  }, [enabled, fixtureRecord, item.contentType, item.id]);
+  }, [enabled, item.contentType, item.id]);
 
   // Surface chapters to the host so the player can segment its timeline.
   useEffect(() => {
@@ -3887,13 +3493,8 @@ function MomentsScreen({
   onOpenItem: (moment: api.MomentRecord) => void;
 }) {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
-    visualFixtureMode ? demoMoments : [],
-  );
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(
-    visualFixtureMode ? "ready" : "loading",
-  );
+  const [moments, setMoments] = useState<api.MomentRecord[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
@@ -3908,11 +3509,6 @@ function MomentsScreen({
   }, [copyStatus]);
 
   const load = useCallback(async () => {
-    if (visualFixtureMode) {
-      setStatus("ready");
-      setMoments(demoMoments);
-      return;
-    }
     if (!actionsEnabled) {
       setStatus("ready");
       setMoments([]);
@@ -3927,17 +3523,13 @@ function MomentsScreen({
       setMessage(errorMessage(error));
       setStatus("error");
     }
-  }, [actionsEnabled, visualFixtureMode]);
+  }, [actionsEnabled]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   async function remove(moment: api.MomentRecord) {
-    if (visualFixtureMode) {
-      setMoments((current) => current.filter((record) => record.id !== moment.id));
-      return;
-    }
     try {
       await api.deleteMoment(moment.id);
       await load();
@@ -4024,24 +3616,12 @@ function EntityDetailScreen({
   onOpenMention: (mention: api.EntityMention) => void;
 }) {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [detail, setDetail] = useState<api.EntityDetail | null>(() =>
-    visualFixtureMode ? demoEntityDetail : null,
-  );
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(
-    visualFixtureMode ? "ready" : "loading",
-  );
+  const [detail, setDetail] = useState<api.EntityDetail | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureMode) {
-      const entity = demoEntities.find((record) => record.id === entityId) ?? demoEntityDetail.entity;
-      setDetail({ ...demoEntityDetail, entity });
-      setStatus("ready");
-      setMessage(null);
-      return;
-    }
     if (!actionsEnabled || !entityId) {
       setStatus("ready");
       setDetail(null);
@@ -4066,7 +3646,7 @@ function EntityDetailScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, entityId, visualFixtureMode]);
+  }, [actionsEnabled, entityId]);
 
   return (
     <div className="page wide">
@@ -4150,7 +3730,6 @@ function LibraryScreen({
     message: string | null;
   }>({ status: "idle", message: null });
   const [entities, setEntities] = useState<api.EntitySummary[]>([]);
-  const visualFixtureMode = visualFixtureModeEnabled();
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
@@ -4184,10 +3763,6 @@ function LibraryScreen({
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureMode) {
-      setEntities(demoEntities);
-      return;
-    }
     if (!actionsEnabled) {
       setEntities([]);
       return;
@@ -4203,7 +3778,7 @@ function LibraryScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, items.length, visualFixtureMode]);
+  }, [actionsEnabled, items.length]);
 
   function clearLibraryFilters() {
     setLibraryQuery("");
@@ -4480,7 +4055,6 @@ function ItemDetail({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
@@ -4496,7 +4070,7 @@ function ItemDetail({
     lines: TranscriptLine[];
     message: string | null;
   }>({
-    status: visualFixtureMode ? "loaded" : "idle",
+    status: "idle",
     lines: transcript,
     message: null,
   });
@@ -4509,7 +4083,7 @@ function ItemDetail({
     apiStatus === "online" && chunkState.status !== "idle" ? chunkState.lines : transcript;
   const momentActions = useItemMoments(
     item,
-    (visualFixtureMode || actionsEnabled) && chunkState.status === "loaded",
+    actionsEnabled && chunkState.status === "loaded",
   );
   const playerMarkers: PlayerMarker[] = useMemo(
     () =>
@@ -4641,10 +4215,6 @@ function ItemDetail({
   }, [onBack]);
 
   useEffect(() => {
-    if (visualFixtureMode) {
-      setChunkState({ status: "loaded", lines: transcript, message: null });
-      return;
-    }
     if (apiStatus !== "online") {
       setChunkState({ status: "idle", lines: transcript, message: null });
       return;
@@ -4670,7 +4240,7 @@ function ItemDetail({
     return () => {
       cancelled = true;
     };
-  }, [apiStatus, item.id, visualFixtureMode]);
+  }, [apiStatus, item.id]);
 
   async function locateSourceFile() {
     setItemAction({ status: "locating", message: null });
@@ -4935,7 +4505,6 @@ function ItemDetail({
             onSeek={seekTo}
             requestConfirm={requestConfirm}
             onChapters={handleUnderstandingChapters}
-            fixtureRecord={visualFixtureMode ? demoVideoUnderstanding : null}
           />
           {itemAction.message ? (
             <p
@@ -5436,6 +5005,10 @@ type CapabilityRowModel = {
   onSelectModel?: (id: string) => void;
   provider: api.ProviderRecord | null;
   note: string | null;
+  // Which bundled on-device model backs this capability — used to show the real
+  // download state ("未下载 / 下载中 / 就绪") instead of a blanket "ready" when
+  // running locally. null for capabilities with no local weights to fetch.
+  localModelKey: "embed" | "asr" | "ocr" | null;
 };
 
 function ModelsSettings({
@@ -5473,6 +5046,18 @@ function ModelsSettings({
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
+  // Real on-device download state, so the capability rows reflect actual weights
+  // on disk (未下载 / 下载中 / 就绪) rather than a blanket "ready" in local mode.
+  const [localPrep, setLocalPrep] = useState<api.LocalPrepareStatus | null>(null);
+
+  async function downloadLocalModels(modelKey?: string) {
+    try {
+      const next = await api.prepareLocalModels(modelKey ? [modelKey] : undefined);
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
 
   async function loadProviders() {
     try {
@@ -5518,6 +5103,31 @@ function ModelsSettings({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
+
+  // Poll the real on-device download state (cheap disk scan) while not on
+  // pure-cloud mode, so the capability rows show 未下载 / 下载中 / 就绪 live.
+  useEffect(() => {
+    if (inferenceMode === "remote") {
+      setLocalPrep(null);
+      return;
+    }
+    let cancelled = false;
+    async function tick() {
+      if (document.hidden) return;
+      try {
+        const next = await api.localPrepareStatus();
+        if (!cancelled) setLocalPrep(next);
+      } catch {
+        /* core offline or route absent — keep the last known state */
+      }
+    }
+    void tick();
+    const interval = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [inferenceMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5598,6 +5208,7 @@ function ModelsSettings({
       onSelectModel: (id) => void onSettingsChange({ asr_model: id }),
       provider: providerFor(selectedAsrProvider, "env-asr"),
       note: null,
+      localModelKey: "asr",
     },
     {
       key: "embedding",
@@ -5611,6 +5222,7 @@ function ModelsSettings({
       modelOptions: [],
       provider: providerFor(selectedEmbeddingProvider, "env-embedding"),
       note: t("settings.models.embedding.boundBadge"),
+      localModelKey: "embed",
     },
     {
       key: "video",
@@ -5633,6 +5245,9 @@ function ModelsSettings({
         ? null
         : providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
       note: null,
+      // On-device video understanding uses the bundled Qwen3-VL vision model
+      // (same weights as OCR), so its readiness tracks the "ocr" download.
+      localModelKey: "ocr",
     },
   ];
 
@@ -5660,6 +5275,8 @@ function ModelsSettings({
           disabled={disabled}
           onRefresh={loadProviders}
           requestConfirm={requestConfirm}
+          localPrep={localPrep}
+          onDownloadLocal={downloadLocalModels}
         />
       </section>
     </div>
@@ -6015,6 +5632,8 @@ function ProviderConnections({
   disabled,
   onRefresh,
   requestConfirm,
+  localPrep,
+  onDownloadLocal,
 }: {
   capabilities: CapabilityRowModel[];
   providers: api.ProviderRecord[];
@@ -6022,6 +5641,8 @@ function ProviderConnections({
   disabled: boolean;
   onRefresh: () => Promise<void>;
   requestConfirm: RequestConfirm;
+  localPrep: api.LocalPrepareStatus | null;
+  onDownloadLocal: (modelKey?: string) => void;
 }) {
   const t = useT();
   const typeLabel = (type: api.ProviderType) =>
@@ -6233,7 +5854,20 @@ function ProviderConnections({
           // status "error" + last_error) is not actually ready — don't show it
           // as a green success row.
           const failed = !cap.isLocal && provider?.status === "error";
-          const ready = cap.isLocal || (hasKey && !failed);
+          // On-device rows show the REAL weight-download state (未下载 / 下载中 /
+          // 就绪) from the live prepare-status — not a blanket "ready" just
+          // because local mode is selected.
+          const localModel =
+            cap.isLocal && cap.localModelKey
+              ? localPrep?.models.find((m) => m.id === cap.localModelKey) ?? null
+              : null;
+          // "ready" | "downloading" | "pending" | "unknown" (core not reached yet)
+          const localState = cap.isLocal
+            ? localModel
+              ? localModel.status
+              : "unknown"
+            : null;
+          const ready = cap.isLocal ? localState === "ready" : hasKey && !failed;
           const host = provider?.base_url
             ? provider.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
             : "";
@@ -6258,17 +5892,46 @@ function ProviderConnections({
                   <span className="cap-row__name">{cap.name}</span>
                   <span className="cap-row__actions">
                     <span
-                      className={failed ? "chip danger" : ready ? "chip success" : "chip warn"}
+                      className={
+                        failed
+                          ? "chip danger"
+                          : ready
+                            ? "chip success"
+                            : localState === "downloading"
+                              ? "chip warn"
+                              : cap.isLocal
+                                ? "chip neutral"
+                                : "chip warn"
+                      }
                       title={failed ? provider?.last_error ?? undefined : undefined}
                     >
                       <span className="dot" />
                       {failed
                         ? t("settings.models.capability.failed")
-                        : ready
-                          ? t("settings.models.capability.ready")
-                          : t("settings.models.capability.needsKey")}
+                        : cap.isLocal
+                          ? localState === "ready"
+                            ? t("settings.models.capability.ready")
+                            : localState === "downloading"
+                              ? `${t("localModel.status.downloading")} ${localModel?.progress ?? 0}%`
+                              : localState === "unknown"
+                                ? t("settings.models.capability.checking")
+                                : t("settings.models.capability.notDownloaded")
+                          : ready
+                            ? t("settings.models.capability.ready")
+                            : t("settings.models.capability.needsKey")}
                     </span>
-                    {cap.isLocal ? null : (
+                    {cap.isLocal ? (
+                      cap.localModelKey && (localState === "pending" || localState === "unknown") ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost sm cap-row__edit"
+                          disabled={disabled}
+                          onClick={() => onDownloadLocal(cap.localModelKey ?? undefined)}
+                        >
+                          {t("settings.models.capability.download")}
+                        </button>
+                      ) : null
+                    ) : (
                       <button
                         type="button"
                         className="btn btn-ghost sm cap-row__edit"
@@ -6851,8 +6514,12 @@ function AdvancedSettings({
           className="btn btn-secondary sm"
           type="button"
           onClick={() => {
-            // Mark onboarding as not completed so the next launch re-runs it.
-            void persistLastRoute({ view: "onboarding" });
+            // Route straight to the onboarding wizard via the hash. The previous
+            // version only persisted the route and reloaded, but the reload kept
+            // the current #settings hash — which takes priority on launch — so the
+            // button appeared to do nothing. Setting the hash before reloading is
+            // what actually navigates (and the reload resets the wizard to step 0).
+            window.location.hash = routeHash("onboarding");
             window.location.reload();
           }}
         >
@@ -6874,21 +6541,13 @@ function AdvancedSettings({
 // breakdown come from the local usageSummary endpoint.
 function UsageSettings() {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [summary, setSummary] = useState<api.UsageSummary | null>(() =>
-    visualFixtureMode ? demoUsageSummary : null,
-  );
+  const [summary, setSummary] = useState<api.UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const user = useAuthStore((state) => state.user);
   const status = useAuthStore((state) => state.status);
   const signedIn = status === "signedIn" && !!user;
 
   useEffect(() => {
-    if (visualFixtureMode) {
-      setSummary(demoUsageSummary);
-      setError(null);
-      return;
-    }
     let active = true;
     void (async () => {
       try {
@@ -6905,7 +6564,7 @@ function UsageSettings() {
     return () => {
       active = false;
     };
-  }, [visualFixtureMode]);
+  }, []);
 
   const total = summary?.total.estimated_usd ?? 0;
   const events = summary?.total.event_count ?? 0;

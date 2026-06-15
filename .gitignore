@@ -66,6 +66,9 @@ design/exports/
 third-party/*
 !third-party/README.md
 
+# Bundled, self-contained MLX Python runtime (built by scripts/build-mlx-runtime.sh)
+apps/electron-shell/mlx-runtime/
+
 # Internal design/spec docs (kept local, not published)
 docs/
 

@@ -1468,6 +1468,15 @@ function runtimeEnv() {
     "cerul_mlx_sidecar.py",
   );
   if (fs.existsSync(mlxSidecar)) env.CERUL_MLX_SIDECAR = mlxSidecar;
+
+  // Packaged builds ship a self-contained MLX Python runtime so on-device
+  // models run from a clean install with no user setup. In dev we leave
+  // CERUL_MLX_PYTHON unset and the core falls back to the repo venv / system
+  // python (see default_python_path in cerul-pipeline).
+  if (app.isPackaged) {
+    const mlxPython = path.join(process.resourcesPath, "mlx-runtime", "bin", "python3");
+    if (fs.existsSync(mlxPython)) env.CERUL_MLX_PYTHON = mlxPython;
+  }
   return env;
 }
 

@@ -638,6 +638,50 @@ export async function updateSettings(settings: SettingsMap) {
   });
 }
 
+// ---- Local on-device models: machine capability + download prepare ----
+export type LocalModelInfo = {
+  id: string;
+  label: string;
+  size_mb: number;
+  status: "pending" | "downloading" | "ready";
+  progress: number; // 0–100
+};
+
+export type LocalModelCapability = {
+  can_run_local: boolean;
+  apple_silicon: boolean;
+  arch: string;
+  ram_gb: number;
+  recommended: "local" | "remote";
+  total_mb: number;
+  models: { id: string; label: string; size_mb: number }[];
+};
+
+export type LocalPrepareStatus = {
+  phase: "idle" | "downloading" | "ready" | "error";
+  overall_progress: number; // 0–100
+  done_mb: number;
+  total_mb: number;
+  eta_seconds: number | null;
+  models: LocalModelInfo[];
+  error: string | null;
+};
+
+export async function localModelCapability() {
+  return fetchJson<LocalModelCapability>("/models/local/capability");
+}
+
+export async function prepareLocalModels(modelIds?: string[]) {
+  return fetchJson<LocalPrepareStatus>("/models/local/prepare", {
+    method: "POST",
+    body: JSON.stringify({ models: modelIds ?? null }),
+  });
+}
+
+export async function localPrepareStatus() {
+  return fetchJson<LocalPrepareStatus>("/models/local/prepare-status");
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {

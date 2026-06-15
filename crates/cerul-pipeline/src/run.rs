@@ -445,7 +445,10 @@ impl VideoPipeline {
             );
             segments
         } else {
-            tracing::info!(item_id, "video has no audio stream; indexing visual frames only");
+            tracing::info!(
+                item_id,
+                "video has no audio stream; indexing visual frames only"
+            );
             self.report_progress(
                 item_id,
                 "transcribing",
@@ -1733,9 +1736,11 @@ mod tests {
         assert_eq!(status, "indexed");
 
         let metadata: String = conn
-            .query_row("SELECT metadata FROM items WHERE id = 'item-1'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT metadata FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(metadata["has_audio"].as_bool(), Some(false));

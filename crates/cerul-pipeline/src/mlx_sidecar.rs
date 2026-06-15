@@ -145,6 +145,9 @@ pub fn runtime_status(paths: &AppPaths) -> anyhow::Result<MlxRuntimeStatus> {
         .arg("-c")
         .arg(RUNTIME_STATUS_PROBE)
         .env("PYTHONUNBUFFERED", "1")
+        // Don't write .pyc back into the (signed, bundled) runtime at runtime —
+        // it would break the app's code seal and dirty the read-only bundle.
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("HF_HOME", &hf_home)
         .env("HF_HUB_DISABLE_XET", "1")
         .stdin(Stdio::null())
@@ -567,6 +570,9 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         .arg("--whisper-model")
         .arg(&config.whisper_model)
         .env("PYTHONUNBUFFERED", "1")
+        // Don't write .pyc back into the (signed, bundled) runtime at runtime —
+        // it would break the app's code seal and dirty the read-only bundle.
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("HF_HOME", &hf_home)
         // Xet-backed downloads stall behind the Great Firewall; the classic
         // LFS transport from huggingface.co works, so force it.

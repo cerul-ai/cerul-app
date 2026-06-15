@@ -260,9 +260,7 @@ async fn run_clip_command(
         // (GPL), and VideoToolbox needs no licence and is faster. `-q:v` is its
         // constant-quality control (resolution-independent), ~equivalent to the
         // old x264 CRF 23.
-        command.args([
-            "-c:v", "h264_videotoolbox", "-q:v", "60", "-c:a", "aac",
-        ]);
+        command.args(["-c:v", "h264_videotoolbox", "-q:v", "60", "-c:a", "aac"]);
     }
 
     command
@@ -412,7 +410,8 @@ mod tests {
     fn detects_audio_stream_from_ffmpeg_streams() {
         let with_audio = "  Stream #0:0(und): Video: h264, 1920x1080\n  Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo";
         // Matches the user's screen-recording case: a video stream, no audio.
-        let video_only = "  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), none, 3840x2160, 600 tbr";
+        let video_only =
+            "  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), none, 3840x2160, 600 tbr";
         assert!(stderr_reports_audio_stream(with_audio));
         assert!(!stderr_reports_audio_stream(video_only));
     }

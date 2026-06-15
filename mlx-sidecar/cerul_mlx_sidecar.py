@@ -71,6 +71,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asr-quantization", default="4bit", choices=["8bit", "4bit", "none"])
     parser.add_argument("--ocr-model", default=DEFAULT_OCR_MODEL)
     parser.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
+    # One-shot model fetch: download the given HF repos into the cache and exit
+    # (no JSONL loop, no model load). Used by the "prepare on-device models"
+    # consent flow so the first index doesn't block on a silent download.
+    parser.add_argument(
+        "--prepare",
+        nargs="*",
+        default=None,
+        metavar="REPO",
+        help="Download the given model repos into the cache, then exit.",
+    )
     return parser.parse_args()
 
 
@@ -707,6 +717,17 @@ def main() -> int:
 
     args = parse_args()
     configure_cache(args.models_cache)
+
+    # One-shot prepare: fetch the requested repos and exit before the JSONL loop.
+    if args.prepare is not None:
+        repos = list(dict.fromkeys(r for r in args.prepare if r))
+        for index, repo in enumerate(repos, start=1):
+            print(f"prepare: ({index}/{len(repos)}) downloading {repo}", file=sys.stderr)
+            resolve_snapshot(repo)
+            print(f"prepare: ({index}/{len(repos)}) ready {repo}", file=sys.stderr)
+        print(f"prepare: complete ({len(repos)} repos)", file=sys.stderr)
+        return 0
+
     runtime = CerulMlxRuntime(args)
 
     for line in sys.stdin:

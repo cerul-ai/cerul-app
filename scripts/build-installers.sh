@@ -11,6 +11,7 @@ NO_BUNDLE=0
 SKIP_FETCH=0
 DRY_RUN=0
 REQUIRE_SIGNING=0
+REBUILD_MLX=0
 
 usage() {
   cat <<'EOF'
@@ -52,6 +53,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --require-signing)
       REQUIRE_SIGNING=1
+      shift
+      ;;
+    --rebuild-mlx-runtime)
+      REBUILD_MLX=1
       shift
       ;;
     --dry-run)
@@ -192,6 +197,19 @@ else
   run pnpm --filter @cerul/electron-shell stage:cerul-api
 fi
 run pnpm --filter @cerul/electron-shell build
+
+# Bundled on-device MLX Python runtime (macOS only). Reuse an existing build
+# unless --rebuild-mlx-runtime is passed; always ensure the directory exists so
+# electron-builder's extraResources copy never fails on other platforms.
+MLX_RUNTIME_DIR="$ROOT/apps/electron-shell/mlx-runtime"
+mkdir -p "$MLX_RUNTIME_DIR"
+if target_is_macos; then
+  if [ "$REBUILD_MLX" -eq 1 ] || [ ! -x "$MLX_RUNTIME_DIR/bin/python3" ]; then
+    run "$ROOT/scripts/build-mlx-runtime.sh"
+  else
+    echo "Reusing existing MLX runtime at $MLX_RUNTIME_DIR (pass --rebuild-mlx-runtime to force a fresh build)."
+  fi
+fi
 
 builder_args=(--publish never)
 while IFS= read -r arg; do
