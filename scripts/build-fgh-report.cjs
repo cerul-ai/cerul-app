@@ -57,16 +57,16 @@ const html = `<!doctype html>
 
 <div class="scoreboard">
   <div class="stat steel"><div class="n">3 / 3</div><div class="l">屏已还原（F · G · H）</div></div>
-  <div class="stat green"><div class="n">G + H</div><div class="l">应用内实现并验证</div></div>
-  <div class="stat amber"><div class="n">F</div><div class="l">DMG 打包背景图（构建时合成图标）</div></div>
+  <div class="stat green"><div class="n">G + H</div><div class="l">应用内实现 · fixture 实测</div></div>
+  <div class="stat green"><div class="n">F ✓</div><div class="l">真打 DMG 包 · 挂载验证通过</div></div>
 </div>
 
 <section>
   <h2><span class="pill">G</span> 主页 · 有内容时 <span class="tag match">已还原</span></h2>
-  <p class="sec-note">最显眼的是「继续观看」从横排小卡升级成大幅 hero 横幅。</p>
+  <p class="sec-note">最显眼的是「继续观看」从横排小卡升级成大幅 hero 横幅；顶部 logo 也换成了桌面端 app 图标。</p>
   ${cmp("proto-G-home", "after-G-home", "原型 · HomeWithContent", "实现 · 真实 app（fixture）")}
-  <p class="cap">对比要点：<b>继续观看 hero 横幅</b>（深色渐变 + 钢蓝光晕 + 噪点 + 玻璃大播放键 + 来源胶囊 + 时长 + 标题阴影 + 进度条 + 继续播放按钮）已 1:1 还原；上方 Logo 光晕 hero、大搜索框、统计行（N 媒体 · 时长 · N 来源 · 全部在本机）、正在索引 chip、最近索引网格都对齐。</p>
-  <div class="matchbox"><b>已还原：</b> hero Logo 方块+光晕、大搜索框、统计行、正在索引 chip、<b>继续观看大横幅</b>（含进度条/继续播放）、最近索引 4 列网格。</div>
+  <p class="cap">对比要点：<b>顶部 hero logo</b> 换成了真实的桌面端 app 图标（拉丝银方块 + 石墨标志）+ 钢蓝光晕；<b>继续观看 hero 横幅</b>（深色渐变 + 钢蓝光晕 + 噪点 + 玻璃大播放键 + 来源胶囊 + 时长 + 标题阴影 + 进度条 + 继续播放按钮）已 1:1 还原；大搜索框、统计行、正在索引 chip、最近索引网格都对齐。</p>
+  <div class="matchbox"><b>已还原：</b> <b>桌面端 app 图标 hero logo</b> + 光晕、大搜索框、统计行、正在索引 chip、<b>继续观看大横幅</b>（含进度条/继续播放）、最近索引 4 列网格。</div>
 </section>
 
 <section>
@@ -78,11 +78,11 @@ const html = `<!doctype html>
 </section>
 
 <section>
-  <h2><span class="pill">F</span> 安装包 · DMG 拖拽安装 <span class="tag note">背景图已还原</span></h2>
-  <p class="sec-note">F 是打包资源——electron-builder 的 DMG 背景图（660×400）。我把它重绘成了原型设计。</p>
-  ${cmp("proto-F-installer", "after-F-dmg", "原型 · InstallerDMG（含图标占位）", "实现 · dmg-background.png（图标构建时合成）")}
-  <p class="cap">对比要点：品牌锁定（Logo + Cerul + 「本地优先的视频 / 媒体记忆搜索」）、<b>「拖到这里安装」钢蓝标签 + 钢蓝箭头</b>、Applications 钢蓝虚线投放目标、底部 <b>Gatekeeper 提示卡</b>（i 徽章 + 系统设置 › 隐私与安全性 · 仍要打开）全部还原。</p>
-  <div class="notebox"><b>说明：</b> 右图是<b>背景图本身</b>，所以 app 图标位（左）是空的——真实 DMG 里 electron-builder 会在 <code>(173,235)</code>/<code>(487,235)</code> 把 Cerul 应用图标和 Applications 别名图标合成上去，并自动加「Cerul」「Applications」文字标签。已更新 <code>apps/desktop/public/brand/dmg/dmg-background.png</code> + <code>@2x</code>；最终成品效果需打 DMG 包后才能看到合成结果。</p></div>
+  <h2><span class="pill">F</span> 安装包 · DMG 拖拽安装 <span class="tag match">已打包验证</span></h2>
+  <p class="sec-note">F 是 electron-builder 的 DMG 背景资源。已重绘成原型设计、<b>真打了一个 DMG 包并挂载验证</b>。</p>
+  ${cmp("proto-F-installer", "dmg-composite", "原型 · InstallerDMG", "实现 · 真实 DMG 合成效果（背景 + app 图标 + Applications + 标签）")}
+  <p class="cap">对比要点：品牌锁定（Logo + Cerul + 「本地优先的视频 / 媒体记忆搜索」）、<b>「拖到这里安装」钢蓝标签 + 钢蓝箭头</b>、Applications 钢蓝虚线投放目标、底部 <b>Gatekeeper 提示卡</b>（i 徽章 + 系统设置 › 隐私与安全性 · 仍要打开）全部还原。右图是真实 app 图标 + Applications 文件夹合成进背景后的效果。</p>
+  <div class="matchbox"><b>已真打包验证：</b> <code>electron-builder</code> 打出 <code>Cerul-0.0.1-alpha.4-arm64.dmg</code>（ad-hoc 签名），挂载<b>干净无「已损坏」报错</b>，背景 + Cerul 应用图标（拉丝银方块）+ Applications 别名 + 文字标签全部就位。图标位上移做了版面平衡（y 235→205），品牌锁定加大。</div>
 </section>
 
 <footer>
