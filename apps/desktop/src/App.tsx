@@ -5005,6 +5005,10 @@ type CapabilityRowModel = {
   onSelectModel?: (id: string) => void;
   provider: api.ProviderRecord | null;
   note: string | null;
+  // Which bundled on-device model backs this capability — used to show the real
+  // download state ("未下载 / 下载中 / 就绪") instead of a blanket "ready" when
+  // running locally. null for capabilities with no local weights to fetch.
+  localModelKey: "embed" | "asr" | "ocr" | null;
 };
 
 function ModelsSettings({
@@ -5042,6 +5046,18 @@ function ModelsSettings({
   const [providers, setProviders] = useState<api.ProviderRecord[]>([]);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [usageSummary, setUsageSummary] = useState<api.UsageSummary | null>(null);
+  // Real on-device download state, so the capability rows reflect actual weights
+  // on disk (未下载 / 下载中 / 就绪) rather than a blanket "ready" in local mode.
+  const [localPrep, setLocalPrep] = useState<api.LocalPrepareStatus | null>(null);
+
+  async function downloadLocalModels(modelKey?: string) {
+    try {
+      const next = await api.prepareLocalModels(modelKey ? [modelKey] : undefined);
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
 
   async function loadProviders() {
     try {
@@ -5087,6 +5103,31 @@ function ModelsSettings({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
+
+  // Poll the real on-device download state (cheap disk scan) while not on
+  // pure-cloud mode, so the capability rows show 未下载 / 下载中 / 就绪 live.
+  useEffect(() => {
+    if (inferenceMode === "remote") {
+      setLocalPrep(null);
+      return;
+    }
+    let cancelled = false;
+    async function tick() {
+      if (document.hidden) return;
+      try {
+        const next = await api.localPrepareStatus();
+        if (!cancelled) setLocalPrep(next);
+      } catch {
+        /* core offline or route absent — keep the last known state */
+      }
+    }
+    void tick();
+    const interval = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [inferenceMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5167,6 +5208,7 @@ function ModelsSettings({
       onSelectModel: (id) => void onSettingsChange({ asr_model: id }),
       provider: providerFor(selectedAsrProvider, "env-asr"),
       note: null,
+      localModelKey: "asr",
     },
     {
       key: "embedding",
@@ -5180,6 +5222,7 @@ function ModelsSettings({
       modelOptions: [],
       provider: providerFor(selectedEmbeddingProvider, "env-embedding"),
       note: t("settings.models.embedding.boundBadge"),
+      localModelKey: "embed",
     },
     {
       key: "video",
@@ -5202,6 +5245,9 @@ function ModelsSettings({
         ? null
         : providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
       note: null,
+      // On-device video understanding uses the bundled Qwen3-VL vision model
+      // (same weights as OCR), so its readiness tracks the "ocr" download.
+      localModelKey: "ocr",
     },
   ];
 
@@ -5229,6 +5275,8 @@ function ModelsSettings({
           disabled={disabled}
           onRefresh={loadProviders}
           requestConfirm={requestConfirm}
+          localPrep={localPrep}
+          onDownloadLocal={downloadLocalModels}
         />
       </section>
     </div>
@@ -5584,6 +5632,8 @@ function ProviderConnections({
   disabled,
   onRefresh,
   requestConfirm,
+  localPrep,
+  onDownloadLocal,
 }: {
   capabilities: CapabilityRowModel[];
   providers: api.ProviderRecord[];
@@ -5591,6 +5641,8 @@ function ProviderConnections({
   disabled: boolean;
   onRefresh: () => Promise<void>;
   requestConfirm: RequestConfirm;
+  localPrep: api.LocalPrepareStatus | null;
+  onDownloadLocal: (modelKey?: string) => void;
 }) {
   const t = useT();
   const typeLabel = (type: api.ProviderType) =>
@@ -5802,7 +5854,20 @@ function ProviderConnections({
           // status "error" + last_error) is not actually ready — don't show it
           // as a green success row.
           const failed = !cap.isLocal && provider?.status === "error";
-          const ready = cap.isLocal || (hasKey && !failed);
+          // On-device rows show the REAL weight-download state (未下载 / 下载中 /
+          // 就绪) from the live prepare-status — not a blanket "ready" just
+          // because local mode is selected.
+          const localModel =
+            cap.isLocal && cap.localModelKey
+              ? localPrep?.models.find((m) => m.id === cap.localModelKey) ?? null
+              : null;
+          // "ready" | "downloading" | "pending" | "unknown" (core not reached yet)
+          const localState = cap.isLocal
+            ? localModel
+              ? localModel.status
+              : "unknown"
+            : null;
+          const ready = cap.isLocal ? localState === "ready" : hasKey && !failed;
           const host = provider?.base_url
             ? provider.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
             : "";
@@ -5827,17 +5892,46 @@ function ProviderConnections({
                   <span className="cap-row__name">{cap.name}</span>
                   <span className="cap-row__actions">
                     <span
-                      className={failed ? "chip danger" : ready ? "chip success" : "chip warn"}
+                      className={
+                        failed
+                          ? "chip danger"
+                          : ready
+                            ? "chip success"
+                            : localState === "downloading"
+                              ? "chip warn"
+                              : cap.isLocal
+                                ? "chip neutral"
+                                : "chip warn"
+                      }
                       title={failed ? provider?.last_error ?? undefined : undefined}
                     >
                       <span className="dot" />
                       {failed
                         ? t("settings.models.capability.failed")
-                        : ready
-                          ? t("settings.models.capability.ready")
-                          : t("settings.models.capability.needsKey")}
+                        : cap.isLocal
+                          ? localState === "ready"
+                            ? t("settings.models.capability.ready")
+                            : localState === "downloading"
+                              ? `${t("localModel.status.downloading")} ${localModel?.progress ?? 0}%`
+                              : localState === "unknown"
+                                ? t("settings.models.capability.checking")
+                                : t("settings.models.capability.notDownloaded")
+                          : ready
+                            ? t("settings.models.capability.ready")
+                            : t("settings.models.capability.needsKey")}
                     </span>
-                    {cap.isLocal ? null : (
+                    {cap.isLocal ? (
+                      cap.localModelKey && (localState === "pending" || localState === "unknown") ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost sm cap-row__edit"
+                          disabled={disabled}
+                          onClick={() => onDownloadLocal(cap.localModelKey ?? undefined)}
+                        >
+                          {t("settings.models.capability.download")}
+                        </button>
+                      ) : null
+                    ) : (
                       <button
                         type="button"
                         className="btn btn-ghost sm cap-row__edit"

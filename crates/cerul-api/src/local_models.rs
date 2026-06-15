@@ -33,6 +33,10 @@ const MIN_LOCAL_RAM_GB: u32 = 8;
 static PREPARE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static PREPARE_LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static PREPARE_STARTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// The model ids in the current prepare run, so status can mark the right rows
+/// as "downloading" (not just the first incomplete one — matters when only one
+/// capability's model is being fetched from Settings).
+static PREPARE_ACTIVE_IDS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 /// One user-facing on-device model, which may map to more than one HF repo
 /// (transcription needs the ASR model *and* the forced aligner).
@@ -174,7 +178,7 @@ pub async fn prepare_local_models(
     let cfg = runtime_config(&state.paths).map_err(ApiError::internal)?;
     let groups = model_groups(&cfg);
     let wanted = body.and_then(|Json(b)| b.models);
-    let repos: Vec<String> = groups
+    let active_ids: Vec<&'static str> = groups
         .iter()
         .filter(|g| {
             wanted
@@ -182,6 +186,11 @@ pub async fn prepare_local_models(
                 .map(|ids| ids.iter().any(|id| id == g.id))
                 .unwrap_or(true)
         })
+        .map(|g| g.id)
+        .collect();
+    let repos: Vec<String> = groups
+        .iter()
+        .filter(|g| active_ids.contains(&g.id))
         .flat_map(|g| g.repos.clone())
         .collect();
 
@@ -191,6 +200,9 @@ pub async fn prepare_local_models(
         }
         if let Ok(mut guard) = PREPARE_STARTED_AT.lock() {
             *guard = Some(Instant::now());
+        }
+        if let Ok(mut guard) = PREPARE_ACTIVE_IDS.lock() {
+            *guard = active_ids.clone();
         }
         let python = cfg.python.clone();
         let script = cfg.script.clone();
@@ -230,6 +242,9 @@ pub async fn prepare_local_models(
                 }
             }
             PREPARE_IN_PROGRESS.store(false, Ordering::Release);
+            if let Ok(mut guard) = PREPARE_ACTIVE_IDS.lock() {
+                guard.clear();
+            }
         });
     }
 
@@ -248,6 +263,10 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
     let hub = cfg.models_cache.join("huggingface").join("hub");
     let in_progress = PREPARE_IN_PROGRESS.load(Ordering::Acquire);
     let error = PREPARE_LAST_ERROR.lock().ok().and_then(|g| g.clone());
+    let active_ids: Vec<&'static str> = PREPARE_ACTIVE_IDS
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
 
     let groups = model_groups(cfg);
     let mut models = Vec::with_capacity(groups.len());
@@ -266,9 +285,13 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         done_mb += capped;
         let progress = ((capped as f64 / group.size_mb as f64) * 100.0).round() as u32;
         let ready = capped as f64 >= group.size_mb as f64 * READY_RATIO;
+        // Only mark a model "downloading" if it's actually in the active prepare
+        // run (and is the first such not-yet-ready one) — so downloading one
+        // capability's model from Settings doesn't light up a different row.
+        let is_active = in_progress && active_ids.contains(&group.id);
         let status = if ready {
             "ready"
-        } else if in_progress && !downloading_assigned {
+        } else if is_active && !downloading_assigned {
             downloading_assigned = true;
             "downloading"
         } else {
