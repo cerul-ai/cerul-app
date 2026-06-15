@@ -1127,9 +1127,9 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fastembed"
-version = "5.16.0"
+version = "5.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "add59222e7bc3787285f993744b244cd454d78571845623606bdc45b22b23a4e"
+checksum = "13d4a1da220e9adaed8435d0d1a508712c2141190afa86050e3f0f2bec68eba3"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -4089,9 +4089,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.23.2"
+version = "1.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d258b83ceec21034727ecee8c382cfa6c3e133699b0742c64571814fb420c9f7"
+checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
