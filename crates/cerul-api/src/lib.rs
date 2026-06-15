@@ -28,6 +28,7 @@ use tower_http::{
 
 mod api_models;
 pub mod jobs;
+pub mod local_models;
 pub mod models;
 pub mod providers;
 pub mod video_understanding;
@@ -382,6 +383,18 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route(
             "/models/embed/prepare",
             post(models::prepare_embedding_models),
+        )
+        .route(
+            "/models/local/capability",
+            get(local_models::local_capability),
+        )
+        .route(
+            "/models/local/prepare",
+            post(local_models::prepare_local_models),
+        )
+        .route(
+            "/models/local/prepare-status",
+            get(local_models::local_prepare_status),
         )
         .route(
             "/providers",
@@ -3110,6 +3123,38 @@ mod tests {
         assert_eq!(openapi.status(), StatusCode::OK);
         let openapi_json = response_json(openapi).await;
         assert!(openapi_json["paths"].as_object().unwrap().len() >= 19);
+    }
+
+    #[tokio::test]
+    async fn local_capability_route_reports_models_and_total() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/models/local/capability")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        // Three user-facing models (embed / asr / ocr), ~7.6 GB total.
+        let models = json["models"].as_array().unwrap();
+        assert_eq!(models.len(), 3);
+        let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["embed", "asr", "ocr"]);
+        assert_eq!(json["total_mb"].as_u64().unwrap(), 7745);
+        // recommended is one of the two known values; can_run_local is a bool.
+        assert!(matches!(
+            json["recommended"].as_str(),
+            Some("local") | Some("remote")
+        ));
+        assert!(json["can_run_local"].is_boolean());
     }
 
     #[tokio::test]

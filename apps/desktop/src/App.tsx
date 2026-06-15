@@ -136,6 +136,8 @@ import {
 } from "./lib/validation";
 import { ConfirmDialog } from "./dialogs/confirm-dialog";
 import { JobsSheet } from "./dialogs/jobs-sheet";
+import { LocalModelConsent } from "./components/local-model-consent";
+import { useLocalModelConsent } from "./lib/use-local-model-consent";
 import { IndexingStrip } from "./components/indexing-strip";
 import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
@@ -1101,6 +1103,44 @@ function AppWorkspace() {
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
 
+  // First-run on-device-model consent + download. Fixture mode drives a mock
+  // download for design QA (`?lmconsent=1`); live mode fetches capability and
+  // shows the dialog once, gated on `local_models_prompted` so it never
+  // re-prompts — and never fires before the core's capability route exists,
+  // because the capability fetch simply rejects until then.
+  const lmTrigger = visualFixtureMode
+    ? hashQueryParam("lmconsent") === "1"
+    : screenApiStatus === "online" &&
+      view !== "onboarding" &&
+      !settingBoolean(data.settings, "local_models_prompted", false);
+  const lm = useLocalModelConsent({ mode: visualFixtureMode ? "mock" : "live", trigger: lmTrigger });
+  const handleLmAgree = useCallback(() => {
+    lm.agree();
+    if (!visualFixtureMode) {
+      void api
+        .updateSettings({ inference_mode: "local", local_models_prompted: true })
+        .then(() => refreshCoreData())
+        .catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lm.agree, visualFixtureMode]);
+  const handleLmDecline = useCallback(() => {
+    lm.decline();
+    if (!visualFixtureMode) {
+      void api
+        .updateSettings({ inference_mode: "remote", local_models_prompted: true })
+        .then(() => refreshCoreData())
+        .catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lm.decline, visualFixtureMode]);
+  // Auto-dismiss the "models ready" toast after a few seconds.
+  useEffect(() => {
+    if (!lm.ready) return;
+    const id = window.setTimeout(() => lm.dismissReady(), 6000);
+    return () => window.clearTimeout(id);
+  }, [lm.ready, lm.dismissReady]);
+
   useEffect(() => {
     function handleOAuthRoute(route: RouteState) {
       if (!route.oauthProvider && !route.oauthCode && !route.oauthState && !route.oauthError) {
@@ -1696,6 +1736,19 @@ function AppWorkspace() {
             <span className="rail-label">{t("nav.settings")}</span>
           </button>
           <AccountRailButton />
+          {lm.minimized && lm.download?.phase === "downloading" ? (
+            <button
+              type="button"
+              className="rail-dl-pill"
+              onClick={lm.reopen}
+              title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+            >
+              <span className="ring" aria-hidden="true" />
+              <span className="rail-label clamp1">
+                {t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+              </span>
+            </button>
+          ) : null}
           <div className="rail-status mono">
             <span
               className="rail-status-dot"
@@ -2018,6 +2071,21 @@ function AppWorkspace() {
         onCancel={() => resolveConfirm(false)}
         onConfirm={() => resolveConfirm(true)}
       />
+      {lm.show && !lm.minimized ? (
+        <LocalModelConsent
+          capability={lm.capability}
+          download={lm.download}
+          onAgree={handleLmAgree}
+          onDecline={handleLmDecline}
+          onBackground={lm.background}
+        />
+      ) : null}
+      {lm.ready ? (
+        <button type="button" className="toast lm-toast" onClick={lm.dismissReady}>
+          <Check size={15} />
+          <span>{t("localModel.ready.toast")}</span>
+        </button>
+      ) : null}
     </div>
   );
 }
