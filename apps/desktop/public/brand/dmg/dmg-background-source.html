@@ -12,18 +12,12 @@
       radial-gradient(760px 360px at 50% -4%,#ffffff,rgba(255,255,255,0) 68%),
       #fcfdfe;
   }
-  /* brand lockup (top) */
-  .brand{position:absolute;top:46px;left:0;right:0;text-align:center;}
-  .brand-row{display:inline-flex;align-items:center;gap:11px;}
-  .brand-row svg{width:30px;height:30px;fill:#1c2229;}
-  .brand-name{font-size:29px;font-weight:700;letter-spacing:-.02em;color:#161b22;}
-  .brand-tag{font-size:13px;color:#8a93a0;margin-top:7px;letter-spacing:.01em;}
-  /* arrow + tag, centered in the gap between the two icon slots (x≈330, y=205) */
-  .arrow{position:absolute;left:330px;top:205px;transform:translate(-50%,-50%);text-align:center;}
+  /* arrow + tag, centered in the gap between the two icon slots (x≈330, y=170) */
+  .arrow{position:absolute;left:330px;top:170px;transform:translate(-50%,-50%);text-align:center;}
   .arrow .tag{display:inline-block;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11px;color:#3e6b9d;
     background:#eef4fb;border:1px solid #d4e0ee;padding:3px 10px;border-radius:7px;white-space:nowrap;margin-bottom:9px;}
-  /* dashed Applications drop-target around the alias slot (x=487, y=205) */
-  .apps{position:absolute;left:487px;top:205px;transform:translate(-50%,-50%);
+  /* dashed Applications drop-target around the alias slot (x=487, y=170) */
+  .apps{position:absolute;left:487px;top:170px;transform:translate(-50%,-50%);
     width:132px;height:122px;border:1.5px dashed #d4e0ee;border-radius:18px;background:rgba(62,107,157,.04);}
   /* Gatekeeper hint card (bottom) */
   .hint{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);
@@ -36,13 +30,6 @@
   .hint b{color:#1c2229;} .hint b.steel{color:#3e6b9d;}
 </style></head>
 <body>
-  <div class="brand">
-    <div class="brand-row">
-      <svg viewBox="0 0 508 508"><rect width="211" height="508"/><rect x="297" y="91" width="211" height="112"/><rect x="297" y="301" width="211" height="207"/></svg>
-      <span class="brand-name">Cerul</span>
-    </div>
-    <div class="brand-tag">本地优先的视频 / 媒体记忆搜索</div>
-  </div>
   <div class="apps"></div>
   <div class="arrow">
     <div class="tag">拖到这里安装</div>
