@@ -30,37 +30,6 @@ const searchDebounceMs = 180;
 const overlayRetainQueryMs = 30_000;
 const defaultHotkeyLabel = "Alt Space";
 
-const demoAskAnswer: api.AskResponse = {
-  answer:
-    "Test-time compute lets the model spend extra reasoning budget after the prompt arrives, so the retrieval layer becomes part of the answer loop instead of a separate search step.",
-  citations: [
-    {
-      chunk_id: "sample-2",
-      item_id: "item-1",
-      title: "Software Is Changing Again",
-      timestamp: "12:34",
-      start_sec: 754,
-      snippet:
-        "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    },
-    {
-      chunk_id: "sample-3",
-      item_id: "item-2",
-      title: "API-first Media Systems",
-      timestamp: "13:02",
-      start_sec: 782,
-      snippet:
-        "The retrieval layer becomes part of the reasoning loop when answers cite exact moments.",
-    },
-  ],
-};
-
-function overlayFixtureModeEnabled() {
-  const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
-  const params = new URLSearchParams(queryString);
-  return params.get("fixture") === "design";
-}
-
 function readRecentSearches() {
   try {
     const raw = window.localStorage.getItem(recentSearchesStorageKey);
@@ -90,18 +59,15 @@ function isLikelyUrl(value: string): boolean {
 
 export function OverlayApp() {
   const { lang, t } = useI18n();
-  const visualFixtureMode = overlayFixtureModeEnabled();
-  const [query, setQuery] = useState(visualFixtureMode ? "test-time compute" : "");
+  const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [items, setItems] = useState<api.ItemRecord[]>([]);
   const [sources, setSources] = useState<api.SourceRecord[]>([]);
   const [results, setResults] = useState<OverlayResult[]>([]);
   const [searchState, setSearchState] = useState<SearchState>("idle");
-  const [mode, setMode] = useState<OverlayMode>(visualFixtureMode ? "ask" : "search");
-  const [askState, setAskState] = useState<SearchState>(visualFixtureMode ? "ready" : "idle");
-  const [askAnswer, setAskAnswer] = useState<api.AskResponse | null>(
-    visualFixtureMode ? demoAskAnswer : null,
-  );
+  const [mode, setMode] = useState<OverlayMode>("search");
+  const [askState, setAskState] = useState<SearchState>("idle");
+  const [askAnswer, setAskAnswer] = useState<api.AskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
   const [hotkeyLabel, setHotkeyLabel] = useState(defaultHotkeyLabel);
@@ -269,15 +235,6 @@ export function OverlayApp() {
       };
     }
 
-    if (visualFixtureMode) {
-      setAskAnswer(demoAskAnswer);
-      setAskState("ready");
-      setAskError(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-
     const timer = window.setTimeout(() => {
       setAskState("loading");
       setAskError(null);
@@ -304,7 +261,7 @@ export function OverlayApp() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [trimmedQuery, mode, visualFixtureMode, lang]);
+  }, [trimmedQuery, mode, lang]);
 
   function clearRetainedQueryTimer() {
     if (retainedQueryTimerRef.current !== null) {

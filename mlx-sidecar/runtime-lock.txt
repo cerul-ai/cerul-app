@@ -1,0 +1,80 @@
+# Locked, flattened runtime for the BUNDLED on-device MLX stack.
+# Used by scripts/build-mlx-runtime.sh with `pip install --no-deps`, so the set
+# is EXACTLY this — none of the torch / datasets / audio-gen / fastapi extras
+# that mlx-vlm's transitive deps would otherwise drag in (~900 MB saved; the
+# sidecar's code paths never import them). Verified: every sidecar import
+# resolves and `torch` never loads.
+#
+# To regenerate: install requirements.txt into a fresh standalone CPython,
+# uninstall the unused heavies (torch sympy networkx datasets pyarrow pandas
+# multiprocess dill xxhash mlx-audio sounddevice miniaudio fastapi uvicorn
+# starlette), then `pip freeze`. Keep the pinned majors in sync with
+# requirements.txt.
+aiohappyeyeballs==2.6.2
+aiohttp==3.14.1
+aiosignal==1.4.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+attrs==26.1.0
+certifi==2026.5.20
+cffi==2.0.0
+charset-normalizer==3.4.7
+click==8.4.1
+filelock==3.29.4
+frozenlist==1.8.0
+fsspec==2026.4.0
+h11==0.16.0
+hf-xet==1.5.1
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.16.1
+idna==3.18
+Jinja2==3.1.6
+llguidance==1.7.6
+llvmlite==0.47.0
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+mlx==0.31.2
+mlx-embeddings==0.1.0
+mlx-lm==0.31.3
+mlx-metal==0.31.2
+mlx-qwen3-asr==0.3.5
+mlx-vlm==0.5.0
+mlx-whisper==0.4.3
+more-itertools==11.1.0
+mpmath==1.3.0
+multidict==6.7.1
+numba==0.65.1
+numpy==2.4.6
+opencv-python==4.13.0.92
+packaging==26.2
+pillow==12.2.0
+propcache==0.5.2
+protobuf==7.35.1
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+regex==2026.5.9
+requests==2.34.2
+rich==15.0.0
+safetensors==0.8.0
+scipy==1.17.1
+sentencepiece==0.2.1
+setuptools==81.0.0
+shellingham==1.5.4
+six==1.17.0
+soundfile==0.13.1
+tiktoken==0.13.0
+tokenizers==0.22.2
+tqdm==4.68.2
+transformers==5.12.0
+typer==0.26.7
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+urllib3==2.7.0
+yarl==1.24.2

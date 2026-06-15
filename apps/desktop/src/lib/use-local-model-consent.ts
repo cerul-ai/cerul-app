@@ -1,0 +1,113 @@
+// Drives the first-run on-device-model consent dialog + download progress.
+// Calls the core (prepareLocalModels + poll localPrepareStatus); the same state
+// backs the dialog, the sidebar pill and the ready toast.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import * as api from "./api";
+
+type State = {
+  show: boolean;
+  minimized: boolean;
+  ready: boolean;
+  capability: api.LocalModelCapability | null;
+  download: api.LocalPrepareStatus | null;
+};
+
+const IDLE: State = {
+  show: false,
+  minimized: false,
+  ready: false,
+  capability: null,
+  download: null,
+};
+
+export function useLocalModelConsent(args: { trigger: boolean }) {
+  const [s, setS] = useState<State>(IDLE);
+  const timer = useRef<number | null>(null);
+  const clear = () => {
+    if (timer.current) {
+      window.clearInterval(timer.current);
+      timer.current = null;
+    }
+  };
+
+  // Open the dialog once when the host asks (first-run gate). Fetch capability
+  // first and only prompt machines that can actually run on-device well —
+  // otherwise staying on cloud silently beats a dialog that recommends cloud
+  // back. The capability fetch simply rejects until the core route exists, so
+  // this never fires prematurely.
+  useEffect(() => {
+    if (!args.trigger || s.show || s.download || s.ready) {
+      return;
+    }
+    let cancelled = false;
+    api
+      .localModelCapability()
+      .then((capability) => {
+        if (!cancelled && capability.can_run_local) {
+          setS((p) => ({ ...p, show: true, capability }));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [args.trigger, s.show, s.download, s.ready]);
+
+  const pollStatus = useCallback(() => {
+    api
+      .localPrepareStatus()
+      .then((download) => {
+        setS((p) => {
+          if (download.phase === "ready") {
+            clear();
+            return { ...p, download, show: false, minimized: false, ready: true };
+          }
+          return { ...p, download };
+        });
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const agree = useCallback(() => {
+    setS((p) => {
+      const cap = p.capability;
+      if (!cap) {
+        return p;
+      }
+      // Seed an optimistic "downloading" view; the first poll replaces it with
+      // real per-model progress from the core.
+      const seed: api.LocalPrepareStatus = {
+        phase: "downloading",
+        overall_progress: 0,
+        done_mb: 0,
+        total_mb: cap.total_mb,
+        eta_seconds: null,
+        models: cap.models.map((m, i) => ({
+          id: m.id,
+          label: m.label,
+          size_mb: m.size_mb,
+          status: i === 0 ? "downloading" : "pending",
+          progress: 0,
+        })),
+        error: null,
+      };
+      return { ...p, download: seed };
+    });
+    api.prepareLocalModels().catch(() => undefined);
+    clear();
+    timer.current = window.setInterval(pollStatus, 1200);
+  }, [pollStatus]);
+
+  const decline = useCallback(() => {
+    clear();
+    setS((p) => ({ ...p, show: false, download: null }));
+  }, []);
+  const background = useCallback(() => setS((p) => ({ ...p, minimized: true })), []);
+  const reopen = useCallback(() => setS((p) => ({ ...p, minimized: false })), []);
+  const dismissReady = useCallback(() => setS((p) => ({ ...p, ready: false })), []);
+
+  useEffect(() => () => clear(), []);
+
+  return { ...s, agree, decline, background, reopen, dismissReady };
+}

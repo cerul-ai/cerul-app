@@ -79,6 +79,10 @@
           "cerul_mlx_sidecar.py",
           "requirements.txt"
         ]
+      },
+      {
+        "from": "mlx-runtime",
+        "to": "mlx-runtime"
       }
     ],
     "mac": {
@@ -100,12 +104,12 @@
       "contents": [
         {
           "x": 173,
-          "y": 235,
+          "y": 170,
           "type": "file"
         },
         {
           "x": 487,
-          "y": 235,
+          "y": 170,
           "type": "link",
           "path": "/Applications"
         }

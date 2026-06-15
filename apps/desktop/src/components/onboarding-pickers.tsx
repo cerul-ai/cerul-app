@@ -14,7 +14,7 @@ import {
   Option,
 } from "lucide-react";
 import { useState } from "react";
-import { uniqueStrings, formatHotkeyLabel } from "../lib/formatters";
+import { uniqueStrings } from "../lib/formatters";
 import { useT } from "../lib/i18n";
 import type { OnboardingYoutubeChannel, ValidationState } from "../lib/types";
 import {
@@ -36,31 +36,23 @@ async function openAccessibilitySettings() {
 
 export function AccessibilityPermissionCallout() {
   const t = useT();
+  // The ⌥+Space shortcut card now lives in the welcome step (handoff design);
+  // this callout carries only the functional macOS Accessibility CTA.
   return (
-    <>
-      <div className="hotkey-demo" aria-hidden="true">
-        <div className="hotkey-demo__keys">
-          <kbd className="hotkey-demo__key">{formatHotkeyLabel(t("onboarding.hotkey.altKey"))}</kbd>
-          <span>+</span>
-          <kbd className="hotkey-demo__key">{t("onboarding.hotkey.spaceKey")}</kbd>
-        </div>
-        <p className="hotkey-demo__caption">{t("onboarding.hotkey.caption")}</p>
-      </div>
-      <div className="permission-callout">
-        <Option size={18} />
-        <span>
-          <strong>{t("onboarding.accessibility.title")}</strong>
-          <small>{t("onboarding.accessibility.body")}</small>
-        </span>
-        <button
-          className="btn btn-ghost accent sm"
-          type="button"
-          onClick={openAccessibilitySettings}
-        >
-          {t("onboarding.accessibility.openSettings")}
-        </button>
-      </div>
-    </>
+    <div className="permission-callout">
+      <Option size={18} />
+      <span>
+        <strong>{t("onboarding.accessibility.title")}</strong>
+        <small>{t("onboarding.accessibility.body")}</small>
+      </span>
+      <button
+        className="btn btn-ghost accent sm"
+        type="button"
+        onClick={openAccessibilitySettings}
+      >
+        {t("onboarding.accessibility.openSettings")}
+      </button>
+    </div>
   );
 }
 
@@ -138,11 +130,7 @@ export function OnboardingFolderPicker({
             </button>
           ))}
         </div>
-      ) : (
-        <p className="field-hint" style={{ gridColumn: "1 / -1" }}>
-          {t("onboarding.folder.emptyHint")}
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -214,14 +202,18 @@ export function OnboardingYoutubePicker({
             : t("onboarding.youtube.validate")}
         </span>
       </button>
-      <SourcePreview
-        icon={<Youtube size={19} />}
-        initials="YT"
-        title={t("source.preview.youtubeTitle")}
-        validation={validation}
-        idleMessage={t("source.preview.youtubeIdle")}
-        validDetail={t("onboarding.youtube.previewValidDetail")}
-      />
+      {/* Preview only appears once a link is being validated — the idle
+          placeholder card was just clutter on the first-run step. */}
+      {validation.status !== "idle" ? (
+        <SourcePreview
+          icon={<Youtube size={19} />}
+          initials="YT"
+          title={t("source.preview.youtubeTitle")}
+          validation={validation}
+          idleMessage={t("source.preview.youtubeIdle")}
+          validDetail={t("onboarding.youtube.previewValidDetail")}
+        />
+      ) : null}
       {channels.length > 0 ? (
         <div
           className="youtube-channel-list"

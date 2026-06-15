@@ -1,10 +1,12 @@
-// Onboarding screen — the 4-step first-launch wizard. Extracted from
-// App.tsx (B13 Phase C). Owns the step content metadata; every input
-// state (folders / YouTube channels / model choices) lives
-// in the host so reloading the app preserves the in-progress wizard
-// position.
+// Onboarding screen — the first-launch wizard, redesigned to the
+// design_handoff_cerul 3-step narrative: welcome → add a source →
+// smart / local processing. The former folder + YouTube steps are merged
+// into one "add a source" step; the final step doubles as the smart-
+// processing explainer that kicks off indexing. Every input state
+// (folders / YouTube channels / model download) lives in the host so
+// reloading the app preserves the in-progress wizard position.
 
-import { ArrowLeft, ArrowRight, FastForward } from "lucide-react";
+import { ArrowLeft, ArrowRight, FastForward, Folder, Search, SlidersHorizontal } from "lucide-react";
 import type {
   ApiStatus,
   OnboardingYoutubeChannel,
@@ -16,31 +18,164 @@ import {
   OnboardingFolderPicker,
   OnboardingYoutubePicker,
 } from "../components/onboarding-pickers";
-import { LogoLockup } from "../components/brand";
 
-// Copy is keyed by step index into the i18n catalog (onboarding.step{n}.*).
-const onboardingSteps = [
-  {
-    titleKey: "onboarding.step0.title",
-    kickerKey: "onboarding.step0.kicker",
-    actionKey: "onboarding.step0.action",
-  },
-  {
-    titleKey: "onboarding.step1.title",
-    kickerKey: "onboarding.step1.kicker",
-    actionKey: "onboarding.continue",
-  },
-  {
-    titleKey: "onboarding.step2.title",
-    kickerKey: "onboarding.step2.kicker",
-    actionKey: "onboarding.continue",
-  },
-  {
-    titleKey: "onboarding.step3.title",
-    kickerKey: "onboarding.step3.kicker",
-    actionKey: "onboarding.startIndexing",
-  },
-] as const;
+const STEP_COUNT = 3;
+
+// Inline geometric brand mark (handoff: reproduce as SVG, do not redraw).
+function BrandGlyph({ size = 30 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 508 508" width={size} height={size} aria-hidden="true">
+      <rect width="211" height="508" />
+      <rect x="297" y="91" width="211" height="112" />
+      <rect x="297" y="301" width="211" height="207" />
+    </svg>
+  );
+}
+
+// Step 0 — welcome / shortcut. Logo squircle with steel glow + sheen, a
+// two-line headline, and the ⌥+Space shortcut card.
+function WelcomeStep() {
+  const t = useT();
+  return (
+    <div className="onb-step onb-welcome">
+      <div className="onb-logo-wrap">
+        <span className="logo-glow" />
+        <span className="logo-tile onb-logo-tile">
+          <BrandGlyph size={34} />
+          <span className="sheen" />
+        </span>
+      </div>
+      <h1 className="onb-h3">{t("onboarding.step0.title")}</h1>
+      <p className="onb-lead">{t("onboarding.welcome.body")}</p>
+      <div className="onb-shortcut float-card">
+        <kbd className="onb-kbd">⌥</kbd>
+        <span className="onb-shortcut-plus">+</span>
+        <kbd className="onb-kbd">Space</kbd>
+        <span className="onb-shortcut-label">{t("onboarding.welcome.shortcut")}</span>
+      </div>
+      <AccessibilityPermissionCallout />
+    </div>
+  );
+}
+
+// Step 1 — add a source. Floating file-cards illustration drifting above a
+// steel-tinted folder, then the real folder + YouTube pickers.
+function AddSourceStep({
+  folders,
+  setFolders,
+  youtubeChannels,
+  setYoutubeChannels,
+}: {
+  folders: string[];
+  setFolders: (folders: string[]) => void;
+  youtubeChannels: OnboardingYoutubeChannel[];
+  setYoutubeChannels: (channels: OnboardingYoutubeChannel[]) => void;
+}) {
+  const t = useT();
+  return (
+    <div className="onb-step">
+      <div className="onb-illo onb-illo-source" aria-hidden="true">
+        <span className="onb-file onb-file-l">
+          <span className="onb-play" />
+        </span>
+        <span className="onb-file onb-file-r">
+          <span className="onb-play" />
+        </span>
+        <span className="onb-file onb-file-c">
+          <span className="onb-play" />
+        </span>
+        <span className="onb-folder">
+          <BrandGlyph size={26} />
+        </span>
+      </div>
+      <h1 className="onb-h3">{t("onboarding.addSource.title")}</h1>
+      <p className="onb-lead">{t("onboarding.addSource.body")}</p>
+      <div className="onb-source-pickers">
+        <OnboardingFolderPicker folders={folders} setFolders={setFolders} />
+        <div className="onb-source-sep">
+          <span>{t("onboarding.addSource.youtubeHint")}</span>
+        </div>
+        <OnboardingYoutubePicker
+          channels={youtubeChannels}
+          setChannels={setYoutubeChannels}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Step 2 — smart / local processing. A dark video frame → steel arrow → a
+// "transcript" card with a scan-line sweep and a 🔒 本地 badge, then the
+// three local-first chips and the $0.00 cost line.
+function SmartStep({
+  modelDownloadState,
+  apiStatus,
+}: {
+  modelDownloadState: { status: string; error: string | null };
+  apiStatus: ApiStatus;
+}) {
+  const t = useT();
+  const chips = [
+    { icon: "🔒", label: t("onboarding.smart.chipLocal") },
+    { icon: "⚡", label: t("onboarding.smart.chipSearch") },
+    { icon: "⚙", label: t("onboarding.smart.chipTune") },
+  ];
+  const detail = [
+    { Icon: SlidersHorizontal, title: t("onboarding.model.asrTitle"), desc: t("onboarding.model.asrDesc") },
+    { Icon: Search, title: t("onboarding.model.embeddingTitle"), desc: t("onboarding.model.embeddingDesc") },
+    { Icon: Folder, title: t("onboarding.model.connectionsTitle"), desc: t("onboarding.model.connectionsDesc") },
+  ];
+  return (
+    <div className="onb-step">
+      <div className="onb-illo onb-illo-smart" aria-hidden="true">
+        <span className="onb-frame">
+          <span className="onb-play onb-play-lg" />
+        </span>
+        <span className="onb-arrow">
+          <ArrowRight size={18} />
+        </span>
+        <span className="onb-transcript float-card">
+          <span className="onb-tline" />
+          <span className="onb-tline hot" />
+          <span className="onb-tline" />
+          <span className="onb-tline short" />
+          <span className="onb-scan" />
+          <span className="onb-local-badge">🔒 {t("onboarding.smart.chipLocal")}</span>
+        </span>
+      </div>
+      <h1 className="onb-h3">{t("onboarding.smart.title")}</h1>
+      <p className="onb-lead">{t("onboarding.smart.body")}</p>
+      <div className="onb-chips">
+        {chips.map((chip) => (
+          <span key={chip.label} className="onb-chip">
+            <span aria-hidden="true">{chip.icon}</span>
+            {chip.label}
+          </span>
+        ))}
+      </div>
+      <div className="onb-detail-stack">
+        {detail.map(({ Icon, title, desc }) => (
+          <div key={title} className="onb-detail-row">
+            <span className="onb-detail-icon"><Icon size={16} /></span>
+            <span className="onb-detail-text">
+              <strong>{title}</strong>
+              <span>{desc}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      {apiStatus !== "online" && modelDownloadState.status !== "error" ? (
+        <p className="onb-connecting mono">
+          <span className="onb-connecting-dot" aria-hidden="true" />
+          {t("onboarding.smart.connecting")}
+        </p>
+      ) : null}
+      {modelDownloadState.error ? (
+        <InlineNotice tone="error" message={modelDownloadState.error} />
+      ) : null}
+    </div>
+  );
+}
 
 export function Onboarding({
   step,
@@ -67,9 +202,10 @@ export function Onboarding({
   onDone: () => void;
 }) {
   const t = useT();
-  const current = onboardingSteps[step];
-  const finalStep = step === onboardingSteps.length - 1;
+  const clamped = Math.min(Math.max(step, 0), STEP_COUNT - 1);
+  const finalStep = clamped === STEP_COUNT - 1;
   const selectedSourceCount = folders.length + youtubeChannels.length;
+
   const finalActionLabel =
     modelDownloadState.status === "saving_sources"
       ? t(
@@ -87,65 +223,45 @@ export function Onboarding({
       modelDownloadState.status === "saving_sources" ||
       modelDownloadState.status === "downloading");
 
+  const primaryLabel = finalStep
+    ? finalActionLabel
+    : clamped === 0
+      ? t("onboarding.welcome.start")
+      : t("onboarding.continue");
+
   return (
     <div className="onb">
       <div className="onb-body">
-        <div className="onb-card">
-          <div className="onb-dots" aria-label={t("onboarding.dotsAria")}>
-            {onboardingSteps.map((item, index) => (
-              <span
-                key={item.titleKey}
-                className={`onb-dot ${index === step ? "active" : ""}`}
-              />
+        <div className="onb-card onb-card-wide">
+          {/* Progress — three inert dots with a steel pill that springs to the active step. */}
+          <div className="onb-progress" role="img" aria-label={t("onboarding.dotsAria")}>
+            <span className="onb-progress-pill" style={{ left: `${clamped * 20}px` }} />
+            {Array.from({ length: STEP_COUNT }).map((_, index) => (
+              <i key={index} className="onb-progress-dot" />
             ))}
           </div>
-          <div className="onb-brand">
-            <LogoLockup />
+
+          <div className="onb-stage">
+            {clamped === 0 ? <WelcomeStep /> : null}
+            {clamped === 1 ? (
+              <AddSourceStep
+                folders={folders}
+                setFolders={setFolders}
+                youtubeChannels={youtubeChannels}
+                setYoutubeChannels={setYoutubeChannels}
+              />
+            ) : null}
+            {clamped === 2 ? (
+              <SmartStep modelDownloadState={modelDownloadState} apiStatus={apiStatus} />
+            ) : null}
           </div>
-          <h1 className="onb-title">{t(current.titleKey)}</h1>
-          <p className="onb-subtitle muted">{t(current.kickerKey)}</p>
-
-          {step === 0 ? <AccessibilityPermissionCallout /> : null}
-
-          {step === 1 ? (
-            <OnboardingFolderPicker folders={folders} setFolders={setFolders} />
-          ) : null}
-
-          {step === 2 ? (
-            <OnboardingYoutubePicker
-              channels={youtubeChannels}
-              setChannels={setYoutubeChannels}
-            />
-          ) : null}
-
-          {step === 3 ? (
-            <>
-              <div className="onboarding-model-stack">
-                <div>
-                  <strong>{t("onboarding.model.asrTitle")}</strong>
-                  <span>{t("onboarding.model.asrDesc")}</span>
-                </div>
-                <div>
-                  <strong>{t("onboarding.model.embeddingTitle")}</strong>
-                  <span>{t("onboarding.model.embeddingDesc")}</span>
-                </div>
-                <div>
-                  <strong>{t("onboarding.model.connectionsTitle")}</strong>
-                  <span>{t("onboarding.model.connectionsDesc")}</span>
-                </div>
-              </div>
-              {modelDownloadState.error ? (
-                <InlineNotice tone="error" message={modelDownloadState.error} />
-              ) : null}
-            </>
-          ) : null}
 
           <div className="onb-actions">
-            {step > 0 ? (
+            {clamped > 0 ? (
               <button
                 type="button"
                 className="btn btn-ghost"
-                onClick={() => setStep(step - 1)}
+                onClick={() => setStep(clamped - 1)}
               >
                 <ArrowLeft size={15} />
                 <span>{t("common.back")}</span>
@@ -153,24 +269,33 @@ export function Onboarding({
             ) : null}
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary lg"
               disabled={finalActionDisabled}
               onClick={() => {
-                if (step === onboardingSteps.length - 1) {
+                if (finalStep) {
                   onDone();
                 } else {
-                  setStep(step + 1);
+                  setStep(clamped + 1);
                 }
               }}
             >
-              <span>{finalStep ? finalActionLabel : t(current.actionKey)}</span>
+              <span>{primaryLabel}</span>
               <ArrowRight size={16} />
             </button>
-            {step > 0 && step < onboardingSteps.length - 1 ? (
+            {clamped === 0 ? (
               <button
                 type="button"
                 className="btn btn-ghost"
-                onClick={() => setStep(step + 1)}
+                onClick={() => setStep(STEP_COUNT - 1)}
+              >
+                <span>{t("onboarding.welcome.later")}</span>
+                <FastForward size={15} />
+              </button>
+            ) : !finalStep ? (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setStep(clamped + 1)}
               >
                 <span>{t("onboarding.skip")}</span>
                 <FastForward size={15} />
