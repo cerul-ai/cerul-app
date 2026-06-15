@@ -5,12 +5,13 @@
   body{
     font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB","Segoe UI",Roboto,sans-serif;
     position:relative;
+    /* Near-uniform near-white so a resized DMG window shows no colour seam
+       (Finder fills any area beyond the background with ~white). The depth
+       comes from a soft top-centre glow, not a top-to-bottom gradient. */
     background:
-      radial-gradient(720px 380px at 50% 2%,#ffffff,rgba(255,255,255,0) 64%),
-      linear-gradient(180deg,#fbfcfd,#eef1f5);
+      radial-gradient(760px 360px at 50% -4%,#ffffff,rgba(255,255,255,0) 68%),
+      #fcfdfe;
   }
-  /* faint bottom steel glow */
-  .glow{position:absolute;inset:0;background:radial-gradient(440px 220px at 50% 116%,rgba(62,107,157,.06),rgba(62,107,157,0) 60%);}
   /* brand lockup (top) */
   .brand{position:absolute;top:46px;left:0;right:0;text-align:center;}
   .brand-row{display:inline-flex;align-items:center;gap:11px;}
@@ -35,7 +36,6 @@
   .hint b{color:#1c2229;} .hint b.steel{color:#3e6b9d;}
 </style></head>
 <body>
-  <div class="glow"></div>
   <div class="brand">
     <div class="brand-row">
       <svg viewBox="0 0 508 508"><rect width="211" height="508"/><rect x="297" y="91" width="211" height="112"/><rect x="297" y="301" width="211" height="207"/></svg>
