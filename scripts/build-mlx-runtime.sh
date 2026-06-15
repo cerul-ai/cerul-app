@@ -63,12 +63,12 @@ find "$RUNTIME_DIR/lib" -name "EXTERNALLY-MANAGED" -delete 2>/dev/null || true
 echo "==> Installing locked MLX stack (--no-deps, exact set)"
 "$PY" -m pip install --no-deps --no-input --disable-pip-version-check -r "$LOCK"
 
-echo "==> Pruning bytecode caches + unused stdlib (GUI/test/dev tooling)"
-find "$RUNTIME_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
-find "$RUNTIME_DIR" -name "*.pyc" -delete 2>/dev/null || true
+echo "==> Pruning unused stdlib (GUI/test/dev tooling)"
 # The sidecar is headless and never uses Tk, IDLE, the test suite, 2to3, or the
 # C headers — dropping them trims size and the code-signing surface.
 STDLIB="$RUNTIME_DIR/lib/python3.12"
+find "$RUNTIME_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+find "$RUNTIME_DIR" -name "*.pyc" -delete 2>/dev/null || true
 rm -rf "$STDLIB/tkinter" "$STDLIB/idlelib" "$STDLIB/turtledemo" "$STDLIB/lib2to3" \
   "$STDLIB/test" "$STDLIB"/*/tests "$STDLIB"/site-packages/*/tests 2>/dev/null || true
 rm -f "$STDLIB"/lib-dynload/_tkinter*.so "$STDLIB"/turtle.py 2>/dev/null || true
@@ -76,6 +76,12 @@ rm -rf "$RUNTIME_DIR"/lib/libtcl*.dylib "$RUNTIME_DIR"/lib/libtk*.dylib \
   "$RUNTIME_DIR"/lib/tcl* "$RUNTIME_DIR"/lib/tk* "$RUNTIME_DIR"/lib/libtcl9thread*.dylib \
   "$RUNTIME_DIR"/lib/thread3* "$RUNTIME_DIR"/lib/itcl* 2>/dev/null || true
 rm -rf "$RUNTIME_DIR/include" "$RUNTIME_DIR/share" 2>/dev/null || true
+
+# Precompile ALL bytecode now (deterministic) so the signed bundle never needs
+# to write .pyc at runtime — that would break the app's code seal. Paired with
+# PYTHONDONTWRITEBYTECODE=1 at runtime (cerul-pipeline::mlx_sidecar).
+echo "==> Precompiling bytecode (compileall)"
+"$PY" -m compileall -q -j 0 "$STDLIB" >/dev/null 2>&1 || true
 
 echo "==> Verifying the runtime is self-contained, relocatable, and complete"
 "$PY" - <<'PY'
