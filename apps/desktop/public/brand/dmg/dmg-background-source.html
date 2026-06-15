@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><style>
+  *{margin:0;box-sizing:border-box;}
+  html,body{width:660px;height:400px;overflow:hidden;}
+  body{
+    font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB","Segoe UI",Roboto,sans-serif;
+    position:relative;
+    background:
+      radial-gradient(720px 380px at 50% 2%,#ffffff,rgba(255,255,255,0) 64%),
+      linear-gradient(180deg,#fbfcfd,#eef1f5);
+  }
+  /* faint bottom steel glow */
+  .glow{position:absolute;inset:0;background:radial-gradient(440px 220px at 50% 116%,rgba(62,107,157,.06),rgba(62,107,157,0) 60%);}
+  /* brand lockup (top) */
+  .brand{position:absolute;top:30px;left:0;right:0;text-align:center;}
+  .brand-row{display:inline-flex;align-items:center;gap:10px;}
+  .brand-row svg{width:26px;height:26px;fill:#1c2229;}
+  .brand-name{font-size:27px;font-weight:700;letter-spacing:-.02em;color:#161b22;}
+  .brand-tag{font-size:13px;color:#8a93a0;margin-top:6px;letter-spacing:.01em;}
+  /* arrow + tag, centered in the gap between the two icon slots (x≈330, y=235) */
+  .arrow{position:absolute;left:330px;top:235px;transform:translate(-50%,-50%);text-align:center;}
+  .arrow .tag{display:inline-block;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11px;color:#3e6b9d;
+    background:#eef4fb;border:1px solid #d4e0ee;padding:3px 10px;border-radius:7px;white-space:nowrap;margin-bottom:9px;}
+  /* dashed Applications drop-target around the alias slot (x=487, y=235) */
+  .apps{position:absolute;left:487px;top:235px;transform:translate(-50%,-50%);
+    width:132px;height:122px;border:1.5px dashed #d4e0ee;border-radius:18px;background:rgba(62,107,157,.04);}
+  /* Gatekeeper hint card (bottom) */
+  .hint{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);
+    display:flex;align-items:center;gap:11px;max-width:500px;
+    padding:11px 16px;border-radius:11px;background:#fff;border:1px solid #e6e9ee;
+    box-shadow:0 1px 2px rgba(28,40,60,.05),0 14px 30px -12px rgba(28,40,60,.22);}
+  .hint .i{flex:none;width:22px;height:22px;border-radius:7px;display:grid;place-items:center;
+    background:#eef4fb;color:#3e6b9d;font-family:ui-monospace,monospace;font-size:13px;font-weight:700;}
+  .hint p{font-size:12px;color:#525d6b;line-height:1.5;}
+  .hint b{color:#1c2229;} .hint b.steel{color:#3e6b9d;}
+</style></head>
+<body>
+  <div class="glow"></div>
+  <div class="brand">
+    <div class="brand-row">
+      <svg viewBox="0 0 508 508"><rect width="211" height="508"/><rect x="297" y="91" width="211" height="112"/><rect x="297" y="301" width="211" height="207"/></svg>
+      <span class="brand-name">Cerul</span>
+    </div>
+    <div class="brand-tag">本地优先的视频 / 媒体记忆搜索</div>
+  </div>
+  <div class="apps"></div>
+  <div class="arrow">
+    <div class="tag">拖到这里安装</div>
+    <svg width="92" height="20" viewBox="0 0 92 20" fill="none"><line x1="2" y1="10" x2="78" y2="10" stroke="#3e6b9d" stroke-width="3" stroke-linecap="round"/><path d="M76 3 L88 10 L76 17" fill="none" stroke="#3e6b9d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="hint">
+    <span class="i">i</span>
+    <p>首次打开被 macOS 拦住？这是正常的——到 <b>系统设置 › 隐私与安全性</b>，点 <b class="steel">仍要打开</b> 即可。</p>
+  </div>
+</body></html>

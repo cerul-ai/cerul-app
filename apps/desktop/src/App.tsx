@@ -2500,35 +2500,48 @@ function ContinueWatchingCard({
     positionSec != null && item.durationSec
       ? Math.min(100, Math.max(2, (positionSec / item.durationSec) * 100))
       : null;
-  const metaParts = [itemKindLabel(item, t), item.source].filter(Boolean);
-  if (timestamp) {
-    metaParts.push(t("home.continueAt", { at: timestamp, total: item.duration }));
-  }
+  const remaining =
+    positionSec != null && item.durationSec
+      ? formatDuration(Math.max(0, item.durationSec - positionSec))
+      : null;
+  const sourceLabel = item.source || t("home.continueLocal");
   return (
-    <button className="card hover continue-card" type="button" onClick={onOpen}>
-      <span className={`continue-thumb ${item.thumbnailUrl ? "has-image" : item.color}`}>
-        {item.thumbnailUrl ? (
-          <img src={item.thumbnailUrl} alt="" loading="lazy" />
-        ) : (
-          <ItemModalityIcon item={item} size={26} />
-        )}
-        <span className="continue-play" aria-hidden="true">
-          <Play size={18} fill="currentColor" />
-        </span>
-        {item.contentType !== "image" && item.duration ? (
-          <small className="thumb-duration mono">{item.duration}</small>
-        ) : null}
-        {progressPct != null ? (
-          <span className="continue-progress" aria-hidden="true">
-            <span style={{ width: `${progressPct}%` }} />
+    <button className="cw-banner" type="button" onClick={onOpen} title={t("home.continueResume")}>
+      {item.thumbnailUrl ? (
+        <img className="cw-bg" src={item.thumbnailUrl} alt="" loading="lazy" />
+      ) : null}
+      <span className="cw-noise" aria-hidden="true" />
+      <span className="cw-glow" aria-hidden="true" />
+      <span className="cw-scrim" aria-hidden="true" />
+      <span className="cw-play" aria-hidden="true">
+        <Play size={20} fill="currentColor" />
+      </span>
+      <span className="cw-badge mono">
+        <span className="cw-badge-dot" aria-hidden="true" />
+        {sourceLabel}
+      </span>
+      {item.duration ? <span className="cw-dur mono">{item.duration}</span> : null}
+      <span className="cw-bottom">
+        <span className="cw-info">
+          <strong className="cw-title clamp1">{item.title}</strong>
+          <span className="cw-meta">
+            {timestamp
+              ? `${t("home.continueAt", { at: timestamp, total: item.duration })}${
+                  remaining ? ` · ${t("home.continueRemaining", { remaining })}` : ""
+                }`
+              : itemKindLabel(item, t)}
           </span>
-        ) : null}
+        </span>
+        <span className="cw-resume">
+          <Play size={13} fill="currentColor" />
+          {t("home.continuePlay")}
+        </span>
       </span>
-      <span className="continue-body">
-        <strong className="clamp1 continue-title">{item.title}</strong>
-        <span className="continue-meta clamp1">{metaParts.join(" · ")}</span>
-        <span className="continue-cta">{t("home.continueResume")}</span>
-      </span>
+      {progressPct != null ? (
+        <span className="cw-bar" aria-hidden="true">
+          <span style={{ width: `${progressPct}%` }} />
+        </span>
+      ) : null}
     </button>
   );
 }
