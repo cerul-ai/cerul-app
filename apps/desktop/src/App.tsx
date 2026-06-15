@@ -474,478 +474,10 @@ function searchIndexIsSettling(data: AppData) {
   );
 }
 
-const results: Result[] = [
-  {
-    id: "chunk-1",
-    itemId: "item-1",
-    title: "Karpathy - Software Is Changing Again",
-    source: "YouTube / Andrej Karpathy",
-    timestamp: "12:34",
-    indexedAtEpoch: 1780444800,
-    duration: "1:18:22",
-    snippet:
-      "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    color: "mint",
-    thumbnailUrl: null,
-    confidence: "high",
-    confidenceLabel: "Best",
-    score: 0.048,
-    scoreLabel: "Match 100%",
-    scoreTitle: "Model similarity score",
-    chunkType: "transcript",
-    moreMatches: [
-      {
-        id: "chunk-1-2",
-        timestamp: "18:02",
-        snippet:
-          "If the answer is difficult, test-time compute lets the system search longer before committing.",
-        confidence: "medium",
-        confidenceLabel: "Strong",
-        scoreLabel: "Match 74%",
-        scoreTitle: "Model similarity score",
-      },
-      {
-        id: "chunk-1-3",
-        timestamp: "41:27",
-        snippet:
-          "You can think of the runtime budget as part of the interface, not just the model.",
-        confidence: "medium",
-        confidenceLabel: "Strong",
-        scoreLabel: "Match 68%",
-        scoreTitle: "Model similarity score",
-      },
-      {
-        id: "chunk-1-4",
-        timestamp: "52:09",
-        snippet:
-          "The UI should cite the exact moment because the useful unit is a clip, not a whole file.",
-        confidence: "low",
-        confidenceLabel: "Review",
-        scoreLabel: "Match 41%",
-        scoreTitle: "Model similarity score",
-      },
-    ],
-  },
-  {
-    id: "chunk-2",
-    itemId: "item-2",
-    title: "API-first Media Systems",
-    source: "Folders / Talks 2026",
-    timestamp: "34:10",
-    indexedAtEpoch: 1780358400,
-    duration: "49:08",
-    snippet:
-      "A media memory layer needs exact phrase search and semantic retrieval because users remember both words and scenes.",
-    color: "amber",
-    thumbnailUrl: null,
-    confidence: "medium",
-    confidenceLabel: "Strong",
-    score: 0.031,
-    scoreLabel: "Match 65%",
-    scoreTitle: "Model similarity score",
-    chunkType: "transcript",
-    moreMatches: [
-      {
-        id: "chunk-2-2",
-        timestamp: "37:44",
-        snippet:
-          "When search crosses transcript and frames, the result card needs to explain why it matched.",
-        confidence: "low",
-        confidenceLabel: "Review",
-        scoreLabel: "Match 48%",
-        scoreTitle: "Model similarity score",
-      },
-    ],
-  },
-  {
-    id: "chunk-3",
-    itemId: "item-3",
-    title: "Podcast - Agents in Production",
-    source: "Podcast RSS / Engineering Notes",
-    timestamp: "08:52",
-    indexedAtEpoch: 1778544000,
-    duration: "56:41",
-    snippet:
-      "The agent should cite the moment in the source, not just return an answer without a timestamp.",
-    color: "rose",
-    thumbnailUrl: null,
-    confidence: "low",
-    confidenceLabel: "Review",
-    score: 0.018,
-    scoreLabel: "Match 38%",
-    scoreTitle: "Model similarity score",
-    chunkType: "transcript",
-    moreMatches: [],
-  },
-];
 
-const emptyUsageTotals: api.UsageTotals = {
-  event_count: 0,
-  request_count: 0,
-  input_tokens: 0,
-  output_tokens: 0,
-  audio_seconds: 0,
-  image_count: 0,
-  video_seconds: 0,
-  estimated_usd: 0,
-  billed_credits: 0,
-  unpriced_events: 0,
-};
-
-const items: Item[] = [
-  {
-    id: "item-1",
-    title: "Karpathy — Software Is Changing Again",
-    sourceId: "source-2",
-    contentType: "video",
-    source: "Andrej Karpathy",
-    sourceKind: "youtube",
-    duration: "1:18:22",
-    durationSec: 4702,
-    indexedAt: "今天",
-    indexedAtEpoch: 1780444800,
-    status: "indexed",
-    error: null,
-    rawPath: null,
-    originalUrl: "https://www.youtube.com/watch?v=demo-karpathy",
-    color: "mint",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: {
-      item_id: "item-1",
-      position_sec: 754,
-      timestamp: "12:34",
-      chunk_id: null,
-      updated_at: 1780448400,
-    },
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-2",
-    title: "API-first Media Systems",
-    sourceId: "source-1",
-    contentType: "video",
-    source: "Talks 2026",
-    sourceKind: "folder",
-    duration: "49:08",
-    durationSec: 2948,
-    indexedAt: "昨天",
-    indexedAtEpoch: 1780358400,
-    status: "indexing",
-    error: null,
-    rawPath: "~/Movies/conferences/local-first-ai-systems.mp4",
-    originalUrl: null,
-    color: "amber",
-    thumbnailUrl: null,
-    progress: 0.42,
-    progressLabel: "42%",
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: "pending",
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-3",
-    title: "Agents in Production",
-    sourceId: "source-3",
-    contentType: "audio",
-    source: "Engineering Notes",
-    sourceKind: "podcast",
-    duration: "56:41",
-    durationSec: 3401,
-    indexedAt: "5月12日",
-    indexedAtEpoch: 1778544000,
-    status: "indexed",
-    error: null,
-    rawPath: null,
-    originalUrl: "https://example.com/engineering-notes/agents-in-production",
-    color: "rose",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-4",
-    title: "Multimodal Search Review",
-    sourceId: "source-1",
-    contentType: "video",
-    source: "Design Reviews",
-    sourceKind: "folder",
-    duration: "23:12",
-    durationSec: 1392,
-    indexedAt: "5月11日",
-    indexedAtEpoch: 1778457600,
-    status: "failed",
-    error: "The original file moved or was deleted from ~/Movies/design-reviews/multimodal-search-review.mp4.",
-    rawPath: "~/Movies/design-reviews/multimodal-search-review.mp4",
-    originalUrl: null,
-    color: "steel",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-  {
-    id: "item-5",
-    title: "Deleted YouTube Lecture",
-    sourceId: "source-2",
-    contentType: "video",
-    source: "Andrej Karpathy",
-    sourceKind: "youtube",
-    duration: "41:05",
-    durationSec: 2465,
-    indexedAt: "5月10日",
-    indexedAtEpoch: 1778371200,
-    status: "failed",
-    error: "yt-dlp fetch failed: video unavailable or private.",
-    rawPath: null,
-    originalUrl: "https://www.youtube.com/watch?v=deleted-demo",
-    color: "mint",
-    thumbnailUrl: null,
-    progress: null,
-    progressLabel: null,
-    etaLabel: null,
-    visualIndexStatus: null,
-    visualIndexMessage: null,
-    embeddingIndexStatus: null,
-    embeddingIndexMessage: null,
-    playbackPosition: null,
-    usage: emptyUsageTotals,
-  },
-];
-
-const sources: Source[] = [
-  {
-    id: "source-1",
-    type: "folder",
-    name: "~/Movies/conferences",
-    status: "active",
-    items: 82,
-    lastPolled: "2 min ago",
-    error: null,
-  },
-  {
-    id: "source-2",
-    type: "youtube",
-    name: "Andrej Karpathy",
-    status: "active",
-    items: 24,
-    lastPolled: "1 h ago",
-    error: null,
-  },
-  {
-    id: "source-3",
-    type: "podcast",
-    name: "Engineering Notes",
-    status: "paused",
-    items: 17,
-    lastPolled: "Yesterday",
-    error: null,
-  },
-  {
-    id: "source-4",
-    type: "folder",
-    name: "~/Movies/archive-drive",
-    status: "error",
-    items: 9,
-    lastPolled: "May 12",
-    error: "Cerul cannot reach this folder. Locate the drive or remove the source.",
-  },
-];
-
-const demoJobs: api.JobRecord[] = [
-  {
-    id: "job-1",
-    item_id: "item-2",
-    job_type: "index_video",
-    status: "running",
-    started_at: Math.floor(Date.now() / 1000) - 75,
-    finished_at: null,
-    error: null,
-    progress: 0.42,
-    stage: "transcribing",
-    stage_message: "Transcribing audio",
-    usage: emptyUsageTotals,
-    error_info: null,
-  },
-  {
-    id: "job-2",
-    item_id: "item-4",
-    job_type: "index_video",
-    status: "failed",
-    started_at: null,
-    finished_at: null,
-    error: "The source file is missing.",
-    progress: 1,
-    stage: "failed",
-    stage_message: "Index failed",
-    usage: emptyUsageTotals,
-    error_info: {
-      code: "source_unavailable",
-      capability: "视频索引",
-      settings_section: "Models",
-      message: "来源暂时不可访问，可能是私有、地区限制或文件已移动。",
-    },
-  },
-];
-
-const demoMoments: api.MomentRecord[] = [
-  {
-    id: "moment-1",
-    item_id: "item-1",
-    chunk_id: "sample-2",
-    start_sec: 754,
-    end_sec: null,
-    timestamp: "12:34",
-    title: "Software Is Changing Again",
-    quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    note: null,
-    created_at: Math.floor(Date.now() / 1000) - 3600,
-  },
-  {
-    id: "moment-2",
-    item_id: "item-2",
-    chunk_id: "sample-3",
-    start_sec: 782,
-    end_sec: null,
-    timestamp: "13:02",
-    title: "API-first Media Systems",
-    quote: "Search quality improves when lexical recall and semantic retrieval are evaluated separately.",
-    note: null,
-    created_at: Math.floor(Date.now() / 1000) - 7200,
-  },
-];
-
-const demoEntities: api.EntitySummary[] = [
-  { id: "andrej-karpathy", label: "Andrej Karpathy", kind: "person_or_entity", mention_count: 6, item_count: 2 },
-  { id: "test-time-compute", label: "test-time compute", kind: "topic", mention_count: 5, item_count: 2 },
-  { id: "retrieval-quality", label: "retrieval quality", kind: "topic", mention_count: 4, item_count: 3 },
-];
-
-const demoEntityDetail: api.EntityDetail = {
-  entity: demoEntities[1],
-  mentions: [
-    {
-      entity_id: "test-time-compute",
-      label: "test-time compute",
-      kind: "topic",
-      item_id: "item-1",
-      item_title: "Software Is Changing Again",
-      chunk_id: "sample-2",
-      timestamp: "12:34",
-      start_sec: 754,
-      quote: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    },
-    {
-      entity_id: "test-time-compute",
-      label: "test-time compute",
-      kind: "topic",
-      item_id: "item-2",
-      item_title: "API-first Media Systems",
-      chunk_id: "sample-3",
-      timestamp: "13:02",
-      start_sec: 782,
-      quote: "The retrieval layer becomes part of the reasoning loop when answers cite exact moments.",
-    },
-  ],
-};
-
-const demoVideoUnderstanding: api.VideoUnderstandingRecord = {
-  item_id: "item-1",
-  provider_id: "fixture",
-  model_id: "qwen3-vl-fixture",
-  status: "completed",
-  summary:
-    "A discussion of test-time compute, retrieval quality, and how timestamped media evidence changes search workflows.",
-  chapters: [
-    {
-      start_sec: 730,
-      end_sec: 820,
-      title: "Test-time compute",
-      summary: "Reasoning budget can be spent after the prompt arrives.",
-    },
-    {
-      start_sec: 900,
-      end_sec: 1020,
-      title: "Retrieval as evidence",
-      summary: "Answers are grounded by exact transcript moments.",
-    },
-  ],
-  events: [
-    {
-      start_sec: 754,
-      end_sec: 790,
-      caption: "The speaker explains why test-time compute changes answer quality.",
-      visual: null,
-      audio: null,
-      actions: ["explains"],
-      entities: ["test-time compute"],
-      confidence: 0.91,
-    },
-  ],
-  topics: ["test-time compute", "retrieval quality", "media memory"],
-  searchable_text: null,
-  error: null,
-  created_at: Math.floor(Date.now() / 1000) - 3600,
-  updated_at: Math.floor(Date.now() / 1000) - 1800,
-};
-
-const demoUsageSummary: api.UsageSummary = {
-  total: { ...emptyUsageTotals, event_count: 18, request_count: 18, estimated_usd: 0.42, billed_credits: 42 },
-  remote: { ...emptyUsageTotals, event_count: 7, request_count: 7, estimated_usd: 0.42, billed_credits: 42 },
-  local: { ...emptyUsageTotals, event_count: 11, request_count: 11, estimated_usd: 0, billed_credits: 0 },
-  by_capability: [
-    { key: "asr", totals: { ...emptyUsageTotals, event_count: 6, request_count: 6, estimated_usd: 0.12 } },
-    { key: "embedding", totals: { ...emptyUsageTotals, event_count: 9, request_count: 9, estimated_usd: 0.18 } },
-    { key: "video_understanding", totals: { ...emptyUsageTotals, event_count: 3, request_count: 3, estimated_usd: 0.12 } },
-  ],
-};
-
-const transcript: TranscriptLine[] = [
-  {
-    id: "sample-1",
-    time: "12:10",
-    text: "Before we talk about search quality, we need to separate lexical recall from semantic recall.",
-  },
-  {
-    id: "sample-2",
-    time: "12:34",
-    text: "The interesting part of test-time compute is that the model can spend more budget after the prompt arrives.",
-    active: true,
-  },
-  {
-    id: "sample-3",
-    time: "13:02",
-    text: "This changes how we evaluate memory products because the retrieval layer becomes part of the reasoning loop.",
-  },
-  {
-    id: "sample-4",
-    time: "13:41",
-    text: "If the citation lands on the wrong moment, the user loses trust even when the answer sounds plausible.",
-  },
-];
+// Fallback transcript shown before the real lines load (or when the core is
+// offline) — intentionally empty so the UI never shows placeholder content.
+const transcript: TranscriptLine[] = [];
 
 const settingsSections = ["Models", "Usage", "General", "Indexing", "Storage", "Advanced", "About"] as const;
 type SettingsSection = (typeof settingsSections)[number];
@@ -963,10 +495,6 @@ function normalizeSettingsSection(section?: string | null): SettingsSection {
 function hashQueryParam(name: string): string | null {
   const [, queryString = ""] = window.location.hash.replace(/^#/, "").split("?");
   return new URLSearchParams(queryString).get(name);
-}
-
-function visualFixtureModeEnabled() {
-  return hashQueryParam("fixture") === "design";
 }
 
 // Single source of truth for the non-online core-status wording, so the home
@@ -1036,9 +564,7 @@ function AppWorkspace() {
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(
     initialRoute.timestamp,
   );
-  const [query, setQuery] = useState(() =>
-    visualFixtureModeEnabled() ? "test-time compute" : "",
-  );
+  const [query, setQuery] = useState("");
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [showAddSource, setShowAddSource] = useState(false);
   const [showJobsSheet, setShowJobsSheet] = useState(false);
@@ -1074,66 +600,51 @@ function AppWorkspace() {
   // Monotonic token: every runSearch bumps it, stale responses are dropped.
   const searchSeqRef = useRef(0);
 
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const screenApiStatus: ApiStatus = visualFixtureMode ? "online" : apiStatus;
-  // Demo fixtures are reserved for `?fixture=design`. When the core is
-  // offline we keep showing the last data we fetched (or empty states) —
-  // never fake content the user might mistake for their own library.
-  const visibleSources = visualFixtureMode ? sources : data.sources;
-  const visibleItems = visualFixtureMode ? items : data.items;
-  const visibleResults = visualFixtureMode ? results : liveResults;
-  const visibleJobs = visualFixtureMode
-    ? demoJobs
-    : apiStatus === "online"
-      ? data.jobs
-      : [];
+  // When the core is offline we keep showing the last data we fetched (or empty
+  // states) — never fake content the user might mistake for their own library.
+  const visibleSources = data.sources;
+  const visibleItems = data.items;
+  const visibleResults = liveResults;
+  const visibleJobs = apiStatus === "online" ? data.jobs : [];
   // Follow the OS by default — first launch on a light-mode Mac used to open dark.
   const themePreference = settingString(data.settings, "theme", "System");
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
   // The Tasks drawer hides jobs whose item no longer exists, so cancelling a task
   // (which deletes its item) makes it disappear even though the job row lingers in
-  // the DB. Fixture mode shows demo jobs verbatim.
-  const drawerJobs = visualFixtureMode
-    ? visibleJobs
-    : visibleJobs.filter(
-        (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
-      );
+  // the DB.
+  const drawerJobs = visibleJobs.filter(
+    (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
+  );
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const stepStarts = useStepStarts(visibleJobs);
 
-  // First-run on-device-model consent + download. Fixture mode drives a mock
-  // download for design QA (`?lmconsent=1`); live mode fetches capability and
-  // shows the dialog once, gated on `local_models_prompted` so it never
-  // re-prompts — and never fires before the core's capability route exists,
-  // because the capability fetch simply rejects until then.
-  const lmTrigger = visualFixtureMode
-    ? hashQueryParam("lmconsent") === "1"
-    : screenApiStatus === "online" &&
-      view !== "onboarding" &&
-      !settingBoolean(data.settings, "local_models_prompted", false);
-  const lm = useLocalModelConsent({ mode: visualFixtureMode ? "mock" : "live", trigger: lmTrigger });
+  // First-run on-device-model consent + download. Fetches capability and shows
+  // the dialog once, gated on `local_models_prompted` so it never re-prompts —
+  // and never fires before the core's capability route exists, because the
+  // capability fetch simply rejects until then.
+  const lmTrigger =
+    apiStatus === "online" &&
+    view !== "onboarding" &&
+    !settingBoolean(data.settings, "local_models_prompted", false);
+  const lm = useLocalModelConsent({ trigger: lmTrigger });
   const handleLmAgree = useCallback(() => {
     lm.agree();
-    if (!visualFixtureMode) {
-      void api
-        .updateSettings({ inference_mode: "local", local_models_prompted: true })
-        .then(() => refreshCoreData())
-        .catch(() => undefined);
-    }
+    void api
+      .updateSettings({ inference_mode: "local", local_models_prompted: true })
+      .then(() => refreshCoreData())
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lm.agree, visualFixtureMode]);
+  }, [lm.agree]);
   const handleLmDecline = useCallback(() => {
     lm.decline();
-    if (!visualFixtureMode) {
-      void api
-        .updateSettings({ inference_mode: "remote", local_models_prompted: true })
-        .then(() => refreshCoreData())
-        .catch(() => undefined);
-    }
+    void api
+      .updateSettings({ inference_mode: "remote", local_models_prompted: true })
+      .then(() => refreshCoreData())
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lm.decline, visualFixtureMode]);
+  }, [lm.decline]);
   // Auto-dismiss the "models ready" toast after a few seconds.
   useEffect(() => {
     if (!lm.ready) return;
@@ -1256,7 +767,7 @@ function AppWorkspace() {
       });
       return;
     }
-    if (visualFixtureMode || !hasDesktopHost()) {
+    if (!hasDesktopHost()) {
       return;
     }
     const unsubscribe = subscribeDesktopUpdater(setUpdaterState);
@@ -1270,7 +781,7 @@ function AppWorkspace() {
       unsubscribe();
       window.clearInterval(intervalId);
     };
-  }, [visualFixtureMode]);
+  }, []);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
@@ -1337,7 +848,7 @@ function AppWorkspace() {
       return;
     }
     lastMappedLangRef.current = lang;
-    if (!visualFixtureMode && apiStatus === "online") {
+    if (apiStatus === "online") {
       void refreshCoreData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1346,7 +857,7 @@ function AppWorkspace() {
   // Auto-reconnect: while the core is unreachable, keep probing with a
   // capped exponential backoff instead of waiting for a manual Retry click.
   useEffect(() => {
-    if (visualFixtureMode || apiStatus === "online") {
+    if (apiStatus === "online") {
       return;
     }
     let cancelled = false;
@@ -1369,7 +880,7 @@ function AppWorkspace() {
       window.clearTimeout(timeoutId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiStatus, visualFixtureMode]);
+  }, [apiStatus]);
 
   async function refreshCoreData(): Promise<AppData | null> {
     setApiError(null);
@@ -1529,13 +1040,6 @@ function AppWorkspace() {
 
   async function runSearch(value: string) {
     const trimmed = value.trim();
-    if (visualFixtureMode) {
-      setQuery(trimmed || value);
-      setLiveResults(results);
-      setSearchError(null);
-      navigate("results", {});
-      return;
-    }
     if (!trimmed) {
       return;
     }
@@ -1752,13 +1256,13 @@ function AppWorkspace() {
           <div className="rail-status mono">
             <span
               className="rail-status-dot"
-              data-ok={screenApiStatus === "online" ? "true" : undefined}
+              data-ok={apiStatus === "online" ? "true" : undefined}
               aria-hidden="true"
             />
             <span className="rail-label">
-              {screenApiStatus === "online"
+              {apiStatus === "online"
                 ? t("shell.coreLocal")
-                : coreStatusText(screenApiStatus, t)}
+                : coreStatusText(apiStatus, t)}
             </span>
           </div>
         </div>
@@ -1792,7 +1296,7 @@ function AppWorkspace() {
       </div>
 
       <main className="content">
-        {screenApiStatus !== "online" ? (
+        {apiStatus !== "online" ? (
           <CoreBanner
             status={apiStatus}
             error={apiError}
@@ -1803,7 +1307,7 @@ function AppWorkspace() {
           <Onboarding
             step={onboardingStep}
             setStep={setOnboardingStep}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             folders={onboardingFolders}
             setFolders={setOnboardingFolders}
             youtubeChannels={onboardingYoutubeChannels}
@@ -1825,7 +1329,7 @@ function AppWorkspace() {
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             onOpenModelSettings={() => navigate("settings", { settingsSection: "Models" })}
             globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
           />
@@ -1846,7 +1350,7 @@ function AppWorkspace() {
             results={visibleResults}
             isSearching={isSearching}
             error={searchError}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
             hasActiveJobs={visibleJobs.some(isActiveJob)}
           />
@@ -1869,7 +1373,7 @@ function AppWorkspace() {
               visibleResults.find((result) => result.id === selectedChunkId)?.moreMatches
             }
             startTimestamp={selectedTimestamp ?? "00:00"}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onLibrary={() => navigate("results")}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
@@ -1888,7 +1392,7 @@ function AppWorkspace() {
             items={visibleItems}
             jobs={visibleJobs}
             stepStarts={stepStarts}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
@@ -1910,7 +1414,7 @@ function AppWorkspace() {
         ) : null}
         {view === "moments" ? (
           <MomentsScreen
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onOpenItem={(moment) =>
               navigate("item-detail", { itemId: moment.item_id, timestamp: moment.timestamp })
             }
@@ -1919,7 +1423,7 @@ function AppWorkspace() {
         {view === "entity-detail" ? (
           <EntityDetailScreen
             entityId={selectedItemId}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onBack={() => navigate("library")}
             onOpenMention={(mention) =>
               navigate("item-detail", {
@@ -1943,8 +1447,8 @@ function AppWorkspace() {
         {view === "item-detail" && currentItem ? (
           <ItemDetail
             item={currentItem}
-            apiStatus={screenApiStatus}
-            actionsEnabled={screenApiStatus === "online"}
+            apiStatus={apiStatus}
+            actionsEnabled={apiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             onBack={() => navigate("library")}
             onDeleteItem={async (itemToDelete) => {
@@ -1962,7 +1466,7 @@ function AppWorkspace() {
         {view === "sources" ? (
           <SourcesScreen
             sources={visibleSources}
-            actionsEnabled={screenApiStatus === "online"}
+            actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onPauseSource={async (source) => {
               await api.pauseSource(source.id);
@@ -1984,7 +1488,7 @@ function AppWorkspace() {
           <SettingsScreen
             section={settingsSection}
             setSection={setSettingsSection}
-            apiStatus={screenApiStatus}
+            apiStatus={apiStatus}
             settings={data.settings}
             daemonStatus={data.daemonStatus}
             version={data.version}
@@ -2030,7 +1534,7 @@ function AppWorkspace() {
           items={visibleItems}
           stepStarts={stepStarts}
           paused={indexingPaused}
-          controlsEnabled={screenApiStatus === "online"}
+          controlsEnabled={apiStatus === "online"}
           onTogglePause={async () => {
             try {
               await api.updateSettings({ indexing_paused: !indexingPaused });
@@ -2110,64 +1614,12 @@ function formatWeeklyHours(seconds: number) {
   return `${minutes}m`;
 }
 
-// Illustrative example searches for the first-run empty state. These are demo
-// placeholders (no index exists yet) that show the user what a result will look
-// like — copy mirrors design_handoff_cerul §3.
-const HOME_EMPTY_EXAMPLES = [
-  {
-    chip: "test-time compute 是怎么讲的",
-    title: "Karpathy — Software Is Changing Again",
-    source: "Andrej Karpathy",
-    duration: "1:18:22",
-    at: "12:34",
-    tag: "indexed" as const,
-    snippet: [
-      { t: "…我们可以多花一点 " },
-      { t: "test-time compute", hl: true },
-      { t: " 来换取更好的 " },
-      { t: "retrieval quality", hl: true },
-      { t: "…" },
-    ],
-  },
-  {
-    chip: "API-first 媒体系统的架构",
-    title: "API-first Media Systems",
-    source: "Talks 2026",
-    duration: "42:50",
-    at: "04:18",
-    tag: "indexed" as const,
-    snippet: [
-      { t: "…把每段视频暴露成一个 " },
-      { t: "API", hl: true },
-      { t: " 端点，检索就是一次普通的 " },
-      { t: "query", hl: true },
-      { t: "…" },
-    ],
-  },
-  {
-    chip: "讲 multimodal search 的片段",
-    title: "Multimodal Search Review",
-    source: "Research Notes",
-    duration: "38:40",
-    at: "27:02",
-    tag: "visual" as const,
-    snippet: [
-      { t: "…画面里出现的 " },
-      { t: "multimodal", hl: true },
-      { t: " 结果也能被 " },
-      { t: "search", hl: true },
-      { t: " 命中…" },
-    ],
-  },
-];
-
-// First-run empty state (handoff §3): an inviting drag zone, clickable example
-// chips, and a result-preview card that shows what indexing will surface.
+// First-run empty state: an inviting drag zone and the two ways to add a
+// source. No placeholder results — the page stays honest until the user's own
+// content is indexed.
 function HomeEmptyState({ onAddSource }: { onAddSource: () => void }) {
   const t = useT();
   const [dragOver, setDragOver] = useState(false);
-  const [active, setActive] = useState<number | null>(null);
-  const ex = active !== null ? HOME_EMPTY_EXAMPLES[active] : null;
   return (
     <div className="page home-empty">
       <div className="home-empty-head">
@@ -2209,62 +1661,6 @@ function HomeEmptyState({ onAddSource }: { onAddSource: () => void }) {
             <span>{t("home.emptyHero.followYoutube")}</span>
           </button>
         </div>
-      </div>
-
-      <div className="example-chips" role="group" aria-label={t("home.emptyHero.examplesAria")}>
-        {HOME_EMPTY_EXAMPLES.map((example, index) => (
-          <button
-            key={example.title}
-            type="button"
-            className={active === index ? "example-chip active" : "example-chip"}
-            aria-pressed={active === index}
-            onClick={() => setActive(index)}
-          >
-            {example.chip}
-          </button>
-        ))}
-      </div>
-
-      <div className="result-preview float-card lift">
-        {ex ? (
-          <div className="preview-grid">
-            <div className="preview-thumb">
-              <span className="preview-play" aria-hidden="true" />
-              <span className="preview-ts mono">{ex.at}</span>
-            </div>
-            <div className="preview-main">
-              <div className="preview-row1">
-                <strong className="preview-title">{ex.title}</strong>
-                <span className={ex.tag === "visual" ? "chip copper" : "chip success"}>
-                  {ex.tag === "visual"
-                    ? t("home.emptyHero.tagVisual")
-                    : t("home.emptyHero.tagIndexed")}
-                </span>
-              </div>
-              <div className="preview-meta mono">
-                {ex.source} · {ex.duration}
-              </div>
-              <p className="preview-snippet">
-                {ex.snippet.map((part, index) =>
-                  part.hl ? (
-                    <mark key={index}>{part.t}</mark>
-                  ) : (
-                    <span key={index}>{part.t}</span>
-                  ),
-                )}
-              </p>
-              <button className="preview-jump" type="button" onClick={onAddSource}>
-                <Play size={13} />
-                <span>{t("home.emptyHero.jumpTo", { ts: ex.at })}</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="preview-ghost">
-            <ArrowRight size={16} />
-            <span>{t("home.emptyHero.previewGhost")}</span>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -2311,22 +1707,7 @@ function HomeScreen({
   const recentIndexed = [...items]
     .sort((left, right) => (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0))
     .slice(0, 4);
-  const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(() =>
-    visualFixtureModeEnabled()
-      ? {
-          week_start: 0,
-          indexed_items: 4,
-          indexed_seconds: 6 * 3600 + 12 * 60,
-          watched_percent: 40,
-          topics: [
-            { id: "test-time-compute", label: "test-time compute", count: 5 },
-            { id: "retrieval-quality", label: "retrieval quality", count: 4 },
-            { id: "media-memory", label: "media memory", count: 3 },
-          ],
-          has_data: true,
-        }
-      : null,
-  );
+  const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(null);
   // Weekly review is kept but lives off the default home (完整版 baseline has no
   // weekly card) — surfaced on demand via the "本周回顾" toggle in the recent header.
   const [showWeekly, setShowWeekly] = useState(false);
@@ -2380,7 +1761,7 @@ function HomeScreen({
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureModeEnabled() || apiStatus !== "online") {
+    if (apiStatus !== "online") {
       return;
     }
     api
@@ -3057,32 +2438,21 @@ function DetailActionsMenu({
 }
 
 function useItemMoments(item: Item, enabled: boolean) {
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
-    visualFixtureMode ? demoMoments.filter((moment) => moment.item_id === item.id) : [],
-  );
+  const [moments, setMoments] = useState<api.MomentRecord[]>([]);
   const [pendingLineId, setPendingLineId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    if (visualFixtureMode) {
-      setMoments((current) => current.filter((moment) => moment.item_id === item.id));
-      return;
-    }
     if (!enabled) {
       setMoments([]);
       return;
     }
     const records = await api.listMoments();
     setMoments(records.filter((moment) => moment.item_id === item.id));
-  }, [enabled, item.id, visualFixtureMode]);
+  }, [enabled, item.id]);
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureMode) {
-      setMoments(demoMoments.filter((moment) => moment.item_id === item.id));
-      return;
-    }
     if (!enabled) {
       setMoments([]);
       return;
@@ -3098,7 +2468,7 @@ function useItemMoments(item: Item, enabled: boolean) {
     return () => {
       cancelled = true;
     };
-  }, [enabled, item.id, visualFixtureMode]);
+  }, [enabled, item.id]);
 
   // Indexed lookups: the per-line linear scan made transcript rendering
   // O(lines x moments).
@@ -3127,29 +2497,6 @@ function useItemMoments(item: Item, enabled: boolean) {
     setMessage(null);
     try {
       const existing = momentForLine(line);
-      if (visualFixtureMode) {
-        const startSec = parseTimestampSeconds(line.time);
-        setMoments((current) =>
-          existing
-            ? current.filter((moment) => moment.id !== existing.id)
-            : [
-                ...current,
-                {
-                  id: `fixture-${line.id}`,
-                  item_id: item.id,
-                  chunk_id: line.id,
-                  start_sec: Number.isFinite(startSec) ? startSec : null,
-                  end_sec: null,
-                  timestamp: line.time,
-                  title: item.title,
-                  quote: line.text,
-                  note: null,
-                  created_at: Math.floor(Date.now() / 1000),
-                },
-              ],
-        );
-        return;
-      }
       if (existing) {
         await api.deleteMoment(existing.id);
       } else {
@@ -3341,15 +2688,6 @@ function ResultDetail({
   }, [item.id, startTimestamp]);
 
   useEffect(() => {
-    if (visualFixtureModeEnabled()) {
-      setMediaState({
-        status: "ready",
-        chunkId: startChunkId,
-        lines: transcript,
-        message: null,
-      });
-      return;
-    }
     if (!actionsEnabled) {
       setMediaState({ status: "idle", chunkId: null, lines: transcript, message: null });
       return;
@@ -3844,14 +3182,12 @@ function VideoUnderstandingPanel({
   onSeek,
   requestConfirm,
   onChapters,
-  fixtureRecord,
 }: {
   item: Item;
   enabled: boolean;
   onSeek?: (timestamp: string) => void;
   requestConfirm: RequestConfirm;
   onChapters?: (chapters: api.VideoUnderstandingChapter[]) => void;
-  fixtureRecord?: api.VideoUnderstandingRecord | null;
 }) {
   const t = useT();
   const [state, setState] = useState<{
@@ -3859,8 +3195,8 @@ function VideoUnderstandingPanel({
     record: api.VideoUnderstandingRecord | null;
     message: string | null;
   }>({
-    status: fixtureRecord ? "loaded" : "idle",
-    record: fixtureRecord ?? null,
+    status: "idle",
+    record: null,
     message: null,
   });
   // Tracks the currently displayed item so long-running requests started
@@ -3875,10 +3211,6 @@ function VideoUnderstandingPanel({
   const [analyzeElapsedMs, setAnalyzeElapsedMs] = useState(0);
 
   useEffect(() => {
-    if (fixtureRecord) {
-      setState({ status: "loaded", record: fixtureRecord, message: null });
-      return;
-    }
     if (!enabled || item.contentType !== "video") {
       setState({ status: "idle", record: null, message: null });
       return;
@@ -3906,7 +3238,7 @@ function VideoUnderstandingPanel({
     return () => {
       cancelled = true;
     };
-  }, [enabled, fixtureRecord, item.contentType, item.id]);
+  }, [enabled, item.contentType, item.id]);
 
   // Surface chapters to the host so the player can segment its timeline.
   useEffect(() => {
@@ -4147,13 +3479,8 @@ function MomentsScreen({
   onOpenItem: (moment: api.MomentRecord) => void;
 }) {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [moments, setMoments] = useState<api.MomentRecord[]>(() =>
-    visualFixtureMode ? demoMoments : [],
-  );
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(
-    visualFixtureMode ? "ready" : "loading",
-  );
+  const [moments, setMoments] = useState<api.MomentRecord[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
@@ -4168,11 +3495,6 @@ function MomentsScreen({
   }, [copyStatus]);
 
   const load = useCallback(async () => {
-    if (visualFixtureMode) {
-      setStatus("ready");
-      setMoments(demoMoments);
-      return;
-    }
     if (!actionsEnabled) {
       setStatus("ready");
       setMoments([]);
@@ -4187,17 +3509,13 @@ function MomentsScreen({
       setMessage(errorMessage(error));
       setStatus("error");
     }
-  }, [actionsEnabled, visualFixtureMode]);
+  }, [actionsEnabled]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   async function remove(moment: api.MomentRecord) {
-    if (visualFixtureMode) {
-      setMoments((current) => current.filter((record) => record.id !== moment.id));
-      return;
-    }
     try {
       await api.deleteMoment(moment.id);
       await load();
@@ -4284,24 +3602,12 @@ function EntityDetailScreen({
   onOpenMention: (mention: api.EntityMention) => void;
 }) {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [detail, setDetail] = useState<api.EntityDetail | null>(() =>
-    visualFixtureMode ? demoEntityDetail : null,
-  );
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(
-    visualFixtureMode ? "ready" : "loading",
-  );
+  const [detail, setDetail] = useState<api.EntityDetail | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureMode) {
-      const entity = demoEntities.find((record) => record.id === entityId) ?? demoEntityDetail.entity;
-      setDetail({ ...demoEntityDetail, entity });
-      setStatus("ready");
-      setMessage(null);
-      return;
-    }
     if (!actionsEnabled || !entityId) {
       setStatus("ready");
       setDetail(null);
@@ -4326,7 +3632,7 @@ function EntityDetailScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, entityId, visualFixtureMode]);
+  }, [actionsEnabled, entityId]);
 
   return (
     <div className="page wide">
@@ -4410,7 +3716,6 @@ function LibraryScreen({
     message: string | null;
   }>({ status: "idle", message: null });
   const [entities, setEntities] = useState<api.EntitySummary[]>([]);
-  const visualFixtureMode = visualFixtureModeEnabled();
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
@@ -4444,10 +3749,6 @@ function LibraryScreen({
 
   useEffect(() => {
     let cancelled = false;
-    if (visualFixtureMode) {
-      setEntities(demoEntities);
-      return;
-    }
     if (!actionsEnabled) {
       setEntities([]);
       return;
@@ -4463,7 +3764,7 @@ function LibraryScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, items.length, visualFixtureMode]);
+  }, [actionsEnabled, items.length]);
 
   function clearLibraryFilters() {
     setLibraryQuery("");
@@ -4740,7 +4041,6 @@ function ItemDetail({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
@@ -4756,7 +4056,7 @@ function ItemDetail({
     lines: TranscriptLine[];
     message: string | null;
   }>({
-    status: visualFixtureMode ? "loaded" : "idle",
+    status: "idle",
     lines: transcript,
     message: null,
   });
@@ -4769,7 +4069,7 @@ function ItemDetail({
     apiStatus === "online" && chunkState.status !== "idle" ? chunkState.lines : transcript;
   const momentActions = useItemMoments(
     item,
-    (visualFixtureMode || actionsEnabled) && chunkState.status === "loaded",
+    actionsEnabled && chunkState.status === "loaded",
   );
   const playerMarkers: PlayerMarker[] = useMemo(
     () =>
@@ -4901,10 +4201,6 @@ function ItemDetail({
   }, [onBack]);
 
   useEffect(() => {
-    if (visualFixtureMode) {
-      setChunkState({ status: "loaded", lines: transcript, message: null });
-      return;
-    }
     if (apiStatus !== "online") {
       setChunkState({ status: "idle", lines: transcript, message: null });
       return;
@@ -4930,7 +4226,7 @@ function ItemDetail({
     return () => {
       cancelled = true;
     };
-  }, [apiStatus, item.id, visualFixtureMode]);
+  }, [apiStatus, item.id]);
 
   async function locateSourceFile() {
     setItemAction({ status: "locating", message: null });
@@ -5195,7 +4491,6 @@ function ItemDetail({
             onSeek={seekTo}
             requestConfirm={requestConfirm}
             onChapters={handleUnderstandingChapters}
-            fixtureRecord={visualFixtureMode ? demoVideoUnderstanding : null}
           />
           {itemAction.message ? (
             <p
@@ -7138,21 +6433,13 @@ function AdvancedSettings({
 // breakdown come from the local usageSummary endpoint.
 function UsageSettings() {
   const t = useT();
-  const visualFixtureMode = visualFixtureModeEnabled();
-  const [summary, setSummary] = useState<api.UsageSummary | null>(() =>
-    visualFixtureMode ? demoUsageSummary : null,
-  );
+  const [summary, setSummary] = useState<api.UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const user = useAuthStore((state) => state.user);
   const status = useAuthStore((state) => state.status);
   const signedIn = status === "signedIn" && !!user;
 
   useEffect(() => {
-    if (visualFixtureMode) {
-      setSummary(demoUsageSummary);
-      setError(null);
-      return;
-    }
     let active = true;
     void (async () => {
       try {
@@ -7169,7 +6456,7 @@ function UsageSettings() {
     return () => {
       active = false;
     };
-  }, [visualFixtureMode]);
+  }, []);
 
   const total = summary?.total.estimated_usd ?? 0;
   const events = summary?.total.event_count ?? 0;
