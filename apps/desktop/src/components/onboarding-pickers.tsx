@@ -130,11 +130,7 @@ export function OnboardingFolderPicker({
             </button>
           ))}
         </div>
-      ) : (
-        <p className="field-hint" style={{ gridColumn: "1 / -1" }}>
-          {t("onboarding.folder.emptyHint")}
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -206,14 +202,18 @@ export function OnboardingYoutubePicker({
             : t("onboarding.youtube.validate")}
         </span>
       </button>
-      <SourcePreview
-        icon={<Youtube size={19} />}
-        initials="YT"
-        title={t("source.preview.youtubeTitle")}
-        validation={validation}
-        idleMessage={t("source.preview.youtubeIdle")}
-        validDetail={t("onboarding.youtube.previewValidDetail")}
-      />
+      {/* Preview only appears once a link is being validated — the idle
+          placeholder card was just clutter on the first-run step. */}
+      {validation.status !== "idle" ? (
+        <SourcePreview
+          icon={<Youtube size={19} />}
+          initials="YT"
+          title={t("source.preview.youtubeTitle")}
+          validation={validation}
+          idleMessage={t("source.preview.youtubeIdle")}
+          validDetail={t("onboarding.youtube.previewValidDetail")}
+        />
+      ) : null}
       {channels.length > 0 ? (
         <div
           className="youtube-channel-list"
