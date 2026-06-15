@@ -141,6 +141,7 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
+import { brandAssets } from "./lib/brand";
 import { AccountRailButton } from "./components/account-sidebar";
 import type {
   ApiStatus,
@@ -2335,7 +2336,7 @@ function HomeScreen({
     <div className="page home-page" style={{ maxWidth: 920 }}>
       <div className="home-search-stage">
         <div className="home-hero-mark" aria-hidden="true">
-          <BrandMark variant="color" />
+          <img className="home-hero-icon" src={brandAssets.appIcon} alt="" />
         </div>
         <h1>{t("home.heading")}</h1>
         <p className="muted home-summary">

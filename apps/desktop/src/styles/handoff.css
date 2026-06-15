@@ -717,3 +717,31 @@
 .jobs-tl-card .job-meta, .jobs-tl-card .job-usage { margin: 6px 0 0; }
 .jobs-tl-card .job-fix { margin-bottom: 0; margin-top: 4px; }
 .jobs-tl-card .job-tech { margin-top: 10px; }
+
+/* ============================================================
+   HOME HERO — the desktop app icon (brushed-silver squircle + mark)
+   ============================================================ */
+.home-hero-mark {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 22px;
+}
+.home-hero-mark::before {
+  content: "";
+  position: absolute;
+  width: 124px;
+  height: 124px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(62, 107, 157, 0.12), rgba(62, 107, 157, 0) 68%);
+  pointer-events: none;
+}
+.home-hero-icon {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  display: block;
+  filter: drop-shadow(0 12px 22px rgba(28, 40, 60, 0.26));
+}
