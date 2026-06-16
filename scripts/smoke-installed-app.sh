@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DMG=""
 DRY_RUN=0
-DEFAULT_APP_VERSION="0.0.1"
+DEFAULT_APP_VERSION="0.0.2"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
