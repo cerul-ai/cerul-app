@@ -97,7 +97,6 @@
       "category": "public.app-category.productivity"
     },
     "dmg": {
-      "sign": true,
       "background": "../desktop/public/brand/dmg/dmg-background.png",
       "iconSize": 120,
       "window": {
