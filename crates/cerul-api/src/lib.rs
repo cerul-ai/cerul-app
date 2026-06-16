@@ -17,7 +17,7 @@ use axum::{
 };
 use cerul_models::{ContentType, DiscoveredItem, HealthResponse};
 use cerul_storage::AppPaths;
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{types::Value as SqlValue, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncSeekExt;
@@ -34,6 +34,8 @@ pub mod providers;
 pub mod video_understanding;
 
 const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_LIST_LIMIT: usize = 250;
+const MAX_LIST_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -1036,9 +1038,57 @@ async fn resume_source(
     Ok(Json(json!({ "status": "active", "id": id })))
 }
 
-async fn list_items(State(state): State<ApiState>) -> ApiResult<Json<Vec<ItemRecord>>> {
+#[derive(Debug, Deserialize)]
+struct ListItemsQuery {
+    limit: Option<usize>,
+    /// Offset-style cursor. Kept as a string-free integer so invalid values get
+    /// rejected by Axum before reaching SQLite.
+    cursor: Option<usize>,
+    status: Option<String>,
+    source_id: Option<String>,
+    light: Option<bool>,
+    include_usage: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListJobsQuery {
+    limit: Option<usize>,
+    cursor: Option<usize>,
+    status: Option<String>,
+    source_id: Option<String>,
+    item_id: Option<String>,
+    light: Option<bool>,
+    include_usage: Option<bool>,
+}
+
+fn list_limit(limit: Option<usize>) -> usize {
+    limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT)
+}
+
+fn split_filter_values(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .take(32)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+async fn list_items(
+    State(state): State<ApiState>,
+    Query(query): Query<ListItemsQuery>,
+) -> ApiResult<Json<Vec<ItemRecord>>> {
+    let limit = list_limit(query.limit);
+    let offset = query.cursor.unwrap_or(0);
+    let light = query.light.unwrap_or(false);
+    let include_usage = query.include_usage.unwrap_or(!light);
+    let statuses = split_filter_values(query.status.as_deref());
+    let metadata_expr = if light { "NULL" } else { "i.metadata" };
     let conn = cerul_storage::sqlite::open(&state.paths)?;
-    let mut stmt = conn.prepare(
+    let mut params: Vec<SqlValue> = Vec::new();
+    let mut sql = format!(
         r#"
         SELECT i.id, i.source_id, i.content_type, i.external_id, i.title,
                COALESCE(i.duration_sec, (
@@ -1046,7 +1096,7 @@ async fn list_items(State(state): State<ApiState>) -> ApiResult<Json<Vec<ItemRec
                    FROM chunks c2
                    WHERE c2.item_id = i.id
                )) AS duration_sec,
-               i.raw_path, i.indexed_at, i.status, i.error, i.metadata,
+               i.raw_path, i.indexed_at, i.status, i.error, {metadata_expr} AS metadata,
                (
                    SELECT c.id
                    FROM chunks c
@@ -1056,12 +1106,39 @@ async fn list_items(State(state): State<ApiState>) -> ApiResult<Json<Vec<ItemRec
                    LIMIT 1
                ) AS thumbnail_chunk_id
         FROM items i
-        ORDER BY i.indexed_at DESC, i.id ASC
+        WHERE 1 = 1
+        "#
+    );
+    if !statuses.is_empty() {
+        sql.push_str(" AND i.status IN (");
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push(')');
+        params.extend(statuses.into_iter().map(SqlValue::from));
+    }
+    if let Some(source_id) = query.source_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND i.source_id = ?");
+        params.push(SqlValue::from(source_id));
+    }
+    sql.push_str(
+        r#"
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, i.id ASC
+        LIMIT ? OFFSET ?
         "#,
-    )?;
-    let rows = stmt.query_map([], item_from_row)?;
+    );
+    params.push(SqlValue::from(limit as i64));
+    params.push(SqlValue::from(offset as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), item_from_row)?;
     let mut items = rows.collect::<Result<Vec<_>, _>>()?;
-    attach_item_usage(&state.paths, &mut items);
+    if include_usage {
+        attach_item_usage(&state.paths, &mut items);
+    }
 
     Ok(Json(items))
 }
@@ -1410,17 +1487,59 @@ async fn get_chunk_video_clip(
     Ok(response)
 }
 
-async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecord>>> {
+async fn list_jobs(
+    State(state): State<ApiState>,
+    Query(query): Query<ListJobsQuery>,
+) -> ApiResult<Json<Vec<JobRecord>>> {
+    let limit = list_limit(query.limit);
+    let offset = query.cursor.unwrap_or(0);
+    let light = query.light.unwrap_or(false);
+    let include_usage = query.include_usage.unwrap_or(!light);
+    let statuses = split_filter_values(query.status.as_deref());
+    let error_expr = if light { "NULL" } else { "j.error" };
+    let stage_message_expr = if light { "NULL" } else { "j.stage_message" };
     let conn = cerul_storage::sqlite::open(&state.paths)?;
-    let mut stmt = conn.prepare(
+    let mut params: Vec<SqlValue> = Vec::new();
+    let mut sql = format!(
         r#"
-        SELECT id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
-        FROM jobs
-        ORDER BY COALESCE(started_at, 0) DESC, id ASC
+        SELECT j.id, j.item_id, j.job_type, j.status, j.started_at, j.finished_at,
+               {error_expr} AS error, j.progress, j.stage, {stage_message_expr} AS stage_message
+        FROM jobs j
+        WHERE 1 = 1
+        "#
+    );
+    if !statuses.is_empty() {
+        sql.push_str(" AND j.status IN (");
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push(')');
+        params.extend(statuses.into_iter().map(SqlValue::from));
+    }
+    if let Some(item_id) = query.item_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND j.item_id = ?");
+        params.push(SqlValue::from(item_id));
+    }
+    if let Some(source_id) = query.source_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM items i WHERE i.id = j.item_id AND i.source_id = ?)",
+        );
+        params.push(SqlValue::from(source_id));
+    }
+    sql.push_str(
+        r#"
+        ORDER BY COALESCE(j.started_at, 0) DESC, j.id ASC
+        LIMIT ? OFFSET ?
         "#,
-    )?;
-    let mut usage_by_job = cerul_storage::usage_totals_by_job(&state.paths).unwrap_or_default();
-    let rows = stmt.query_map([], |row| {
+    );
+    params.push(SqlValue::from(limit as i64));
+    params.push(SqlValue::from(offset as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
         let job_id: String = row.get(0)?;
         let job_type: String = row.get(2)?;
         let error: Option<String> = row.get(6)?;
@@ -1443,8 +1562,13 @@ async fn list_jobs(State(state): State<ApiState>) -> ApiResult<Json<Vec<JobRecor
     })?;
 
     let mut jobs = rows.collect::<Result<Vec<_>, _>>()?;
-    for job in &mut jobs {
-        job.usage = usage_by_job.remove(&job.id).unwrap_or_default();
+    if include_usage {
+        let job_ids = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
+        let mut usage_by_job =
+            cerul_storage::usage_totals_by_job_ids(&state.paths, &job_ids).unwrap_or_default();
+        for job in &mut jobs {
+            job.usage = usage_by_job.remove(&job.id).unwrap_or_default();
+        }
     }
     Ok(Json(jobs))
 }
@@ -2505,7 +2629,8 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
 fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
     // Single GROUP BY query; per-item lookups opened one SQLite connection
     // per row and made GET /items O(n) connections.
-    let mut totals = cerul_storage::usage_totals_by_item(paths).unwrap_or_default();
+    let item_ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    let mut totals = cerul_storage::usage_totals_by_item_ids(paths, &item_ids).unwrap_or_default();
     for item in items {
         item.usage = totals.remove(&item.id).unwrap_or_default();
     }
@@ -4802,6 +4927,113 @@ mod tests {
         let jobs = response_json(jobs).await;
         assert_eq!(jobs[0]["usage"]["event_count"], 1);
         assert_eq!(jobs[0]["usage"]["audio_seconds"], 60.0);
+    }
+
+    #[tokio::test]
+    async fn list_items_supports_paging_filters_and_light_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_indexing_schema_version(&paths);
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active'), ('source-b', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES
+                    ('item-new', 'source-a', 'video', 'new.mp4', 'New', 30, 'indexed', '{"channel":"heavy"}'),
+                    ('item-old', 'source-a', 'video', 'old.mp4', 'Old', 10, 'indexed', '{"channel":"heavy"}'),
+                    ('item-other', 'source-b', 'video', 'other.mp4', 'Other', 20, 'indexed', '{"channel":"heavy"}'),
+                    ('item-running', 'source-a', 'video', 'running.mp4', 'Running', NULL, 'discovered', '{"channel":"heavy"}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items?source_id=source-a&status=indexed&limit=1&cursor=1&light=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let items = response_json(response).await;
+        let items = items.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "item-old");
+        assert_eq!(items[0]["metadata"], json!({}));
+        assert_eq!(items[0]["usage"]["event_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn list_jobs_supports_paging_filters_and_light_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active'), ('source-b', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, title, status, metadata)
+                VALUES
+                    ('item-a', 'source-a', 'video', 'a.mp4', 'A', 'discovered', '{}'),
+                    ('item-b', 'source-b', 'video', 'b.mp4', 'B', 'discovered', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
+                )
+                VALUES
+                    ('job-a-running', 'item-a', 'index_video', 'running', 30, NULL, 'verbose error', 0.5, 'asr', 'verbose stage'),
+                    ('job-a-done', 'item-a', 'index_video', 'succeeded', 20, 25, NULL, 1, 'done', NULL),
+                    ('job-b-running', 'item-b', 'index_video', 'running', 40, NULL, NULL, 0.25, 'asr', NULL)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/jobs?source_id=source-a&status=queued,running&limit=1&light=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let jobs = response_json(response).await;
+        let jobs = jobs.as_array().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["id"], "job-a-running");
+        assert_eq!(jobs[0]["error"], Value::Null);
+        assert_eq!(jobs[0]["stage_message"], Value::Null);
+        assert_eq!(jobs[0]["usage"]["event_count"], 0);
     }
 
     #[tokio::test]
