@@ -46,7 +46,8 @@ rg -qF "export function chunkFrameUrl" apps/desktop/src/lib/api.ts
 rg -qF "export async function listJobs" apps/desktop/src/lib/api.ts
 rg -qF "export async function deleteItem" apps/desktop/src/lib/api.ts
 rg -qF "export async function reindexItem" apps/desktop/src/lib/api.ts
-rg -qF '.route("/items/:id", get(get_item).delete(remove_item))' crates/cerul-api/src/lib.rs
+rg -qF '"/items/:id"' crates/cerul-api/src/lib.rs
+rg -qF "get(get_item).patch(update_item).delete(remove_item)" crates/cerul-api/src/lib.rs
 rg -qF '.route("/items/:id/reindex", post(reindex_item))' crates/cerul-api/src/lib.rs
 rg -qF "async fn remove_item" crates/cerul-api/src/lib.rs
 rg -qF "async fn reindex_item" crates/cerul-api/src/lib.rs

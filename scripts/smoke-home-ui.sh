@@ -5,12 +5,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 rg -qF 'if (!hasSources && apiStatus === "online")' apps/desktop/src
-rg -qF 't("home.empty.addFirst")' apps/desktop/src
-rg -qF 't("home.empty.title")' apps/desktop/src
-rg -qF 't("home.empty.body")' apps/desktop/src
-rg -qF '"home.empty.addFirst": "Add your first source"' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"home.empty.title": "Nothing to search yet."' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"home.empty.body": "Add a folder of videos, follow a YouTube channel, or connect a feed. Cerul indexes transcripts first, then adds remote API or local model retrieval."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF 't("home.emptyHero.eyebrow")' apps/desktop/src
+rg -qF 't("home.emptyHero.title")' apps/desktop/src
+rg -qF 't("home.emptyHero.body")' apps/desktop/src
+rg -qF 't("home.emptyHero.dragTitle")' apps/desktop/src
+rg -qF 't("home.emptyHero.followYoutube")' apps/desktop/src
+rg -qF '"home.emptyHero.title": "Turn video into searchable memory."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"home.emptyHero.dragTitle": "Drag a folder of videos here"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"home.emptyHero.followYoutube": "Follow a YouTube channel"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"home.searchPlaceholder": "Search any sentence from meetings, podcasts, or interviews..."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "const searchDisabled = hasSources && indexedCount === 0" apps/desktop/src
 rg -qF '"home.searchLockedPlaceholder": "Search unlocks after the first item is indexed"' apps/desktop/src/lib/i18n-catalog.ts

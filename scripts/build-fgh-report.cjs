@@ -82,7 +82,7 @@ const html = `<!doctype html>
   <p class="sec-note">F 是 electron-builder 的 DMG 背景资源。已重绘成原型设计、<b>真打了一个 DMG 包并挂载验证</b>。</p>
   ${cmp("proto-F-installer", "dmg-composite", "原型 · InstallerDMG", "实现 · 真实 DMG 合成效果（背景 + app 图标 + Applications + 标签）")}
   <p class="cap">对比要点：<b>「拖到这里安装」钢蓝标签 + 钢蓝箭头</b>、Applications 钢蓝虚线投放目标、底部 <b>Gatekeeper 提示卡</b>（i 徽章 + 系统设置 › 隐私与安全性 · 仍要打开）。<b>已按反馈删掉顶部品牌锁定</b>（app 图标本身已代表品牌，装机窗里那行 logo+标语用处不大），版面更精简、图标重新居中。右图是真实 app 图标 + Applications 文件夹合成进背景后的效果。</p>
-  <div class="matchbox"><b>已真打包验证：</b> <code>electron-builder</code> 打出 <code>Cerul-0.0.1-alpha.4-arm64.dmg</code>（ad-hoc 签名），挂载<b>干净无「已损坏」报错</b>，app 图标（拉丝银方块）+ Applications 别名 + 文字标签全部就位。背景改成<b>近白均匀色</b>——拉伸窗口也无色缝；顶部品牌锁定按反馈移除、图标重新居中。</div>
+  <div class="matchbox"><b>已真打包验证：</b> <code>electron-builder</code> 打出 <code>Cerul-0.0.1-arm64.dmg</code>（ad-hoc 签名），挂载<b>干净无「已损坏」报错</b>，app 图标（拉丝银方块）+ Applications 别名 + 文字标签全部就位。背景改成<b>近白均匀色</b>——拉伸窗口也无色缝；顶部品牌锁定按反馈移除、图标重新居中。</div>
 </section>
 
 <footer>

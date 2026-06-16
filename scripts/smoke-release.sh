@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/corepack-pnpm.sh"
 DRY_RUN=0
 SKIP_INSTALLERS=0
 SKIP_FETCH=0
@@ -18,7 +19,7 @@ RUN_INSTALLED_HOTKEY_MANUAL=0
 MODELS_CACHE="${CERUL_MODEL_SMOKE_CACHE:-}"
 MODEL_RETRIES="${CERUL_MODEL_SMOKE_RETRIES:-2}"
 REPORT_PATH="$ROOT/.tmp/smoke-release-checklist.md"
-DEFAULT_APP_VERSION="0.0.1-alpha.3"
+DEFAULT_APP_VERSION="0.0.1"
 
 if command -v node >/dev/null 2>&1 && [ -f "$ROOT/apps/electron-shell/package.json" ]; then
   DEFAULT_APP_VERSION="$(cd "$ROOT" && node -p "require('./apps/electron-shell/package.json').version")"
@@ -142,6 +143,13 @@ while [ "$#" -gt 0 ]; do
 done
 
 cd "$ROOT"
+prepare_corepack_pnpm_path "$ROOT" "$DRY_RUN"
+if [ "$(uname -s)" = "Darwin" ] &&
+  [ -z "${CSC_LINK:-}" ] &&
+  [ -z "${CSC_NAME:-}" ] &&
+  [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  export CSC_IDENTITY_AUTO_DISCOVERY="${CSC_IDENTITY_AUTO_DISCOVERY:-false}"
+fi
 
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then

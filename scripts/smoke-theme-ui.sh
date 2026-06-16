@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-rg -qF "const themePreference = settingString(data.settings, \"theme\", \"Dark\")" apps/desktop/src
+rg -qF "const themePreference = settingString(data.settings, \"theme\", \"System\")" apps/desktop/src
 rg -qF "function resolveThemePreference" apps/desktop/src
 rg -qF "window.matchMedia(\"(prefers-color-scheme: light)\")" apps/desktop/src
 rg -qF "root.dataset.theme = resolvedTheme" apps/desktop/src

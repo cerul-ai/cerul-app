@@ -5,6 +5,7 @@ set -euo pipefail
 export CERUL_RELEASE_BUILD=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/corepack-pnpm.sh"
 TARGET=""
 DEBUG=0
 NO_BUNDLE=0
@@ -173,6 +174,13 @@ electron_builder_args() {
 }
 
 check_signing_prereqs
+prepare_corepack_pnpm_path "$ROOT" "$DRY_RUN"
+if target_is_macos &&
+  [ -z "${CSC_LINK:-}" ] &&
+  [ -z "${CSC_NAME:-}" ] &&
+  [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  export CSC_IDENTITY_AUTO_DISCOVERY="${CSC_IDENTITY_AUTO_DISCOVERY:-false}"
+fi
 
 if [ "$SKIP_FETCH" -eq 0 ]; then
   fetch_args=()
@@ -237,7 +245,7 @@ if [ "$NO_BUNDLE" -eq 1 ] || [ "$DEBUG" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 echo "Installer artifacts:"
-artifacts="$(find "$bundle_root" -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.msi" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -print 2>/dev/null || true)"
+artifacts="$(find "$bundle_root" -maxdepth 1 -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.msi" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -print 2>/dev/null || true)"
 if [ -z "$artifacts" ]; then
   echo "No installer artifacts found under $bundle_root." >&2
   exit 1

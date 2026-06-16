@@ -12,7 +12,8 @@ rg -qF "api.listSources()" apps/desktop/src/OverlayApp.tsx
 rg -qF "mapOverlayResult(record, items, sources, t)" apps/desktop/src/OverlayApp.tsx
 rg -qF "function overlaySourceLabel" apps/desktop/src/OverlayApp.tsx
 rg -qF "function overlaySourceName" apps/desktop/src/OverlayApp.tsx
-rg -qF "compactUrlLabel(url, t(\"overlay.source.youtube\"))" apps/desktop/src/OverlayApp.tsx
+rg -qF "source.type === \"web_video\" ? t(\"overlay.source.webVideo\") : t(\"overlay.source.youtube\")" apps/desktop/src/OverlayApp.tsx
+rg -qF "compactUrlLabel(url, label)" apps/desktop/src/OverlayApp.tsx
 rg -qF "compactUrlLabel(feedUrl, t(\"overlay.source.podcast\"))" apps/desktop/src/OverlayApp.tsx
 rg -qF "function OverlayThumbGlyph" apps/desktop/src/OverlayApp.tsx
 rg -qF "function OverlayHint" apps/desktop/src/OverlayApp.tsx

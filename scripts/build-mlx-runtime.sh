@@ -71,11 +71,16 @@ find "$RUNTIME_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/
 find "$RUNTIME_DIR" -name "*.pyc" -delete 2>/dev/null || true
 rm -rf "$STDLIB/tkinter" "$STDLIB/idlelib" "$STDLIB/turtledemo" "$STDLIB/lib2to3" \
   "$STDLIB/test" "$STDLIB"/*/tests "$STDLIB"/site-packages/*/tests 2>/dev/null || true
+find "$STDLIB/site-packages" -type d \( -name "test" -o -name "tests" \) -prune -exec rm -rf {} + 2>/dev/null || true
 rm -f "$STDLIB"/lib-dynload/_tkinter*.so "$STDLIB"/turtle.py 2>/dev/null || true
 rm -rf "$RUNTIME_DIR"/lib/libtcl*.dylib "$RUNTIME_DIR"/lib/libtk*.dylib \
   "$RUNTIME_DIR"/lib/tcl* "$RUNTIME_DIR"/lib/tk* "$RUNTIME_DIR"/lib/libtcl9thread*.dylib \
   "$RUNTIME_DIR"/lib/thread3* "$RUNTIME_DIR"/lib/itcl* 2>/dev/null || true
 rm -rf "$RUNTIME_DIR/include" "$RUNTIME_DIR/share" 2>/dev/null || true
+rm -rf "$STDLIB/ensurepip" "$STDLIB/site-packages/pip" "$STDLIB"/site-packages/pip-*.dist-info \
+  "$STDLIB/site-packages/setuptools" "$STDLIB"/site-packages/setuptools-*.dist-info \
+  "$STDLIB/site-packages/pkg_resources" 2>/dev/null || true
+find "$STDLIB/site-packages" -type f -name "*.exe" -delete 2>/dev/null || true
 
 # Precompile ALL bytecode now (deterministic) so the signed bundle never needs
 # to write .pyc at runtime — that would break the app's code seal. Paired with
