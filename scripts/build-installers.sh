@@ -175,6 +175,9 @@ electron_builder_args() {
 
 check_signing_prereqs
 prepare_corepack_pnpm_path "$ROOT" "$DRY_RUN"
+if [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_PASSWORD:-}" ]; then
+  export APPLE_APP_SPECIFIC_PASSWORD="$APPLE_PASSWORD"
+fi
 if target_is_macos &&
   [ -z "${CSC_LINK:-}" ] &&
   [ -z "${CSC_NAME:-}" ] &&
