@@ -330,8 +330,78 @@ fn similarity_from_qdrant_score(score: f32, distance_metric: &str) -> f32 {
 }
 
 fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult>> {
+    if hits.is_empty() {
+        return Ok(Vec::new());
+    }
     let conn = cerul_storage::sqlite::open(paths)?;
-    let mut stmt = conn.prepare(
+    let chunks = load_chunks_for_hits(&conn, hits)?;
+    let mut results = Vec::with_capacity(hits.len());
+
+    for hit in hits {
+        let Some(chunk) = chunks.get(&hit.chunk_id) else {
+            continue;
+        };
+        let snippet = chunk
+            .text
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| fallback_snippet(&chunk.chunk_type, chunk.start_sec));
+
+        results.push(SearchResult {
+            chunk_id: chunk.id.clone(),
+            item_id: chunk.item_id.clone(),
+            chunk_type: chunk.chunk_type.clone(),
+            start_sec: chunk.start_sec,
+            end_sec: chunk.end_sec,
+            snippet,
+            frame_path: chunk.frame_path.clone(),
+            score: hit.score,
+            similarity_score: hit.similarity_score,
+            item_title: chunk.item_title.clone(),
+            nearest_frame_chunk_id: None,
+        });
+    }
+
+    attach_nearest_frame_chunk_ids(&conn, &mut results)?;
+    Ok(results)
+}
+
+#[derive(Debug, Clone)]
+struct HydratedChunk {
+    id: String,
+    item_id: String,
+    chunk_type: String,
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    text: Option<String>,
+    frame_path: Option<String>,
+    item_title: Option<String>,
+}
+
+fn load_chunks_for_hits(
+    conn: &rusqlite::Connection,
+    hits: &[RawHit],
+) -> anyhow::Result<HashMap<String, HydratedChunk>> {
+    let mut seen = HashSet::new();
+    let chunk_ids = hits
+        .iter()
+        .filter_map(|hit| {
+            if seen.insert(hit.chunk_id.as_str()) {
+                Some(hit.chunk_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if chunk_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(chunk_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
         SELECT
             c.id,
@@ -344,85 +414,114 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult
             i.title
         FROM chunks c
         LEFT JOIN items i ON i.id = c.item_id
-        WHERE c.id = ?1
+        WHERE c.id IN ({placeholders})
         "#,
-    )?;
-    let mut results = Vec::with_capacity(hits.len());
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
+        Ok(HydratedChunk {
+            id: row.get(0)?,
+            item_id: row.get(1)?,
+            chunk_type: row.get(2)?,
+            start_sec: row.get(3)?,
+            end_sec: row.get(4)?,
+            text: row.get(5)?,
+            frame_path: row.get(6)?,
+            item_title: row.get(7)?,
+        })
+    })?;
 
-    for hit in hits {
-        match stmt.query_row([hit.chunk_id.as_str()], |row| {
-            let text: Option<String> = row.get(5)?;
-            let frame_path: Option<String> = row.get(6)?;
-            let chunk_type: String = row.get(2)?;
-            let start_sec: Option<f64> = row.get(3)?;
-            let end_sec: Option<f64> = row.get(4)?;
-            let item_title: Option<String> = row.get(7)?;
-            let snippet = text
-                .clone()
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| fallback_snippet(&chunk_type, start_sec));
-
-            Ok(SearchResult {
-                chunk_id: row.get(0)?,
-                item_id: row.get(1)?,
-                chunk_type,
-                start_sec,
-                end_sec,
-                snippet,
-                frame_path,
-                score: hit.score,
-                similarity_score: hit.similarity_score,
-                item_title,
-                nearest_frame_chunk_id: None,
-            })
-        }) {
-            Ok(mut result) => {
-                // A transcript row has no frame of its own; attach the keyframe
-                // nearest its timestamp so the UI can show what was on screen
-                // when the line was spoken.
-                if result.frame_path.is_none() {
-                    result.nearest_frame_chunk_id =
-                        nearest_keyframe_chunk_id(&conn, &result.item_id, result.start_sec)?;
-                }
-                results.push(result);
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-            Err(error) => return Err(error.into()),
-        }
+    let mut chunks = HashMap::with_capacity(chunk_ids.len());
+    for chunk in rows {
+        let chunk = chunk?;
+        chunks.insert(chunk.id.clone(), chunk);
     }
-
-    Ok(results)
+    Ok(chunks)
 }
 
-/// Finds the keyframe/image chunk for `item_id` whose timestamp is closest to
-/// `target_sec`. Returns `None` when the item has no frames or the row itself
-/// has no timestamp to anchor to.
-fn nearest_keyframe_chunk_id(
+fn attach_nearest_frame_chunk_ids(
     conn: &rusqlite::Connection,
-    item_id: &str,
-    target_sec: Option<f64>,
-) -> anyhow::Result<Option<String>> {
-    let Some(target) = target_sec else {
-        return Ok(None);
+    results: &mut [SearchResult],
+) -> anyhow::Result<()> {
+    let mut seen = HashSet::new();
+    let item_ids = results
+        .iter()
+        .filter(|result| result.frame_path.is_none() && result.start_sec.is_some())
+        .filter_map(|result| {
+            if seen.insert(result.item_id.as_str()) {
+                Some(result.item_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if item_ids.is_empty() {
+        return Ok(());
+    }
+
+    let frames_by_item = load_frame_chunks_by_item(conn, &item_ids)?;
+    for result in results {
+        let Some(target) = result.start_sec else {
+            continue;
+        };
+        if result.frame_path.is_some() {
+            continue;
+        }
+        let Some(frames) = frames_by_item.get(&result.item_id) else {
+            continue;
+        };
+        result.nearest_frame_chunk_id = frames
+            .iter()
+            .min_by(|left, right| {
+                (left.0 - target)
+                    .abs()
+                    .partial_cmp(&(right.0 - target).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(_, chunk_id)| chunk_id.clone());
+    }
+    Ok(())
+}
+
+fn load_frame_chunks_by_item(
+    conn: &rusqlite::Connection,
+    item_ids: &[String],
+) -> anyhow::Result<HashMap<String, Vec<(f64, String)>>> {
+    if item_ids.is_empty() {
+        return Ok(HashMap::new());
     };
-    match conn.query_row(
+    let placeholders = std::iter::repeat("?")
+        .take(item_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
-        SELECT id
+        SELECT item_id, start_sec, id
         FROM chunks
-        WHERE item_id = ?1
+        WHERE item_id IN ({placeholders})
           AND chunk_type IN ('keyframe', 'image')
           AND frame_path IS NOT NULL
           AND start_sec IS NOT NULL
-        ORDER BY ABS(start_sec - ?2)
-        LIMIT 1
         "#,
-        rusqlite::params![item_id, target],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(id) => Ok(Some(id)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error.into()),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut frames_by_item: HashMap<String, Vec<(f64, String)>> = HashMap::new();
+    for row in rows {
+        let (item_id, start_sec, chunk_id) = row?;
+        frames_by_item
+            .entry(item_id)
+            .or_default()
+            .push((start_sec, chunk_id));
     }
+    Ok(frames_by_item)
 }
 
 fn fallback_snippet(chunk_type: &str, start_sec: Option<f64>) -> String {
@@ -651,6 +750,62 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk_id, "item-1:transcript:000000");
         assert!(results[0].snippet.contains("fallback search"));
+    }
+
+    #[tokio::test]
+    async fn hydrate_preserves_hit_order_with_batch_query() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let chunks = vec![
+            StorageTranscriptChunk {
+                start: 1.0,
+                end: 2.0,
+                text: "first chunk".to_string(),
+            },
+            StorageTranscriptChunk {
+                start: 3.0,
+                end: 4.0,
+                text: "second chunk".to_string(),
+            },
+        ];
+        cerul_storage::write_video_chunks(
+            &paths,
+            "item-1",
+            &chunks,
+            &[],
+            &[fake_vector(0), fake_vector(1)],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let results = hydrate(
+            &paths,
+            &[
+                RawHit {
+                    chunk_id: "item-1:transcript:000001".to_string(),
+                    score: 0.9,
+                    similarity_score: Some(0.9),
+                },
+                RawHit {
+                    chunk_id: "item-1:transcript:000000".to_string(),
+                    score: 0.8,
+                    similarity_score: Some(0.8),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["item-1:transcript:000001", "item-1:transcript:000000"]
+        );
+        assert_eq!(results[0].score, 0.9);
+        assert_eq!(results[1].score, 0.8);
     }
 
     #[tokio::test]

@@ -57,6 +57,21 @@ PINNED_MODEL_REVISIONS = {
     DEFAULT_OCR_MODEL: "9c4f5209e57b31f4b9dfba735de3fb983739c9cc",
     DEFAULT_WHISPER_MODEL: "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
 }
+PINNED_SNAPSHOT_REQUIRED_FILES = {
+    DEFAULT_EMBEDDING_MODEL: (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ),
+    DEFAULT_OCR_MODEL: (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ),
+}
+PINNED_SNAPSHOT_WEIGHT_GLOBS = ("*.safetensors", "*.bin", "*.npz")
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,10 +121,48 @@ def env_positive_int(name: str, fallback: int) -> int:
     return max(1, value)
 
 
+def pinned_snapshot_missing_reasons(snapshot: Path, model_id_or_path: str) -> list[str]:
+    if not snapshot.is_dir():
+        return ["snapshot directory is missing"]
+    try:
+        has_entries = any(snapshot.iterdir())
+    except OSError as exc:
+        return [f"snapshot directory is unreadable: {exc}"]
+    if not has_entries:
+        return ["snapshot directory is empty"]
+
+    required_files = PINNED_SNAPSHOT_REQUIRED_FILES.get(model_id_or_path, ("config.json",))
+    missing = [name for name in required_files if not (snapshot / name).is_file()]
+    if missing:
+        return [f"missing {', '.join(missing)}"]
+
+    if not any(any(snapshot.rglob(pattern)) for pattern in PINNED_SNAPSHOT_WEIGHT_GLOBS):
+        return ["missing model weights"]
+    return []
+
+
 def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = None) -> Path:
     local_path = Path(model_id_or_path)
     if local_path.exists():
         return local_path
+    pinned = PINNED_MODEL_REVISIONS.get(model_id_or_path)
+    hf_home = os.environ.get("HF_HOME")
+    if pinned and hf_home:
+        cached = (
+            Path(hf_home)
+            / "hub"
+            / f"models--{model_id_or_path.replace('/', '--')}"
+            / "snapshots"
+            / pinned
+        )
+        missing_reasons = pinned_snapshot_missing_reasons(cached, model_id_or_path)
+        if not missing_reasons:
+            return cached
+        print(
+            "prepare: pinned snapshot cache incomplete for "
+            f"{model_id_or_path} ({'; '.join(missing_reasons)}); repairing",
+            file=sys.stderr,
+        )
 
     from huggingface_hub import snapshot_download
 
@@ -135,6 +188,83 @@ def patch_qwen3_vl_processor(processor: Any) -> list[str]:
         inner.audio_ids = [getattr(inner, "audio_token_id", None)]
         shims.append("set Qwen3VLProcessor.audio_ids")
     return shims
+
+
+def patch_qwen3_vl_auto_image_processor() -> list[str]:
+    """Keep mlx-embeddings' Qwen3-VL processor torch-free.
+
+    mlx-embeddings 0.1.0 asks Transformers' AutoImageProcessor to build the
+    Qwen3-VL image processor. In our packaged runtime, Transformers 5.x routes
+    that through torch/torchvision-backed image processing even for text-only
+    embedding loads. Cerul deliberately does not bundle torch, so install a
+    narrow Qwen3-VL-only replacement before calling mlx_embeddings.load().
+    """
+    try:
+        import numpy as np
+        import mlx_embeddings.models.qwen3_vl.processor as qwen3_vl_processor
+        from mlx_vlm.models.qwen3_vl.processing_qwen3_vl import (
+            Qwen3VLImageProcessor,
+            _qwen_vl_image_kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve the original load error.
+        print(
+            f"embedding: Qwen3-VL torch-free image patch unavailable ({exc})",
+            file=sys.stderr,
+        )
+        return []
+
+    current = getattr(qwen3_vl_processor, "AutoImageProcessor", None)
+    if getattr(current, "_cerul_torch_free_qwen3_vl", False):
+        return ["patch Qwen3-VL AutoImageProcessor to mlx-vlm torch-free processor"]
+
+    def flatten_image_inputs(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, (str, os.PathLike)):
+            return [str(value)]
+        if isinstance(value, np.ndarray) or hasattr(value, "convert"):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            flattened: list[Any] = []
+            for item in value:
+                flattened.extend(flatten_image_inputs(item))
+            return flattened
+        return [value]
+
+    class CerulQwen3VLImageProcessor(Qwen3VLImageProcessor):
+        def fetch_images(self, images):
+            return super().fetch_images(flatten_image_inputs(images))
+
+        def __call__(self, images=None, **kwargs):
+            overrides = {}
+            for key in ("min_pixels", "max_pixels"):
+                value = kwargs.get(key)
+                if value is not None and hasattr(self, key):
+                    overrides[key] = getattr(self, key)
+                    setattr(self, key, value)
+            try:
+                return super().__call__(flatten_image_inputs(images), **kwargs)
+            finally:
+                for key, value in overrides.items():
+                    setattr(self, key, value)
+
+        def preprocess(self, images, **kwargs):
+            return self(images, **kwargs)
+
+    class CerulAutoImageProcessor:
+        _cerul_torch_free_qwen3_vl = True
+
+        @classmethod
+        def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+            del cls
+            image_kwargs = _qwen_vl_image_kwargs(
+                pretrained_model_name_or_path,
+                default_patch_size=16,
+            )
+            return CerulQwen3VLImageProcessor(**image_kwargs)
+
+    qwen3_vl_processor.AutoImageProcessor = CerulAutoImageProcessor
+    return ["patch Qwen3-VL AutoImageProcessor to mlx-vlm torch-free processor"]
 
 
 class CerulMlxRuntime:
@@ -249,10 +379,11 @@ class CerulMlxRuntime:
             return
         from mlx_embeddings import load
 
+        self.embedding_shims = patch_qwen3_vl_auto_image_processor()
         model_path = resolve_snapshot(self.args.embedding_model, QWEN3_VL_ALLOW_PATTERNS)
         self.embedding_model, self.embedding_processor = load(str(model_path))
         self.embedding_model_path = str(model_path)
-        self.embedding_shims = patch_qwen3_vl_processor(self.embedding_processor)
+        self.embedding_shims.extend(patch_qwen3_vl_processor(self.embedding_processor))
 
     def embed_texts(self, texts: list[str], instruction: str | None = None) -> dict[str, Any]:
         import mlx.core as mx

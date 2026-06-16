@@ -119,7 +119,7 @@ import {
   ResultModalityIcon,
   itemModalityLabel,
 } from "./components/cards";
-import { CoreBanner } from "./components/core-banner";
+import { CoreStatusToast, useCoreStatus } from "./components/core-banner";
 import { SourceRow } from "./components/source-row";
 import { SourcePreview } from "./components/source-preview";
 import {
@@ -143,14 +143,12 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
-import { brandAssets } from "./lib/brand";
 import { AccountRailButton } from "./components/account-sidebar";
 import type {
   ApiStatus,
   AppData,
   ConfirmOptions,
   ConfirmRequest,
-  CoreBannerAction,
   DaemonInstallResult,
   DaemonStatus,
   DetailIssue,
@@ -584,6 +582,7 @@ function AppWorkspace() {
   >([]);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("connecting");
   const [apiError, setApiError] = useState<string | null>(null);
+  const coreLevel = useCoreStatus(apiStatus, apiError);
   const [data, setData] = useState<AppData>({
     sources: [],
     items: [],
@@ -1160,20 +1159,11 @@ function AppWorkspace() {
 
   return (
     <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
-      <aside className="rail">
-        <div className="rail-top">
-          <button
-            className="rail-brand"
-            type="button"
-            onClick={() => navigate("home")}
-            aria-label={t("shell.openHome")}
-          >
-            <BrandMark />
-            <span className="rail-wordmark rail-label">Cerul</span>
-          </button>
+      <div className="titlebar">
+        <div className="titlebar-lead">
           {updaterState.phase !== "idle" ? (
             <button
-              className="rail-update"
+              className={`rail-update is-${updaterState.phase}`}
               type="button"
               disabled={updaterState.phase === "downloading"}
               title={
@@ -1203,6 +1193,20 @@ function AppWorkspace() {
               )}
             </button>
           ) : null}
+        </div>
+        <div className="titlebar-drag" aria-hidden="true" />
+      </div>
+      <aside className="rail">
+        <div className="rail-top">
+          <button
+            className="rail-brand"
+            type="button"
+            onClick={() => navigate("home")}
+            aria-label={t("shell.openHome")}
+          >
+            <BrandMark />
+            <span className="rail-wordmark rail-label">Cerul</span>
+          </button>
         </div>
 
         <nav className="rail-nav" aria-label={t("nav.home")}>
@@ -1270,13 +1274,15 @@ function AppWorkspace() {
           <div className="rail-status mono">
             <span
               className="rail-status-dot"
-              data-ok={apiStatus === "online" ? "true" : undefined}
+              data-level={coreLevel === "grace" ? "ok" : coreLevel}
               aria-hidden="true"
             />
             <span className="rail-label">
-              {apiStatus === "online"
+              {coreLevel === "ok" || coreLevel === "grace"
                 ? t("shell.coreLocal")
-                : coreStatusText(apiStatus, t)}
+                : coreLevel === "starting"
+                  ? t("shell.coreStarting")
+                  : t("shell.coreUnresponsive")}
             </span>
           </div>
         </div>
@@ -1310,13 +1316,6 @@ function AppWorkspace() {
       </div>
 
       <main className="content">
-        {apiStatus !== "online" ? (
-          <CoreBanner
-            status={apiStatus}
-            error={apiError}
-            onAction={restartCoreConnection}
-          />
-        ) : null}
         {view === "onboarding" ? (
           <Onboarding
             step={onboardingStep}
@@ -1531,6 +1530,12 @@ function AppWorkspace() {
           );
         })}
       </nav>
+
+      <CoreStatusToast
+        show={coreLevel === "unresponsive"}
+        error={apiError}
+        onAction={restartCoreConnection}
+      />
 
       {showAddSource ? (
         <AddSourceDialog
@@ -1798,9 +1803,6 @@ function HomeScreen({
   return (
     <div className="page home-page" style={{ maxWidth: 920 }}>
       <div className="home-search-stage">
-        <div className="home-hero-mark" aria-hidden="true">
-          <img className="home-hero-icon" src={brandAssets.appIcon} alt="" />
-        </div>
         <h1>{t("home.heading")}</h1>
         <p className="muted home-summary">
           {t("home.summary", {

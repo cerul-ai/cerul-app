@@ -65,6 +65,8 @@ export function SourceRow({
   const statusLabel =
     source.status === "active"
       ? t("sourceRow.status.active")
+      : source.status === "syncing"
+        ? t("sourceRow.status.syncing")
       : source.status === "paused"
         ? t("sourceRow.status.paused")
         : t("sourceRow.status.error");

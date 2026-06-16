@@ -381,6 +381,9 @@ function createMainWindow() {
     minWidth: 1080,
     minHeight: 720,
     title: "Cerul",
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 19, y: 13 } }
+      : {}),
     icon: desktopAppIconPath(),
     show: false,
     webPreferences: {

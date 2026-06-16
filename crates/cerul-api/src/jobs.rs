@@ -1,9 +1,9 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -16,6 +16,8 @@ const INDEXING_PAUSED_SETTING: &str = "indexing_paused";
 const CONCURRENT_JOBS_SETTING: &str = "concurrent_jobs";
 const DEFAULT_CONCURRENT_JOBS: usize = 2;
 const MAX_CONCURRENT_JOBS: usize = 4;
+const JOB_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(500);
+const JOB_PROGRESS_MIN_DELTA: f64 = 0.01;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedJob {
@@ -76,6 +78,7 @@ impl JobProcessor for PipelineJobProcessor {
                 .with_progress(Arc::new(JobProgressReporter {
                     paths: self.paths.clone(),
                     job_id: job.id.clone(),
+                    state: Mutex::new(JobProgressState::default()),
                 }))
                 .process_video_item(&job.item_id)
                 .await
@@ -105,13 +108,54 @@ impl JobProcessor for PipelineJobProcessor {
 struct JobProgressReporter {
     paths: AppPaths,
     job_id: String,
+    state: Mutex<JobProgressState>,
+}
+
+#[derive(Debug, Default)]
+struct JobProgressState {
+    stage: Option<&'static str>,
+    progress: f64,
+    last_write: Option<Instant>,
 }
 
 impl PipelineProgress for JobProgressReporter {
     fn update(&self, _item_id: &str, stage: &'static str, progress: f64, message: &str) {
+        if !self.should_write(stage, progress) {
+            return;
+        }
         if let Err(error) = update_job_stage(&self.paths, &self.job_id, stage, progress, message) {
             tracing::warn!(%error, job_id = %self.job_id, stage, "failed to update job progress");
+            return;
         }
+        self.record_write(stage, progress);
+    }
+}
+
+impl JobProgressReporter {
+    fn should_write(&self, stage: &'static str, progress: f64) -> bool {
+        let Ok(state) = self.state.lock() else {
+            return true;
+        };
+        let stage_changed = state.stage != Some(stage);
+        let progress_changed = (progress.clamp(0.0, 1.0) - state.progress).abs();
+        let interval_elapsed = state
+            .last_write
+            .map(|last| last.elapsed() >= JOB_PROGRESS_MIN_INTERVAL)
+            .unwrap_or(true);
+
+        stage_changed
+            || progress >= 1.0
+            || progress_changed >= JOB_PROGRESS_MIN_DELTA
+            || interval_elapsed
+    }
+
+    fn record_write(&self, stage: &'static str, progress: f64) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.stage = Some(stage);
+        state.progress = progress.clamp(0.0, 1.0);
+        state.last_write = Some(Instant::now());
     }
 }
 
@@ -1241,6 +1285,35 @@ mod tests {
         assert_eq!(row.2, 0.48);
     }
 
+    #[test]
+    fn job_progress_reporter_throttles_small_same_stage_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "running",
+            "processing",
+        );
+        let reporter = JobProgressReporter {
+            paths: paths.clone(),
+            job_id: "job-1".to_string(),
+            state: Mutex::new(JobProgressState::default()),
+        };
+
+        reporter.update("item-1", "transcribing", 0.10, "first write");
+        reporter.update("item-1", "transcribing", 0.105, "tiny update");
+        assert_job_stage(&paths, "job-1", "transcribing", "first write", 0.10);
+
+        reporter.update("item-1", "transcribing", 0.12, "large enough update");
+        assert_job_stage(&paths, "job-1", "transcribing", "large enough update", 0.12);
+
+        reporter.update("item-1", "embedding", 0.121, "stage changed");
+        assert_job_stage(&paths, "job-1", "embedding", "stage changed", 0.121);
+    }
+
     #[tokio::test]
     #[ignore = "runs real API-backed providers; configure OpenAI and Gemini providers first"]
     async fn api_default_worker_smoke_indexes_added_folder_video() {
@@ -1494,6 +1567,27 @@ mod tests {
         assert_eq!(row.0, status);
         assert_eq!(row.1, progress);
         assert_eq!(row.2.as_deref(), error);
+    }
+
+    fn assert_job_stage(paths: &AppPaths, job_id: &str, stage: &str, message: &str, progress: f64) {
+        let conn = sqlite::open(paths).unwrap();
+        let row = conn
+            .query_row(
+                "SELECT stage, stage_message, progress FROM jobs WHERE id = ?1",
+                [job_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, stage);
+        assert_eq!(row.1, message);
+        assert_eq!(row.2, progress);
     }
 
     fn assert_item_status(paths: &AppPaths, item_id: &str, status: &str, error: Option<&str>) {

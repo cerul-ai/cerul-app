@@ -234,10 +234,24 @@ pub fn usage_totals_by_item(
     usage_totals_grouped(paths, "item_id")
 }
 
+pub fn usage_totals_by_item_ids(
+    paths: &AppPaths,
+    item_ids: &[String],
+) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
+    usage_totals_grouped_for_ids(paths, "item_id", item_ids)
+}
+
 pub fn usage_totals_by_job(
     paths: &AppPaths,
 ) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
     usage_totals_grouped(paths, "job_id")
+}
+
+pub fn usage_totals_by_job_ids(
+    paths: &AppPaths,
+    job_ids: &[String],
+) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
+    usage_totals_grouped_for_ids(paths, "job_id", job_ids)
 }
 
 fn usage_totals_grouped(
@@ -261,6 +275,41 @@ fn usage_totals_grouped(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)?))
+    })?;
+    rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
+        .map_err(Into::into)
+}
+
+fn usage_totals_grouped_for_ids(
+    paths: &AppPaths,
+    column: &str,
+    ids: &[String],
+) -> anyhow::Result<std::collections::HashMap<String, UsageTotals>> {
+    anyhow::ensure!(matches!(column, "item_id" | "job_id"));
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let conn = sqlite::open(paths)?;
+    let sql = format!(
+        r#"
+        SELECT {column}, COUNT(*), COALESCE(SUM(request_count), 0),
+               COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+               COALESCE(SUM(audio_seconds), 0), COALESCE(SUM(image_count), 0),
+               COALESCE(SUM(video_seconds), 0), COALESCE(SUM(estimated_usd), 0),
+               COALESCE(SUM(billed_credits), 0),
+               COALESCE(SUM(CASE WHEN estimated_usd IS NULL THEN 1 ELSE 0 END), 0)
+        FROM inference_usage_events
+        WHERE {column} IN ({placeholders})
+        GROUP BY {column}
+        "#
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(ids.iter()), |row| {
         Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)?))
     })?;
     rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
