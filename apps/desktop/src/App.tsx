@@ -1171,11 +1171,13 @@ function AppWorkspace() {
             <button
               className={`rail-update is-${updaterState.phase}`}
               type="button"
-              disabled={updaterState.phase === "downloading"}
+              disabled={updaterState.phase === "downloading" || updaterState.phase === "installing"}
               title={
                 updaterState.phase === "downloading"
                   ? t("shell.updateDownloadingTip")
-                  : updaterState.phase === "downloaded"
+                  : updaterState.phase === "installing"
+                    ? t("shell.updateInstallingTip")
+                    : updaterState.phase === "downloaded"
                     ? t("shell.updateReadyTip", { version: updaterState.version })
                     : t("shell.updateAvailableTip", { version: updaterState.version })
               }
@@ -1185,6 +1187,11 @@ function AppWorkspace() {
                 <>
                   <Loader2 size={13} className="spin" />
                   <span className="rail-update-label">{updaterState.percent}%</span>
+                </>
+              ) : updaterState.phase === "installing" ? (
+                <>
+                  <Loader2 size={13} className="spin" />
+                  <span className="rail-update-label">{t("shell.updateInstalling")}</span>
                 </>
               ) : updaterState.phase === "downloaded" ? (
                 <>
@@ -6700,7 +6707,7 @@ function AboutSettings({ version }: { version: string | null }) {
       <SettingsGroup title={t("settings.about.group.title")}>
         <SettingRow
           label={t("settings.about.version.label")}
-          control={<span className="settings-value">{version ?? "0.0.2"}</span>}
+          control={<span className="settings-value">{version ?? "0.0.3"}</span>}
         />
         <SettingRow
           label={t("settings.about.license.label")}

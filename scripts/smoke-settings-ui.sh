@@ -40,6 +40,11 @@ rg -qF "Authorization: Bearer" apps/desktop/src
 rg -qF "Anonymous usage counters, off by default" apps/desktop/src
 rg -qF "Open logs folder" apps/desktop/src
 rg -qF "Check for updates" apps/desktop/src
+rg -qF 'phase: "installing"' apps/electron-shell/src/main.ts
+rg -qF "installDesktopUpdate();" apps/electron-shell/src/main.ts
+rg -qF "isQuitting = true;" apps/electron-shell/src/main.ts
+rg -qF "updater.quitAndInstall(false, true)" apps/electron-shell/src/main.ts
+rg -qF "shell.updateInstalling" apps/desktop/src
 rg -qF "Commit" apps/desktop/src
 rg -qF "Build date" apps/desktop/src
 rg -qF "function revealDataDirectory" apps/desktop/src
@@ -64,4 +69,4 @@ rg -qF ".settings-stack-control" apps/desktop/src/styles/extensions.css
 rg -qF ".setting-row-control > .select" apps/desktop/src/styles/extensions.css
 rg -qF ".select:disabled" apps/desktop/src/styles/ui.css
 
-echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled advanced_actions=remote_auth about_actions=enabled"
+echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled updater_auto_install=enabled advanced_actions=remote_auth about_actions=enabled"

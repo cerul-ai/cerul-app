@@ -13,12 +13,13 @@ export type DesktopUpdate = {
 } | null;
 
 // Drives the rail "Update" pill. Mirrors UpdaterState in the electron shell.
-// `available` works on any build (GitHub-release detection); the download/
-// install phases only occur once releases ship signed + a latest-mac.yml.
+// `available` works on any build (GitHub-release detection); later phases only
+// occur once releases ship signed + a latest-mac.yml.
 export type DesktopUpdaterState =
   | { phase: "idle" }
   | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
   | { phase: "downloading"; version: string; percent: number }
+  | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string };
 
 export type DesktopStore = {

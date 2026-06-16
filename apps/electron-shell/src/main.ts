@@ -96,12 +96,13 @@ type DesktopUpdateInfo = {
 };
 
 // Drives the rail "Update" pill. `available` always works (GitHub-release
-// detection, signing-independent); `downloading`/`downloaded` only occur once
-// releases ship signed + a latest-mac.yml that electron-updater can apply.
+// detection, signing-independent); later phases only occur once releases ship
+// signed + a latest-mac.yml that electron-updater can apply.
 type UpdaterState =
   | { phase: "idle" }
   | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
   | { phase: "downloading"; version: string; percent: number }
+  | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string };
 
 type ApiOutputTail = {
@@ -1747,7 +1748,8 @@ function wireAutoUpdater(updater: AppUpdater) {
     return;
   }
   autoUpdaterWired = true;
-  // User-driven: the pill triggers downloadUpdate(); we never auto-download.
+  // User-driven: the pill triggers downloadUpdate(); once that download
+  // finishes, the shell automatically restarts into the installer.
   updater.autoDownload = false;
   updater.autoInstallOnAppQuit = true;
   updater.on("update-available", (info) => {
@@ -1766,8 +1768,22 @@ function wireAutoUpdater(updater: AppUpdater) {
     setUpdaterState({ phase: "downloading", version, percent: Math.round(progress.percent) });
   });
   updater.on("update-downloaded", (info) => {
+    const version = normalizeVersion(info.version);
+    const shouldAutoInstall = updateInstallRequested;
     updateInstallRequested = false;
-    setUpdaterState({ phase: "downloaded", version: normalizeVersion(info.version) });
+    if (!shouldAutoInstall) {
+      setUpdaterState({ phase: "downloaded", version });
+      return;
+    }
+    setUpdaterState({ phase: "installing", version });
+    setTimeout(() => {
+      try {
+        installDesktopUpdate();
+      } catch (error) {
+        console.error("electron-updater install failed; waiting for manual restart", error);
+        setUpdaterState({ phase: "downloaded", version });
+      }
+    }, 500);
   });
   updater.on("error", (error) => {
     // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
@@ -1828,7 +1844,7 @@ async function runDesktopUpdateCheck() {
   // Opportunistic in-place updater — dormant until releases ship signed +
   // notarized with a latest-mac.yml that Squirrel.Mac can apply. When that
   // lands, these events upgrade the pill from "open download page" to a
-  // one-click download + restart-to-install.
+  // one-click download followed by an automatic restart-to-install.
   if (!app.isPackaged) {
     return;
   }
@@ -1849,8 +1865,7 @@ async function startDesktopUpdateDownload() {
     return;
   }
   const { releaseUrl, canAutoInstall } = latestUpdaterState;
-  // Without a working in-place updater (today's builds), "update" means open the
-  // download page.
+  // Without a working in-place updater, "update" means open the download page.
   if (!canAutoInstall) {
     await shell.openExternal(releaseUrl);
     return;
@@ -1875,8 +1890,11 @@ function installDesktopUpdate() {
   if (!updater) {
     return;
   }
-  // Window 'close' handlers flush persisted state before the relaunch.
-  updater.quitAndInstall();
+  // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
+  // app as quitting up front so our close-to-tray handler does not hide the
+  // main window and leave ShipIt blocked on a still-running app instance.
+  isQuitting = true;
+  updater.quitAndInstall(false, true);
 }
 
 function releaseVersionFromTag(tag: string | undefined) {
