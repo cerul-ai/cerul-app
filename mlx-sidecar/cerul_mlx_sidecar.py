@@ -57,6 +57,21 @@ PINNED_MODEL_REVISIONS = {
     DEFAULT_OCR_MODEL: "9c4f5209e57b31f4b9dfba735de3fb983739c9cc",
     DEFAULT_WHISPER_MODEL: "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
 }
+PINNED_SNAPSHOT_REQUIRED_FILES = {
+    DEFAULT_EMBEDDING_MODEL: (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ),
+    DEFAULT_OCR_MODEL: (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ),
+}
+PINNED_SNAPSHOT_WEIGHT_GLOBS = ("*.safetensors", "*.bin", "*.npz")
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,6 +121,26 @@ def env_positive_int(name: str, fallback: int) -> int:
     return max(1, value)
 
 
+def pinned_snapshot_missing_reasons(snapshot: Path, model_id_or_path: str) -> list[str]:
+    if not snapshot.is_dir():
+        return ["snapshot directory is missing"]
+    try:
+        has_entries = any(snapshot.iterdir())
+    except OSError as exc:
+        return [f"snapshot directory is unreadable: {exc}"]
+    if not has_entries:
+        return ["snapshot directory is empty"]
+
+    required_files = PINNED_SNAPSHOT_REQUIRED_FILES.get(model_id_or_path, ("config.json",))
+    missing = [name for name in required_files if not (snapshot / name).is_file()]
+    if missing:
+        return [f"missing {', '.join(missing)}"]
+
+    if not any(any(snapshot.rglob(pattern)) for pattern in PINNED_SNAPSHOT_WEIGHT_GLOBS):
+        return ["missing model weights"]
+    return []
+
+
 def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = None) -> Path:
     local_path = Path(model_id_or_path)
     if local_path.exists():
@@ -120,8 +155,14 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
             / "snapshots"
             / pinned
         )
-        if cached.is_dir() and any(cached.iterdir()):
+        missing_reasons = pinned_snapshot_missing_reasons(cached, model_id_or_path)
+        if not missing_reasons:
             return cached
+        print(
+            "prepare: pinned snapshot cache incomplete for "
+            f"{model_id_or_path} ({'; '.join(missing_reasons)}); repairing",
+            file=sys.stderr,
+        )
 
     from huggingface_hub import snapshot_download
 
