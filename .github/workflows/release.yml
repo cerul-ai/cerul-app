@@ -30,7 +30,7 @@ jobs:
         include:
           - os: macos-latest
             artifact: cerul-macos
-            deps: brew install protobuf ffmpeg cmake
+            deps: brew install protobuf ffmpeg cmake uv
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
