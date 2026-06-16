@@ -119,7 +119,7 @@ import {
   ResultModalityIcon,
   itemModalityLabel,
 } from "./components/cards";
-import { CoreBanner } from "./components/core-banner";
+import { CoreStatusToast, useCoreStatus } from "./components/core-banner";
 import { SourceRow } from "./components/source-row";
 import { SourcePreview } from "./components/source-preview";
 import {
@@ -149,7 +149,6 @@ import type {
   AppData,
   ConfirmOptions,
   ConfirmRequest,
-  CoreBannerAction,
   DaemonInstallResult,
   DaemonStatus,
   DetailIssue,
@@ -583,6 +582,7 @@ function AppWorkspace() {
   >([]);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("connecting");
   const [apiError, setApiError] = useState<string | null>(null);
+  const coreLevel = useCoreStatus(apiStatus, apiError);
   const [data, setData] = useState<AppData>({
     sources: [],
     items: [],
@@ -1274,13 +1274,15 @@ function AppWorkspace() {
           <div className="rail-status mono">
             <span
               className="rail-status-dot"
-              data-ok={apiStatus === "online" ? "true" : undefined}
+              data-level={coreLevel === "grace" ? "ok" : coreLevel}
               aria-hidden="true"
             />
             <span className="rail-label">
-              {apiStatus === "online"
+              {coreLevel === "ok" || coreLevel === "grace"
                 ? t("shell.coreLocal")
-                : coreStatusText(apiStatus, t)}
+                : coreLevel === "starting"
+                  ? t("shell.coreStarting")
+                  : t("shell.coreUnresponsive")}
             </span>
           </div>
         </div>
@@ -1314,13 +1316,6 @@ function AppWorkspace() {
       </div>
 
       <main className="content">
-        {apiStatus !== "online" ? (
-          <CoreBanner
-            status={apiStatus}
-            error={apiError}
-            onAction={restartCoreConnection}
-          />
-        ) : null}
         {view === "onboarding" ? (
           <Onboarding
             step={onboardingStep}
@@ -1535,6 +1530,12 @@ function AppWorkspace() {
           );
         })}
       </nav>
+
+      <CoreStatusToast
+        show={coreLevel === "unresponsive"}
+        error={apiError}
+        onAction={restartCoreConnection}
+      />
 
       {showAddSource ? (
         <AddSourceDialog

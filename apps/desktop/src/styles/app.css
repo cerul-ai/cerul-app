@@ -126,8 +126,10 @@
 .rail-sep { height: 1px; background: var(--line); margin: 8px 6px; }
 .rail-status { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: 11px; color: var(--text-faint); }
 .rail-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.rail-status-dot[data-ok="true"] { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); animation: cerDot 2.4s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) { .rail-status-dot[data-ok="true"] { animation: none; } }
+.rail-status-dot[data-level="ok"] { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); animation: cerDot 2.4s ease-in-out infinite; }
+.rail-status-dot[data-level="starting"] { background: #c2892e; box-shadow: 0 0 0 3px var(--warn-soft); animation: cerDot 1.3s ease-in-out infinite; }
+.rail-status-dot[data-level="unresponsive"] { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+@media (prefers-reduced-motion: reduce) { .rail-status-dot { animation: none; } }
 
 .rail-item {
   position: relative;
