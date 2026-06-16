@@ -108,6 +108,19 @@ require_command() {
   fi
 }
 
+electron_builder_identity_name() {
+  local identity="$1"
+  case "$identity" in
+    "Developer ID Application:"*) identity="${identity#Developer ID Application:}" ;;
+    "Developer ID Installer:"*) identity="${identity#Developer ID Installer:}" ;;
+    "3rd Party Mac Developer Application:"*) identity="${identity#3rd Party Mac Developer Application:}" ;;
+    "3rd Party Mac Developer Installer:"*) identity="${identity#3rd Party Mac Developer Installer:}" ;;
+  esac
+  identity="${identity#"${identity%%[![:space:]]*}"}"
+  identity="${identity%"${identity##*[![:space:]]}"}"
+  printf '%s\n' "$identity"
+}
+
 check_signing_prereqs() {
   if [ "$REQUIRE_SIGNING" -eq 0 ]; then
     return
@@ -151,7 +164,8 @@ check_signing_prereqs() {
 
   xcrun -f notarytool >/dev/null
   xcrun -f stapler >/dev/null
-  export CSC_NAME="${CSC_NAME:-$APPLE_SIGNING_IDENTITY}"
+  export CSC_NAME
+  CSC_NAME="$(electron_builder_identity_name "${CSC_NAME:-$APPLE_SIGNING_IDENTITY}")"
   export APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-$APPLE_PASSWORD}"
 }
 

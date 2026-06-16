@@ -56,7 +56,7 @@ exports.default = async function afterPack(context) {
     process.env.APPLE_SIGNING_IDENTITY ||
     process.env.CSC_NAME
   );
-  const identity = process.env.CSC_NAME || process.env.APPLE_SIGNING_IDENTITY || "-";
+  const identity = process.env.APPLE_SIGNING_IDENTITY || process.env.CSC_NAME || "-";
 
   // 1. Sign the bundled Python runtime's mach-O inside-out.
   const runtimeDir = path.join(appPath, "Contents", "Resources", "mlx-runtime");
