@@ -16,9 +16,8 @@
 //    locally (still unsigned for distribution / not notarized).
 //
 // When a real Developer ID IS provided, electron-builder signs the .app itself;
-// we still sign the runtime above (NOTE: a notarized release also needs JIT
-// entitlements on the interpreter — allow-jit, allow-unsigned-executable-memory,
-// disable-library-validation — wire that when the Developer ID flow lands).
+// we still sign the runtime above and attach JIT entitlements to the embedded
+// Python interpreter so the local MLX process can run under hardened runtime.
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -41,6 +40,10 @@ function chunk(arr, size) {
   return out;
 }
 
+function isPythonInterpreter(file) {
+  return path.basename(file) === "python3.12" && path.basename(path.dirname(file)) === "bin";
+}
+
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "darwin") {
     return;
@@ -59,11 +62,24 @@ exports.default = async function afterPack(context) {
   const runtimeDir = path.join(appPath, "Contents", "Resources", "mlx-runtime");
   if (fs.existsSync(runtimeDir)) {
     const machO = collectMachO(runtimeDir);
+    const interpreters = machO.filter(isPythonInterpreter);
+    const libraries = machO.filter((file) => !isPythonInterpreter(file));
     const args = ["--force", "--sign", identity];
     if (hasIdentity) args.push("--options", "runtime", "--timestamp");
     // execFileSync: no shell, so paths with $/backticks/spaces are safe.
-    for (const batch of chunk(machO, 100)) {
+    for (const batch of chunk(libraries, 100)) {
       execFileSync("codesign", [...args, ...batch], { stdio: "inherit" });
+    }
+    const runtimeEntitlements = path.join(
+      __dirname,
+      "../entitlements/entitlements.mlx-runtime.plist",
+    );
+    const interpreterArgs =
+      hasIdentity && fs.existsSync(runtimeEntitlements)
+        ? [...args, "--entitlements", runtimeEntitlements]
+        : args;
+    for (const batch of chunk(interpreters, 20)) {
+      execFileSync("codesign", [...interpreterArgs, ...batch], { stdio: "inherit" });
     }
     console.log(`afterPack: signed ${machO.length} mach-O files in mlx-runtime`);
   }

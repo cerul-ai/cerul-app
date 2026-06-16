@@ -91,6 +91,8 @@
         "dmg",
         "zip"
       ],
+      "entitlements": "entitlements/entitlements.mac.plist",
+      "entitlementsInherit": "entitlements/entitlements.mac.inherit.plist",
       "minimumSystemVersion": "10.15",
       "category": "public.app-category.productivity"
     },

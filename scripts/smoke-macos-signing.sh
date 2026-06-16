@@ -15,9 +15,10 @@ usage() {
 Usage: scripts/smoke-macos-signing.sh [--dmg <path>] [--app <path>] [--expected-team-id <id>] [--allow-ad-hoc] [--skip-notarization] [--dry-run]
 
 Verifies the macOS public-release signing gate. With --dmg, the script mounts
-the image, verifies the embedded Cerul.app Developer ID signature, checks
-Gatekeeper assessment, and validates the stapled notarization ticket. With
---app, only the app signature/Gatekeeper checks run unless --dmg is also set.
+the image, verifies the embedded Cerul.app Developer ID signature and release
+entitlements, checks Gatekeeper assessment, and validates the stapled
+notarization ticket. With --app, only the app signature/Gatekeeper checks run
+unless --dmg is also set.
 
 Use --allow-ad-hoc only for unsigned internal/alpha artifacts. It still verifies
 that the app bundle has a complete code signature, but accepts an ad-hoc
@@ -77,6 +78,46 @@ run() {
   else
     "$@"
   fi
+}
+
+require_entitlement() {
+  local subject="$1"
+  local key="$2"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "+ verify entitlement $key on $subject"
+    return
+  fi
+
+  local entitlements
+  entitlements="$(codesign -d --entitlements :- "$subject" 2>/dev/null || true)"
+  if ! printf '%s\n' "$entitlements" | grep -q "<key>$key</key>"; then
+    echo "Missing required macOS entitlement $key on $subject." >&2
+    printf '%s\n' "$entitlements" >&2
+    exit 1
+  fi
+}
+
+require_release_entitlements() {
+  local app_exec="$APP/Contents/MacOS/Cerul"
+  local runtime_python="$APP/Contents/Resources/mlx-runtime/bin/python3.12"
+
+  if [ "$DRY_RUN" -eq 0 ]; then
+    if [ ! -x "$app_exec" ]; then
+      echo "Cerul app executable not found: $app_exec" >&2
+      exit 1
+    fi
+    if [ ! -x "$runtime_python" ]; then
+      echo "Bundled MLX Python interpreter not found: $runtime_python" >&2
+      exit 1
+    fi
+  fi
+
+  for subject in "$app_exec" "$runtime_python"; do
+    require_entitlement "$subject" "com.apple.security.cs.allow-jit"
+    require_entitlement "$subject" "com.apple.security.cs.allow-unsigned-executable-memory"
+    require_entitlement "$subject" "com.apple.security.cs.disable-library-validation"
+  done
 }
 
 cleanup() {
@@ -166,6 +207,7 @@ if [ "$DRY_RUN" -eq 0 ] && [ "$signing_mode" = "developer_id" ]; then
 fi
 
 if [ "$signing_mode" = "developer_id" ]; then
+  require_release_entitlements
   run spctl --assess --type execute --verbose "$APP"
 else
   echo "Skipping Gatekeeper assessment for ad-hoc alpha artifact; macOS is expected to report an unidentified developer."

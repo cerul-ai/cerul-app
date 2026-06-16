@@ -20,7 +20,7 @@
   <p>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
-    <img alt="Status" src="https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square" />
+    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.1-22c55e?style=flat-square" />
   </p>
 
   <p>
@@ -32,7 +32,7 @@
 <br />
 
 > [!NOTE]
-> **Alpha 阶段。** Cerul App 是 [Cerul Cloud](https://cerul.ai) 的源码可得、可自托管配套客户端。当前版本：**0.0.1-alpha.3**。核心已可运行 —— 桌面外壳、本地 API、索引流水线、混合搜索、浮层和托盘今天就能跑。已签名的公开安装包仍处于发布门禁阶段；在某个 GitHub Release 明确标注"已签名/已公证"安装包之前，请先从源码构建运行。详见 [项目状态与路线图](#项目状态与路线图)。
+> **初版发布。** Cerul App 是 [Cerul Cloud](https://cerul.ai) 的源码可得、可自托管配套客户端。当前版本：**0.0.1**。核心已可运行 —— 桌面外壳、本地 API、索引流水线、混合搜索、浮层和托盘今天就能跑。公开安装包通过 GitHub Releases 发布；release workflow 配置 Developer ID 凭据时，macOS 制品会经过签名与公证。
 
 ## 为什么用 Cerul App
 
@@ -132,20 +132,20 @@ scripts/           构建、打包与冒烟测试脚本
 
 ## 项目状态与路线图
 
-Cerul App 处于 **alpha** 阶段。整条链路已端到端跑通，但面向大众的安装分发仍受签名、安装版冒烟覆盖和第三方二进制审查的门禁约束。
+Cerul App 处于 **0.0.1 初版发布** 阶段。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
 
 **今天已可用**
 - Electron 桌面外壳、本地 REST API、存储与索引流水线
 - 混合（FTS + 向量）搜索、搜索浮层、托盘、通知、开机自启
 - 文件夹、YouTube、RSS 数据源；Remote API 与本地模型推理
 
-**已签名公开安装包之前还需**
-- macOS 代码签名与公证，随后是 Windows/Linux 打包
-- GitHub Release 更新检查与已发布的 alpha 制品
-- 完整的安装版发布冒烟覆盖
+**下一步发布加固**
+- Windows/Linux 打包与签名
+- 更新元数据与自动更新 rollout 校验
+- 更完整的安装版发布冒烟覆盖
 - 第三方二进制许可证审查（`ffmpeg`、`yt-dlp`、`qdrant`）
 
-想要开箱即装？Star 并 Watch 本仓库 —— 首批已签名构建会以 GitHub Release 形式发布。
+想要更新的开箱即装构建？Star 并 Watch 本仓库 —— 公开构建会以 GitHub Release 形式发布。
 
 ## 它与 Cerul 的关系
 

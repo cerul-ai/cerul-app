@@ -20,7 +20,7 @@
   <p>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
-    <img alt="Status" src="https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square" />
+    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.1-22c55e?style=flat-square" />
   </p>
 
   <p>
@@ -32,7 +32,7 @@
 <br />
 
 > [!NOTE]
-> **Alpha.** Cerul App is the source-available, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.1-alpha.3**. The core is functional — desktop shell, local API, indexing pipeline, hybrid search, overlay, and tray all run today. Signed public installers are still release-gated; for now you build and run from source unless a GitHub Release explicitly lists an installer as signed/notarized. See [Status & roadmap](#status--roadmap).
+> **Initial release.** Cerul App is the source-available, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.1**. The core is functional — desktop shell, local API, indexing pipeline, hybrid search, overlay, and tray all run today. Public release builds are published through GitHub Releases; macOS artifacts are signed and notarized when the release workflow has Developer ID credentials.
 
 ## Why Cerul App
 
@@ -132,20 +132,20 @@ scripts/           Build, packaging, and smoke-test scripts
 
 ## Status & roadmap
 
-Cerul App is in **alpha**. The foundation works end to end, but broad public installation is still gated by signing, installed-build smoke coverage, and third-party binary review.
+Cerul App is in its **initial 0.0.1 release**. The foundation works end to end, and the release workflow now gates public macOS artifacts on signing, notarization, and installed-build smoke coverage.
 
 **Working today**
 - Electron desktop shell, local REST API, storage, and indexing pipeline
 - Hybrid (FTS + vector) search, search overlay, tray, notifications, start-at-login
 - Folder, YouTube, and RSS sources; Remote API and local-model inference
 
-**Before signed public installers**
-- macOS code signing & notarization, then Windows/Linux packaging
-- GitHub Release update checks and published alpha artifacts
-- Full installed-build release smoke coverage
+**Next release hardening**
+- Windows/Linux packaging and signing
+- Update metadata and auto-update rollout checks
+- Broader installed-build release smoke coverage
 - Third-party binary license review (`ffmpeg`, `yt-dlp`, `qdrant`)
 
-Want it ready-to-install? Star and watch the repo — first signed builds will ship as GitHub Releases.
+Want newer ready-to-install builds? Star and watch the repo — public builds ship as GitHub Releases.
 
 ## How this fits with Cerul
 
