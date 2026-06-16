@@ -247,6 +247,12 @@ if [ "$NO_BUNDLE" -eq 1 ] || [ "$DEBUG" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
+if target_is_macos &&
+  [ -n "${APPLE_SIGNING_IDENTITY:-${CSC_NAME:-}}" ] &&
+  [ "${CERUL_NOTARIZE:-0}" = "1" ]; then
+  run "$ROOT/scripts/finalize-macos-release-artifacts.sh" --bundle-root "$bundle_root"
+fi
+
 echo "Installer artifacts:"
 artifacts="$(find "$bundle_root" -maxdepth 1 -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.msi" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -print 2>/dev/null || true)"
 if [ -z "$artifacts" ]; then
