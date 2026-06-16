@@ -1991,6 +1991,8 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
       return appPaths();
     case "clear_cache":
       return clearCache();
+    case "reset_local_data":
+      return scheduleLocalDataReset();
     case "set_global_hotkey":
       registerGlobalHotkey(String(args.label ?? defaultHotkey));
       return null;
@@ -2243,6 +2245,107 @@ function clearCache() {
     cache_dir: paths.cache_dir,
     bytes_removed: bytesRemoved,
   };
+}
+
+function scheduleLocalDataReset() {
+  const targets = resetLocalDataTargets();
+  const scriptPath = path.join(os.tmpdir(), `cerul-reset-${process.pid}-${Date.now()}.sh`);
+  const relaunchLine = relaunchShellLine();
+  const lines = [
+    "#!/bin/sh",
+    "set -u",
+    `PARENT_PID=${process.pid}`,
+    'while kill -0 "$PARENT_PID" 2>/dev/null; do sleep 0.2; done',
+    "sleep 0.5",
+    ...targets.map((target) => `rm -rf -- ${shellQuote(target.path)}`),
+    relaunchLine,
+    `rm -f -- ${shellQuote(scriptPath)}`,
+    "",
+  ];
+
+  fs.writeFileSync(scriptPath, lines.join("\n"), { mode: 0o700 });
+  const child = spawn("/bin/sh", [scriptPath], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  isQuitting = true;
+  app.quit();
+
+  return {
+    scheduled: true,
+    targets,
+  };
+}
+
+function resetLocalDataTargets() {
+  const paths = appPaths();
+  const userData = app.getPath("userData");
+  const targets = [
+    { label: "data", path: paths.data_dir },
+    {
+      label: app.isPackaged ? "userData" : "devStores",
+      path: app.isPackaged ? userData : path.join(userData, "stores"),
+    },
+  ];
+  const seen = new Set<string>();
+  return targets
+    .map((target) => ({ ...target, path: path.resolve(target.path) }))
+    .filter((target) => {
+      if (seen.has(target.path)) {
+        return false;
+      }
+      seen.add(target.path);
+      return true;
+    })
+    .map((target) => {
+      assertSafeResetTarget(target.path);
+      return target;
+    });
+}
+
+function assertSafeResetTarget(targetPath: string) {
+  const resolved = path.resolve(targetPath);
+  const forbidden = [
+    path.parse(resolved).root,
+    os.homedir(),
+    dataBaseDir(),
+    path.dirname(dataBaseDir()),
+  ].map((value) => path.resolve(value));
+  if (forbidden.includes(resolved)) {
+    throw new Error(`refusing to reset unsafe path: ${resolved}`);
+  }
+  const depth = resolved.split(path.sep).filter(Boolean).length;
+  if (depth < 3) {
+    throw new Error(`refusing to reset shallow path: ${resolved}`);
+  }
+}
+
+function relaunchShellLine() {
+  if (process.env.CERUL_RESET_SKIP_RELAUNCH === "1") {
+    return "true";
+  }
+  const bundle = macAppBundlePath();
+  if (bundle) {
+    return `open -n ${shellQuote(bundle)} >/dev/null 2>&1 || true`;
+  }
+  return `${shellQuote(process.execPath)} >/dev/null 2>&1 &`;
+}
+
+function macAppBundlePath() {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+  const marker = ".app/Contents/MacOS";
+  const index = process.execPath.indexOf(marker);
+  if (index === -1) {
+    return null;
+  }
+  return process.execPath.slice(0, index + ".app".length);
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function directorySize(root: string) {

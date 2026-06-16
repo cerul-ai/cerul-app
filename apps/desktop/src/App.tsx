@@ -428,6 +428,12 @@ async function clearCacheDirectory() {
   return invokeHostCommand<{ cache_dir: string; bytes_removed: number }>("clear_cache");
 }
 
+async function resetLocalDataAndRestart() {
+  return invokeHostCommand<{ scheduled: boolean; targets: Array<{ label: string; path: string }> }>(
+    "reset_local_data",
+  );
+}
+
 async function setGlobalHotkey(label: string) {
   await invokeHostCommand("set_global_hotkey", { label });
 }
@@ -4745,7 +4751,9 @@ function SettingsScreen({
             />
           ) : null}
           {activeSection === "Usage" ? <UsageSettings /> : null}
-          {activeSection === "Storage" ? <StorageSettings disabled={controlsDisabled} /> : null}
+          {activeSection === "Storage" ? (
+            <StorageSettings requestConfirm={requestConfirm} />
+          ) : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
               settings={settings}
@@ -4796,8 +4804,6 @@ function GeneralSettings({
   const languageOptions: { value: string; label: string; disabled?: boolean }[] = [
     { value: "zh", label: t("settings.general.language.zh") },
     { value: "en", label: t("settings.general.language.en") },
-    { value: "zh-TW", label: t("settings.general.language.zhTW"), disabled: true },
-    { value: "ja", label: t("settings.general.language.ja"), disabled: true },
   ];
 
   return (
@@ -6246,7 +6252,11 @@ function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
   return labels[key] ?? fallback;
 }
 
-function StorageSettings({ disabled }: { disabled: boolean }) {
+function StorageSettings({
+  requestConfirm,
+}: {
+  requestConfirm: RequestConfirm;
+}) {
   const t = useT();
   const [locations, setLocations] = useState<StorageLocations | null>(null);
   const [usage, setUsage] = useState<api.StorageUsageResponse | null>(null);
@@ -6305,6 +6315,23 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
         await refreshStorageUsage();
         return;
       }
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function resetAllLocalData() {
+    const confirmed = await requestConfirm({
+      title: t("settings.storage.reset.confirm.title"),
+      body: t("settings.storage.reset.confirm.body"),
+      confirmLabel: t("settings.storage.reset.confirm.label"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    setAction({ status: "running", message: t("settings.storage.message.resetStarting") });
+    try {
+      await resetLocalDataAndRestart();
     } catch (error) {
       setAction({ status: "error", message: errorMessage(error) });
     }
@@ -6377,6 +6404,15 @@ function StorageSettings({ disabled }: { disabled: boolean }) {
         >
           {busy ? <Loader2 size={16} /> : <HardDrive size={16} />}
           <span>{t("settings.storage.clearCache")}</span>
+        </button>
+        <button
+          className="btn btn-danger sm"
+          type="button"
+          disabled={busy || !hasDesktopHost()}
+          onClick={() => void resetAllLocalData()}
+        >
+          {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+          <span>{t("settings.storage.resetLocalData")}</span>
         </button>
       </div>
       {action.message ? (
@@ -6664,7 +6700,7 @@ function AboutSettings({ version }: { version: string | null }) {
       <SettingsGroup title={t("settings.about.group.title")}>
         <SettingRow
           label={t("settings.about.version.label")}
-          control={<span className="settings-value">{version ?? "0.0.1"}</span>}
+          control={<span className="settings-value">{version ?? "0.0.2"}</span>}
         />
         <SettingRow
           label={t("settings.about.license.label")}
