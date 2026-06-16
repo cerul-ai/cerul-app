@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     io::BufReader,
     path::{Path, PathBuf},
     sync::{
@@ -7,7 +7,7 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use cerul_storage::{
@@ -20,6 +20,9 @@ use crate::{
     chunking, ffmpeg,
     whisper::{Segment, TranscriptionProgress},
 };
+
+const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
 
 pub trait Transcriber: Send + Sync {
     fn transcribe(
@@ -318,6 +321,16 @@ impl VideoPipeline {
         }
     }
 
+    async fn cleanup_success_temp_artifacts(&self, item_id: &str, audio_path: &Path) {
+        if let Err(error) = remove_file_if_exists(audio_path).await {
+            tracing::warn!(%error, item_id, path = %audio_path.display(), "failed to remove temporary pipeline audio");
+        }
+        let budget = pipeline_temp_cache_budget_bytes();
+        if let Err(error) = prune_pipeline_temp_cache(&self.paths, budget).await {
+            tracing::warn!(%error, item_id, "failed to prune pipeline temp cache");
+        }
+    }
+
     pub async fn process_video_item(&self, item_id: &str) -> anyhow::Result<ProcessVideoSummary> {
         anyhow::ensure!(
             self.frame_interval_sec > 0,
@@ -593,6 +606,8 @@ impl VideoPipeline {
                     "Transcript searchable; embedding failed",
                 );
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
+                self.cleanup_success_temp_artifacts(item_id, &audio_path)
+                    .await;
                 return Ok(ProcessVideoSummary::from_write_summary(
                     item_id,
                     audio_path,
@@ -707,6 +722,8 @@ impl VideoPipeline {
         )?;
         cerul_storage::mark_indexed(&self.paths, item_id)?;
         self.report_progress(item_id, "completed", 1.0, "Index complete");
+        self.cleanup_success_temp_artifacts(item_id, &audio_path)
+            .await;
 
         Ok(ProcessVideoSummary::from_write_summary(
             item_id,
@@ -789,6 +806,8 @@ impl VideoPipeline {
                 );
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
+                self.cleanup_success_temp_artifacts(item_id, &audio_path)
+                    .await;
                 return Ok(ProcessAudioSummary::from_write_summary(
                     item_id,
                     audio_path,
@@ -830,6 +849,8 @@ impl VideoPipeline {
             write_summary.image_vectors,
         )?;
         cerul_storage::mark_indexed(&self.paths, item_id)?;
+        self.cleanup_success_temp_artifacts(item_id, &audio_path)
+            .await;
 
         Ok(ProcessAudioSummary::from_write_summary(
             item_id,
@@ -1276,6 +1297,191 @@ pub fn cache_key_for_discovery_id(input: &str) -> String {
     cache_key(input)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineTempCachePrune {
+    pub removed_entries: usize,
+    pub removed_bytes: u64,
+    pub remaining_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineTempCacheEntryKind {
+    File,
+    Dir,
+}
+
+#[derive(Debug, Clone)]
+struct PipelineTempCacheEntry {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+    kind: PipelineTempCacheEntryKind,
+}
+
+pub async fn prune_pipeline_temp_cache(
+    paths: &AppPaths,
+    budget_bytes: u64,
+) -> anyhow::Result<PipelineTempCachePrune> {
+    let mut entries = collect_pipeline_temp_cache_entries(paths)?;
+    let mut total_bytes = entries.iter().map(|entry| entry.bytes).sum::<u64>();
+    if total_bytes <= budget_bytes {
+        return Ok(PipelineTempCachePrune {
+            removed_entries: 0,
+            removed_bytes: 0,
+            remaining_bytes: total_bytes,
+        });
+    }
+
+    entries.sort_by_key(|entry| entry.modified);
+    let mut removed_entries = 0usize;
+    let mut removed_bytes = 0u64;
+    for entry in entries {
+        if total_bytes <= budget_bytes {
+            break;
+        }
+        match entry.kind {
+            PipelineTempCacheEntryKind::File => remove_file_if_exists(&entry.path).await?,
+            PipelineTempCacheEntryKind::Dir => remove_dir_if_exists(&entry.path).await?,
+        }
+        removed_entries += 1;
+        removed_bytes = removed_bytes.saturating_add(entry.bytes);
+        total_bytes = total_bytes.saturating_sub(entry.bytes);
+    }
+
+    Ok(PipelineTempCachePrune {
+        removed_entries,
+        removed_bytes,
+        remaining_bytes: total_bytes,
+    })
+}
+
+fn pipeline_temp_cache_budget_bytes() -> u64 {
+    std::env::var(PIPELINE_TEMP_CACHE_BUDGET_MB_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|mb| mb.saturating_mul(1024 * 1024))
+        .unwrap_or(DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES)
+}
+
+fn collect_pipeline_temp_cache_entries(
+    paths: &AppPaths,
+) -> anyhow::Result<Vec<PipelineTempCacheEntry>> {
+    let mut entries = Vec::new();
+    collect_audio_temp_entries(paths, &mut entries)?;
+    collect_orphan_frame_dir_entries(paths, &mut entries)?;
+    Ok(entries)
+}
+
+fn collect_audio_temp_entries(
+    paths: &AppPaths,
+    entries: &mut Vec<PipelineTempCacheEntry>,
+) -> anyhow::Result<()> {
+    let audio_dir = paths.cache.join("pipeline").join("audio");
+    if !audio_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(audio_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        if !metadata.is_file() {
+            continue;
+        }
+        entries.push(PipelineTempCacheEntry {
+            path,
+            bytes: metadata.len(),
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            kind: PipelineTempCacheEntryKind::File,
+        });
+    }
+    Ok(())
+}
+
+fn collect_orphan_frame_dir_entries(
+    paths: &AppPaths,
+    entries: &mut Vec<PipelineTempCacheEntry>,
+) -> anyhow::Result<()> {
+    let frames_root = paths.cache.join("pipeline").join("frames");
+    if !frames_root.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(frames_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.metadata()?.is_dir() || frame_dir_has_referenced_chunks(paths, &path)? {
+            continue;
+        }
+        entries.push(PipelineTempCacheEntry {
+            bytes: path_size(&path)?,
+            modified: entry
+                .metadata()?
+                .modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+            kind: PipelineTempCacheEntryKind::Dir,
+            path,
+        });
+    }
+    Ok(())
+}
+
+fn frame_dir_has_referenced_chunks(paths: &AppPaths, dir: &Path) -> anyhow::Result<bool> {
+    let mut prefix = dir.to_string_lossy().to_string();
+    if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+    let like = format!("{}%", escape_sql_like(&prefix));
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let count: i64 = conn.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM chunks
+        WHERE frame_path LIKE ?1 ESCAPE '\'
+        LIMIT 1
+        "#,
+        [like],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn escape_sql_like(value: &str) -> String {
+    value
+        .replace('\\', r"\\")
+        .replace('%', r"\%")
+        .replace('_', r"\_")
+}
+
+fn path_size(path: &Path) -> anyhow::Result<u64> {
+    let metadata = fs::metadata(path)?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+    let mut bytes = 0u64;
+    for entry in fs::read_dir(path)? {
+        bytes = bytes.saturating_add(path_size(&entry?.path())?);
+    }
+    Ok(bytes)
+}
+
+async fn remove_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn remove_dir_if_exists(path: &Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn cache_key(input: &str) -> String {
     input
         .chars()
@@ -1617,6 +1823,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prune_pipeline_temp_cache_removes_audio_and_orphan_frames_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let audio_dir = paths.cache.join("pipeline").join("audio");
+        let frames_root = paths.cache.join("pipeline").join("frames");
+        let referenced_dir = frames_root.join("referenced");
+        let orphan_dir = frames_root.join("orphan");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        std::fs::create_dir_all(&referenced_dir).unwrap();
+        std::fs::create_dir_all(&orphan_dir).unwrap();
+        let audio = audio_dir.join("old.wav");
+        let referenced_frame = referenced_dir.join("frame.jpg");
+        let orphan_frame = orphan_dir.join("frame.jpg");
+        std::fs::write(&audio, b"audio-temp").unwrap();
+        std::fs::write(&referenced_frame, b"keep-frame").unwrap();
+        std::fs::write(&orphan_frame, b"drop-frame").unwrap();
+
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, source_id, content_type, status, metadata) VALUES ('item-1', 'source-1', 'video', 'indexed', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunks (id, item_id, chunk_type, frame_path, metadata) VALUES ('frame-1', 'item-1', 'keyframe', ?1, '{}')",
+            [referenced_frame.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let pruned = prune_pipeline_temp_cache(&paths, 0).await.unwrap();
+
+        assert!(pruned.removed_entries >= 2);
+        assert!(!audio.exists());
+        assert!(!orphan_dir.exists());
+        assert!(referenced_dir.exists());
+        assert!(referenced_frame.exists());
+    }
+
+    #[tokio::test]
     async fn process_video_item_writes_sqlite_and_qdrant() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
@@ -1640,7 +1891,7 @@ mod tests {
         assert_eq!(summary.text_vectors, 1);
         assert!(summary.sampled_frames > 0);
         assert_eq!(summary.image_vectors, summary.sampled_frames);
-        assert!(summary.audio_path.is_file());
+        assert!(!summary.audio_path.exists());
 
         let conn = sqlite::open(&paths).unwrap();
         let status: String = conn
@@ -2115,7 +2366,7 @@ mod tests {
                 .unwrap();
             assert_eq!(audio.transcript_chunks, 1);
             assert_eq!(audio.text_vectors, 1);
-            assert!(audio.audio_path.is_file());
+            assert!(!audio.audio_path.exists());
 
             let image = pipeline
                 .process_image_item(&format!("image-{index}"))
