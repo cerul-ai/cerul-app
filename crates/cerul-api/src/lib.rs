@@ -944,6 +944,12 @@ async fn add_source(
     State(state): State<ApiState>,
     Json(req): Json<AddSourceRequest>,
 ) -> ApiResult<Json<SourceRecord>> {
+    if should_discover_source_async(&req.source_type) {
+        let source = create_syncing_source(&state.paths, req)?;
+        spawn_source_discovery(state.paths.clone(), source.id.clone());
+        return Ok(Json(source));
+    }
+
     let summary = add_source_to_paths(&state.paths, req).await?;
     Ok(Json(summary.source))
 }
@@ -980,20 +986,14 @@ pub async fn add_source_to_paths(
         (&id, &req.source_type, &config),
     )?;
 
-    for item in &discovered_items {
-        let item_id = upsert_discovered_item(&tx, &id, content_type, item)?;
-        let queued_job = enqueue_index_job(&tx, &item_id, content_type)?;
-        if queued_job {
-            queued_jobs += 1;
-        }
-        items.push(AddedSourceItem {
-            id: item_id,
-            external_id: Some(item.external_id.clone()),
-            title: item.title.clone(),
-            status: "discovered".to_string(),
-            queued_job,
-        });
-    }
+    persist_discovered_items(
+        &tx,
+        &id,
+        content_type,
+        &discovered_items,
+        &mut items,
+        &mut queued_jobs,
+    )?;
 
     tx.execute(
         "UPDATE sources SET last_poll_at = strftime('%s','now') WHERE id = ?1",
@@ -1006,6 +1006,141 @@ pub async fn add_source_to_paths(
         items,
         queued_jobs,
     })
+}
+
+fn should_discover_source_async(source_type: &str) -> bool {
+    matches!(source_type, "youtube" | "web_video" | "rss_podcast")
+}
+
+fn create_syncing_source(paths: &AppPaths, req: AddSourceRequest) -> anyhow::Result<SourceRecord> {
+    let id = new_id("source");
+    let plugin = cerul_sources::build(&req.source_type, req.config.clone())?;
+    primary_content_type(&*plugin)?;
+    let config = req.config.to_string();
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.execute(
+        "INSERT INTO sources (id, type, config, status) VALUES (?1, ?2, ?3, 'syncing')",
+        (&id, &req.source_type, &config),
+    )?;
+    source_by_id(paths, &id)
+}
+
+fn spawn_source_discovery(paths: AppPaths, source_id: String) {
+    tokio::spawn(async move {
+        if let Err(error) = discover_source_items_to_paths(&paths, &source_id).await {
+            let message = error.to_string();
+            if let Err(mark_error) = mark_source_discovery_error(&paths, &source_id, &message) {
+                tracing::warn!(
+                    source_id,
+                    error = %mark_error,
+                    "failed to mark source discovery error"
+                );
+            }
+            tracing::warn!(source_id, error = %message, "source discovery failed");
+        }
+    });
+}
+
+async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> anyhow::Result<()> {
+    let source = source_by_id(paths, source_id)?;
+    if source.status != "syncing" {
+        return Ok(());
+    }
+
+    let plugin = cerul_sources::build(&source.source_type, source.config.clone())?;
+    let content_type = primary_content_type(&*plugin)?;
+    let discovered_items = plugin.discover().await?;
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+    let current_status = tx
+        .query_row(
+            "SELECT status FROM sources WHERE id = ?1",
+            [source_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if current_status.as_deref() != Some("syncing") {
+        tx.commit()?;
+        return Ok(());
+    }
+
+    let mut items = Vec::with_capacity(discovered_items.len());
+    let mut queued_jobs = 0;
+    persist_discovered_items(
+        &tx,
+        source_id,
+        content_type,
+        &discovered_items,
+        &mut items,
+        &mut queued_jobs,
+    )?;
+    tx.execute(
+        "UPDATE sources SET status = 'active', last_poll_at = strftime('%s','now') WHERE id = ?1",
+        [source_id],
+    )?;
+    tx.commit()?;
+    tracing::info!(
+        source_id,
+        discovered_items = items.len(),
+        queued_jobs,
+        "source discovery completed"
+    );
+    Ok(())
+}
+
+fn persist_discovered_items(
+    tx: &Transaction<'_>,
+    source_id: &str,
+    content_type: ContentType,
+    discovered_items: &[DiscoveredItem],
+    items: &mut Vec<AddedSourceItem>,
+    queued_jobs: &mut usize,
+) -> anyhow::Result<()> {
+    for item in discovered_items {
+        let item_id = upsert_discovered_item(tx, source_id, content_type, item)?;
+        let queued_job = enqueue_index_job(tx, &item_id, content_type)?;
+        if queued_job {
+            *queued_jobs += 1;
+        }
+        items.push(AddedSourceItem {
+            id: item_id,
+            external_id: Some(item.external_id.clone()),
+            title: item.title.clone(),
+            status: "discovered".to_string(),
+            queued_job,
+        });
+    }
+    Ok(())
+}
+
+fn mark_source_discovery_error(
+    paths: &AppPaths,
+    source_id: &str,
+    error: &str,
+) -> anyhow::Result<()> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let config = conn
+        .query_row(
+            "SELECT config FROM sources WHERE id = ?1",
+            [source_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let mut config = parse_json(&config);
+    if !config.is_object() {
+        config = json!({});
+    }
+    if let Some(config) = config.as_object_mut() {
+        config.insert("last_error".to_string(), Value::String(error.to_string()));
+    }
+    conn.execute(
+        "UPDATE sources SET status = 'error', config = ?2 WHERE id = ?1",
+        (source_id, config.to_string()),
+    )?;
+    Ok(())
 }
 
 async fn remove_source(
@@ -4652,6 +4787,97 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn add_remote_source_http_returns_syncing_before_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths.clone());
+        let body = json!({
+            "type": "youtube",
+            "config": {
+                "url": "https://www.youtube.com/@cerul",
+                "max_videos": 2,
+                "ytdlp_path": fake_slow_ytdlp(&temp),
+                "cache_dir": temp.path().join("cache"),
+                "timeout_sec": 5
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sources")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(response.status(), StatusCode::OK);
+        let source = response_json(response).await;
+        assert_eq!(source["status"], "syncing");
+        let source_id = source["id"].as_str().unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let item_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?1",
+                [source_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(item_count, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_source_discovery_persists_items_and_activates_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let source = create_syncing_source(
+            &paths,
+            AddSourceRequest {
+                source_type: "youtube".to_string(),
+                config: json!({
+                    "url": "https://www.youtube.com/@cerul",
+                    "max_videos": 2,
+                    "ytdlp_path": fake_ytdlp(&temp),
+                    "cache_dir": temp.path().join("cache"),
+                }),
+            },
+        )
+        .unwrap();
+
+        discover_source_items_to_paths(&paths, &source.id)
+            .await
+            .unwrap();
+
+        let source = source_by_id(&paths, &source.id).unwrap();
+        assert_eq!(source.status, "active");
+        assert!(source.last_poll_at.is_some());
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let item_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?1 AND status = 'discovered'",
+                [source.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let job_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(item_count, 2);
+        assert_eq!(job_count, 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn add_youtube_source_discovers_items_and_queues_video_jobs() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -5162,6 +5388,31 @@ if [ -z "$out" ]; then
 fi
 mkdir -p "$(dirname "$out")"
 printf 'video' > "$out"
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    fn fake_slow_ytdlp(temp: &tempfile::TempDir) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = temp.path().join("yt-dlp-slow");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--flat-playlist" ]; then
+  sleep 2
+  printf '{"id":"abc123","title":"First video","duration":12}\n'
+  exit 0
+  fi
+done
+exit 1
 "#,
         )
         .unwrap();

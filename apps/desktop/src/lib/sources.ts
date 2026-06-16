@@ -41,6 +41,9 @@ export function sourceName(record: api.SourceRecord) {
 }
 
 export function sourceStatus(status: string): SourceStatus {
+  if (status === "syncing") {
+    return "syncing";
+  }
   if (status === "paused") {
     return "paused";
   }

@@ -19,7 +19,7 @@ export type View =
   | "sources"
   | "settings";
 
-export type SourceStatus = "active" | "paused" | "error";
+export type SourceStatus = "active" | "syncing" | "paused" | "error";
 export type ItemStatus = "indexed" | "indexing" | "failed";
 export type VisualIndexStatus = "indexed" | "failed" | "pending" | null;
 export type EmbeddingIndexStatus = "indexed" | "failed" | "pending" | null;
