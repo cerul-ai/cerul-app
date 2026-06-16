@@ -143,7 +143,6 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
-import { brandAssets } from "./lib/brand";
 import { AccountRailButton } from "./components/account-sidebar";
 import type {
   ApiStatus,
@@ -1160,20 +1159,11 @@ function AppWorkspace() {
 
   return (
     <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
-      <aside className="rail">
-        <div className="rail-top">
-          <button
-            className="rail-brand"
-            type="button"
-            onClick={() => navigate("home")}
-            aria-label={t("shell.openHome")}
-          >
-            <BrandMark />
-            <span className="rail-wordmark rail-label">Cerul</span>
-          </button>
+      <div className="titlebar">
+        <div className="titlebar-lead">
           {updaterState.phase !== "idle" ? (
             <button
-              className="rail-update"
+              className={`rail-update is-${updaterState.phase}`}
               type="button"
               disabled={updaterState.phase === "downloading"}
               title={
@@ -1203,6 +1193,20 @@ function AppWorkspace() {
               )}
             </button>
           ) : null}
+        </div>
+        <div className="titlebar-drag" aria-hidden="true" />
+      </div>
+      <aside className="rail">
+        <div className="rail-top">
+          <button
+            className="rail-brand"
+            type="button"
+            onClick={() => navigate("home")}
+            aria-label={t("shell.openHome")}
+          >
+            <BrandMark />
+            <span className="rail-wordmark rail-label">Cerul</span>
+          </button>
         </div>
 
         <nav className="rail-nav" aria-label={t("nav.home")}>
@@ -1798,9 +1802,6 @@ function HomeScreen({
   return (
     <div className="page home-page" style={{ maxWidth: 920 }}>
       <div className="home-search-stage">
-        <div className="home-hero-mark" aria-hidden="true">
-          <img className="home-hero-icon" src={brandAssets.appIcon} alt="" />
-        </div>
         <h1>{t("home.heading")}</h1>
         <p className="muted home-summary">
           {t("home.summary", {

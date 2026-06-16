@@ -2,8 +2,13 @@
    CERUL · APP SHELL LAYOUT
    ============================================================ */
 .app {
+  --titlebar-h: 40px;
   display: grid;
   grid-template-columns: auto 1fr;
+  grid-template-rows: var(--titlebar-h) 1fr;
+  grid-template-areas:
+    "titlebar titlebar"
+    "rail content";
   height: 100vh;
   overflow: hidden;
   position: relative;
@@ -33,10 +38,36 @@
   z-index: 0;
 }
 .app > .rail,
-.app > .content { position: relative; z-index: 1; }
+.app > .content,
+.app > .titlebar { position: relative; z-index: 1; }
+
+/* ---------------- Title bar (Codex-style: traffic lights + update affordance) ----------------
+   macOS hiddenInset overlays the native traffic lights on the left; this bar is the
+   draggable strip that carries the update button, aligned with the rail column. */
+.titlebar {
+  grid-area: titlebar;
+  display: flex;
+  align-items: stretch;
+  height: var(--titlebar-h);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.titlebar-lead {
+  width: 220px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 14px 0 82px;
+  border-right: 1px solid rgba(28, 40, 60, 0.06);
+}
+[data-theme="dark"] .titlebar-lead { border-right-color: rgba(255, 255, 255, 0.06); }
+.titlebar-drag { flex: 1; }
+.titlebar .rail-update { -webkit-app-region: no-drag; app-region: no-drag; margin-left: 0; }
 
 /* ---------------- Rail ---------------- */
 .rail {
+  grid-area: rail;
   width: 220px;
   /* Transparent so the .app luminous gradient flows continuously into the rail;
      a near-invisible hairline is the only thing splitting rail from content. */
@@ -137,7 +168,7 @@
 }
 
 /* ---------------- Content area ---------------- */
-.content { overflow-y: auto; overflow-x: hidden; height: 100vh; position: relative; }
+.content { grid-area: content; overflow-y: auto; overflow-x: hidden; height: 100%; position: relative; }
 .page { max-width: 1080px; margin: 0 auto; padding: 0 40px 80px; }
 .page.wide { max-width: 1240px; }
 
@@ -172,7 +203,7 @@
 .home-hero-mark .brand-mark { width: 54px; height: 54px; }
 .home-search-stage h1 {
   margin: 0;
-  font-size: 31px;
+  font-size: 38px;
   line-height: 1.14;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -527,6 +558,7 @@
 /* tablet: tighten the rail to icons-only so result/library density stays usable */
 @media (max-width: 1000px) {
   .rail { width: 60px; }
+  .titlebar-lead { width: 60px; padding: 0 8px; justify-content: center; }
   .rail .rail-label { display: none; }
   .rail .rail-top { flex-direction: column; gap: 6px; }
   .rail .rail-update { margin-left: 0; padding: 0 6px; }
@@ -539,6 +571,7 @@
 
 @media (max-width: 720px) {
   .app { display: flex; flex-direction: column; height: 100vh; }
+  .titlebar { display: none; }
   .rail { display: none; }
   .mobilebar { display: flex; }
   .bottomnav { display: flex; }
