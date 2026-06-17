@@ -28,7 +28,8 @@ use crate::{
 pub const DEFAULT_EMBEDDING_MODEL: &str = "mlx-community/Qwen3-VL-Embedding-2B-6bit";
 pub const DEFAULT_ASR_MODEL: &str = "Qwen/Qwen3-ASR-0.6B";
 pub const DEFAULT_FORCED_ALIGNER_MODEL: &str = "Qwen/Qwen3-ForcedAligner-0.6B";
-pub const DEFAULT_OCR_MODEL: &str = "mlx-community/Qwen3-VL-2B-Instruct-4bit";
+pub const DEFAULT_OCR_DET_MODEL: &str = "PaddlePaddle/PP-OCRv6_small_det_onnx";
+pub const DEFAULT_OCR_REC_MODEL: &str = "PaddlePaddle/PP-OCRv6_small_rec_onnx";
 pub const DEFAULT_WHISPER_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
 /// In-memory quantization for the official Qwen3-ASR + ForcedAligner weights.
 /// "4bit" minimises RAM (~-70%); "8bit" is near-lossless; "none" keeps fp16.
@@ -58,10 +59,14 @@ packages = {
     "mlx-vlm": package_version("mlx-vlm"),
     "mlx-whisper": package_version("mlx-whisper"),
     "numpy": package_version("numpy"),
+    "opencv-python": package_version("opencv-python"),
+    "onnxruntime": package_version("onnxruntime"),
     "Pillow": package_version("Pillow"),
+    "pyclipper": package_version("pyclipper"),
+    "PyYAML": package_version("PyYAML"),
     "huggingface-hub": package_version("huggingface-hub"),
 }
-required = ["mlx", "mlx-embeddings", "mlx-qwen3-asr", "mlx-vlm"]
+required = ["mlx", "mlx-embeddings", "mlx-qwen3-asr", "mlx-vlm", "opencv-python", "onnxruntime", "pyclipper", "PyYAML"]
 missing = [name for name in required if packages.get(name) is None]
 apple_silicon = platform.system() == "Darwin" and platform.machine() == "arm64"
 print(json.dumps({
@@ -89,7 +94,8 @@ pub struct MlxSidecarConfig {
     pub asr_model: String,
     pub forced_aligner_model: String,
     pub asr_quantization: String,
-    pub ocr_model: String,
+    pub ocr_det_model: String,
+    pub ocr_rec_model: String,
     pub whisper_model: String,
 }
 
@@ -124,8 +130,10 @@ impl MlxSidecarConfig {
                 .unwrap_or_else(|_| DEFAULT_FORCED_ALIGNER_MODEL.to_string()),
             asr_quantization: env::var("CERUL_MLX_ASR_QUANTIZATION")
                 .unwrap_or_else(|_| DEFAULT_ASR_QUANTIZATION.to_string()),
-            ocr_model: env::var("CERUL_MLX_OCR_MODEL")
-                .unwrap_or_else(|_| DEFAULT_OCR_MODEL.to_string()),
+            ocr_det_model: env::var("CERUL_MLX_OCR_DET_MODEL")
+                .unwrap_or_else(|_| DEFAULT_OCR_DET_MODEL.to_string()),
+            ocr_rec_model: env::var("CERUL_MLX_OCR_REC_MODEL")
+                .unwrap_or_else(|_| DEFAULT_OCR_REC_MODEL.to_string()),
             whisper_model: env::var("CERUL_MLX_WHISPER_MODEL")
                 .unwrap_or_else(|_| DEFAULT_WHISPER_MODEL.to_string()),
         })
@@ -174,7 +182,8 @@ pub fn runtime_status(paths: &AppPaths) -> anyhow::Result<MlxRuntimeStatus> {
         "embedding": config.embedding_model,
         "asr": config.asr_model,
         "forced_aligner": config.forced_aligner_model,
-        "ocr": config.ocr_model,
+        "ocr_det": config.ocr_det_model,
+        "ocr_rec": config.ocr_rec_model,
     });
     status.cache = json!({ "HF_HOME": hf_home });
     Ok(status)
@@ -565,8 +574,10 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         .arg(&config.forced_aligner_model)
         .arg("--asr-quantization")
         .arg(&config.asr_quantization)
-        .arg("--ocr-model")
-        .arg(&config.ocr_model)
+        .arg("--ocr-det-model")
+        .arg(&config.ocr_det_model)
+        .arg("--ocr-rec-model")
+        .arg(&config.ocr_rec_model)
         .arg("--whisper-model")
         .arg(&config.whisper_model)
         .env("PYTHONUNBUFFERED", "1")

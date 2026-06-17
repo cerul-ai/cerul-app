@@ -5202,11 +5202,6 @@ function ModelsSettings({
       activeProfile?.model_id ??
       "Qwen3-VL Embedding local"
     : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
-  // Video understanding runs locally too when processing is on-device: prefer
-  // catalog-reported local vision models, else the bundled fallback list.
-  const catalogLocalVision = videoUnderstandingModels.filter((model) => model.tier === "local");
-  const videoLocalOptions =
-    catalogLocalVision.length > 0 ? toComboOptions(catalogLocalVision) : localVisionModels;
   const capabilities: CapabilityRowModel[] = [
     {
       key: "asr",
@@ -5241,26 +5236,16 @@ function ModelsSettings({
       key: "video",
       badge: t("settings.models.capability.video.badge"),
       name: t("settings.models.video.kicker"),
-      isLocal: effectiveLocalMode,
+      isLocal: false,
       locked: false,
       modelEditable: true,
       localLabel: "",
-      modelValue:
-        effectiveLocalMode &&
-        !videoLocalOptions.some((option) => option.id === selectedVideoUnderstandingModel)
-          ? videoLocalOptions[0]?.id ?? selectedVideoUnderstandingModel
-          : selectedVideoUnderstandingModel,
-      modelOptions: effectiveLocalMode
-        ? videoLocalOptions
-        : toComboOptions(videoUnderstandingModels),
+      modelValue: selectedVideoUnderstandingModel,
+      modelOptions: toComboOptions(videoUnderstandingModels),
       onSelectModel: (id) => void onSettingsChange({ video_understanding_model: id }),
-      provider: effectiveLocalMode
-        ? null
-        : providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
+      provider: providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
       note: null,
-      // On-device video understanding uses the bundled Qwen3-VL vision model
-      // (same weights as OCR), so its readiness tracks the "ocr" download.
-      localModelKey: "ocr",
+      localModelKey: null,
     },
   ];
 
@@ -5464,24 +5449,6 @@ const fallbackAsrModels: AsrModelOption[] = [
   { id: "whisper-1", label: "OpenAI Whisper", size_label: "usage-based" },
   { id: "gpt-4o-mini-transcribe", label: "OpenAI GPT-4o mini transcribe", size_label: "usage-based" },
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
-];
-
-// On-device video-understanding VLMs offered when processing runs locally
-// (mlx-community Qwen3-VL collection + Gemma 4). All Instruct + quantized for
-// practical on-device use. The first entry is the default; Qwen3-VL options
-// run small -> large below it. The daemon must ship/serve these for a
-// selection to take effect.
-const localVisionModels: ModelComboOption[] = [
-  { id: "gemma-4-12B-it-qat-4bit", label: "Gemma 4 12B", hint: "本地 · MLX · QAT 量化 · 默认" },
-  { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit · 轻量" },
-  { id: "Qwen3-VL-2B-Instruct-4bit", label: "Qwen3-VL 2B", hint: "本地 · MLX · 4-bit · 最省资源" },
-  { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit · 更准确" },
-  {
-    id: "Qwen3-VL-30B-A3B-Instruct-4bit",
-    label: "Qwen3-VL 30B (MoE)",
-    hint: "本地 · MLX · 4-bit · 强 · 30B 总 / 3B 激活",
-  },
-  { id: "Qwen3-VL-32B-Instruct-4bit", label: "Qwen3-VL 32B", hint: "本地 · MLX · 4-bit · 最强 · 占用大" },
 ];
 
 function isGeminiAsrModelId(modelId: string) {

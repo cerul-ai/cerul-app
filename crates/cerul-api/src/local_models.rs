@@ -8,7 +8,7 @@
 //! fallback downloads.
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -69,8 +69,8 @@ fn model_groups(cfg: &MlxSidecarConfig) -> Vec<LocalModelGroup> {
         LocalModelGroup {
             id: "ocr",
             label: "On-screen text",
-            repos: vec![cfg.ocr_model.clone()],
-            size_mb: 1798,
+            repos: vec![cfg.ocr_det_model.clone(), cfg.ocr_rec_model.clone()],
+            size_mb: 30,
         },
     ]
 }
@@ -263,6 +263,7 @@ pub async fn local_prepare_status(
 fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
     let hub = cfg.models_cache.join("huggingface").join("hub");
     let mirror = cfg.models_cache.join("cerul-mirror");
+    let bundled = bundled_models_root();
     let in_progress = PREPARE_IN_PROGRESS.load(Ordering::Acquire);
     let error = PREPARE_LAST_ERROR.lock().ok().and_then(|g| g.clone());
     let active_ids: Vec<&'static str> = PREPARE_ACTIVE_IDS
@@ -281,7 +282,7 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         let on_disk_mb: u64 = group
             .repos
             .iter()
-            .map(|repo| repo_cached_bytes(&hub, &mirror, repo) / 1_000_000)
+            .map(|repo| repo_cached_bytes(&hub, &mirror, bundled.as_deref(), repo) / 1_000_000)
             .sum();
         let capped = on_disk_mb.min(group.size_mb);
         done_mb += capped;
@@ -357,9 +358,24 @@ fn cache_dir_name(repo: &str) -> String {
     format!("models--{}", repo.replace('/', "--"))
 }
 
-fn repo_cached_bytes(hf_hub: &Path, mirror_root: &Path, repo: &str) -> u64 {
+fn bundled_models_root() -> Option<PathBuf> {
+    std::env::var_os("CERUL_BUNDLED_MODELS_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+fn repo_cached_bytes(
+    hf_hub: &Path,
+    mirror_root: &Path,
+    bundled_root: Option<&Path>,
+    repo: &str,
+) -> u64 {
     let name = cache_dir_name(repo);
-    dir_size_bytes(&hf_hub.join(&name)) + dir_size_bytes(&mirror_root.join(name))
+    dir_size_bytes(&hf_hub.join(&name))
+        + dir_size_bytes(&mirror_root.join(&name))
+        + bundled_root
+            .map(|root| dir_size_bytes(&root.join(name)))
+            .unwrap_or(0)
 }
 
 /// Sum of real file bytes under `path`. Skips symlinks, so the HF `snapshots/`
@@ -415,8 +431,12 @@ mod tests {
             "models--Qwen--Qwen3-ASR-0.6B"
         );
         assert_eq!(
-            cache_dir_name("mlx-community/Qwen3-VL-2B-Instruct-4bit"),
-            "models--mlx-community--Qwen3-VL-2B-Instruct-4bit"
+            cache_dir_name("PaddlePaddle/PP-OCRv6_small_det_onnx"),
+            "models--PaddlePaddle--PP-OCRv6_small_det_onnx"
+        );
+        assert_eq!(
+            cache_dir_name("PaddlePaddle/PP-OCRv6_small_rec_onnx"),
+            "models--PaddlePaddle--PP-OCRv6_small_rec_onnx"
         );
     }
 
@@ -426,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_cached_bytes_counts_hf_and_mirror_roots() {
+    fn repo_cached_bytes_counts_hf_mirror_and_bundled_roots() {
         let unique = format!(
             "cerul-model-cache-test-{}",
             std::time::SystemTime::now()
@@ -437,14 +457,17 @@ mod tests {
         let root = std::env::temp_dir().join(unique);
         let hf = root.join("hf");
         let mirror = root.join("mirror");
+        let bundled = root.join("bundled");
         let repo = "Qwen/Qwen3-ASR-0.6B";
         let name = cache_dir_name(repo);
         std::fs::create_dir_all(hf.join(&name)).unwrap();
         std::fs::create_dir_all(mirror.join(&name)).unwrap();
+        std::fs::create_dir_all(bundled.join(&name)).unwrap();
         std::fs::write(hf.join(&name).join("a.bin"), vec![0u8; 3]).unwrap();
         std::fs::write(mirror.join(&name).join("b.bin"), vec![0u8; 5]).unwrap();
+        std::fs::write(bundled.join(&name).join("c.bin"), vec![0u8; 7]).unwrap();
 
-        assert_eq!(repo_cached_bytes(&hf, &mirror, repo), 8);
+        assert_eq!(repo_cached_bytes(&hf, &mirror, Some(&bundled), repo), 15);
 
         let _ = std::fs::remove_dir_all(root);
     }

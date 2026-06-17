@@ -185,7 +185,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         sidecar.DEFAULT_EMBEDDING_MODEL,
         sidecar.DEFAULT_ASR_MODEL,
         sidecar.DEFAULT_FORCED_ALIGNER_MODEL,
-        sidecar.DEFAULT_OCR_MODEL,
+        sidecar.DEFAULT_OCR_DET_MODEL,
+        sidecar.DEFAULT_OCR_REC_MODEL,
     ]
     if args.include_whisper:
         models.append(sidecar.DEFAULT_WHISPER_MODEL)
@@ -194,17 +195,20 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         sidecar.DEFAULT_EMBEDDING_MODEL: "apache-2.0",
         sidecar.DEFAULT_ASR_MODEL: "apache-2.0",
         sidecar.DEFAULT_FORCED_ALIGNER_MODEL: "apache-2.0",
-        sidecar.DEFAULT_OCR_MODEL: "apache-2.0",
+        sidecar.DEFAULT_OCR_DET_MODEL: "apache-2.0",
+        sidecar.DEFAULT_OCR_REC_MODEL: "apache-2.0",
         sidecar.DEFAULT_WHISPER_MODEL: "mit",
     }
     source_models = {
         sidecar.DEFAULT_EMBEDDING_MODEL: "Qwen/Qwen3-VL-Embedding-2B",
-        sidecar.DEFAULT_OCR_MODEL: "Qwen/Qwen3-VL-2B-Instruct",
+        sidecar.DEFAULT_OCR_DET_MODEL: "PaddlePaddle/PP-OCRv6_small_det_onnx",
+        sidecar.DEFAULT_OCR_REC_MODEL: "PaddlePaddle/PP-OCRv6_small_rec_onnx",
         sidecar.DEFAULT_WHISPER_MODEL: "openai/whisper-large-v3-turbo",
     }
     allow_patterns = {
         sidecar.DEFAULT_EMBEDDING_MODEL: sidecar.QWEN3_VL_ALLOW_PATTERNS,
-        sidecar.DEFAULT_OCR_MODEL: sidecar.QWEN3_VL_ALLOW_PATTERNS,
+        sidecar.DEFAULT_OCR_DET_MODEL: sidecar.ONNX_OCR_ALLOW_PATTERNS,
+        sidecar.DEFAULT_OCR_REC_MODEL: sidecar.ONNX_OCR_ALLOW_PATTERNS,
     }
 
     env = os.environ.copy()

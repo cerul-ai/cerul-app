@@ -56,7 +56,8 @@ Current default local model mirror candidates:
 - `mlx-community/Qwen3-VL-Embedding-2B-6bit` — Apache-2.0
 - `Qwen/Qwen3-ASR-0.6B` — Apache-2.0
 - `Qwen/Qwen3-ForcedAligner-0.6B` — Apache-2.0
-- `mlx-community/Qwen3-VL-2B-Instruct-4bit` — Apache-2.0
+- `PaddlePaddle/PP-OCRv6_small_det_onnx` — Apache-2.0
+- `PaddlePaddle/PP-OCRv6_small_rec_onnx` — Apache-2.0
   Windows/Linux local runtimes require separate backend work and license review.
 
 ## Brand Assets

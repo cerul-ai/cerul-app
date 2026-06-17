@@ -1478,6 +1478,9 @@ function runtimeEnv() {
   );
   if (fs.existsSync(mlxSidecar)) env.CERUL_MLX_SIDECAR = mlxSidecar;
 
+  const bundledModels = path.join(app.isPackaged ? process.resourcesPath : root, "bundled-models");
+  if (fs.existsSync(bundledModels)) env.CERUL_BUNDLED_MODELS_DIR = bundledModels;
+
   // Packaged builds ship a signed MLX Python runtime as a single archive. We
   // extract it into user data on first launch so Gatekeeper does not recursively
   // scan hundreds of nested mach-O files inside the .app bundle.

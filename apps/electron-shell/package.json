@@ -87,6 +87,10 @@
         ]
       },
       {
+        "from": "../../bundled-models",
+        "to": "bundled-models"
+      },
+      {
         "from": "mlx-runtime.tar.gz",
         "to": "mlx-runtime.tar.gz"
       },

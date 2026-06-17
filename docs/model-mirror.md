@@ -34,12 +34,13 @@ The build script defaults to Hugging Face's classic HTTP path
 environment. Set `HF_HUB_DISABLE_XET=0` explicitly if a future builder wants to
 test Xet again.
 
-By default, the script mirrors the four release-path models:
+By default, the script mirrors the five release-path repos:
 
 - `mlx-community/Qwen3-VL-Embedding-2B-6bit`
 - `Qwen/Qwen3-ASR-0.6B`
 - `Qwen/Qwen3-ForcedAligner-0.6B`
-- `mlx-community/Qwen3-VL-2B-Instruct-4bit`
+- `PaddlePaddle/PP-OCRv6_small_det_onnx`
+- `PaddlePaddle/PP-OCRv6_small_rec_onnx`
 
 `mlx-community/whisper-large-v3-turbo` is intentionally excluded from the
 default mirror batch because its MLX model card does not declare a license tag.
@@ -59,3 +60,8 @@ Downloaded mirror snapshots live under:
 
 If the manifest is unavailable, a checksum fails, or an archive is incomplete,
 the sidecar logs the mirror error and falls back to Hugging Face.
+
+PP-OCRv6 small ONNX detector/recognizer snapshots are also bundled in release
+installers under `bundled-models/`, so OCR does not need a first-run model
+download. The mirror remains a repair/fallback path if a bundled snapshot is
+absent or incomplete.
