@@ -168,6 +168,19 @@ export function classifyFailureReason(rawError: string): FailureReason | null {
   return null;
 }
 
+export function isSourceFileMissingError(rawError: string): boolean {
+  const e = rawError.toLowerCase();
+  return (
+    e.includes("source file does not exist") ||
+    e.includes("source file missing") ||
+    e.includes("source path does not exist") ||
+    e.includes("input file does not exist") ||
+    e.startsWith("file not found:") ||
+    (e.includes("no such file or directory") &&
+      (e.includes("source") || e.includes("raw_path")))
+  );
+}
+
 export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
   const error = item.error?.trim() ?? "";
   if (item.status !== "failed" && !error) {
@@ -203,7 +216,11 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
     };
   }
 
-  if (item.sourceKind === "folder" || item.rawPath) {
+  if (
+    item.rawPath &&
+    item.rawPathExists === false &&
+    isSourceFileMissingError(error)
+  ) {
     return {
       kind: "missing-file",
       title: t("item.issue.missingFile.title"),
@@ -375,6 +392,7 @@ export function mapItemRecord(
     status,
     error: record.error ? sanitizeErrorText(record.error) : null,
     rawPath,
+    rawPathExists: record.raw_path_exists ?? null,
     originalUrl: itemOriginalUrl(record),
     color: itemColor(record.content_type),
     thumbnailUrl: record.thumbnail_chunk_id ? api.chunkFrameUrl(record.thumbnail_chunk_id) : null,

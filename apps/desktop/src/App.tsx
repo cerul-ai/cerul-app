@@ -1429,6 +1429,9 @@ function AppWorkspace() {
               await api.reindexItem(itemToReindex.id);
               await refreshCoreData();
             }}
+            onItemUpdated={async () => {
+              await refreshCoreData();
+            }}
             requestConfirm={requestConfirm}
           />
         ) : null}
@@ -1516,6 +1519,9 @@ function AppWorkspace() {
             }}
             onReindexItem={async (itemToReindex) => {
               await api.reindexItem(itemToReindex.id);
+              await refreshCoreData();
+            }}
+            onItemUpdated={async () => {
               await refreshCoreData();
             }}
             requestConfirm={requestConfirm}
@@ -2654,6 +2660,7 @@ function ResultDetail({
   onLibrary,
   onDeleteItem,
   onReindexItem,
+  onItemUpdated,
   requestConfirm,
 }: {
   item: Item;
@@ -2664,6 +2671,7 @@ function ResultDetail({
   onLibrary: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
+  onItemUpdated: () => Promise<void>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -2949,12 +2957,10 @@ function ResultDetail({
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
       try {
-        // Persist the new location and queue a re-index against it —
-        // previously the picked path was only echoed back as a message.
         await api.updateItemRawPath(item.id, selected.trim());
-        await onReindexItem(item);
+        await onItemUpdated();
         setItemAction({
-          status: "queued",
+          status: "idle",
           message: t("detail.locatedSource", { path: selected }),
         });
       } catch (error) {
@@ -4128,6 +4134,7 @@ function ItemDetail({
   onBack,
   onDeleteItem,
   onReindexItem,
+  onItemUpdated,
   requestConfirm,
 }: {
   item: Item;
@@ -4137,6 +4144,7 @@ function ItemDetail({
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
+  onItemUpdated: () => Promise<void>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -4336,12 +4344,10 @@ function ItemDetail({
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
       try {
-        // Persist the new location and queue a re-index against it —
-        // previously the picked path was only echoed back as a message.
         await api.updateItemRawPath(item.id, selected.trim());
-        await onReindexItem(item);
+        await onItemUpdated();
         setItemAction({
-          status: "queued",
+          status: "idle",
           message: t("detail.locatedSource", { path: selected }),
         });
       } catch (error) {

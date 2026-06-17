@@ -98,6 +98,7 @@ pub struct ItemRecord {
     pub title: Option<String>,
     pub duration_sec: Option<f64>,
     pub raw_path: Option<String>,
+    pub raw_path_exists: Option<bool>,
     pub indexed_at: Option<i64>,
     pub status: String,
     pub error: Option<String>,
@@ -1304,19 +1305,97 @@ async fn update_item(
         if trimmed.is_empty() {
             return Err(ApiError::bad_request("raw_path must not be empty"));
         }
-        if !FsPath::new(trimmed).is_file() {
+        let path = FsPath::new(trimmed);
+        if !path.is_file() {
             return Err(ApiError::bad_request(format!("file not found: {trimmed}")));
         }
-        let conn = cerul_storage::sqlite::open(&state.paths)?;
-        let updated = conn.execute(
-            "UPDATE items SET raw_path = ?2, error = NULL WHERE id = ?1",
-            rusqlite::params![id.as_str(), trimmed],
-        )?;
-        if updated == 0 {
-            return Err(ApiError::not_found("item not found"));
+
+        let (previous_raw_path, indexed_at, previous_error) =
+            item_raw_path_patch_state(&state.paths, &id)?;
+        let same_path = previous_raw_path
+            .as_deref()
+            .map(|previous| paths_refer_to_same_file(FsPath::new(previous), path))
+            .unwrap_or(false);
+        cerul_storage::set_item_raw_path(&state.paths, &id, path).map_err(|error| {
+            if error.to_string().contains("item not found") {
+                ApiError::not_found(format!("item not found: {id}"))
+            } else {
+                ApiError::internal(error)
+            }
+        })?;
+        if previous_error
+            .as_deref()
+            .is_some_and(is_source_file_missing_error)
+        {
+            clear_stale_missing_file_error(&state.paths, &id, indexed_at.is_some())?;
         }
+        tracing::info!(
+            item_id = %id,
+            raw_path = %trimmed,
+            raw_path_exists = true,
+            same_path,
+            was_indexed = indexed_at.is_some(),
+            "updated item raw path"
+        );
     }
     get_item(State(state), Path(id)).await
+}
+
+fn item_raw_path_patch_state(
+    paths: &AppPaths,
+    item_id: &str,
+) -> ApiResult<(Option<String>, Option<i64>, Option<String>)> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.query_row(
+        "SELECT raw_path, indexed_at, error FROM items WHERE id = ?1",
+        [item_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            ApiError::not_found(format!("item not found: {item_id}"))
+        }
+        other => ApiError::internal(other.into()),
+    })
+}
+
+fn clear_stale_missing_file_error(
+    paths: &AppPaths,
+    item_id: &str,
+    restore_indexed_status: bool,
+) -> ApiResult<()> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let status = if restore_indexed_status {
+        "indexed"
+    } else {
+        "failed"
+    };
+    conn.execute(
+        "UPDATE items SET error = NULL, status = ?2 WHERE id = ?1",
+        rusqlite::params![item_id, status],
+    )?;
+    Ok(())
+}
+
+fn is_source_file_missing_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("source file does not exist")
+        || normalized.contains("source file missing")
+        || normalized.contains("source path does not exist")
+        || normalized.contains("input file does not exist")
+        || normalized.starts_with("file not found:")
+        || (normalized.contains("no such file or directory")
+            && (normalized.contains("source") || normalized.contains("raw_path")))
+}
+
+fn paths_refer_to_same_file(left: &FsPath, right: &FsPath) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 async fn get_item(
@@ -2757,6 +2836,8 @@ fn index_job_type(content_type: ContentType) -> &'static str {
 
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
     let metadata: Option<String> = row.get(10)?;
+    let raw_path: Option<String> = row.get(6)?;
+    let raw_path_exists = raw_path.as_deref().map(|path| FsPath::new(path).is_file());
 
     Ok(ItemRecord {
         id: row.get(0)?,
@@ -2765,7 +2846,8 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
         external_id: row.get(3)?,
         title: row.get(4)?,
         duration_sec: row.get(5)?,
-        raw_path: row.get(6)?,
+        raw_path,
+        raw_path_exists,
         indexed_at: row.get(7)?,
         status: row.get(8)?,
         error: row.get(9)?,
@@ -4283,6 +4365,76 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table} should be empty after deleting item");
         }
+    }
+
+    #[tokio::test]
+    async fn item_raw_path_patch_syncs_metadata_without_reindexing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let old_path = temp.path().join("old.mp4");
+        let new_path = temp.path().join("new.mp4");
+        std::fs::write(&new_path, b"video").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path,
+                    indexed_at, status, error, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'clip.mp4', 'Clip', ?1,
+                    10, 'failed', ?2, ?3
+                )
+                "#,
+                rusqlite::params![
+                    old_path.to_string_lossy().as_ref(),
+                    format!("source file does not exist: {}", old_path.display()),
+                    json!({ "raw_path": old_path.to_string_lossy(), "kept": true }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+        let body = json!({ "raw_path": new_path.to_string_lossy() });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/items/item-1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let item = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "patch failed: {item}");
+        assert_eq!(
+            item["raw_path"].as_str().unwrap(),
+            new_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            item["metadata"]["raw_path"].as_str().unwrap(),
+            new_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(item["metadata"]["kept"], true);
+        assert_eq!(item["raw_path_exists"], true);
+        assert_eq!(item["status"], "indexed");
+        assert!(item["error"].is_null());
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let queued_jobs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(queued_jobs, 0);
     }
 
     #[tokio::test]

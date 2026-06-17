@@ -116,6 +116,7 @@ export type Item = {
   status: ItemStatus;
   error: string | null;
   rawPath: string | null;
+  rawPathExists: boolean | null;
   originalUrl: string | null;
   color: string;
   thumbnailUrl: string | null;

@@ -25,6 +25,7 @@ export type ItemRecord = {
   title: string | null;
   duration_sec: number | null;
   raw_path: string | null;
+  raw_path_exists: boolean | null;
   indexed_at: number | null;
   status: string;
   error: string | null;
