@@ -340,6 +340,10 @@ impl Transcriber for ApiTranscriber {
 }
 
 impl Transcriber for RoutedApiTranscriber {
+    fn prepare_transcription(&self) -> anyhow::Result<()> {
+        selected_transcriber(&self.paths)?.prepare_transcription()
+    }
+
     fn transcribe(
         &self,
         audio_path: &Path,

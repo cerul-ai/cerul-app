@@ -25,6 +25,7 @@ export type ItemRecord = {
   title: string | null;
   duration_sec: number | null;
   raw_path: string | null;
+  raw_path_exists: boolean | null;
   indexed_at: number | null;
   status: string;
   error: string | null;
@@ -257,6 +258,64 @@ export type SearchResultRecord = {
   // Optional: older backends omit these, so treat them as possibly undefined.
   item_title?: string | null;
   nearest_frame_chunk_id?: string | null;
+};
+
+export type SearchDiagnostics = {
+  retrieval_mode: "hybrid" | "vector" | "fts" | "fts_fallback" | "empty" | string;
+  fallback_reason: string | null;
+  vector_hits_count: number;
+  text_vector_hits_count: number;
+  image_vector_hits_count: number;
+  fts_hits_count: number;
+  embedding_profile_id: string | null;
+  qdrant_collection: string | null;
+  qdrant_text_collection: string | null;
+  qdrant_image_collection: string | null;
+  qdrant_text_points: number | null;
+  qdrant_image_points: number | null;
+};
+
+export type SearchResponseRecord = {
+  results: SearchResultRecord[];
+  diagnostics: SearchDiagnostics;
+};
+
+export type SearchHealthDiagnostics = {
+  item_count: number;
+  indexed_item_count: number;
+  chunk_count: number;
+  searchable_text_chunk_count: number;
+  image_chunk_count: number;
+  fts_row_count: number;
+  orphan_job_count: number;
+  missing_raw_path_count: number;
+  embedding_profile_id: string | null;
+  qdrant_text_collection: string | null;
+  qdrant_image_collection: string | null;
+  qdrant_text_points: number | null;
+  qdrant_image_points: number | null;
+  embedded_text_chunk_count: number | null;
+  embedded_image_chunk_count: number | null;
+  text_embedding_gap_count: number | null;
+  image_embedding_gap_count: number | null;
+  qdrant_error: string | null;
+};
+
+export type SearchRebuildResponse = {
+  fts_rebuilt: boolean;
+  diagnostics: SearchHealthDiagnostics;
+};
+
+export type DiagnosticsBundle = {
+  generated_at: number;
+  app_version: string;
+  runtime: Record<string, unknown>;
+  settings: SettingsMap;
+  local_models: LocalPrepareStatus | null;
+  local_models_error: string | null;
+  search: SearchHealthDiagnostics;
+  jobs: Record<string, unknown>[];
+  recent_errors: Record<string, unknown>[];
 };
 
 export type SettingsMap = Record<string, unknown>;
@@ -545,10 +604,24 @@ export async function analyzeItemUnderstanding(id: string) {
 }
 
 export async function search(q: string, limit = 20) {
-  return fetchJson<SearchResultRecord[]>("/search", {
+  return fetchJson<SearchResponseRecord>("/search", {
     method: "POST",
     body: JSON.stringify({ q, limit }),
   });
+}
+
+export async function searchDiagnostics() {
+  return fetchJson<SearchHealthDiagnostics>("/search/diagnostics");
+}
+
+export async function rebuildSearchIndex() {
+  return fetchJson<SearchRebuildResponse>("/search/rebuild", {
+    method: "POST",
+  });
+}
+
+export async function diagnosticsBundle() {
+  return fetchJson<DiagnosticsBundle>("/diagnostics");
 }
 
 export async function listWhisperModels() {
@@ -676,8 +749,21 @@ export type LocalPrepareStatus = {
   can_pause: boolean;
   can_cancel: boolean;
   last_source_error: string | null;
+  last_source: string | null;
+  last_source_label: string | null;
+  last_download_bps: number | null;
+  probes: ProbeResult[] | null;
   models: LocalModelInfo[];
   error: string | null;
+};
+
+export type ProbeResult = {
+  source: string;
+  ok: boolean;
+  bytes_per_second: number;
+  ttfb_ms: number | null;
+  bytes: number;
+  error?: string;
 };
 
 export async function localModelCapability() {
@@ -698,6 +784,20 @@ export async function localPrepareStatus() {
 export async function cancelLocalModelPrepare() {
   return fetchJson<LocalPrepareStatus>("/models/local/prepare-cancel", {
     method: "POST",
+  });
+}
+
+export async function deleteLocalModels(modelIds?: string[]) {
+  return fetchJson<LocalPrepareStatus>("/models/local/delete", {
+    method: "POST",
+    body: JSON.stringify({ models: modelIds ?? null }),
+  });
+}
+
+export async function repairLocalModels(modelIds?: string[]) {
+  return fetchJson<LocalPrepareStatus>("/models/local/repair", {
+    method: "POST",
+    body: JSON.stringify({ models: modelIds ?? null }),
   });
 }
 

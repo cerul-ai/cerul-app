@@ -23,7 +23,7 @@ const IDLE: State = {
   download: null,
 };
 
-export function useLocalModelConsent(args: { trigger: boolean }) {
+export function useLocalModelConsent(args: { trigger: boolean; apiOnline: boolean }) {
   const [s, setS] = useState<State>(IDLE);
   const timer = useRef<number | null>(null);
   const clear = () => {
@@ -71,6 +71,36 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
       .catch(() => undefined);
   }, []);
 
+  // Re-attach to an in-flight download after a relaunch, and keep a cheap
+  // app-level monitor alive so downloads started later from Settings also light
+  // up the rail pill. Show only the pill (minimized), never re-pop the consent
+  // dialog.
+  useEffect(() => {
+    if (!args.apiOnline || s.show || s.download || s.ready || timer.current) {
+      return;
+    }
+    let cancelled = false;
+    const check = () => {
+      api
+        .localPrepareStatus()
+        .then((download) => {
+          if (cancelled || download.phase !== "downloading") {
+            return;
+          }
+          setS((p) => ({ ...p, download, minimized: true }));
+          clear();
+          timer.current = window.setInterval(pollStatus, 1200);
+        })
+        .catch(() => undefined);
+    };
+    check();
+    const monitor = window.setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(monitor);
+    };
+  }, [args.apiOnline, s.show, s.download, s.ready, pollStatus]);
+
   const agree = useCallback(() => {
     setS((p) => {
       const cap = p.capability;
@@ -91,6 +121,10 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
         can_pause: false,
         can_cancel: false,
         last_source_error: null,
+        last_source: null,
+        last_source_label: null,
+        last_download_bps: null,
+        probes: null,
         models: cap.models.map((m, i) => ({
           id: m.id,
           label: m.label,

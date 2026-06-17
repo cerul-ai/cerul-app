@@ -78,6 +78,7 @@ import {
   extractChunkIdFromThumbnail,
   formatBytes,
   formatDuration,
+  formatSpeed,
   formatTimestamp,
   formatUsd,
   metadataString,
@@ -601,6 +602,7 @@ function AppWorkspace() {
     version: null,
   });
   const [liveResults, setLiveResults] = useState<Result[]>([]);
+  const [searchDiagnostics, setSearchDiagnostics] = useState<api.SearchDiagnostics | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const lastSearchRef = useRef<{ query: string; retryWhenIdle: boolean } | null>(null);
@@ -634,7 +636,7 @@ function AppWorkspace() {
     apiStatus === "online" &&
     view !== "onboarding" &&
     !settingBoolean(data.settings, "local_models_prompted", false);
-  const lm = useLocalModelConsent({ trigger: lmTrigger });
+  const lm = useLocalModelConsent({ trigger: lmTrigger, apiOnline: apiStatus === "online" });
   const handleLmAgree = useCallback(() => {
     lm.agree();
     void api
@@ -934,10 +936,11 @@ function AppWorkspace() {
         const seqAtSchedule = searchSeqRef.current;
         api
           .search(pendingRetry.query, 20)
-          .then((records) => {
+          .then((response) => {
             // A newer user-initiated search supersedes this idle retry.
             if (seqAtSchedule !== searchSeqRef.current) return;
-            setLiveResults(mapSearchResults(records, mappedItems, t));
+            setLiveResults(mapSearchResults(response.results, mappedItems, t));
+            setSearchDiagnostics(response.diagnostics);
             lastSearchRef.current = {
               query: pendingRetry.query,
               retryWhenIdle: false,
@@ -1063,6 +1066,7 @@ function AppWorkspace() {
   async function runSearch(value: string) {
     const trimmed = value.trim();
     if (!trimmed) {
+      setSearchDiagnostics(null);
       return;
     }
 
@@ -1071,6 +1075,7 @@ function AppWorkspace() {
     const isCurrent = () => seq === searchSeqRef.current;
     setIsSearching(true);
     setSearchError(null);
+    setSearchDiagnostics(null);
     try {
       const latestData = await refreshCoreData();
       if (!latestData && apiStatus !== "online") {
@@ -1079,17 +1084,19 @@ function AppWorkspace() {
       const searchData = latestData ?? data;
       const itemsForResults = searchData.items;
       let retryWhenIndexSettles = searchIndexIsSettling(searchData);
-      let found = await api.search(trimmed, 20);
+      let response = await api.search(trimmed, 20);
       if (!isCurrent()) return;
-      setLiveResults(mapSearchResults(found, itemsForResults, t));
-      if (found.length === 0 || retryWhenIndexSettles) {
+      setLiveResults(mapSearchResults(response.results, itemsForResults, t));
+      setSearchDiagnostics(response.diagnostics);
+      if (response.results.length === 0 || retryWhenIndexSettles) {
         await wait(650);
         if (!isCurrent()) return;
         const refreshed = await refreshCoreData();
         retryWhenIndexSettles = refreshed ? searchIndexIsSettling(refreshed) : retryWhenIndexSettles;
-        found = await api.search(trimmed, 20);
+        response = await api.search(trimmed, 20);
         if (!isCurrent()) return;
-        setLiveResults(mapSearchResults(found, refreshed?.items ?? itemsForResults, t));
+        setLiveResults(mapSearchResults(response.results, refreshed?.items ?? itemsForResults, t));
+        setSearchDiagnostics(response.diagnostics);
       }
       lastSearchRef.current = {
         query: trimmed,
@@ -1285,7 +1292,15 @@ function AppWorkspace() {
             <button
               type="button"
               className="rail-dl-pill"
-              onClick={lm.reopen}
+              onClick={() => {
+                // First-run minimized → reopen the dialog; a relaunch-resumed
+                // download (no dialog) → jump to the persistent Models panel.
+                if (lm.show) {
+                  lm.reopen();
+                } else {
+                  navigate("settings", { settingsSection: "Models" });
+                }
+              }}
               title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
             >
               <span className="ring" aria-hidden="true" />
@@ -1384,6 +1399,7 @@ function AppWorkspace() {
               })
             }
             results={visibleResults}
+            diagnostics={searchDiagnostics}
             isSearching={isSearching}
             error={searchError}
             apiStatus={apiStatus}
@@ -1420,6 +1436,9 @@ function AppWorkspace() {
               await api.reindexItem(itemToReindex.id);
               await refreshCoreData();
             }}
+            onItemUpdated={async () => {
+              await refreshCoreData();
+            }}
             requestConfirm={requestConfirm}
           />
         ) : null}
@@ -1433,10 +1452,23 @@ function AppWorkspace() {
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
             onDeleteItems={async (itemIds) => {
-              for (const itemId of itemIds) {
-                await api.deleteItem(itemId);
-              }
+              const deletingIds = new Set(itemIds);
+              setData((current) => ({
+                ...current,
+                items: current.items.filter((item) => !deletingIds.has(item.id)),
+                jobs: current.jobs.filter((job) => !job.item_id || !deletingIds.has(job.item_id)),
+              }));
+              setLiveResults((current) =>
+                current.filter((result) => !deletingIds.has(result.itemId)),
+              );
+              const results = await Promise.allSettled(
+                itemIds.map((itemId) => api.deleteItem(itemId)),
+              );
               await refreshCoreData();
+              const failed = results.find((result) => result.status === "rejected");
+              if (failed?.status === "rejected") {
+                throw failed.reason;
+              }
             }}
             onReindexItems={async (itemIds) => {
               for (const itemId of itemIds) {
@@ -1494,6 +1526,9 @@ function AppWorkspace() {
             }}
             onReindexItem={async (itemToReindex) => {
               await api.reindexItem(itemToReindex.id);
+              await refreshCoreData();
+            }}
+            onItemUpdated={async () => {
               await refreshCoreData();
             }}
             requestConfirm={requestConfirm}
@@ -2086,6 +2121,7 @@ function ResultsScreen({
   onBack,
   onOpen,
   results,
+  diagnostics,
   isSearching,
   error,
   apiStatus,
@@ -2098,6 +2134,7 @@ function ResultsScreen({
   onBack: () => void;
   onOpen: (result: Result) => void;
   results: Result[];
+  diagnostics: api.SearchDiagnostics | null;
   isSearching: boolean;
   error: string | null;
   apiStatus: ApiStatus;
@@ -2131,6 +2168,8 @@ function ResultsScreen({
   };
   const hasQuery = query.trim().length > 0;
   const hasSearched = hasQuery || results.length > 0;
+  const diagnosticsText = diagnostics ? searchDiagnosticsSummary(diagnostics, t) : null;
+  const diagnosticsTitle = diagnostics ? searchDiagnosticsTitle(diagnostics) : undefined;
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -2290,6 +2329,11 @@ function ResultsScreen({
               </button>
             ) : null}
           </div>
+        ) : null}
+        {diagnosticsText ? (
+          <p className="field-hint" style={{ marginTop: 6 }} title={diagnosticsTitle}>
+            {diagnosticsText}
+          </p>
         ) : null}
 
         <div
@@ -2465,12 +2509,12 @@ function DetailActionsMenu({
             </button>
           ) : null}
           <button type="button" disabled={busy} onClick={() => run(onReindex)}>
-            <RefreshCcw size={15} />
+            {reindexing ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
             <span>{reindexing ? t("common.reindexing") : t("common.reindex")}</span>
           </button>
           <span className="msep" />
           <button className="danger" type="button" disabled={busy} onClick={() => run(onDelete)}>
-            <Trash2 size={15} />
+            {deleting ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
             <span>{deleting ? t("common.deleting") : t("common.delete")}</span>
           </button>
         </div>
@@ -2623,6 +2667,69 @@ function TranscriptReadingView({
   );
 }
 
+function searchDiagnosticsSummary(diagnostics: api.SearchDiagnostics, t: TFunction) {
+  const base = t("results.diagnostics.summary", {
+    mode: searchRetrievalModeLabel(diagnostics.retrieval_mode, t),
+    vector: diagnostics.vector_hits_count,
+    fts: diagnostics.fts_hits_count,
+  });
+  if (!diagnostics.fallback_reason) {
+    return base;
+  }
+  return `${base} · ${t("results.diagnostics.reason", {
+    reason: searchFallbackReasonLabel(diagnostics.fallback_reason, t),
+  })}`;
+}
+
+function searchRetrievalModeLabel(mode: string, t: TFunction) {
+  switch (mode) {
+    case "hybrid":
+      return t("results.diagnostics.mode.hybrid");
+    case "vector":
+      return t("results.diagnostics.mode.vector");
+    case "fts":
+      return t("results.diagnostics.mode.fts");
+    case "fts_fallback":
+      return t("results.diagnostics.mode.ftsFallback");
+    case "empty":
+      return t("results.diagnostics.mode.empty");
+    default:
+      return mode;
+  }
+}
+
+function searchFallbackReasonLabel(reason: string, t: TFunction) {
+  switch (reason) {
+    case "embedding_unavailable":
+    case "query_embedding_failed":
+      return t("results.diagnostics.reason.queryEmbeddingFailed");
+    case "query_embedding_task_failed":
+      return t("results.diagnostics.reason.queryEmbeddingTaskFailed");
+    case "query_embedding_timeout":
+      return t("results.diagnostics.reason.queryEmbeddingTimeout");
+    case "vector_search_failed":
+      return t("results.diagnostics.reason.vectorSearchFailed");
+    case "vector_index_empty":
+      return t("results.diagnostics.reason.vectorIndexEmpty");
+    case "no_vector_hits":
+      return t("results.diagnostics.reason.noVectorHits");
+    case "qdrant_health_check_failed":
+      return t("results.diagnostics.reason.qdrantHealthCheckFailed");
+    default:
+      return reason;
+  }
+}
+
+function searchDiagnosticsTitle(diagnostics: api.SearchDiagnostics) {
+  return [
+    `profile=${diagnostics.embedding_profile_id ?? "-"}`,
+    `text_collection=${diagnostics.qdrant_text_collection ?? "-"}`,
+    `image_collection=${diagnostics.qdrant_image_collection ?? "-"}`,
+    `text_points=${diagnostics.qdrant_text_points ?? "-"}`,
+    `image_points=${diagnostics.qdrant_image_points ?? "-"}`,
+  ].join(" ");
+}
+
 function ResultDetail({
   item,
   startChunkId,
@@ -2632,6 +2739,7 @@ function ResultDetail({
   onLibrary,
   onDeleteItem,
   onReindexItem,
+  onItemUpdated,
   requestConfirm,
 }: {
   item: Item;
@@ -2642,6 +2750,7 @@ function ResultDetail({
   onLibrary: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
+  onItemUpdated: () => Promise<void>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -2927,12 +3036,10 @@ function ResultDetail({
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
       try {
-        // Persist the new location and queue a re-index against it —
-        // previously the picked path was only echoed back as a message.
         await api.updateItemRawPath(item.id, selected.trim());
-        await onReindexItem(item);
+        await onItemUpdated();
         setItemAction({
-          status: "queued",
+          status: "idle",
           message: t("detail.locatedSource", { path: selected }),
         });
       } catch (error) {
@@ -3779,6 +3886,9 @@ function LibraryScreen({
     })
     .sort((a, b) => sortLibraryItems(a, b, sortKey));
   const selectedCount = selectedItemIds.size;
+  const filteredItemIds = filteredItems.map((item) => item.id);
+  const visibleSelectedCount = filteredItemIds.filter((itemId) => selectedItemIds.has(itemId)).length;
+  const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
 
   useEffect(() => {
@@ -3823,6 +3933,23 @@ function LibraryScreen({
         next.add(itemId);
       } else {
         next.delete(itemId);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllFilteredItems() {
+    setBatchState({ status: "idle", message: null });
+    setSelectedItemIds((current) => {
+      const next = new Set(current);
+      if (allFilteredSelected) {
+        for (const itemId of filteredItemIds) {
+          next.delete(itemId);
+        }
+      } else {
+        for (const itemId of filteredItemIds) {
+          next.add(itemId);
+        }
       }
       return next;
     });
@@ -3960,6 +4087,21 @@ function LibraryScreen({
             {t("common.clearFilters")}
           </button>
         ) : null}
+        {filteredItems.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost sm library-select-all"
+            disabled={batchPending}
+            onClick={toggleAllFilteredItems}
+          >
+            <Check size={14} />
+            <span>
+              {allFilteredSelected
+                ? t("library.batch.selectNone")
+                : t("library.batch.selectAll")}
+            </span>
+          </button>
+        ) : null}
       </div>
       {entities.length > 0 ? (
         <div className="entity-chip-row" aria-label={t("entities.eyebrow")}>
@@ -3997,7 +4139,7 @@ function LibraryScreen({
             disabled={batchPending || !actionsEnabled}
             onClick={() => void runBatchAction("reindex")}
           >
-            {batchState.status === "reindexing" ? <Loader2 size={15} /> : <RefreshCcw size={15} />}
+            {batchState.status === "reindexing" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
             <span>{batchState.status === "reindexing" ? t("common.reindexing") : t("common.reindex")}</span>
           </button>
           <button
@@ -4006,7 +4148,7 @@ function LibraryScreen({
             disabled={batchPending || !actionsEnabled}
             onClick={() => void runBatchAction("delete")}
           >
-            {batchState.status === "deleting" ? <Loader2 size={15} /> : <Trash2 size={15} />}
+            {batchState.status === "deleting" ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
             <span>{batchState.status === "deleting" ? t("common.deleting") : t("common.delete")}</span>
           </button>
           <button
@@ -4071,6 +4213,7 @@ function ItemDetail({
   onBack,
   onDeleteItem,
   onReindexItem,
+  onItemUpdated,
   requestConfirm,
 }: {
   item: Item;
@@ -4080,6 +4223,7 @@ function ItemDetail({
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
+  onItemUpdated: () => Promise<void>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -4279,12 +4423,10 @@ function ItemDetail({
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
       try {
-        // Persist the new location and queue a re-index against it —
-        // previously the picked path was only echoed back as a message.
         await api.updateItemRawPath(item.id, selected.trim());
-        await onReindexItem(item);
+        await onItemUpdated();
         setItemAction({
-          status: "queued",
+          status: "idle",
           message: t("detail.locatedSource", { path: selected }),
         });
       } catch (error) {
@@ -5085,6 +5227,42 @@ function ModelsSettings({
     }
   }
 
+  async function pauseLocalDownload() {
+    try {
+      // Cancel keeps partial files on disk, so a later "download" resumes.
+      const next = await api.cancelLocalModelPrepare();
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
+
+  async function deleteLocalModel(modelKey: string) {
+    const confirmed = await requestConfirm({
+      title: t("settings.models.localDownload.deleteConfirm.title"),
+      body: t("settings.models.localDownload.deleteConfirm.body"),
+      confirmLabel: t("settings.models.localDownload.deleteConfirm.confirm"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const next = await api.deleteLocalModels([modelKey]);
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
+
+  async function repairLocalModels(modelKey?: string) {
+    try {
+      const next = await api.repairLocalModels(modelKey ? [modelKey] : undefined);
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
+
   async function loadProviders() {
     try {
       const next = await api.listProviders();
@@ -5288,6 +5466,10 @@ function ModelsSettings({
           requestConfirm={requestConfirm}
           localPrep={localPrep}
           onDownloadLocal={downloadLocalModels}
+          onPauseLocal={pauseLocalDownload}
+          onRepairLocal={repairLocalModels}
+          onDeleteLocal={deleteLocalModel}
+          inferenceMode={inferenceMode}
         />
       </section>
     </div>
@@ -5618,6 +5800,202 @@ const providerTypeOptions: { value: RemoteProviderType; label: string; placehold
   },
 ];
 
+// Persistent download status for on-device models: while a download runs it
+// shows the live source + speed + ETA + a progress bar + pause; otherwise it
+// surfaces a "download missing models" CTA (local mode), a cloud-mode note, or
+// the last-used source/peak speed once a run has finished. Backs the
+// "看不到下载速度 / 找不到下载页面" fix — the speed/source were previously only
+// visible in the one-shot first-run dialog.
+function LocalDownloadStatus({
+  localPrep,
+  inferenceMode,
+  capabilities,
+  disabled,
+  onDownloadLocal,
+  onPauseLocal,
+  onRepairLocal,
+}: {
+  localPrep: api.LocalPrepareStatus | null;
+  inferenceMode: string;
+  capabilities: CapabilityRowModel[];
+  disabled: boolean;
+  onDownloadLocal: (modelKey?: string) => void;
+  onPauseLocal: () => void;
+  onRepairLocal: (modelKey?: string) => void;
+}) {
+  const t = useT();
+  const [showProbes, setShowProbes] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  if (!localPrep) {
+    return null;
+  }
+  const status = localPrep;
+  const downloading = status.phase === "downloading";
+  const isLocalMode = inferenceMode === "local" || inferenceMode === "auto";
+
+  // Only the local models actually shown as cards here (embed/asr) drive the
+  // "missing" CTA — OCR/aligner repos aren't user-actionable in this view.
+  const localKeys = new Set(
+    capabilities
+      .filter((c) => c.isLocal && c.localModelKey)
+      .map((c) => c.localModelKey as string),
+  );
+  const shownModels = status.models.filter((m) => localKeys.has(m.id));
+  const missingCount = shownModels.filter((m) => m.status !== "ready").length;
+
+  const speed = formatSpeed(status.download_bps);
+  const lastSpeed = formatSpeed(status.last_download_bps);
+  const eta = status.eta_seconds != null ? formatDuration(status.eta_seconds, t) : null;
+  const probes = status.probes ?? [];
+
+  const showMissingCta = !downloading && isLocalMode && missingCount > 0;
+  const showLastUsed =
+    !downloading && !showMissingCta && !!status.last_source_label && missingCount === 0;
+
+  if (!downloading && !showMissingCta && !showLastUsed) {
+    return null;
+  }
+
+  function copyDiagnostics() {
+    const lines = [
+      `platform: ${navigator.platform || "unknown"}`,
+      `inference_mode: ${inferenceMode}`,
+      `phase: ${status.phase}`,
+      `source: ${status.active_source ?? status.last_source ?? "-"}`,
+      `bps: ${status.download_bps ?? status.last_download_bps ?? "-"}`,
+      `overall: ${status.overall_progress}% (${status.done_mb}/${status.total_mb} MB)`,
+      ...status.models.map((m) => `model ${m.id}: ${m.status} ${m.progress}%`),
+      ...(status.last_source_error ? [`last_error: ${status.last_source_error}`] : []),
+      ...probes.map(
+        (p) => `probe ${p.source}: ${p.ok ? `${p.bytes_per_second} B/s` : `fail ${p.error ?? ""}`}`,
+      ),
+    ];
+    void navigator.clipboard?.writeText(lines.join("\n"));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <div className={downloading ? "lm-dl-status is-active" : "lm-dl-status"}>
+      <div className="lm-dl-status__row">
+        <div className="lm-dl-status__main">
+          {downloading ? (
+            <>
+              <span className="lm-dl-status__title">
+                {t("settings.models.localDownload.downloading")}
+              </span>
+              <span className="lm-dl-status__meta mono">
+                {[
+                  status.source_label
+                    ? t("localModel.downloading.source", { source: status.source_label })
+                    : null,
+                  speed,
+                  eta ? t("home.continueRemaining", { remaining: eta }) : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </>
+          ) : showMissingCta ? (
+            <span className="lm-dl-status__title">
+              {t("settings.models.localDownload.missing", { count: missingCount })}
+            </span>
+          ) : (
+            <span className="lm-dl-status__note">
+              {lastSpeed
+                ? t("settings.models.localDownload.lastUsed", {
+                    source: status.last_source_label ?? "",
+                    speed: lastSpeed,
+                  })
+                : t("settings.models.localDownload.lastUsedNoSpeed", {
+                    source: status.last_source_label ?? "",
+                  })}
+            </span>
+          )}
+        </div>
+        <div className="lm-dl-status__actions">
+          {downloading ? (
+            <button
+              type="button"
+              className="btn btn-ghost sm"
+              disabled={disabled || !status.can_pause}
+              onClick={onPauseLocal}
+            >
+              {t("settings.models.localDownload.pause")}
+            </button>
+          ) : showMissingCta ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-ghost sm"
+                disabled={disabled}
+                onClick={() => onRepairLocal()}
+              >
+                {t("settings.models.localDownload.repair")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary sm"
+                disabled={disabled}
+                onClick={() => onDownloadLocal()}
+              >
+                {t("settings.models.localDownload.prepareMissing")}
+              </button>
+            </>
+          ) : null}
+        </div>
+      </div>
+      {downloading ? (
+        <span className="lm-track lm-dl-status__track">
+          <span className="lm-fill" style={{ width: `${status.overall_progress}%` }} />
+        </span>
+      ) : null}
+      {status.last_source_error && !downloading ? (
+        <p className="lm-dl-status__error">{status.last_source_error}</p>
+      ) : null}
+      <div className="lm-dl-status__foot">
+        {probes.length > 0 ? (
+          <button
+            type="button"
+            className="lm-dl-status__link"
+            onClick={() => setShowProbes((v) => !v)}
+          >
+            {t("settings.models.localDownload.whyToggle")}
+          </button>
+        ) : (
+          <span />
+        )}
+        <button type="button" className="lm-dl-status__link" onClick={copyDiagnostics}>
+          {copied
+            ? t("settings.models.localDownload.copied")
+            : t("settings.models.localDownload.copyDiagnostics")}
+        </button>
+      </div>
+      {showProbes && probes.length > 0 ? (
+        <div className="lm-dl-status__probes">
+          {probes.map((p) => {
+            const selected = p.source === (status.active_source ?? status.last_source);
+            return (
+              <div className="lm-dl-status__probe" key={p.source}>
+                <span>
+                  {p.source}
+                  {selected ? ` · ${t("settings.models.localDownload.probeSelected")}` : ""}
+                </span>
+                <span className={p.ok ? "mono" : "mono faint"}>
+                  {p.ok
+                    ? formatSpeed(p.bytes_per_second) ?? `${p.bytes_per_second} B/s`
+                    : t("settings.models.localDownload.probeFailed")}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderConnections({
   capabilities,
   providers,
@@ -5627,6 +6005,10 @@ function ProviderConnections({
   requestConfirm,
   localPrep,
   onDownloadLocal,
+  onPauseLocal,
+  onRepairLocal,
+  onDeleteLocal,
+  inferenceMode,
 }: {
   capabilities: CapabilityRowModel[];
   providers: api.ProviderRecord[];
@@ -5636,6 +6018,10 @@ function ProviderConnections({
   requestConfirm: RequestConfirm;
   localPrep: api.LocalPrepareStatus | null;
   onDownloadLocal: (modelKey?: string) => void;
+  onPauseLocal: () => void;
+  onRepairLocal: (modelKey?: string) => void;
+  onDeleteLocal: (modelKey: string) => void;
+  inferenceMode: string;
 }) {
   const t = useT();
   const typeLabel = (type: api.ProviderType) =>
@@ -5837,6 +6223,16 @@ function ProviderConnections({
       {error ? <InlineNotice tone="error" message={error} /> : null}
       {discoverError ? <InlineNotice tone="error" message={discoverError} /> : null}
 
+      <LocalDownloadStatus
+        localPrep={localPrep}
+        inferenceMode={inferenceMode}
+        capabilities={capabilities}
+        disabled={disabled}
+        onDownloadLocal={onDownloadLocal}
+        onPauseLocal={onPauseLocal}
+        onRepairLocal={onRepairLocal}
+      />
+
       {/* One unified list: the three FIXED capabilities, each carrying its model
           and the connection + key it routes through, handled together. */}
       <div className="cap-list">
@@ -5922,6 +6318,15 @@ function ProviderConnections({
                           onClick={() => onDownloadLocal(cap.localModelKey ?? undefined)}
                         >
                           {t("settings.models.capability.download")}
+                        </button>
+                      ) : cap.localModelKey && localState === "ready" ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost sm cap-row__edit"
+                          disabled={disabled}
+                          onClick={() => onDeleteLocal(cap.localModelKey as string)}
+                        >
+                          {t("settings.models.localDownload.delete")}
                         </button>
                       ) : null
                     ) : (
@@ -6427,6 +6832,10 @@ function AdvancedSettings({
     status: SettingsActionStatus;
     message: string | null;
   }>({ status: "idle", message: null });
+  const [diagnosticBundleAction, setDiagnosticBundleAction] = useState<{
+    status: SettingsActionStatus;
+    message: string | null;
+  }>({ status: "idle", message: null });
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
 
   async function openLogsFolder() {
@@ -6436,6 +6845,20 @@ function AdvancedSettings({
       setLogAction({ status: "done", message: t("settings.advanced.message.logsOpened") });
     } catch (error) {
       setLogAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function copyDiagnosticBundle() {
+    setDiagnosticBundleAction({ status: "running", message: null });
+    try {
+      const diagnostics = await api.diagnosticsBundle();
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      setDiagnosticBundleAction({
+        status: "done",
+        message: t("settings.advanced.message.diagnosticsCopied"),
+      });
+    } catch (error) {
+      setDiagnosticBundleAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -6557,6 +6980,15 @@ function AdvancedSettings({
         <button
           className="btn btn-secondary sm"
           type="button"
+          disabled={diagnosticBundleAction.status === "running"}
+          onClick={() => void copyDiagnosticBundle()}
+        >
+          {diagnosticBundleAction.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+          <span>{t("settings.advanced.copyDiagnostics")}</span>
+        </button>
+        <button
+          className="btn btn-secondary sm"
+          type="button"
           onClick={() => {
             // Route straight to the onboarding wizard via the hash. The previous
             // version only persisted the route and reloaded, but the reload kept
@@ -6575,6 +7007,12 @@ function AdvancedSettings({
         <InlineNotice
           tone={logAction.status === "error" ? "error" : "muted"}
           message={logAction.message}
+        />
+      ) : null}
+      {diagnosticBundleAction.message ? (
+        <InlineNotice
+          tone={diagnosticBundleAction.status === "error" ? "error" : "muted"}
+          message={diagnosticBundleAction.message}
         />
       ) : null}
     </>

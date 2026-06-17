@@ -20,15 +20,15 @@ type CoarseStep = { key: string; stages: string[]; lo: number; hi: number };
 
 const COARSE_STEPS: Record<string, CoarseStep[]> = {
   index_video: [
-    { key: "prepare", stages: ["processing", "fetching", "downloading", "extracting_audio", "sampling_frames"], lo: 0, hi: 0.2 },
-    { key: "transcribe", stages: ["transcribing", "chunking_transcript"], lo: 0.2, hi: 0.62 },
+    { key: "prepare", stages: ["processing", "fetching", "downloading", "extracting_audio", "sampling_frames", "preparing_models"], lo: 0, hi: 0.25 },
+    { key: "transcribe", stages: ["waiting_model", "transcribing", "chunking_transcript"], lo: 0.25, hi: 0.62 },
     { key: "embed_text", stages: ["ocr_frames", "writing_transcript", "embedding_text"], lo: 0.62, hi: 0.8 },
     { key: "embed_frames", stages: ["embedding_frames", "visual_failed"], lo: 0.8, hi: 0.92 },
     { key: "write_index", stages: ["writing_index", "partial", "completed"], lo: 0.92, hi: 1 },
   ],
   index_audio: [
-    { key: "prepare", stages: ["processing", "fetching", "extracting_audio"], lo: 0, hi: 0.25 },
-    { key: "transcribe", stages: ["transcribing", "chunking_transcript", "writing_transcript"], lo: 0.25, hi: 0.68 },
+    { key: "prepare", stages: ["processing", "fetching", "extracting_audio", "preparing_models"], lo: 0, hi: 0.25 },
+    { key: "transcribe", stages: ["waiting_model", "transcribing", "chunking_transcript", "writing_transcript"], lo: 0.25, hi: 0.68 },
     { key: "embed_text", stages: ["embedding_text"], lo: 0.68, hi: 0.92 },
     { key: "write_index", stages: ["writing_index", "partial", "completed"], lo: 0.92, hi: 1 },
   ],
@@ -206,11 +206,21 @@ export function jobElapsedSeconds(job: api.JobRecord, nowSec: number): number | 
   return Math.max(0, end - job.started_at);
 }
 
+const LOW_CONFIDENCE_ETA_STAGES = new Set([
+  "preparing_models",
+  "waiting_model",
+  "transcribing",
+  "chunking_transcript",
+]);
+
 // Rough remaining-time estimate from elapsed wall-clock and current progress.
-// Progress is stage-weighted (not perfectly linear in time), so it's a "~".
-// Suppressed below 12% (too little signal) and at/above 99% (basically done).
+// Progress is stage-weighted, so hide it during whole-file stages where the
+// backend can only ease the bar forward without real sub-progress.
 export function jobEtaLabel(job: api.JobRecord, nowSec: number, t: TFunction): string | null {
   if (job.status !== "running" || job.started_at === null) {
+    return null;
+  }
+  if (job.stage && LOW_CONFIDENCE_ETA_STAGES.has(job.stage)) {
     return null;
   }
   const progress = Math.min(Math.max(job.progress, 0), 1);

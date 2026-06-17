@@ -2667,6 +2667,9 @@ body.overlay-body {
   min-width: 150px;
   flex: 0 1 170px;
 }
+.library-select-all {
+  margin-left: 2px;
+}
 .item-card-shell {
   position: relative;
   min-width: 0;
@@ -2743,7 +2746,7 @@ body.overlay-body {
 .lib-table .item-select {
   opacity: 1;
   top: 50%;
-  left: 16px;
+  left: 10px;
   transform: translateY(-50%);
 }
 .item-card.list {
@@ -2797,13 +2800,21 @@ body.overlay-body {
 }
 .item-select {
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 6px;
+  left: 6px;
   z-index: 4;
   opacity: 0;
-  width: 18px;
-  height: 18px;
+  width: 36px;
+  height: 36px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.item-select:hover {
+  background: color-mix(in srgb, var(--surface) 78%, var(--accent) 22%);
 }
 .item-card-shell:hover .item-select,
 .item-card-shell.selected .item-select {
@@ -2815,13 +2826,13 @@ body.overlay-body {
 }
 .item-select .item-select-box {
   position: static;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--line-strong);
-  border-radius: 5px;
+  border-radius: 7px;
   background: var(--surface);
   color: var(--accent);
   box-shadow: var(--shadow-1);
@@ -4099,6 +4110,93 @@ body.overlay-body {
   border-radius: var(--r-lg);
   background: var(--surface);
 }
+/* Persistent on-device download status (settings → models). Mirrors the
+   first-run dialog's progress, but lives in the always-reachable settings page
+   and shows the live source + speed so downloads are never invisible. */
+.lm-dl-status {
+  margin-bottom: 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+.lm-dl-status.is-active {
+  border-color: var(--accent-line-soft);
+  background: var(--accent-tint);
+}
+.lm-dl-status__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.lm-dl-status__main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.lm-dl-status__title {
+  font-weight: 600;
+  font-size: var(--fs-meta);
+  color: var(--text);
+}
+.lm-dl-status__meta {
+  font-size: var(--fs-caption);
+  color: var(--accent);
+}
+.lm-dl-status__note {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+.lm-dl-status__actions {
+  flex: none;
+}
+.lm-dl-status__track {
+  margin-top: 11px;
+}
+.lm-dl-status__error {
+  margin: 9px 0 0;
+  font-size: var(--fs-caption);
+  color: var(--warn);
+}
+.lm-dl-status__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 9px;
+}
+.lm-dl-status__link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-caption);
+  color: var(--accent);
+  cursor: pointer;
+}
+.lm-dl-status__link:hover {
+  text-decoration: underline;
+}
+.lm-dl-status__probes {
+  margin-top: 9px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.lm-dl-status__probe {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
 .cap-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

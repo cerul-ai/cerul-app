@@ -168,6 +168,19 @@ export function classifyFailureReason(rawError: string): FailureReason | null {
   return null;
 }
 
+export function isSourceFileMissingError(rawError: string): boolean {
+  const e = rawError.toLowerCase();
+  return (
+    e.includes("source file does not exist") ||
+    e.includes("source file missing") ||
+    e.includes("source path does not exist") ||
+    e.includes("input file does not exist") ||
+    e.startsWith("file not found:") ||
+    (e.includes("no such file or directory") &&
+      (e.includes("source") || e.includes("raw_path")))
+  );
+}
+
 export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
   const error = item.error?.trim() ?? "";
   if (item.status !== "failed" && !error) {
@@ -203,7 +216,11 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
     };
   }
 
-  if (item.sourceKind === "folder" || item.rawPath) {
+  if (
+    item.rawPath &&
+    item.rawPathExists === false &&
+    isSourceFileMissingError(error)
+  ) {
     return {
       kind: "missing-file",
       title: t("item.issue.missingFile.title"),
@@ -375,6 +392,7 @@ export function mapItemRecord(
     status,
     error: record.error ? sanitizeErrorText(record.error) : null,
     rawPath,
+    rawPathExists: record.raw_path_exists ?? null,
     originalUrl: itemOriginalUrl(record),
     color: itemColor(record.content_type),
     thumbnailUrl: record.thumbnail_chunk_id ? api.chunkFrameUrl(record.thumbnail_chunk_id) : null,
@@ -423,11 +441,20 @@ function itemJobStageLabel(stage: string | null, t: TFunction): string | null {
   return label === key ? null : label;
 }
 
-// Rough time-remaining estimate. Uses the backend's time-weighted progress (not
-// the step-even bar value) so the estimate tracks elapsed time; the stages
-// aren't perfectly linear, so it's labelled "~".
+const LOW_CONFIDENCE_ETA_STAGES = new Set([
+  "preparing_models",
+  "waiting_model",
+  "transcribing",
+  "chunking_transcript",
+]);
+
+// Rough time-remaining estimate. Uses the backend's time-weighted progress, but
+// hides it during whole-file stages where the pipeline has no real sub-progress.
 export function itemEtaLabel(job: api.JobRecord, t: TFunction): string | null {
   if (job.status !== "running" || job.started_at === null) {
+    return null;
+  }
+  if (job.stage && LOW_CONFIDENCE_ETA_STAGES.has(job.stage)) {
     return null;
   }
   const progress = normalizeJobProgress(job.progress);

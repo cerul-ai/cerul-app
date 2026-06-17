@@ -3,7 +3,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -98,6 +98,7 @@ pub struct ItemRecord {
     pub title: Option<String>,
     pub duration_sec: Option<f64>,
     pub raw_path: Option<String>,
+    pub raw_path_exists: Option<bool>,
     pub indexed_at: Option<i64>,
     pub status: String,
     pub error: Option<String>,
@@ -336,7 +337,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
+        .route("/diagnostics", get(diagnostics_bundle))
         .route("/search", post(search))
+        .route("/search/diagnostics", get(search_diagnostics))
+        .route("/search/rebuild", post(rebuild_search_index))
         .route("/ask", post(ask_library))
         .route("/sources", get(list_sources).post(add_source))
         .route("/sources/preview/rss", post(preview_rss_source))
@@ -402,6 +406,14 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route(
             "/models/local/prepare-cancel",
             post(local_models::cancel_local_prepare),
+        )
+        .route(
+            "/models/local/delete",
+            post(local_models::delete_local_models),
+        )
+        .route(
+            "/models/local/repair",
+            post(local_models::repair_local_models),
         )
         .route(
             "/providers",
@@ -674,7 +686,7 @@ async fn openapi_json() -> Json<Value> {
 async fn search(
     State(state): State<ApiState>,
     Json(mut req): Json<cerul_search::SearchRequest>,
-) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
+) -> ApiResult<Json<cerul_search::SearchResponse>> {
     // The limit fans out 4x into vector + FTS retrieval and pre-allocates
     // buffers; an unclamped client value is a one-request memory DoS.
     req.limit = req.limit.clamp(1, 50);
@@ -684,9 +696,10 @@ async fn search(
 async fn search_records(
     paths: &AppPaths,
     req: cerul_search::SearchRequest,
-) -> anyhow::Result<Vec<cerul_search::SearchResult>> {
+) -> anyhow::Result<cerul_search::SearchResponse> {
     let query = req.q.clone();
     let paths_for_embedding = paths.clone();
+    let embedding_started = Instant::now();
     let query_embedding = tokio::time::timeout(
         QUERY_EMBEDDING_TIMEOUT,
         tokio::task::spawn_blocking(move || api_models::embed_query(&paths_for_embedding, &query)),
@@ -695,21 +708,47 @@ async fn search_records(
 
     match query_embedding {
         Ok(Ok(Ok(embedding))) => {
-            cerul_search::search_with_vector_for_profile(
+            let embedding_elapsed = embedding_started.elapsed();
+            tracing::info!(
+                embedding_profile_id = %embedding.profile.id,
+                query_embedding_ms = embedding_elapsed.as_millis(),
+                "API semantic query embedding completed"
+            );
+            let fallback_req = req.clone();
+            let search_started = Instant::now();
+            match cerul_search::search_with_vector_for_profile_diagnostics(
                 paths,
                 req,
                 embedding.vector,
                 &embedding.profile,
             )
             .await
+            {
+                Ok(response) => {
+                    tracing::info!(
+                        retrieval_mode = %response.diagnostics.retrieval_mode,
+                        vector_hits_count = response.diagnostics.vector_hits_count,
+                        fts_hits_count = response.diagnostics.fts_hits_count,
+                        qdrant_text_points = ?response.diagnostics.qdrant_text_points,
+                        qdrant_image_points = ?response.diagnostics.qdrant_image_points,
+                        search_ms = search_started.elapsed().as_millis(),
+                        "API search completed"
+                    );
+                    Ok(response)
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "API vector search failed; falling back to FTS");
+                    search_fts_fallback(paths, fallback_req, "vector_search_failed").await
+                }
+            }
         }
         Ok(Ok(Err(error))) => {
             tracing::warn!(%error, "API semantic query embedding unavailable; falling back to FTS");
-            cerul_search::search_fts_only(paths, req).await
+            search_fts_fallback(paths, req, "query_embedding_failed").await
         }
         Ok(Err(error)) => {
             tracing::warn!(%error, "API query embedding task failed; falling back to FTS");
-            cerul_search::search_fts_only(paths, req).await
+            search_fts_fallback(paths, req, "query_embedding_task_failed").await
         }
         Err(error) => {
             tracing::warn!(
@@ -717,9 +756,431 @@ async fn search_records(
                 timeout_sec = QUERY_EMBEDDING_TIMEOUT.as_secs(),
                 "API query embedding timed out; falling back to FTS"
             );
-            cerul_search::search_fts_only(paths, req).await
+            search_fts_fallback(paths, req, "query_embedding_timeout").await
         }
     }
+}
+
+async fn search_fts_fallback(
+    paths: &AppPaths,
+    req: cerul_search::SearchRequest,
+    fallback_reason: &str,
+) -> anyhow::Result<cerul_search::SearchResponse> {
+    let started = Instant::now();
+    let response = cerul_search::search_fts_only_with_diagnostics(
+        paths,
+        req,
+        Some(fallback_reason.to_string()),
+    )
+    .await?;
+    tracing::info!(
+        retrieval_mode = %response.diagnostics.retrieval_mode,
+        fallback_reason,
+        fts_hits_count = response.diagnostics.fts_hits_count,
+        search_ms = started.elapsed().as_millis(),
+        "API search completed with FTS fallback"
+    );
+    Ok(response)
+}
+
+#[derive(Debug, Serialize)]
+struct SearchHealthDiagnostics {
+    item_count: usize,
+    indexed_item_count: usize,
+    chunk_count: usize,
+    searchable_text_chunk_count: usize,
+    image_chunk_count: usize,
+    fts_row_count: usize,
+    orphan_job_count: usize,
+    missing_raw_path_count: usize,
+    embedding_profile_id: Option<String>,
+    qdrant_text_collection: Option<String>,
+    qdrant_image_collection: Option<String>,
+    qdrant_text_points: Option<usize>,
+    qdrant_image_points: Option<usize>,
+    embedded_text_chunk_count: Option<usize>,
+    embedded_image_chunk_count: Option<usize>,
+    text_embedding_gap_count: Option<usize>,
+    image_embedding_gap_count: Option<usize>,
+    qdrant_error: Option<String>,
+}
+
+async fn search_diagnostics(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<SearchHealthDiagnostics>> {
+    Ok(Json(search_health_diagnostics(&state.paths).await?))
+}
+
+#[derive(Debug, Serialize)]
+struct SearchRebuildResponse {
+    fts_rebuilt: bool,
+    diagnostics: SearchHealthDiagnostics,
+}
+
+async fn rebuild_search_index(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<SearchRebuildResponse>> {
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')", [])?;
+    drop(conn);
+    Ok(Json(SearchRebuildResponse {
+        fts_rebuilt: true,
+        diagnostics: search_health_diagnostics(&state.paths).await?,
+    }))
+}
+
+async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHealthDiagnostics> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let item_count = count_query(&conn, "SELECT COUNT(*) FROM items")?;
+    let indexed_item_count =
+        count_query(&conn, "SELECT COUNT(*) FROM items WHERE status = 'indexed'")?;
+    let chunk_count = count_query(&conn, "SELECT COUNT(*) FROM chunks")?;
+    let searchable_text_chunk_count = count_query(
+        &conn,
+        "SELECT COUNT(*) FROM chunks WHERE text IS NOT NULL AND TRIM(text) <> ''",
+    )?;
+    let image_chunk_count = count_query(
+        &conn,
+        "SELECT COUNT(*) FROM chunks WHERE frame_path IS NOT NULL AND TRIM(frame_path) <> ''",
+    )?;
+    let fts_row_count = count_query(&conn, "SELECT COUNT(*) FROM chunks_fts")?;
+    let orphan_job_count = count_query(
+        &conn,
+        "SELECT COUNT(*) FROM jobs AS j LEFT JOIN items AS i ON i.id = j.item_id WHERE i.id IS NULL",
+    )?;
+    let missing_raw_path_count = count_missing_raw_paths(&conn)?;
+    drop(conn);
+
+    let mut diagnostics = SearchHealthDiagnostics {
+        item_count,
+        indexed_item_count,
+        chunk_count,
+        searchable_text_chunk_count,
+        image_chunk_count,
+        fts_row_count,
+        orphan_job_count,
+        missing_raw_path_count,
+        embedding_profile_id: None,
+        qdrant_text_collection: None,
+        qdrant_image_collection: None,
+        qdrant_text_points: None,
+        qdrant_image_points: None,
+        embedded_text_chunk_count: None,
+        embedded_image_chunk_count: None,
+        text_embedding_gap_count: None,
+        image_embedding_gap_count: None,
+        qdrant_error: None,
+    };
+
+    let profile = match cerul_storage::vectors::ensure_active_embedding_profile(paths) {
+        Ok(profile) => profile,
+        Err(error) => {
+            tracing::warn!(%error, "failed to load active embedding profile for search diagnostics");
+            diagnostics.qdrant_error = Some("embedding_profile_unavailable".to_string());
+            return Ok(diagnostics);
+        }
+    };
+    let collections = cerul_storage::vectors::collection_names(paths, &profile);
+    diagnostics.embedding_profile_id = Some(profile.id);
+    diagnostics.qdrant_text_collection = Some(collections.text.clone());
+    diagnostics.qdrant_image_collection = Some(collections.image.clone());
+
+    let text_points =
+        cerul_storage::vectors::collection_point_count(paths, &collections.text).await;
+    let image_points =
+        cerul_storage::vectors::collection_point_count(paths, &collections.image).await;
+    match text_points {
+        Ok(count) => {
+            diagnostics.qdrant_text_points = Some(count);
+            diagnostics.embedded_text_chunk_count = Some(count);
+            diagnostics.text_embedding_gap_count =
+                Some(searchable_text_chunk_count.saturating_sub(count));
+        }
+        Err(error) => {
+            tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
+            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
+        }
+    }
+    match image_points {
+        Ok(count) => {
+            diagnostics.qdrant_image_points = Some(count);
+            diagnostics.embedded_image_chunk_count = Some(count);
+            diagnostics.image_embedding_gap_count = Some(image_chunk_count.saturating_sub(count));
+        }
+        Err(error) => {
+            tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
+            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
+        }
+    }
+
+    Ok(diagnostics)
+}
+
+fn count_missing_raw_paths(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT raw_path
+        FROM items
+        WHERE raw_path IS NOT NULL
+          AND TRIM(raw_path) <> ''
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut missing = 0usize;
+    for row in rows {
+        let raw_path = row?;
+        if !FsPath::new(&raw_path).exists() {
+            missing += 1;
+        }
+    }
+    Ok(missing)
+}
+
+fn count_query(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<usize> {
+    conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+        .map(|count| count.max(0) as usize)
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsBundle {
+    generated_at: u64,
+    app_version: &'static str,
+    runtime: DiagnosticsRuntime,
+    settings: BTreeMap<String, Value>,
+    local_models: Option<local_models::LocalPrepareStatus>,
+    local_models_error: Option<String>,
+    search: SearchHealthDiagnostics,
+    jobs: Vec<DiagnosticsJob>,
+    recent_errors: Vec<DiagnosticsItemError>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsRuntime {
+    platform: String,
+    api_runtime_ready: bool,
+    local_runtime_ready: bool,
+    openai_ready: bool,
+    gemini_ready: bool,
+    configured_inference_mode: String,
+    effective_inference_mode: String,
+    last_error: Option<String>,
+    local_runtime_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsJob {
+    id: String,
+    item_id: Option<String>,
+    job_type: String,
+    status: String,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+    progress: f64,
+    stage: Option<String>,
+    stage_message: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsItemError {
+    item_id: String,
+    title: Option<String>,
+    status: String,
+    error: String,
+}
+
+const DIAGNOSTIC_SETTING_KEYS: &[&str] = &[
+    "api_binding",
+    "asr_model",
+    "concurrent_jobs",
+    "inference_mode",
+    "log_level",
+    "model_download_source",
+    "telemetry",
+    "video_understanding_model",
+    "whisper_model",
+];
+
+async fn diagnostics_bundle(State(state): State<ApiState>) -> ApiResult<Json<DiagnosticsBundle>> {
+    let generated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let runtime_status = models::model_runtime_status(&state.paths);
+    let configured_inference_mode = configured_inference_mode(&state.paths)?;
+    let effective_inference_mode =
+        effective_inference_mode_for_runtime(&configured_inference_mode, &runtime_status);
+    let settings = diagnostics_settings_snapshot(
+        &state.paths,
+        &configured_inference_mode,
+        &effective_inference_mode,
+    )?;
+    let (local_models, local_models_error) =
+        match local_models::local_prepare_status_snapshot(&state.paths) {
+            Ok(status) => (Some(status), None),
+            Err(error) => (None, Some(redact_diagnostic_text(&error.to_string()))),
+        };
+
+    Ok(Json(DiagnosticsBundle {
+        generated_at,
+        app_version: env!("CARGO_PKG_VERSION"),
+        runtime: DiagnosticsRuntime {
+            platform: runtime_status.platform,
+            api_runtime_ready: runtime_status.api_runtime_ready,
+            local_runtime_ready: runtime_status.local_runtime_ready,
+            openai_ready: runtime_status.openai_ready,
+            gemini_ready: runtime_status.gemini_ready,
+            configured_inference_mode,
+            effective_inference_mode,
+            last_error: runtime_status
+                .last_error
+                .map(|error| redact_diagnostic_text(&error)),
+            local_runtime_error: runtime_status
+                .local_runtime_error
+                .map(|error| redact_diagnostic_text(&error)),
+        },
+        settings,
+        local_models,
+        local_models_error,
+        search: search_health_diagnostics(&state.paths).await?,
+        jobs: diagnostics_recent_jobs(&state.paths)?,
+        recent_errors: diagnostics_recent_item_errors(&state.paths)?,
+    }))
+}
+
+fn diagnostics_settings_snapshot(
+    paths: &AppPaths,
+    configured_inference_mode: &str,
+    effective_inference_mode: &str,
+) -> anyhow::Result<BTreeMap<String, Value>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut settings = BTreeMap::new();
+    for key in DIAGNOSTIC_SETTING_KEYS {
+        let value: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(value) = value {
+            settings.insert(
+                (*key).to_string(),
+                normalize_setting_value(key, parse_json(&value)),
+            );
+        }
+    }
+
+    settings.insert(
+        "configured_inference_mode".to_string(),
+        Value::String(configured_inference_mode.to_string()),
+    );
+    settings.insert(
+        "effective_inference_mode".to_string(),
+        Value::String(effective_inference_mode.to_string()),
+    );
+    settings.insert(
+        "remote_api_key_set".to_string(),
+        Value::Bool(secret_setting_present(&conn, "remote_api_key")?),
+    );
+
+    Ok(settings)
+}
+
+fn secret_setting_present(conn: &rusqlite::Connection, key: &str) -> anyhow::Result<bool> {
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(value
+        .and_then(|raw| parse_json(&raw).as_str().map(str::to_string))
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false))
+}
+
+fn diagnostics_recent_jobs(paths: &AppPaths) -> anyhow::Result<Vec<DiagnosticsJob>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, item_id, job_type, status, started_at, finished_at, progress,
+               stage, stage_message, error
+        FROM jobs
+        ORDER BY COALESCE(started_at, finished_at, 0) DESC, id DESC
+        LIMIT 20
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(DiagnosticsJob {
+            id: row.get(0)?,
+            item_id: row.get(1)?,
+            job_type: row.get(2)?,
+            status: row.get(3)?,
+            started_at: row.get(4)?,
+            finished_at: row.get(5)?,
+            progress: row.get(6)?,
+            stage: row.get(7)?,
+            stage_message: row
+                .get::<_, Option<String>>(8)?
+                .map(|message| redact_diagnostic_text(&message)),
+            error: row
+                .get::<_, Option<String>>(9)?
+                .map(|error| redact_diagnostic_text(&error)),
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn diagnostics_recent_item_errors(paths: &AppPaths) -> anyhow::Result<Vec<DiagnosticsItemError>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, title, status, error
+        FROM items
+        WHERE error IS NOT NULL
+          AND TRIM(error) <> ''
+        ORDER BY COALESCE(indexed_at, 0) DESC, id DESC
+        LIMIT 20
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let error: String = row.get(3)?;
+        Ok(DiagnosticsItemError {
+            item_id: row.get(0)?,
+            title: row.get(1)?,
+            status: row.get(2)?,
+            error: redact_diagnostic_text(&error),
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn redact_diagnostic_text(value: &str) -> String {
+    let mut redacted = value.to_string();
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            redacted = redacted.replace(&home, "~");
+        }
+    }
+    redact_users_path_segments(&redacted)
+}
+
+fn redact_users_path_segments(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(index) = rest.find("/Users/") {
+        output.push_str(&rest[..index]);
+        let after_prefix = &rest[index + "/Users/".len()..];
+        if let Some(next_slash) = after_prefix.find('/') {
+            output.push_str("~/");
+            rest = &after_prefix[next_slash + 1..];
+        } else {
+            output.push('~');
+            rest = "";
+        }
+    }
+    output.push_str(rest);
+    output
 }
 
 async fn ask_library(
@@ -741,6 +1202,7 @@ async fn ask_library(
     )
     .await?;
     let citations = results
+        .results
         .into_iter()
         .filter(|result| !result.snippet.trim().is_empty())
         .take(limit)
@@ -1300,19 +1762,97 @@ async fn update_item(
         if trimmed.is_empty() {
             return Err(ApiError::bad_request("raw_path must not be empty"));
         }
-        if !FsPath::new(trimmed).is_file() {
+        let path = FsPath::new(trimmed);
+        if !path.is_file() {
             return Err(ApiError::bad_request(format!("file not found: {trimmed}")));
         }
-        let conn = cerul_storage::sqlite::open(&state.paths)?;
-        let updated = conn.execute(
-            "UPDATE items SET raw_path = ?2, error = NULL WHERE id = ?1",
-            rusqlite::params![id.as_str(), trimmed],
-        )?;
-        if updated == 0 {
-            return Err(ApiError::not_found("item not found"));
+
+        let (previous_raw_path, indexed_at, previous_error) =
+            item_raw_path_patch_state(&state.paths, &id)?;
+        let same_path = previous_raw_path
+            .as_deref()
+            .map(|previous| paths_refer_to_same_file(FsPath::new(previous), path))
+            .unwrap_or(false);
+        cerul_storage::set_item_raw_path(&state.paths, &id, path).map_err(|error| {
+            if error.to_string().contains("item not found") {
+                ApiError::not_found(format!("item not found: {id}"))
+            } else {
+                ApiError::internal(error)
+            }
+        })?;
+        if previous_error
+            .as_deref()
+            .is_some_and(is_source_file_missing_error)
+        {
+            clear_stale_missing_file_error(&state.paths, &id, indexed_at.is_some())?;
         }
+        tracing::info!(
+            item_id = %id,
+            raw_path = %trimmed,
+            raw_path_exists = true,
+            same_path,
+            was_indexed = indexed_at.is_some(),
+            "updated item raw path"
+        );
     }
     get_item(State(state), Path(id)).await
+}
+
+fn item_raw_path_patch_state(
+    paths: &AppPaths,
+    item_id: &str,
+) -> ApiResult<(Option<String>, Option<i64>, Option<String>)> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.query_row(
+        "SELECT raw_path, indexed_at, error FROM items WHERE id = ?1",
+        [item_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            ApiError::not_found(format!("item not found: {item_id}"))
+        }
+        other => ApiError::internal(other.into()),
+    })
+}
+
+fn clear_stale_missing_file_error(
+    paths: &AppPaths,
+    item_id: &str,
+    restore_indexed_status: bool,
+) -> ApiResult<()> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let status = if restore_indexed_status {
+        "indexed"
+    } else {
+        "failed"
+    };
+    conn.execute(
+        "UPDATE items SET error = NULL, status = ?2 WHERE id = ?1",
+        rusqlite::params![item_id, status],
+    )?;
+    Ok(())
+}
+
+fn is_source_file_missing_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("source file does not exist")
+        || normalized.contains("source file missing")
+        || normalized.contains("source path does not exist")
+        || normalized.contains("input file does not exist")
+        || normalized.starts_with("file not found:")
+        || (normalized.contains("no such file or directory")
+            && (normalized.contains("source") || normalized.contains("raw_path")))
+}
+
+fn paths_refer_to_same_file(left: &FsPath, right: &FsPath) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 async fn get_item(
@@ -1344,6 +1884,7 @@ async fn get_item(
         item_from_row,
     )?;
     let mut item = item;
+    attach_raw_path_exists(&mut item);
     attach_item_usage(&state.paths, std::slice::from_mut(&mut item));
 
     Ok(Json(item))
@@ -2753,6 +3294,7 @@ fn index_job_type(content_type: ContentType) -> &'static str {
 
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
     let metadata: Option<String> = row.get(10)?;
+    let raw_path: Option<String> = row.get(6)?;
 
     Ok(ItemRecord {
         id: row.get(0)?,
@@ -2761,7 +3303,8 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
         external_id: row.get(3)?,
         title: row.get(4)?,
         duration_sec: row.get(5)?,
-        raw_path: row.get(6)?,
+        raw_path,
+        raw_path_exists: None,
         indexed_at: row.get(7)?,
         status: row.get(8)?,
         error: row.get(9)?,
@@ -2772,6 +3315,13 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
         thumbnail_chunk_id: row.get(11)?,
         usage: cerul_storage::UsageTotals::default(),
     })
+}
+
+fn attach_raw_path_exists(item: &mut ItemRecord) {
+    item.raw_path_exists = item
+        .raw_path
+        .as_deref()
+        .map(|path| FsPath::new(path).is_file());
 }
 
 fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
@@ -3277,7 +3827,10 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/health", &["get"]),
     ("/metrics", &["get"]),
     ("/openapi.json", &["get"]),
+    ("/diagnostics", &["get"]),
     ("/search", &["post"]),
+    ("/search/diagnostics", &["get"]),
+    ("/search/rebuild", &["post"]),
     ("/ask", &["post"]),
     ("/sources", &["get", "post"]),
     ("/sources/preview/rss", &["post"]),
@@ -3308,6 +3861,12 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/models/whisper/auto-download-status", &["get"]),
     ("/models/embed/status", &["get"]),
     ("/models/embed/prepare", &["post"]),
+    ("/models/local/capability", &["get"]),
+    ("/models/local/prepare", &["post"]),
+    ("/models/local/prepare-status", &["get"]),
+    ("/models/local/prepare-cancel", &["post"]),
+    ("/models/local/delete", &["post"]),
+    ("/models/local/repair", &["post"]),
     ("/providers", &["get", "post"]),
     ("/providers/{id}", &["patch", "delete"]),
     ("/providers/{id}/test", &["post"]),
@@ -3399,6 +3958,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_bundle_redacts_private_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/tester".to_string());
+        let missing_path = format!("{home}/Downloads/missing.mp4");
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at) VALUES
+                    ('remote_api_key', '"super-secret"', strftime('%s','now')),
+                    ('inference_mode', '"auto"', strftime('%s','now')),
+                    ('model_download_source', '"auto"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO sources (id, type, config, status)
+                VALUES ('source-1', 'local', '{}', 'active')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, title, raw_path, indexed_at, status, error, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'Missing video', ?1, 10, 'failed', ?2, '{}')
+                "#,
+                (
+                    &missing_path,
+                    format!("source file does not exist: {missing_path}"),
+                ),
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, error, progress, stage, stage_message
+                )
+                VALUES ('job-1', 'item-1', 'index_video', 'failed', 11, ?1, 0.4, 'transcribing', ?2)
+                "#,
+                (
+                    format!("failed to read {missing_path}"),
+                    format!("Reading {missing_path}"),
+                ),
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json["settings"]["remote_api_key_set"], true);
+        assert!(json["settings"].get("remote_api_key").is_none());
+        assert_eq!(
+            json["recent_errors"][0]["error"],
+            "source file does not exist: ~/Downloads/missing.mp4"
+        );
+        assert_eq!(
+            json["jobs"][0]["error"],
+            "failed to read ~/Downloads/missing.mp4"
+        );
+
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(!serialized.contains("super-secret"));
+        if !home.trim().is_empty() {
+            assert!(!serialized.contains(&home));
+        }
+    }
+
+    #[tokio::test]
     async fn local_capability_route_reports_models_and_total() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -3417,12 +4061,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = response_json(response).await;
         // Three user-facing models (embed / asr / ocr); the exact total follows
-        // the current model size estimates instead of a stale fixture constant.
+        // the current user-managed model size estimates instead of a stale fixture
+        // constant. OCR is bundled and reported for diagnostics, but it is not part
+        // of the default user download total.
         let models = json["models"].as_array().unwrap();
         assert_eq!(models.len(), 3);
         let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["embed", "asr", "ocr"]);
-        let summed_model_sizes: u64 = models.iter().map(|m| m["size_mb"].as_u64().unwrap()).sum();
+        let summed_model_sizes: u64 = models
+            .iter()
+            .filter(|m| matches!(m["id"].as_str(), Some("embed" | "asr")))
+            .map(|m| m["size_mb"].as_u64().unwrap())
+            .sum();
         assert_eq!(json["total_mb"].as_u64().unwrap(), summed_model_sizes);
         // recommended is one of the two known values; can_run_local is a bool.
         assert!(matches!(
@@ -4279,6 +4929,76 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table} should be empty after deleting item");
         }
+    }
+
+    #[tokio::test]
+    async fn item_raw_path_patch_syncs_metadata_without_reindexing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let old_path = temp.path().join("old.mp4");
+        let new_path = temp.path().join("new.mp4");
+        std::fs::write(&new_path, b"video").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path,
+                    indexed_at, status, error, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'clip.mp4', 'Clip', ?1,
+                    10, 'failed', ?2, ?3
+                )
+                "#,
+                rusqlite::params![
+                    old_path.to_string_lossy().as_ref(),
+                    format!("source file does not exist: {}", old_path.display()),
+                    json!({ "raw_path": old_path.to_string_lossy(), "kept": true }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+        let body = json!({ "raw_path": new_path.to_string_lossy() });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/items/item-1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let item = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "patch failed: {item}");
+        assert_eq!(
+            item["raw_path"].as_str().unwrap(),
+            new_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            item["metadata"]["raw_path"].as_str().unwrap(),
+            new_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(item["metadata"]["kept"], true);
+        assert_eq!(item["raw_path_exists"], true);
+        assert_eq!(item["status"], "indexed");
+        assert!(item["error"].is_null());
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let queued_jobs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(queued_jobs, 0);
     }
 
     #[tokio::test]
@@ -5174,6 +5894,11 @@ mod tests {
     async fn list_items_supports_paging_filters_and_light_records() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let missing_raw_path = temp
+            .path()
+            .join("sleeping-disk-video.mp4")
+            .to_string_lossy()
+            .to_string();
         seed_indexing_schema_version(&paths);
         {
             let conn = cerul_storage::sqlite::open(&paths).unwrap();
@@ -5185,15 +5910,16 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO items (
-                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                    id, source_id, content_type, external_id, title, raw_path,
+                    indexed_at, status, metadata
                 )
                 VALUES
-                    ('item-new', 'source-a', 'video', 'new.mp4', 'New', 30, 'indexed', '{"channel":"heavy"}'),
-                    ('item-old', 'source-a', 'video', 'old.mp4', 'Old', 10, 'indexed', '{"channel":"heavy"}'),
-                    ('item-other', 'source-b', 'video', 'other.mp4', 'Other', 20, 'indexed', '{"channel":"heavy"}'),
-                    ('item-running', 'source-a', 'video', 'running.mp4', 'Running', NULL, 'discovered', '{"channel":"heavy"}')
+                    ('item-new', 'source-a', 'video', 'new.mp4', 'New', NULL, 30, 'indexed', '{"channel":"heavy"}'),
+                    ('item-old', 'source-a', 'video', 'old.mp4', 'Old', ?1, 10, 'indexed', '{"channel":"heavy"}'),
+                    ('item-other', 'source-b', 'video', 'other.mp4', 'Other', NULL, 20, 'indexed', '{"channel":"heavy"}'),
+                    ('item-running', 'source-a', 'video', 'running.mp4', 'Running', NULL, NULL, 'discovered', '{"channel":"heavy"}')
                 "#,
-                [],
+                [missing_raw_path.as_str()],
             )
             .unwrap();
         }
@@ -5216,6 +5942,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], "item-old");
         assert_eq!(items[0]["metadata"], json!({}));
+        assert!(items[0]["raw_path_exists"].is_null());
         assert_eq!(items[0]["usage"]["event_count"], 0);
     }
 

@@ -279,6 +279,66 @@ pub fn write_media_sqlite_chunks_with_ocr_and_lines(
     })
 }
 
+/// Write only the visual keyframes for an item, without touching transcript,
+/// OCR, or vector rows. The indexing pipeline calls this immediately after
+/// frame sampling so the library can show real thumbnails while slower ASR and
+/// embedding stages continue.
+pub fn replace_item_keyframes(
+    paths: &AppPaths,
+    item_id: &str,
+    image_chunks: &[StorageImageChunk],
+) -> anyhow::Result<usize> {
+    let mut conn = sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+
+    tx.execute(
+        "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'keyframe'",
+        [item_id],
+    )?;
+
+    {
+        let mut stmt = tx.prepare(
+            r#"
+            INSERT INTO chunks (
+                id,
+                item_id,
+                chunk_type,
+                start_sec,
+                end_sec,
+                text,
+                frame_path,
+                metadata
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )?;
+
+        for (index, chunk) in image_chunks.iter().enumerate() {
+            if chunk.chunk_type != "keyframe" {
+                continue;
+            }
+            let frame_path = path_to_string(&chunk.path);
+            let metadata = metadata_with_index(&chunk.metadata, index).to_string();
+            stmt.execute((
+                keyframe_chunk_id(item_id, index),
+                item_id,
+                "keyframe",
+                chunk.start_sec,
+                chunk.end_sec,
+                Option::<&str>::None,
+                frame_path.as_str(),
+                metadata.as_str(),
+            ))?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(image_chunks
+        .iter()
+        .filter(|chunk| chunk.chunk_type == "keyframe")
+        .count())
+}
+
 pub async fn replace_media_embeddings(
     paths: &AppPaths,
     item_id: &str,
@@ -661,4 +721,95 @@ fn metadata_with_index(metadata: &serde_json::Value, index: usize) -> serde_json
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sqlite;
+
+    fn insert_test_item(paths: &AppPaths, item_id: &str) {
+        let conn = sqlite::open(paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local_folder', '{}', 'ready')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, source_id, content_type, external_id, title, status) VALUES (?1, 'source-1', 'video', 'external-1', 'Test video', 'queued')",
+            [item_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn replace_item_keyframes_replaces_existing_keyframes_without_touching_text_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let item_id = "item-1";
+        insert_test_item(&paths, item_id);
+
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata) VALUES ('item-1:transcript:000000', ?1, 'transcript', 0, 1, 'hello', '{}')",
+                [item_id],
+            )
+            .unwrap();
+        }
+
+        let first_keyframes = vec![
+            StorageImageChunk::keyframe_at(paths.cache.join("frame-0.jpg"), 0.0, 5.0),
+            StorageImageChunk::keyframe_at(paths.cache.join("frame-1.jpg"), 5.0, 10.0),
+        ];
+        assert_eq!(
+            replace_item_keyframes(&paths, item_id, &first_keyframes).unwrap(),
+            2
+        );
+
+        let replacement_keyframes = vec![StorageImageChunk::keyframe_at(
+            paths.cache.join("frame-2.jpg"),
+            10.0,
+            15.0,
+        )];
+        assert_eq!(
+            replace_item_keyframes(&paths, item_id, &replacement_keyframes).unwrap(),
+            1
+        );
+
+        let conn = sqlite::open(&paths).unwrap();
+        let keyframe_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND chunk_type = 'keyframe'",
+                [item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let transcript_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND chunk_type = 'transcript'",
+                [item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let frame_path: String = conn
+            .query_row(
+                "SELECT frame_path FROM chunks WHERE item_id = ?1 AND chunk_type = 'keyframe'",
+                [item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let metadata: String = conn
+            .query_row(
+                "SELECT metadata FROM chunks WHERE item_id = ?1 AND chunk_type = 'keyframe'",
+                [item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(keyframe_count, 1);
+        assert_eq!(transcript_count, 1);
+        assert!(frame_path.ends_with("frame-2.jpg"));
+        assert!(metadata.contains("\"index\":0"));
+    }
 }

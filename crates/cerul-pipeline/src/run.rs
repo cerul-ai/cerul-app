@@ -15,6 +15,7 @@ use cerul_storage::{
     StorageWriteSummary,
 };
 use serde_json::{json, Map};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     chunking, ffmpeg,
@@ -25,6 +26,10 @@ const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
 
 pub trait Transcriber: Send + Sync {
+    fn prepare_transcription(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn transcribe(
         &self,
         audio_path: &Path,
@@ -155,6 +160,7 @@ pub struct VideoPipeline {
     chunk_overlap_sec: f64,
     embedding_profile: Option<cerul_storage::vectors::EmbeddingProfile>,
     usage_job_id: Option<String>,
+    model_permits: Option<Arc<Semaphore>>,
 }
 
 impl VideoPipeline {
@@ -176,6 +182,7 @@ impl VideoPipeline {
             chunk_overlap_sec: 2.0,
             embedding_profile: None,
             usage_job_id: None,
+            model_permits: None,
         }
     }
 
@@ -219,6 +226,34 @@ impl VideoPipeline {
         self
     }
 
+    pub fn with_model_permits(mut self, model_permits: Arc<Semaphore>) -> Self {
+        self.model_permits = Some(model_permits);
+        self
+    }
+
+    async fn acquire_model_permit(&self) -> anyhow::Result<Option<OwnedSemaphorePermit>> {
+        match &self.model_permits {
+            Some(model_permits) => Ok(Some(Arc::clone(model_permits).acquire_owned().await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn acquire_model_permit_with_wait(
+        &self,
+        item_id: &str,
+        progress: f64,
+    ) -> anyhow::Result<Option<OwnedSemaphorePermit>> {
+        if self.model_permits.is_some() {
+            self.report_progress(
+                item_id,
+                "waiting_model",
+                progress,
+                "Waiting for local model",
+            );
+        }
+        self.acquire_model_permit().await
+    }
+
     fn report_progress(&self, item_id: &str, stage: &'static str, progress: f64, message: &str) {
         self.progress.update(item_id, stage, progress, message);
     }
@@ -246,6 +281,7 @@ impl VideoPipeline {
         let batch = (total / 20).max(1);
         let mut vectors = Vec::with_capacity(total);
         let mut done = 0usize;
+        let _model_permit = self.acquire_model_permit_with_wait(item_id, base).await?;
         for chunk in texts.chunks(batch) {
             let embedder = Arc::clone(&self.embedder);
             let owned = chunk.to_vec();
@@ -281,6 +317,7 @@ impl VideoPipeline {
         let batch = (total / 20).max(1);
         let mut vectors = Vec::with_capacity(total);
         let mut done = 0usize;
+        let _model_permit = self.acquire_model_permit_with_wait(item_id, base).await?;
         for chunk in paths.chunks(batch) {
             let embedder = Arc::clone(&self.embedder);
             let owned = chunk.to_vec();
@@ -297,7 +334,14 @@ impl VideoPipeline {
         Ok(vectors)
     }
 
-    pub fn release_all_runtime_models(&self, item_id: &str) {
+    pub async fn release_all_runtime_models(&self, item_id: &str) {
+        let _model_permit = match self.acquire_model_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                tracing::warn!(%error, item_id, "failed to acquire model runtime release permit");
+                None
+            }
+        };
         self.release_runtime_models(ModelReleaseScope::All, item_id, "job finished");
     }
 
@@ -380,6 +424,15 @@ impl VideoPipeline {
         let frames =
             ffmpeg::sample_frames(&video_path, &frames_dir, self.frame_interval_sec).await?;
         let keyframes = keyframe_chunks(&frames, self.frame_interval_sec);
+        match cerul_storage::replace_item_keyframes(&self.paths, item_id, &keyframes) {
+            Ok(count) if count > 0 => {
+                tracing::info!(item_id, keyframes = count, "stored early video thumbnails");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, item_id, "failed to store early video thumbnails");
+            }
+        }
 
         // Audio is optional. Many screen recordings (and capture tools'
         // intermediate files) are video-only, so probe before extracting: a
@@ -398,7 +451,17 @@ impl VideoPipeline {
             let transcriber = Arc::clone(&self.transcriber);
             let audio_for_transcribe = audio_path.clone();
             let progress = Arc::clone(&self.progress);
+            self.report_progress(
+                item_id,
+                "preparing_models",
+                0.23,
+                "Preparing transcription models",
+            );
+            let transcriber_for_prepare = Arc::clone(&transcriber);
+            tokio::task::spawn_blocking(move || transcriber_for_prepare.prepare_transcription())
+                .await??;
             let progress_item_id = item_id.to_string();
+            let _model_permit = self.acquire_model_permit_with_wait(item_id, 0.24).await?;
             self.report_progress(item_id, "transcribing", 0.25, "Transcribing audio");
             // Whole-file transcription reports no real sub-progress, so ease the
             // bar forward on an elapsed-time estimate to show the job is alive.
@@ -493,7 +556,8 @@ impl VideoPipeline {
                 0.64,
                 "Reading text from visual frames",
             );
-            tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
+            let _model_permit = self.acquire_model_permit_with_wait(item_id, 0.64).await?;
+            let frames = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
                 let total = frames_for_ocr.len();
                 let mut collected = Vec::with_capacity(total);
                 for (index, frame) in frames_for_ocr.iter().enumerate() {
@@ -509,13 +573,12 @@ impl VideoPipeline {
                 }
                 Ok(collected)
             })
-            .await??
+            .await??;
+            self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
+            frames
         } else {
             Vec::new()
         };
-        if self.ocr_enabled {
-            self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
-        }
         let storage_ocr_chunks = ocr_frames
             .into_iter()
             .filter(|frame| !frame.text.trim().is_empty())
@@ -759,11 +822,6 @@ impl VideoPipeline {
         let transcript_storage = self
             .transcribe_to_storage_chunks(item_id, &audio_path)
             .await?;
-        self.release_runtime_models(
-            ModelReleaseScope::Transcription,
-            item_id,
-            "transcription complete",
-        );
         let sqlite_summary = cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
             &self.paths,
             item_id,
@@ -1002,10 +1060,19 @@ impl VideoPipeline {
     ) -> anyhow::Result<TranscriptStorage> {
         let transcriber = Arc::clone(&self.transcriber);
         let audio_for_transcribe = audio_path.to_path_buf();
+        let transcriber_for_prepare = Arc::clone(&transcriber);
+        tokio::task::spawn_blocking(move || transcriber_for_prepare.prepare_transcription())
+            .await??;
+        let _model_permit = self.acquire_model_permit().await?;
         let segments = tokio::task::spawn_blocking(move || {
             transcriber.transcribe(&audio_for_transcribe, None)
         })
         .await??;
+        self.release_runtime_models(
+            ModelReleaseScope::Transcription,
+            item_id,
+            "transcription complete",
+        );
         self.record_asr_usage(
             item_id,
             audio_seconds_from_segments(&segments),
@@ -1030,6 +1097,7 @@ impl VideoPipeline {
             .map(|chunk| chunk.text.clone())
             .collect::<Vec<_>>();
 
+        let _model_permit = self.acquire_model_permit().await?;
         tokio::task::spawn_blocking(move || embedder.embed_texts(&texts)).await?
     }
 
@@ -1037,6 +1105,7 @@ impl VideoPipeline {
         let embedder = Arc::clone(&self.embedder);
         let paths = paths.to_vec();
 
+        let _model_permit = self.acquire_model_permit().await?;
         tokio::task::spawn_blocking(move || embedder.embed_images(&paths)).await?
     }
 
@@ -1944,6 +2013,19 @@ mod tests {
             summary.image_vectors
         );
         let stages = progress.stages.lock().unwrap();
+        let preparing_index = stages
+            .iter()
+            .position(|(stage, progress)| {
+                stage == "preparing_models" && (*progress - 0.23).abs() < f64::EPSILON
+            })
+            .expect("video indexing should report model preparation before transcription");
+        let transcribing_index = stages
+            .iter()
+            .position(|(stage, progress)| {
+                stage == "transcribing" && *progress >= 0.25 && *progress <= 0.60
+            })
+            .expect("video indexing should report transcription progress");
+        assert!(preparing_index < transcribing_index);
         assert!(stages.iter().any(|(stage, progress)| {
             stage == "transcribing" && *progress >= 0.25 && *progress <= 0.60
         }));

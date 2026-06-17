@@ -7,7 +7,7 @@ pub mod usage;
 pub mod vectors;
 
 pub use chunks::{
-    replace_media_embeddings, replace_media_embeddings_for_profile,
+    replace_item_keyframes, replace_media_embeddings, replace_media_embeddings_for_profile,
     replace_media_embeddings_with_ocr, replace_media_embeddings_with_ocr_for_profile,
     replace_video_embeddings_with_ocr, replace_video_embeddings_with_ocr_for_profile,
     write_media_chunks, write_media_chunks_with_ocr_and_lines, write_media_sqlite_chunks,

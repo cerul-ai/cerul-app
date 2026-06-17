@@ -107,7 +107,7 @@ export function DetailIssuePanel({
             onClick={runPrimaryAction}
           >
             {actionStatus === "locating" || actionStatus === "reindexing" ? (
-              <Loader2 size={16} />
+              <Loader2 size={16} className="spin" />
             ) : issue.primaryAction === "locate" ? (
               <Folder size={16} />
             ) : issue.primaryAction === "open-original" ? (
@@ -130,7 +130,7 @@ export function DetailIssuePanel({
           disabled={busy || !actionsEnabled}
           onClick={onRemove}
         >
-          {actionStatus === "deleting" ? <Loader2 size={16} /> : <Trash2 size={16} />}
+          {actionStatus === "deleting" ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
           <span>{actionStatus === "deleting" ? t("detail.issue.removing") : issue.removeLabel}</span>
         </button>
       </div>

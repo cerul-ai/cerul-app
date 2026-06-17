@@ -270,14 +270,17 @@ export function ItemCard({
       data-view={viewMode}
     >
       {selectable ? (
-        <label className="item-select sel-check">
+        <label
+          className="item-select"
+          onClick={(event) => event.stopPropagation()}
+        >
           <input
             type="checkbox"
             checked={selected}
             onChange={(event) => onSelect?.(event.currentTarget.checked)}
           />
           <span className="item-select-box" aria-hidden="true">
-            {selected ? <Check size={12} strokeWidth={3} /> : null}
+            {selected ? <Check size={15} strokeWidth={3} /> : null}
           </span>
           <span className="faint">{t("library.itemCard.selectAria")}</span>
         </label>

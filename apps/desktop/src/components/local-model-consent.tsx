@@ -5,7 +5,7 @@
 
 import { ArrowRight, Check, Pause, Play, X } from "lucide-react";
 import { brandAssets } from "../lib/brand";
-import { formatDuration } from "../lib/formatters";
+import { formatDuration, formatSpeed } from "../lib/formatters";
 import { useT } from "../lib/i18n";
 import type { LocalModelCapability, LocalPrepareStatus } from "../lib/api";
 
@@ -13,20 +13,10 @@ function formatSize(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
 }
 
-function formatSpeed(bps: number | null | undefined): string | null {
-  if (!bps || !Number.isFinite(bps) || bps <= 0) {
-    return null;
-  }
-  const mb = bps / 1024 / 1024;
-  if (mb >= 1) {
-    return `${mb.toFixed(1)} MB/s`;
-  }
-  return `${Math.max(1, Math.round(bps / 1024))} KB/s`;
-}
-
-// The core returns English labels; localize the three known model ids and fall
-// back to whatever label the server sent for anything unrecognized.
-const KNOWN_MODEL_IDS = new Set(["embed", "asr", "ocr"]);
+// OCR is a bundled/default dependency. Keep it in the backend prepare plan, but
+// do not expose that implementation detail in the first-run download dialog.
+const HIDDEN_MODEL_IDS = new Set(["ocr"]);
+const KNOWN_MODEL_IDS = new Set(["embed", "asr"]);
 
 export function LocalModelConsent({
   capability,
@@ -51,7 +41,32 @@ export function LocalModelConsent({
 }) {
   const t = useT();
   const preparing = !!download && download.phase !== "ready";
-  const totalMb = capability?.total_mb ?? download?.total_mb ?? 2100;
+  const visibleCapabilityModels =
+    capability?.models.filter((model) => !HIDDEN_MODEL_IDS.has(model.id)) ?? [];
+  const visibleDownloadModels =
+    download?.models.filter((model) => !HIDDEN_MODEL_IDS.has(model.id)) ?? [];
+  const visibleCapabilityTotalMb = visibleCapabilityModels.reduce(
+    (total, model) => total + model.size_mb,
+    0,
+  );
+  const visibleDownloadTotalMb = visibleDownloadModels.reduce(
+    (total, model) => total + model.size_mb,
+    0,
+  );
+  const visibleDoneMb = visibleDownloadModels.reduce(
+    (total, model) => total + Math.round((model.size_mb * Math.min(100, model.progress)) / 100),
+    0,
+  );
+  const totalMb =
+    visibleCapabilityTotalMb || visibleDownloadTotalMb || capability?.total_mb || download?.total_mb || 2100;
+  const displayedDoneMb =
+    download && visibleDownloadModels.length > 0 ? visibleDoneMb : (download?.done_mb ?? 0);
+  const displayedTotalMb =
+    download && visibleDownloadTotalMb > 0 ? visibleDownloadTotalMb : (download?.total_mb ?? totalMb);
+  const displayedProgress =
+    displayedTotalMb > 0
+      ? Math.min(100, Math.round((displayedDoneMb / displayedTotalMb) * 100))
+      : (download?.overall_progress ?? 0);
   const canLocal = capability?.can_run_local ?? true;
   const speed = formatSpeed(download?.download_bps);
   const statusParts = [
@@ -76,10 +91,10 @@ export function LocalModelConsent({
             </h3>
             <div className="lm-overall">
               <span className="lm-track">
-                <span className="lm-fill" style={{ width: `${download.overall_progress}%` }} />
+                <span className="lm-fill" style={{ width: `${displayedProgress}%` }} />
               </span>
               <p className="lm-meta mono">
-                {formatSize(download.done_mb)} / {formatSize(download.total_mb)}
+                {formatSize(displayedDoneMb)} / {formatSize(displayedTotalMb)}
                 {statusParts.length > 0 ? ` · ${statusParts.join(" · ")}` : ""}
               </p>
             </div>
@@ -87,7 +102,7 @@ export function LocalModelConsent({
               <p className="lm-source-warning">{download.last_source_error}</p>
             ) : null}
             <div className="lm-list">
-              {download.models.map((m) => (
+              {visibleDownloadModels.map((m) => (
                 <div key={m.id} className={`lm-row ${m.status}`}>
                   <span className="lm-row-name">
                     <span className="lm-row-dot" />
