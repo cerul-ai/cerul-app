@@ -795,7 +795,7 @@ function AppWorkspace() {
     void runDesktopUpdaterCheck();
     const intervalId = window.setInterval(
       () => void runDesktopUpdaterCheck(),
-      6 * 60 * 60 * 1000,
+      30 * 60 * 1000,
     );
     return () => {
       unsubscribe();
