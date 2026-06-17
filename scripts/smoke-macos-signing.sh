@@ -136,7 +136,7 @@ require_codesign_xattr_budget() {
   local signed_xattr_count=0
   local first_over_budget_file=""
   while IFS= read -r file; do
-    if xattr -p com.apple.cs.CodeSignature "$file" >/dev/null 2>&1; then
+    if xattr "$file" 2>/dev/null | grep -q '^com\.apple\.cs\.'; then
       signed_xattr_count=$((signed_xattr_count + 1))
       if [ "$signed_xattr_count" -gt "$MAX_CODESIGN_XATTR_FILES" ]; then
         first_over_budget_file="$file"
@@ -146,7 +146,7 @@ require_codesign_xattr_budget() {
   done < <(find "$APP" -type f -print 2>/dev/null)
 
   if [ "$signed_xattr_count" -gt "$MAX_CODESIGN_XATTR_FILES" ]; then
-    echo "Cerul.app has $signed_xattr_count files with com.apple.cs.CodeSignature xattrs, above budget $MAX_CODESIGN_XATTR_FILES." >&2
+    echo "Cerul.app has $signed_xattr_count files with detached com.apple.cs.* xattrs, above budget $MAX_CODESIGN_XATTR_FILES." >&2
     echo "This can make macOS Gatekeeper fail with 'Too many open files' and show the DMG as damaged." >&2
     echo "First file over budget: $first_over_budget_file" >&2
     exit 1

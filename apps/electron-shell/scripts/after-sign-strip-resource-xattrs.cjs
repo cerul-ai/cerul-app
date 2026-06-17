@@ -21,29 +21,37 @@ function walkFiles(dir, visitor) {
   }
 }
 
-function hasCodeSignatureXattr(file) {
+function codeSigningXattrs(file) {
   try {
-    execFileSync("xattr", ["-p", "com.apple.cs.CodeSignature", file], {
-      stdio: "ignore",
-    });
-    return true;
+    return execFileSync("xattr", [file], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split(/\r?\n/)
+      .map((name) => name.trim())
+      .filter((name) => name.startsWith("com.apple.cs."));
   } catch {
-    return false;
+    return [];
   }
 }
 
 function stripDetachedCodeSignatureXattrs(appPath) {
   let scanned = 0;
   let stripped = 0;
+  let filesStripped = 0;
   walkFiles(appPath, (file) => {
     scanned += 1;
-    if (!hasCodeSignatureXattr(file)) return;
-    execFileSync("xattr", ["-d", "com.apple.cs.CodeSignature", file], {
-      stdio: "ignore",
-    });
-    stripped += 1;
+    const names = codeSigningXattrs(file);
+    if (names.length === 0) return;
+    for (const name of names) {
+      execFileSync("xattr", ["-d", name, file], {
+        stdio: "ignore",
+      });
+      stripped += 1;
+    }
+    filesStripped += 1;
   });
-  return { scanned, stripped };
+  return { scanned, stripped, filesStripped };
 }
 
 function verifyAppSignature(appPath) {
@@ -145,10 +153,10 @@ async function afterSign(context) {
   const result = stripDetachedCodeSignatureXattrs(appPath);
   if (result.stripped > 0) {
     console.log(
-      `afterSign: stripped ${result.stripped} detached com.apple.cs.CodeSignature xattrs from ${result.scanned} files`,
+      `afterSign: stripped ${result.stripped} detached com.apple.cs.* xattrs from ${result.filesStripped} of ${result.scanned} files`,
     );
   } else {
-    console.log(`afterSign: no detached com.apple.cs.CodeSignature xattrs found in ${result.scanned} files`);
+    console.log(`afterSign: no detached com.apple.cs.* xattrs found in ${result.scanned} files`);
   }
   verifyAppSignature(appPath);
   runTimed("app_notarization", () => notarizeApp(appPath));
@@ -158,3 +166,4 @@ module.exports = afterSign;
 module.exports.default = afterSign;
 module.exports.stripDetachedCodeSignatureXattrs = stripDetachedCodeSignatureXattrs;
 module.exports.verifyAppSignature = verifyAppSignature;
+module.exports.codeSigningXattrs = codeSigningXattrs;
