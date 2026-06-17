@@ -401,17 +401,11 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
 
     for group in &groups {
         total_mb += group.size_mb;
-        let on_disk_mb: u64 = group
-            .repos
-            .iter()
-            .map(|repo| {
-                repo_cached_bytes(&hub, &mirror, &modelscope, bundled.as_deref(), repo) / 1_000_000
-            })
-            .sum();
+        let on_disk_mb = group_cached_mb(&hub, &mirror, &modelscope, bundled.as_deref(), group);
         let capped = on_disk_mb.min(group.size_mb);
         done_mb += capped;
         let progress = ((capped as f64 / group.size_mb as f64) * 100.0).round() as u32;
-        let ready = capped as f64 >= group.size_mb as f64 * READY_RATIO;
+        let ready = group_weights_ready(&hub, &mirror, &modelscope, bundled.as_deref(), group);
         // Only mark a model "downloading" if it's actually in the active prepare
         // run (and is the first such not-yet-ready one) — so downloading one
         // capability's model from Settings doesn't light up a different row.
@@ -552,22 +546,106 @@ fn repo_cached_bytes(
     bundled_root: Option<&Path>,
     repo: &str,
 ) -> u64 {
+    repo_cached_bytes_with_filter(
+        hf_hub,
+        mirror_root,
+        modelscope_root,
+        bundled_root,
+        repo,
+        false,
+    )
+}
+
+fn repo_complete_cached_bytes(
+    hf_hub: &Path,
+    mirror_root: &Path,
+    modelscope_root: &Path,
+    bundled_root: Option<&Path>,
+    repo: &str,
+) -> u64 {
+    repo_cached_bytes_with_filter(
+        hf_hub,
+        mirror_root,
+        modelscope_root,
+        bundled_root,
+        repo,
+        true,
+    )
+}
+
+fn repo_cached_bytes_with_filter(
+    hf_hub: &Path,
+    mirror_root: &Path,
+    modelscope_root: &Path,
+    bundled_root: Option<&Path>,
+    repo: &str,
+    complete_only: bool,
+) -> u64 {
     let name = cache_dir_name(repo);
-    dir_size_bytes(&hf_hub.join(&name))
-        + dir_size_bytes(&mirror_root.join(&name))
-        + dir_size_bytes(&modelscope_root.join(&name))
+    dir_size_bytes_filtered(&hf_hub.join(&name), complete_only)
+        + dir_size_bytes_filtered(&mirror_root.join(&name), complete_only)
+        + dir_size_bytes_filtered(&modelscope_root.join(&name), complete_only)
         + bundled_root
-            .map(|root| dir_size_bytes(&root.join(name)))
+            .map(|root| dir_size_bytes_filtered(&root.join(name), complete_only))
             .unwrap_or(0)
 }
 
-/// True if a non-trivial amount of weights for `repo` are already cached on
-/// disk (HF hub, Cerul mirror, ModelScope, or bundled). The model catalog uses
-/// this so a "local" model only reports installed once its weights actually
-/// exist — a ready MLX runtime alone does not mean the weights are downloaded.
-pub fn repo_weights_present(paths: &cerul_storage::AppPaths, repo: &str) -> bool {
-    // 64 MB floor distinguishes real weights from a config-only / empty cache;
-    // the precise per-model "ready" signal lives in the prepare-status scan.
+fn group_cached_mb(
+    hf_hub: &Path,
+    mirror_root: &Path,
+    modelscope_root: &Path,
+    bundled_root: Option<&Path>,
+    group: &LocalModelGroup,
+) -> u64 {
+    group
+        .repos
+        .iter()
+        .map(|repo| {
+            repo_cached_bytes(hf_hub, mirror_root, modelscope_root, bundled_root, repo) / 1_000_000
+        })
+        .sum()
+}
+
+fn group_complete_cached_mb(
+    hf_hub: &Path,
+    mirror_root: &Path,
+    modelscope_root: &Path,
+    bundled_root: Option<&Path>,
+    group: &LocalModelGroup,
+) -> u64 {
+    group
+        .repos
+        .iter()
+        .map(|repo| {
+            repo_complete_cached_bytes(hf_hub, mirror_root, modelscope_root, bundled_root, repo)
+                / 1_000_000
+        })
+        .sum()
+}
+
+fn group_weights_ready(
+    hf_hub: &Path,
+    mirror_root: &Path,
+    modelscope_root: &Path,
+    bundled_root: Option<&Path>,
+    group: &LocalModelGroup,
+) -> bool {
+    let every_repo_has_bytes = group.repos.iter().all(|repo| {
+        repo_complete_cached_bytes(hf_hub, mirror_root, modelscope_root, bundled_root, repo) > 0
+    });
+    if !every_repo_has_bytes {
+        return false;
+    }
+
+    group_complete_cached_mb(hf_hub, mirror_root, modelscope_root, bundled_root, group) as f64
+        >= group.size_mb as f64 * READY_RATIO
+}
+
+/// True if the full local model group containing `repo` is ready on disk.
+/// Transcription is one catalog row but two weight repos (ASR + forced aligner),
+/// so the model catalog must not report it installed after seeing only one
+/// partial repo cache.
+pub fn local_model_weights_ready(paths: &cerul_storage::AppPaths, repo: &str) -> bool {
     const MIN_WEIGHT_BYTES: u64 = 64 * 1_000_000;
     let Ok(cfg) = runtime_config(paths) else {
         return false;
@@ -576,7 +654,16 @@ pub fn repo_weights_present(paths: &cerul_storage::AppPaths, repo: &str) -> bool
     let mirror = cfg.models_cache.join("cerul-mirror");
     let modelscope = cfg.models_cache.join("modelscope");
     let bundled = bundled_models_root();
-    repo_cached_bytes(&hub, &mirror, &modelscope, bundled.as_deref(), repo) >= MIN_WEIGHT_BYTES
+    let groups = model_groups(&cfg);
+    if let Some(group) = groups
+        .iter()
+        .find(|group| group.repos.iter().any(|candidate| candidate == repo))
+    {
+        return group_weights_ready(&hub, &mirror, &modelscope, bundled.as_deref(), group);
+    }
+
+    repo_complete_cached_bytes(&hub, &mirror, &modelscope, bundled.as_deref(), repo)
+        >= MIN_WEIGHT_BYTES
 }
 
 fn model_download_source_setting(paths: &cerul_storage::AppPaths) -> anyhow::Result<String> {
@@ -595,7 +682,7 @@ fn model_download_source_setting(paths: &cerul_storage::AppPaths) -> anyhow::Res
 
 /// Sum of real file bytes under `path`. Skips symlinks, so the HF `snapshots/`
 /// symlink tree is not double-counted against the `blobs/` it points at.
-fn dir_size_bytes(path: &Path) -> u64 {
+fn dir_size_bytes_filtered(path: &Path, skip_temporary_downloads: bool) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -609,6 +696,9 @@ fn dir_size_bytes(path: &Path) -> u64 {
             if file_type.is_dir() {
                 stack.push(entry.path());
             } else if file_type.is_file() {
+                if skip_temporary_downloads && is_temporary_download_file(&entry.path()) {
+                    continue;
+                }
                 if let Ok(meta) = entry.metadata() {
                     total += meta.len();
                 }
@@ -616,6 +706,13 @@ fn dir_size_bytes(path: &Path) -> u64 {
         }
     }
     total
+}
+
+fn is_temporary_download_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("incomplete" | "partial")
+    )
 }
 
 /// Installed physical RAM in GiB via `sysctl hw.memsize` (macOS). 0 if unknown.
@@ -657,7 +754,10 @@ mod tests {
 
     #[test]
     fn missing_cache_dir_is_zero_bytes() {
-        assert_eq!(dir_size_bytes(Path::new("/nonexistent/cerul/cache")), 0);
+        assert_eq!(
+            dir_size_bytes_filtered(Path::new("/nonexistent/cerul/cache"), false),
+            0
+        );
     }
 
     #[test]
@@ -691,5 +791,70 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn complete_cached_bytes_ignore_temporary_downloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let hf = temp.path().join("hf");
+        let mirror = temp.path().join("mirror");
+        let modelscope = temp.path().join("modelscope");
+        let repo = "Qwen/Qwen3-ASR-0.6B";
+        let repo_dir = hf.join(cache_dir_name(repo));
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(repo_dir.join("model.safetensors"), vec![0u8; 3]).unwrap();
+        std::fs::write(repo_dir.join("model.safetensors.incomplete"), vec![0u8; 5]).unwrap();
+        std::fs::write(repo_dir.join("archive.tar.gz.partial"), vec![0u8; 7]).unwrap();
+
+        assert_eq!(repo_cached_bytes(&hf, &mirror, &modelscope, None, repo), 15);
+        assert_eq!(
+            repo_complete_cached_bytes(&hf, &mirror, &modelscope, None, repo),
+            3
+        );
+    }
+
+    #[test]
+    fn group_ready_requires_every_repo_and_complete_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let hf = temp.path().join("hf");
+        let mirror = temp.path().join("mirror");
+        let modelscope = temp.path().join("modelscope");
+        let asr = "Qwen/Qwen3-ASR-0.6B";
+        let aligner = "Qwen/Qwen3-ForcedAligner-0.6B";
+        let group = LocalModelGroup {
+            id: "asr",
+            label: "Speech-to-text",
+            repos: vec![asr.to_string(), aligner.to_string()],
+            size_mb: 2,
+        };
+
+        let asr_dir = hf.join(cache_dir_name(asr));
+        std::fs::create_dir_all(&asr_dir).unwrap();
+        std::fs::write(asr_dir.join("model.safetensors"), vec![0u8; 1_000_000]).unwrap();
+        assert!(!group_weights_ready(
+            &hf,
+            &mirror,
+            &modelscope,
+            None,
+            &group
+        ));
+
+        let aligner_dir = hf.join(cache_dir_name(aligner));
+        std::fs::create_dir_all(&aligner_dir).unwrap();
+        std::fs::write(
+            aligner_dir.join("model.safetensors.incomplete"),
+            vec![0u8; 1_000_000],
+        )
+        .unwrap();
+        assert!(!group_weights_ready(
+            &hf,
+            &mirror,
+            &modelscope,
+            None,
+            &group
+        ));
+
+        std::fs::write(aligner_dir.join("model.safetensors"), vec![0u8; 1_000_000]).unwrap();
+        assert!(group_weights_ready(&hf, &mirror, &modelscope, None, &group));
     }
 }

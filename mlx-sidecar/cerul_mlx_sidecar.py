@@ -603,7 +603,7 @@ def resolve_mirror_snapshot(model_id_or_path: str, revision: str) -> Path | None
     return snapshot
 
 
-def modelscope_snapshot_dir(model_id_or_path: str) -> Path | None:
+def modelscope_snapshot_dir(model_id_or_path: str, revision: str = "master") -> Path | None:
     if MODELS_CACHE_ROOT is None:
         return None
     return (
@@ -611,14 +611,14 @@ def modelscope_snapshot_dir(model_id_or_path: str) -> Path | None:
         / "modelscope"
         / model_cache_dir_name(model_id_or_path)
         / "snapshots"
-        / "master"
+        / revision
     )
 
 
-def modelscope_repo_files(model_id_or_path: str) -> list[dict[str, Any]]:
+def modelscope_repo_files(model_id_or_path: str, revision: str) -> list[dict[str, Any]]:
     url = (
         f"{modelscope_endpoint()}/api/v1/models/{model_id_or_path}"
-        "/repo/files?revision=master&recursive=true"
+        f"/repo/files?revision={quote(revision, safe='')}&recursive=true"
     )
     with urllib.request.urlopen(source_request(url, SOURCE_MODELSCOPE), timeout=model_mirror_timeout()) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -637,8 +637,13 @@ def file_allowed(path: str, allow_patterns: list[str] | None, model_id_or_path: 
     return any(fnmatch.fnmatch(path, pattern) for pattern in allow_patterns)
 
 
-def resolve_modelscope_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = None) -> Path | None:
-    snapshot = modelscope_snapshot_dir(model_id_or_path)
+def resolve_modelscope_snapshot(
+    model_id_or_path: str,
+    revision: str,
+    allow_patterns: list[str] | None = None,
+) -> Path | None:
+    global _LAST_DOWNLOAD_SOURCE, _LAST_DOWNLOAD_SOURCE_LABEL
+    snapshot = modelscope_snapshot_dir(model_id_or_path, revision)
     if snapshot is None:
         return None
     missing_reasons = pinned_snapshot_missing_reasons(snapshot, model_id_or_path)
@@ -646,6 +651,8 @@ def resolve_modelscope_snapshot(model_id_or_path: str, allow_patterns: list[str]
         return snapshot
 
     print(f"prepare: downloading {model_id_or_path} from ModelScope", file=sys.stderr)
+    _LAST_DOWNLOAD_SOURCE = SOURCE_MODELSCOPE
+    _LAST_DOWNLOAD_SOURCE_LABEL = source_label(SOURCE_MODELSCOPE)
     write_prepare_status(
         phase="downloading",
         active_source=SOURCE_MODELSCOPE,
@@ -655,7 +662,7 @@ def resolve_modelscope_snapshot(model_id_or_path: str, allow_patterns: list[str]
     )
     files = [
         file
-        for file in modelscope_repo_files(model_id_or_path)
+        for file in modelscope_repo_files(model_id_or_path, revision)
         if file_allowed(str(file["Path"]), allow_patterns, model_id_or_path)
     ]
     if not files:
@@ -665,7 +672,7 @@ def resolve_modelscope_snapshot(model_id_or_path: str, allow_patterns: list[str]
     for file in files:
         remote_path = str(file["Path"])
         destination = snapshot / remote_path
-        url = modelscope_resolve_url(model_id_or_path, remote_path)
+        url = modelscope_resolve_url(model_id_or_path, remote_path, revision)
         download_url_to_file(
             url,
             destination,
@@ -724,7 +731,7 @@ def probe_url_for_source(source: str, model_id_or_path: str, revision: str) -> s
     if source == SOURCE_HUGGINGFACE:
         return hf_resolve_url(model_id_or_path, revision, probe_file)
     if source == SOURCE_MODELSCOPE:
-        return modelscope_resolve_url(model_id_or_path, probe_file)
+        return modelscope_resolve_url(model_id_or_path, probe_file, revision)
     if source == SOURCE_CERUL_CDN:
         entry = mirror_entry(model_id_or_path, revision)
         if entry is None:
@@ -840,7 +847,23 @@ def pinned_snapshot_missing_reasons(snapshot: Path, model_id_or_path: str) -> li
     return []
 
 
+def snapshot_size_bytes(snapshot: Path) -> int:
+    total = 0
+    try:
+        entries = snapshot.rglob("*")
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = None) -> Path:
+    global _LAST_DOWNLOAD_SOURCE, _LAST_DOWNLOAD_SOURCE_LABEL, _LAST_DOWNLOAD_PEAK_BPS
     local_path = Path(model_id_or_path)
     if local_path.exists():
         return local_path
@@ -869,7 +892,7 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
 
     last_error: Exception | None = None
     if pinned:
-        modelscope_cached = modelscope_snapshot_dir(model_id_or_path)
+        modelscope_cached = modelscope_snapshot_dir(model_id_or_path, pinned)
         if modelscope_cached is not None:
             missing_reasons = pinned_snapshot_missing_reasons(modelscope_cached, model_id_or_path)
             if not missing_reasons:
@@ -885,7 +908,7 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
                         return mirror_snapshot
                     raise RuntimeError("Cerul CDN manifest does not contain this model")
                 if source == SOURCE_MODELSCOPE:
-                    modelscope_snapshot = resolve_modelscope_snapshot(model_id_or_path, allow_patterns)
+                    modelscope_snapshot = resolve_modelscope_snapshot(model_id_or_path, pinned, allow_patterns)
                     if modelscope_snapshot is not None:
                         return modelscope_snapshot
                     raise RuntimeError("ModelScope snapshot unavailable")
@@ -908,6 +931,8 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
 
     from huggingface_hub import snapshot_download
 
+    _LAST_DOWNLOAD_SOURCE = SOURCE_HUGGINGFACE
+    _LAST_DOWNLOAD_SOURCE_LABEL = source_label(SOURCE_HUGGINGFACE)
     write_prepare_status(
         phase="downloading",
         active_source=SOURCE_HUGGINGFACE,
@@ -916,13 +941,20 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
         download_bps=None,
         last_source_error=str(last_error) if last_error else None,
     )
-    return Path(
+    started = time.monotonic()
+    snapshot = Path(
         snapshot_download(
             repo_id=model_id_or_path,
             revision=PINNED_MODEL_REVISIONS.get(model_id_or_path),
             allow_patterns=allow_patterns,
         )
     )
+    elapsed = time.monotonic() - started
+    if elapsed >= 1.0:
+        bps = round(snapshot_size_bytes(snapshot) / max(0.001, elapsed))
+        if bps > _LAST_DOWNLOAD_PEAK_BPS:
+            _LAST_DOWNLOAD_PEAK_BPS = bps
+    return snapshot
 
 
 def allow_patterns_for_model(model_id_or_path: str) -> list[str] | None:
@@ -1503,10 +1535,18 @@ class CerulMlxRuntime:
         value = (getattr(self.args, "asr_quantization", "none") or "none").strip().lower()
         return {"8bit": 8, "4bit": 4}.get(value)
 
+    def _resolved_qwen_asr_path(self, model_id_or_path: str) -> str:
+        """Resolve Qwen ASR/aligner weights through Cerul's source router."""
+        if not model_id_or_path:
+            return model_id_or_path
+        if Path(model_id_or_path).exists():
+            return model_id_or_path
+        return str(resolve_snapshot(model_id_or_path, allow_patterns_for_model(model_id_or_path)))
+
     def _transcription_components(self, module: Any) -> tuple[Any, Any]:
         """Resolve the (model, forced_aligner) arguments for transcribe().
 
-        Quantization off -> pass the HF repo ids; the library loads fp16 itself.
+        Quantization off -> pass local snapshot paths; the library loads fp16.
         Quantization on  -> load the *official* weights once, quantize them
         in-memory to N-bit, cache + reuse the objects, and hand those to
         transcribe(). Same official weights, just smaller/faster. The aligner's
@@ -1514,21 +1554,27 @@ class CerulMlxRuntime:
         quantizing; if anything there fails we keep the aligner at fp16 rather
         than lose word-level timestamps.
         """
+        asr_path = self._resolved_qwen_asr_path(self.args.asr_model)
+        aligner_path = (
+            self._resolved_qwen_asr_path(self.args.forced_aligner_model)
+            if self.args.forced_aligner_model
+            else self.args.forced_aligner_model
+        )
         bits = self._asr_quant_bits()
         if bits is None:
-            return self.args.asr_model, self.args.forced_aligner_model
+            return asr_path, aligner_path
 
         import mlx.core as mx
         from mlx_qwen3_asr.convert import quantize_model
 
         if self._asr_model_obj is None:
-            model, _config = module.load_model(self.args.asr_model, dtype=mx.float16)
+            model, _config = module.load_model(asr_path, dtype=mx.float16)
             quantize_model(model, bits=bits, group_size=64)
             self._asr_model_obj = model
             print(f"asr: loaded {self.args.asr_model} ({bits}-bit)", file=sys.stderr)
 
-        if self._asr_aligner_obj is None and self.args.forced_aligner_model:
-            aligner = module.ForcedAligner(self.args.forced_aligner_model, dtype=mx.float16)
+        if self._asr_aligner_obj is None and aligner_path:
+            aligner = module.ForcedAligner(aligner_path, dtype=mx.float16)
             try:
                 aligner._ensure_loaded()
                 quantize_model(aligner._backend.model, bits=bits, group_size=64)
@@ -1537,7 +1583,7 @@ class CerulMlxRuntime:
                 print(f"asr: forced-aligner quantization skipped ({exc})", file=sys.stderr)
             self._asr_aligner_obj = aligner
 
-        return self._asr_model_obj, (self._asr_aligner_obj or self.args.forced_aligner_model)
+        return self._asr_model_obj, (self._asr_aligner_obj or aligner_path)
 
     def transcribe(self, audio_path: str, language: str | None = None) -> dict[str, Any]:
         # Accept both the bare name and full repo ids: a user setting

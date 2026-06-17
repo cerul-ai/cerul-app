@@ -585,7 +585,7 @@ fn model_installed(
         // counts as installed once its weights are actually on disk.
         "local-mlx" => {
             runtime.local_runtime_ready
-                && crate::local_models::repo_weights_present(paths, spec.source)
+                && crate::local_models::local_model_weights_ready(paths, spec.source)
         }
         "embedding-profile" => {
             spec.id == DEFAULT_EMBEDDING_MODEL_ID
