@@ -71,30 +71,33 @@ export function useLocalModelConsent(args: { trigger: boolean; apiOnline: boolea
       .catch(() => undefined);
   }, []);
 
-  // Re-attach to an in-flight download after a relaunch — or whenever the user
-  // was already prompted, so the first-run effect above never fires. The
-  // sidecar keeps downloading in the background regardless of the UI; without
-  // this the rail pill (which needs the in-memory poller) would never appear
-  // and the download stays invisible. Show only the pill (minimized), never
-  // re-pop the consent dialog.
+  // Re-attach to an in-flight download after a relaunch, and keep a cheap
+  // app-level monitor alive so downloads started later from Settings also light
+  // up the rail pill. Show only the pill (minimized), never re-pop the consent
+  // dialog.
   useEffect(() => {
     if (!args.apiOnline || s.show || s.download || s.ready || timer.current) {
       return;
     }
     let cancelled = false;
-    api
-      .localPrepareStatus()
-      .then((download) => {
-        if (cancelled || download.phase !== "downloading") {
-          return;
-        }
-        setS((p) => ({ ...p, download, minimized: true }));
-        clear();
-        timer.current = window.setInterval(pollStatus, 1200);
-      })
-      .catch(() => undefined);
+    const check = () => {
+      api
+        .localPrepareStatus()
+        .then((download) => {
+          if (cancelled || download.phase !== "downloading") {
+            return;
+          }
+          setS((p) => ({ ...p, download, minimized: true }));
+          clear();
+          timer.current = window.setInterval(pollStatus, 1200);
+        })
+        .catch(() => undefined);
+    };
+    check();
+    const monitor = window.setInterval(check, 5000);
     return () => {
       cancelled = true;
+      window.clearInterval(monitor);
     };
   }, [args.apiOnline, s.show, s.download, s.ready, pollStatus]);
 

@@ -1884,6 +1884,7 @@ async fn get_item(
         item_from_row,
     )?;
     let mut item = item;
+    attach_raw_path_exists(&mut item);
     attach_item_usage(&state.paths, std::slice::from_mut(&mut item));
 
     Ok(Json(item))
@@ -3294,7 +3295,6 @@ fn index_job_type(content_type: ContentType) -> &'static str {
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
     let metadata: Option<String> = row.get(10)?;
     let raw_path: Option<String> = row.get(6)?;
-    let raw_path_exists = raw_path.as_deref().map(|path| FsPath::new(path).is_file());
 
     Ok(ItemRecord {
         id: row.get(0)?,
@@ -3304,7 +3304,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
         title: row.get(4)?,
         duration_sec: row.get(5)?,
         raw_path,
-        raw_path_exists,
+        raw_path_exists: None,
         indexed_at: row.get(7)?,
         status: row.get(8)?,
         error: row.get(9)?,
@@ -3315,6 +3315,13 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
         thumbnail_chunk_id: row.get(11)?,
         usage: cerul_storage::UsageTotals::default(),
     })
+}
+
+fn attach_raw_path_exists(item: &mut ItemRecord) {
+    item.raw_path_exists = item
+        .raw_path
+        .as_deref()
+        .map(|path| FsPath::new(path).is_file());
 }
 
 fn attach_item_usage(paths: &AppPaths, items: &mut [ItemRecord]) {
@@ -5887,6 +5894,11 @@ mod tests {
     async fn list_items_supports_paging_filters_and_light_records() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let missing_raw_path = temp
+            .path()
+            .join("sleeping-disk-video.mp4")
+            .to_string_lossy()
+            .to_string();
         seed_indexing_schema_version(&paths);
         {
             let conn = cerul_storage::sqlite::open(&paths).unwrap();
@@ -5898,15 +5910,16 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO items (
-                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                    id, source_id, content_type, external_id, title, raw_path,
+                    indexed_at, status, metadata
                 )
                 VALUES
-                    ('item-new', 'source-a', 'video', 'new.mp4', 'New', 30, 'indexed', '{"channel":"heavy"}'),
-                    ('item-old', 'source-a', 'video', 'old.mp4', 'Old', 10, 'indexed', '{"channel":"heavy"}'),
-                    ('item-other', 'source-b', 'video', 'other.mp4', 'Other', 20, 'indexed', '{"channel":"heavy"}'),
-                    ('item-running', 'source-a', 'video', 'running.mp4', 'Running', NULL, 'discovered', '{"channel":"heavy"}')
+                    ('item-new', 'source-a', 'video', 'new.mp4', 'New', NULL, 30, 'indexed', '{"channel":"heavy"}'),
+                    ('item-old', 'source-a', 'video', 'old.mp4', 'Old', ?1, 10, 'indexed', '{"channel":"heavy"}'),
+                    ('item-other', 'source-b', 'video', 'other.mp4', 'Other', NULL, 20, 'indexed', '{"channel":"heavy"}'),
+                    ('item-running', 'source-a', 'video', 'running.mp4', 'Running', NULL, NULL, 'discovered', '{"channel":"heavy"}')
                 "#,
-                [],
+                [missing_raw_path.as_str()],
             )
             .unwrap();
         }
@@ -5929,6 +5942,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], "item-old");
         assert_eq!(items[0]["metadata"], json!({}));
+        assert!(items[0]["raw_path_exists"].is_null());
         assert_eq!(items[0]["usage"]["event_count"], 0);
     }
 
