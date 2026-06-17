@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DMG=""
 DRY_RUN=0
-DEFAULT_APP_VERSION="0.0.3"
+DEFAULT_APP_VERSION="0.0.4"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -106,7 +106,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ mount $DMG and copy Cerul.app to a temporary install directory"
   echo "+ verify bundled third-party/$TARGET_TRIPLE/ffmpeg and yt-dlp are present and runnable"
   echo "+ verify bundled macOS ffmpeg dependencies use app-relative loader paths"
-  echo "+ verify Contents/Resources/bin/cerul-api is executable"
+  echo "+ verify Contents/Resources/bin/cerul-core is executable"
   echo "+ launch installed Electron app with isolated HOME and stripped PATH"
   echo "+ poll $API_HEALTH_URL for installed runtime health"
   echo "+ roundtrip settings and inference mode through $API_BASE_URL"
@@ -163,9 +163,9 @@ if [ ! -d "$APP_PATH/Contents/Resources/third-party" ]; then
   exit 1
 fi
 
-API_BIN="$APP_PATH/Contents/Resources/bin/cerul-api"
+API_BIN="$APP_PATH/Contents/Resources/bin/cerul-core"
 if [ ! -x "$API_BIN" ]; then
-  echo "Cerul.app does not contain executable packaged cerul-api: $API_BIN" >&2
+  echo "Cerul.app does not contain executable packaged Cerul Core: $API_BIN" >&2
   exit 1
 fi
 
@@ -294,7 +294,7 @@ require_json_field_absent() {
 }
 
 if "$CURL_BIN" -fsS --max-time 1 "$API_HEALTH_URL" >/dev/null 2>&1; then
-  echo "Cerul API already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
+  echo "Cerul Core already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
   exit 1
 fi
 

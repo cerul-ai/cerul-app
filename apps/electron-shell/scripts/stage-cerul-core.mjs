@@ -13,7 +13,7 @@ const destination = resolve(
   "apps",
   "electron-shell",
   "bin",
-  `cerul-api${executableSuffix}`,
+  `cerul-core${executableSuffix}`,
 );
 
 try {

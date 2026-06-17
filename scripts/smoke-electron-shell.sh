@@ -7,7 +7,7 @@ cd "$ROOT"
 source scripts/load-env.sh
 
 if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is already in use; stop the existing Cerul API before running Electron shell smoke." >&2
+  echo "Port 7777 is already in use; stop the existing Cerul Core before running Electron shell smoke." >&2
   exit 2
 fi
 
@@ -44,7 +44,7 @@ for _ in $(seq 1 $((TIMEOUT_SECONDS * 2))); do
     fi
   fi
   if ! kill -0 "$ELECTRON_PID" 2>/dev/null; then
-    echo "Electron exited before local API became healthy." >&2
+    echo "Electron exited before Cerul Core became healthy." >&2
     sed -n '1,200p' "$LOG_FILE" >&2 || true
     exit 1
   fi
@@ -54,7 +54,7 @@ done
 if [ -n "$HEALTH" ]; then
   echo "Timed out waiting for Electron main window to load after ${TIMEOUT_SECONDS}s." >&2
 else
-  echo "Timed out waiting for Electron-started local API after ${TIMEOUT_SECONDS}s." >&2
+  echo "Timed out waiting for Electron-started Cerul Core after ${TIMEOUT_SECONDS}s." >&2
 fi
 sed -n '1,200p' "$LOG_FILE" >&2 || true
 exit 1

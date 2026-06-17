@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
   invoke: <T>(command: string, args?: Record<string, unknown>) =>
     ipcRenderer.invoke("cerul:invoke", command, args) as Promise<T>,
   openDialog: (options: OpenDialogOptions) => ipcRenderer.invoke("cerul:open-dialog", options),
+  appVersion: () => ipcRenderer.invoke("cerul:app-version"),
   checkForUpdate: () => ipcRenderer.invoke("cerul:check-update"),
   updaterCheck: () => ipcRenderer.invoke("cerul:updater-check"),
   updaterGetState: () => ipcRenderer.invoke("cerul:updater-get-state"),

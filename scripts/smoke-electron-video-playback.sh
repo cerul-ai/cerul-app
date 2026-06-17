@@ -76,12 +76,12 @@ if [ -z "${CERUL_FFMPEG_PATH:-}" ]; then
 fi
 
 if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is already in use; stop the existing Cerul API before running Electron video smoke." >&2
+  echo "Port 7777 is already in use; stop the existing Cerul Core before running Electron video smoke." >&2
   exit 2
 fi
 
 TMP_DIR="$(mktemp -d)"
-API_LOG="$TMP_DIR/cerul-api.log"
+API_LOG="$TMP_DIR/cerul-core.log"
 ELECTRON_LOG="$TMP_DIR/electron.log"
 export CERUL_DATA_DIR="$TMP_DIR/data"
 export ELECTRON_ENABLE_LOGGING=1
@@ -134,14 +134,14 @@ for _ in $(seq 1 120); do
     break
   fi
   if ! kill -0 "$API_PID" 2>/dev/null; then
-    echo "cerul-api exited before health became ready." >&2
+    echo "Cerul Core exited before health became ready." >&2
     sed -n '1,200p' "$API_LOG" >&2 || true
     exit 1
   fi
   sleep 0.5
 done
 if [ "$API_READY" != "1" ]; then
-  echo "cerul-api did not become healthy before the Electron video smoke timeout." >&2
+  echo "Cerul Core did not become healthy before the Electron video smoke timeout." >&2
   sed -n '1,240p' "$API_LOG" >&2 || true
   exit 1
 fi

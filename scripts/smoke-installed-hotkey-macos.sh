@@ -231,7 +231,7 @@ if [ -z "$BIN_PATH" ] || [ ! -x "$BIN_PATH" ]; then
 fi
 
 if "$CURL_BIN" -fsS --max-time 1 "$API_HEALTH_URL" >/dev/null 2>&1; then
-  echo "Cerul API already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
+  echo "Cerul Core already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
   exit 1
 fi
 

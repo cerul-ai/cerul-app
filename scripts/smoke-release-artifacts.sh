@@ -142,9 +142,9 @@ case "$PLATFORM" in
       exit 1
     fi
 
-    api_path="$app_path/Contents/Resources/bin/cerul-api"
+    api_path="$app_path/Contents/Resources/bin/cerul-core"
     if [ ! -x "$api_path" ]; then
-      echo "Cerul.app is missing executable packaged cerul-api at $api_path." >&2
+      echo "Cerul.app is missing executable packaged Cerul Core at $api_path." >&2
       exit 1
     fi
 
@@ -164,9 +164,9 @@ case "$PLATFORM" in
         echo "No linux-unpacked directory found under $BUNDLE_ROOT." >&2
         exit 1
       fi
-      api_path="$unpacked/resources/bin/cerul-api"
+      api_path="$unpacked/resources/bin/cerul-core"
       if [ ! -x "$api_path" ]; then
-        echo "linux-unpacked is missing executable packaged cerul-api at $api_path." >&2
+        echo "linux-unpacked is missing executable packaged Cerul Core at $api_path." >&2
         exit 1
       fi
       artifacts="$unpacked"
@@ -184,9 +184,9 @@ case "$PLATFORM" in
         echo "No win-unpacked directory found under $BUNDLE_ROOT." >&2
         exit 1
       fi
-      api_path="$unpacked/resources/bin/cerul-api.exe"
+      api_path="$unpacked/resources/bin/cerul-core.exe"
       if [ ! -f "$api_path" ]; then
-        echo "win-unpacked is missing packaged cerul-api at $api_path." >&2
+        echo "win-unpacked is missing packaged Cerul Core at $api_path." >&2
         exit 1
       fi
       artifacts="$unpacked"

@@ -33,6 +33,8 @@ const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
 const cloudAccountOrigin = "https://accounts.cerul.ai";
 const defaultUpdateRepository = "cerul-ai/cerul-app";
+const packagedCoreBinaryName = "cerul-core";
+const devCoreBinaryName = "cerul-api";
 const apiStartupTimeoutMs = positiveIntegerEnv("CERUL_API_STARTUP_TIMEOUT_MS", 90_000);
 const apiOutputTailBytes = 32 * 1024;
 const contentSecurityPolicy = [
@@ -1073,13 +1075,13 @@ async function startRustCore() {
   lastApiExit = null;
   let binary: string;
   if (app.isPackaged) {
-    binary = path.join(process.resourcesPath, "bin", executableName("cerul-api"));
+    binary = path.join(process.resourcesPath, "bin", executableName(packagedCoreBinaryName));
     if (!fs.existsSync(binary)) {
-      throw new Error(`packaged Cerul API binary is missing: ${binary}`);
+      throw new Error(`packaged Cerul Core binary is missing: ${binary}`);
     }
     apiProcess = spawnApiProcess(binary, env);
   } else {
-    binary = path.join(repoRoot(), "target", "debug", executableName("cerul-api"));
+    binary = path.join(repoRoot(), "target", "debug", executableName(devCoreBinaryName));
     if (!fs.existsSync(binary)) {
       buildDevApiBinary(binary, env);
     }
@@ -1090,14 +1092,14 @@ async function startRustCore() {
   const launchedApiProcess = apiProcess;
   apiProcess.stdout.on("data", (chunk) => {
     outputTail.stdout = appendOutputTail(outputTail.stdout, chunk, apiOutputTailBytes);
-    process.stdout.write(`[cerul-api] ${chunk}`);
+    process.stdout.write(`[cerul-core] ${chunk}`);
   });
   apiProcess.stderr.on("data", (chunk) => {
     outputTail.stderr = appendOutputTail(outputTail.stderr, chunk, apiOutputTailBytes);
-    process.stderr.write(`[cerul-api] ${chunk}`);
+    process.stderr.write(`[cerul-core] ${chunk}`);
   });
   apiProcess.on("error", (error) => {
-    console.error("failed to start Cerul local API", error);
+    console.error("failed to start Cerul Core", error);
   });
   apiProcess.on("exit", (code, signal) => {
     lastApiExit = {
@@ -1108,7 +1110,7 @@ async function startRustCore() {
     };
     if (!isQuitting) {
       console.warn(
-        `Cerul local API exited pid=${launchedApiProcess.pid ?? "unknown"} code=${code} signal=${signal} elapsed_ms=${lastApiExit.elapsedMs}`,
+        `Cerul Core exited pid=${launchedApiProcess.pid ?? "unknown"} code=${code} signal=${signal} elapsed_ms=${lastApiExit.elapsedMs}`,
       );
     }
     apiProcess = null;
@@ -1121,7 +1123,7 @@ async function startRustCore() {
       setTimeout(() => {
         if (!isQuitting && !apiProcess) {
           void startRustCore().catch((restartError) => {
-            console.error("Cerul local API restart failed", restartError);
+            console.error("Cerul Core restart failed", restartError);
           });
         }
       }, delay);
@@ -1214,7 +1216,7 @@ function collectApiStartupDiagnostics({
 }) {
   const pid = child.pid;
   const lines = [
-    "Cerul API startup diagnostics:",
+    "Cerul Core startup diagnostics:",
     `  health_url=${apiBaseUrl}/health`,
     `  startup_timeout_ms=${apiStartupTimeoutMs}`,
     `  pid=${pid ?? "unknown"}`,
@@ -1268,7 +1270,7 @@ function diagnosticCommand(command: string, args: string[]) {
 }
 
 function sampleProcessDiagnostic(pid: number) {
-  const samplePath = path.join(os.tmpdir(), `cerul-api-${pid}-${Date.now()}.sample.txt`);
+  const samplePath = path.join(os.tmpdir(), `cerul-core-${pid}-${Date.now()}.sample.txt`);
   const result = spawnSync("sample", [String(pid), "1", "-file", samplePath], {
     encoding: "utf8",
     maxBuffer: 64 * 1024,
@@ -1301,7 +1303,7 @@ function sampleProcessDiagnostic(pid: number) {
 
 function formatOutputTail(label: string, text: string) {
   const trimmed = text.trimEnd();
-  return `--- cerul-api ${label} tail ---\n${trimmed || "<empty>"}`;
+  return `--- cerul-core ${label} tail ---\n${trimmed || "<empty>"}`;
 }
 
 function buildDevApiBinary(binary: string, env: NodeJS.ProcessEnv) {
@@ -1310,7 +1312,7 @@ function buildDevApiBinary(binary: string, env: NodeJS.ProcessEnv) {
   const args = ["build", "-p", "cerul-api", "-j", jobs];
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (attempt > 1) {
-      console.warn(`Retrying Cerul local API build (${attempt}/${attempts}) after transient Cargo failure.`);
+      console.warn(`Retrying Cerul Core build (${attempt}/${attempts}) after transient Cargo failure.`);
     }
     const result = spawnSync("cargo", args, {
       cwd: repoRoot(),
@@ -1340,12 +1342,12 @@ function buildDevApiBinary(binary: string, env: NodeJS.ProcessEnv) {
     const wasIncompleteArtifact = /error\[E0463\]|can't find crate for/.test(output);
     if ((!wasSigkill && !wasIncompleteArtifact) || attempt === attempts) {
       const status = result.signal ?? result.status ?? "unknown";
-      throw new Error(`failed to build Cerul local API binary (status ${status})`);
+      throw new Error(`failed to build Cerul Core binary (status ${status})`);
     }
     sleepSync(2_000);
   }
   if (!fs.existsSync(binary)) {
-    throw new Error(`Cerul local API binary was not produced: ${binary}`);
+    throw new Error(`Cerul Core binary was not produced: ${binary}`);
   }
 }
 
@@ -1375,7 +1377,7 @@ async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null
     const observedExit = exitInfo?.();
     if (observedExit) {
       throw new Error(
-        `Cerul local API exited before becoming healthy at ${apiBaseUrl} (${formatApiExit(observedExit)})`,
+        `Cerul Core exited before becoming healthy at ${apiBaseUrl} (${formatApiExit(observedExit)})`,
       );
     }
     if (await apiIsHealthy(750)) {
@@ -1384,7 +1386,7 @@ async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null
     await delay(250);
   }
   throw new Error(
-    `Cerul local API did not become healthy at ${apiBaseUrl} within ${timeoutMs}ms`,
+    `Cerul Core did not become healthy at ${apiBaseUrl} within ${timeoutMs}ms`,
   );
 }
 
@@ -1617,6 +1619,10 @@ function registerIpcHandlers() {
     });
     if (result.canceled) return null;
     return options?.multiple ? result.filePaths : result.filePaths[0] ?? null;
+  });
+  ipcMain.handle("cerul:app-version", async (event) => {
+    assertTrustedIpcSender(event);
+    return app.getVersion();
   });
   ipcMain.handle("cerul:check-update", async (event) => {
     assertTrustedIpcSender(event);

@@ -31,6 +31,7 @@ export type DesktopStore = {
 type ElectronDesktopHost = {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openDialog(options: OpenDialogOptions): Promise<string | string[] | null>;
+  appVersion(): Promise<string>;
   checkForUpdate(): Promise<DesktopUpdate>;
   updaterCheck(): Promise<DesktopUpdaterState>;
   updaterGetState(): Promise<DesktopUpdaterState>;
@@ -77,6 +78,13 @@ export async function openDialog(
 export async function checkForDesktopUpdate(): Promise<DesktopUpdate> {
   if (window.cerulDesktop) {
     return window.cerulDesktop.checkForUpdate();
+  }
+  return null;
+}
+
+export async function getDesktopAppVersion(): Promise<string | null> {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.appVersion();
   }
   return null;
 }

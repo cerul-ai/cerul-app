@@ -210,6 +210,7 @@ import type { PersistedRoute } from "./lib/uiStore";
 import {
   checkForDesktopUpdate,
   downloadDesktopUpdate,
+  getDesktopAppVersion,
   getDesktopUpdaterState,
   hasDesktopHost,
   installDesktopUpdate,
@@ -1517,7 +1518,6 @@ function AppWorkspace() {
             apiStatus={apiStatus}
             settings={data.settings}
             daemonStatus={data.daemonStatus}
-            version={data.version}
             onSettingsChange={async (settings) => {
               await api.updateSettings(settings);
               await refreshCoreData();
@@ -4577,7 +4577,6 @@ function SettingsScreen({
   apiStatus,
   settings,
   daemonStatus,
-  version,
   onSettingsChange,
   requestConfirm,
 }: {
@@ -4586,7 +4585,6 @@ function SettingsScreen({
   apiStatus: ApiStatus;
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
-  version: string | null;
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
   requestConfirm: RequestConfirm;
 }) {
@@ -4768,7 +4766,7 @@ function SettingsScreen({
               onSettingsChange={saveSettings}
             />
           ) : null}
-          {activeSection === "About" ? <AboutSettings version={version} /> : null}
+          {activeSection === "About" ? <AboutSettings /> : null}
         </div>
       </div>
     </div>
@@ -6677,14 +6675,33 @@ function UsageSettings() {
   );
 }
 
-function AboutSettings({ version }: { version: string | null }) {
+function AboutSettings() {
   const t = useT();
   type AvailableDesktopUpdate = Exclude<DesktopUpdate, null>;
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<{
     status: SettingsActionStatus;
     message: string | null;
     update: AvailableDesktopUpdate | null;
   }>({ status: "idle", message: null, update: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    void getDesktopAppVersion()
+      .then((version) => {
+        if (!cancelled) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAppVersion(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function checkForUpdates() {
     setUpdateState({ status: "running", message: null, update: null });
@@ -6707,7 +6724,7 @@ function AboutSettings({ version }: { version: string | null }) {
       <SettingsGroup title={t("settings.about.group.title")}>
         <SettingRow
           label={t("settings.about.version.label")}
-          control={<span className="settings-value">{version ?? "0.0.3"}</span>}
+          control={<span className="settings-value">{appVersion ?? t("settings.about.version.fallback")}</span>}
         />
         <SettingRow
           label={t("settings.about.license.label")}

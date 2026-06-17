@@ -13,7 +13,7 @@ Usage: scripts/smoke-boot-persistence-macos.sh [--health-url <url>] [--timeout <
 Run after a macOS reboot/login to record release evidence for the
 boot-persistence smoke. Electron owns Start at login
 through app.setLoginItemSettings(), so this smoke is read-only and verifies that
-the installed app came up and its local API is healthy after login.
+the installed app came up and Cerul Core is healthy after login.
 
 Environment overrides:
   CERUL_API_HEALTH_URL         default: http://127.0.0.1:7777/health

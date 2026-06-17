@@ -9,6 +9,8 @@ SKIP_NOTARIZATION=0
 ALLOW_AD_HOC=0
 DRY_RUN=0
 MOUNT_DIR=""
+MAX_CODESIGN_XATTR_FILES="${CERUL_MAX_CODESIGN_XATTR_FILES:-1000}"
+GATEKEEPER_NOFILE_LIMIT="${CERUL_GATEKEEPER_NOFILE_LIMIT:-256}"
 
 usage() {
   cat <<'EOF'
@@ -78,6 +80,48 @@ run() {
   else
     "$@"
   fi
+}
+
+run_low_nofile() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '+ ulimit -n %q;' "$GATEKEEPER_NOFILE_LIMIT"
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    (ulimit -n "$GATEKEEPER_NOFILE_LIMIT" 2>/dev/null || true; "$@")
+  fi
+}
+
+require_codesign_xattr_budget() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "+ verify signed resource xattr count <= $MAX_CODESIGN_XATTR_FILES"
+    return
+  fi
+
+  if ! [[ "$MAX_CODESIGN_XATTR_FILES" =~ ^[0-9]+$ ]]; then
+    echo "CERUL_MAX_CODESIGN_XATTR_FILES must be a non-negative integer." >&2
+    exit 2
+  fi
+
+  local signed_xattr_count=0
+  local first_over_budget_file=""
+  while IFS= read -r file; do
+    if xattr -p com.apple.cs.CodeSignature "$file" >/dev/null 2>&1; then
+      signed_xattr_count=$((signed_xattr_count + 1))
+      if [ "$signed_xattr_count" -gt "$MAX_CODESIGN_XATTR_FILES" ]; then
+        first_over_budget_file="$file"
+        break
+      fi
+    fi
+  done < <(find "$APP" -type f -print 2>/dev/null)
+
+  if [ "$signed_xattr_count" -gt "$MAX_CODESIGN_XATTR_FILES" ]; then
+    echo "Cerul.app has $signed_xattr_count files with com.apple.cs.CodeSignature xattrs, above budget $MAX_CODESIGN_XATTR_FILES." >&2
+    echo "This can make macOS Gatekeeper fail with 'Too many open files' and show the DMG as damaged." >&2
+    echo "First file over budget: $first_over_budget_file" >&2
+    exit 1
+  fi
+  echo "codesign_xattr_budget signed_files=$signed_xattr_count max=$MAX_CODESIGN_XATTR_FILES"
 }
 
 require_entitlement() {
@@ -163,6 +207,7 @@ if [ ! -d "$APP" ] && [ "$DRY_RUN" -eq 0 ]; then
   exit 1
 fi
 
+require_codesign_xattr_budget
 run codesign --verify --deep --strict --verbose=2 "$APP"
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ codesign -dv --verbose=4 $APP"
@@ -208,13 +253,13 @@ fi
 
 if [ "$signing_mode" = "developer_id" ]; then
   require_release_entitlements
-  run spctl --assess --type execute --verbose "$APP"
+  run_low_nofile spctl --assess --type execute --verbose "$APP"
 else
   echo "Skipping Gatekeeper assessment for ad-hoc alpha artifact; macOS is expected to report an unidentified developer."
 fi
 
 if [ -n "$DMG" ] && [ "$SKIP_NOTARIZATION" -eq 0 ] && [ "$signing_mode" = "developer_id" ]; then
-  run spctl --assess --type open --context context:primary-signature --verbose "$DMG"
+  run_low_nofile spctl --assess --type open --context context:primary-signature --verbose "$DMG"
   run xcrun stapler validate "$DMG"
 fi
 

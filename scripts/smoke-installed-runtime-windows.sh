@@ -13,8 +13,8 @@ Verifies that an Electron-packaged Windows Cerul runtime can start from unpacked
 resources with isolated user profile, bundled third-party binaries, and a
 healthy local REST API.
 
-Pass --binary for a copied or release-built resources/bin/cerul-api.exe. If
-omitted, the script looks for target/electron/win-unpacked/resources/bin/cerul-api.exe.
+Pass --binary for a copied or release-built resources/bin/cerul-core.exe. If
+omitted, the script looks for target/electron/win-unpacked/resources/bin/cerul-core.exe.
 EOF
 }
 
@@ -50,7 +50,7 @@ emit_result() {
   local status="$1"
   local target_triple="${2:-${TARGET_TRIPLE:-${CERUL_TARGET_TRIPLE:-x86_64-pc-windows-msvc}}}"
   local target_binary="${3:-${INSTALLED_BINARY:-${BINARY:-auto}}}"
-  printf 'installed_runtime_smoke platform=windows status=%s %s %s packaged_api=verified bundled_ffmpeg=verified bundled_ytdlp=verified bundled_qdrant=verified health=ok\n' \
+  printf 'installed_runtime_smoke platform=windows status=%s %s %s packaged_core=verified bundled_ffmpeg=verified bundled_ytdlp=verified bundled_qdrant=verified health=ok\n' \
     "$status" \
     "$(field binary "$target_binary")" \
     "$(field target "$target_triple")"
@@ -58,9 +58,9 @@ emit_result() {
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ validate Windows host"
-  echo "+ locate Electron resources/bin/cerul-api.exe"
-  echo "+ copy packaged cerul-api.exe and sibling resources/third-party to a temporary install directory"
-  echo "+ launch copied cerul-api.exe with CERUL_FFMPEG_PATH, CERUL_YTDLP_PATH, and CERUL_QDRANT_BIN"
+  echo "+ locate Electron resources/bin/cerul-core.exe"
+  echo "+ copy packaged cerul-core.exe and sibling resources/third-party to a temporary install directory"
+  echo "+ launch copied cerul-core.exe with CERUL_FFMPEG_PATH, CERUL_YTDLP_PATH, and CERUL_QDRANT_BIN"
   echo "+ poll http://127.0.0.1:7777/health for status=ok"
   emit_result planned
   exit 0
@@ -84,11 +84,11 @@ if [ -z "$CURL_BIN" ]; then
 fi
 
 if [ -z "$BINARY" ]; then
-  BINARY="$ROOT/target/electron/win-unpacked/resources/bin/cerul-api.exe"
+  BINARY="$ROOT/target/electron/win-unpacked/resources/bin/cerul-core.exe"
 fi
 
 if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
-  echo "No packaged Windows cerul-api.exe found. Run scripts/build-installers.sh --debug, pass --binary, or build the Electron package." >&2
+  echo "No packaged Windows Cerul Core found. Run scripts/build-installers.sh --debug, pass --binary, or build the Electron package." >&2
   exit 1
 fi
 
@@ -113,7 +113,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$INSTALL_DIR/bin"
-INSTALLED_BINARY="$INSTALL_DIR/bin/cerul-api.exe"
+INSTALLED_BINARY="$INSTALL_DIR/bin/cerul-core.exe"
 cp "$BINARY" "$INSTALLED_BINARY"
 chmod +x "$INSTALLED_BINARY"
 cp -R "$SOURCE_THIRD_PARTY" "$INSTALL_DIR/third-party"
@@ -133,7 +133,7 @@ check_bundled_binary "yt-dlp.exe"
 check_bundled_binary "qdrant.exe"
 
 if "$CURL_BIN" -fsS --max-time 1 "$API_HEALTH_URL" >/dev/null 2>&1; then
-  echo "Cerul API already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
+  echo "Cerul Core already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
   exit 1
 fi
 
@@ -171,7 +171,7 @@ deadline=$((SECONDS + 30))
 health_body=""
 while [ "$SECONDS" -lt "$deadline" ]; do
   if ! kill -0 "$PID" >/dev/null 2>&1; then
-    echo "Installed Windows cerul-api exited before health became ready." >&2
+    echo "Installed Windows Cerul Core exited before health became ready." >&2
     exit 1
   fi
 
@@ -185,7 +185,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
 done
 
 if [ -z "$health_body" ] || ! printf '%s' "$health_body" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then
-  echo "Installed Windows cerul-api did not report healthy at $API_HEALTH_URL within 30s." >&2
+  echo "Installed Windows Cerul Core did not report healthy at $API_HEALTH_URL within 30s." >&2
   exit 1
 fi
 

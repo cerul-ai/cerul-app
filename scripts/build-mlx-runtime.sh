@@ -82,11 +82,18 @@ rm -rf "$STDLIB/ensurepip" "$STDLIB/site-packages/pip" "$STDLIB"/site-packages/p
   "$STDLIB/site-packages/pkg_resources" 2>/dev/null || true
 find "$STDLIB/site-packages" -type f -name "*.exe" -delete 2>/dev/null || true
 
-# Precompile ALL bytecode now (deterministic) so the signed bundle never needs
-# to write .pyc at runtime — that would break the app's code seal. Paired with
-# PYTHONDONTWRITEBYTECODE=1 at runtime (cerul-pipeline::mlx_sidecar).
-echo "==> Precompiling bytecode (compileall)"
-"$PY" -m compileall -q -j 0 "$STDLIB" >/dev/null 2>&1 || true
+# Do not precompile bytecode by default: thousands of .pyc files make the
+# signed macOS bundle much larger and can trip Gatekeeper's file descriptor
+# limit during assessment. Runtime sets PYTHONDONTWRITEBYTECODE=1, so Python
+# reads .py sources directly and does not mutate the signed bundle.
+if [ "${CERUL_MLX_PRECOMPILE_BYTECODE:-0}" = "1" ]; then
+  echo "==> Precompiling bytecode (compileall)"
+  "$PY" -m compileall -q -j 0 "$STDLIB" >/dev/null 2>&1 || true
+else
+  echo "==> Skipping bytecode precompile"
+fi
+find "$RUNTIME_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+find "$RUNTIME_DIR" -name "*.pyc" -delete 2>/dev/null || true
 
 echo "==> Verifying the runtime is self-contained, relocatable, and complete"
 "$PY" - <<'PY'

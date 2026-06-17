@@ -91,7 +91,7 @@ check_api_port() {
 
   if command -v curl >/dev/null 2>&1 &&
     curl -fsS --max-time 1 "http://127.0.0.1:$API_PORT/health" >/dev/null 2>&1; then
-    echo "Existing Cerul API on port $API_PORT is healthy; Electron will reuse it." >&2
+    echo "Existing Cerul Core on port $API_PORT is healthy; Electron will reuse it." >&2
     return
   fi
 
@@ -106,6 +106,6 @@ if [[ "$TARGET_TRIPLE" == *windows* ]]; then
   QDRANT_BINARY="$QDRANT_BINARY.exe"
 fi
 
-kill_orphan_processes_for_path "Cerul API" "$API_BINARY"
+kill_orphan_processes_for_path "Cerul Core" "$API_BINARY"
 kill_orphan_processes_for_path "Qdrant" "$QDRANT_BINARY"
 check_api_port
