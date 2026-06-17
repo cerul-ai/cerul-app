@@ -384,6 +384,15 @@ impl VideoPipeline {
         let frames =
             ffmpeg::sample_frames(&video_path, &frames_dir, self.frame_interval_sec).await?;
         let keyframes = keyframe_chunks(&frames, self.frame_interval_sec);
+        match cerul_storage::replace_item_keyframes(&self.paths, item_id, &keyframes) {
+            Ok(count) if count > 0 => {
+                tracing::info!(item_id, keyframes = count, "stored early video thumbnails");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, item_id, "failed to store early video thumbnails");
+            }
+        }
 
         // Audio is optional. Many screen recordings (and capture tools'
         // intermediate files) are video-only, so probe before extracting: a

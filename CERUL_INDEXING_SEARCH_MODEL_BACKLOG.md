@@ -269,6 +269,8 @@
 
 ### 13. 先生成封面和基础信息
 
+状态：已完成并推送到 PR #60。pipeline 在 `sampling_frames` 后立即调用 `replace_item_keyframes()` 写入 keyframe chunks，不再等 ASR/embedding 完成才出现封面；storage 层新增只替换 keyframe、不触碰 transcript/OCR/vector rows 的 helper 和单测。
+
 问题：用户看到灰卡和 spinner 很焦虑，即使视频存在且可读取。
 
 需要做：
