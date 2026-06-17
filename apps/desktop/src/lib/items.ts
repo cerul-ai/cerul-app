@@ -441,11 +441,19 @@ function itemJobStageLabel(stage: string | null, t: TFunction): string | null {
   return label === key ? null : label;
 }
 
-// Rough time-remaining estimate. Uses the backend's time-weighted progress (not
-// the step-even bar value) so the estimate tracks elapsed time; the stages
-// aren't perfectly linear, so it's labelled "~".
+const LOW_CONFIDENCE_ETA_STAGES = new Set([
+  "preparing_models",
+  "transcribing",
+  "chunking_transcript",
+]);
+
+// Rough time-remaining estimate. Uses the backend's time-weighted progress, but
+// hides it during whole-file stages where the pipeline has no real sub-progress.
 export function itemEtaLabel(job: api.JobRecord, t: TFunction): string | null {
   if (job.status !== "running" || job.started_at === null) {
+    return null;
+  }
+  if (job.stage && LOW_CONFIDENCE_ETA_STAGES.has(job.stage)) {
     return null;
   }
   const progress = normalizeJobProgress(job.progress);

@@ -287,6 +287,8 @@
 
 ### 14. ETA 和进度改成可信状态
 
+状态：已完成并推送到 PR #60。前端现在会在 `preparing_models` / `transcribing` / `chunking_transcript` 这类没有真实细粒度进度的阶段隐藏精确 ETA，只显示当前 stage 文案，避免用 elapsed-time easing 给用户一个不可靠的剩余时间。
+
 问题：当前 ETA 经常不准；step 2 卡很久时用户无法判断是在下载、模型加载、转写还是死锁。
 
 需要做：

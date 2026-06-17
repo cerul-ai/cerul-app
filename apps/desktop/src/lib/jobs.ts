@@ -206,11 +206,20 @@ export function jobElapsedSeconds(job: api.JobRecord, nowSec: number): number | 
   return Math.max(0, end - job.started_at);
 }
 
+const LOW_CONFIDENCE_ETA_STAGES = new Set([
+  "preparing_models",
+  "transcribing",
+  "chunking_transcript",
+]);
+
 // Rough remaining-time estimate from elapsed wall-clock and current progress.
-// Progress is stage-weighted (not perfectly linear in time), so it's a "~".
-// Suppressed below 12% (too little signal) and at/above 99% (basically done).
+// Progress is stage-weighted, so hide it during whole-file stages where the
+// backend can only ease the bar forward without real sub-progress.
 export function jobEtaLabel(job: api.JobRecord, nowSec: number, t: TFunction): string | null {
   if (job.status !== "running" || job.started_at === null) {
+    return null;
+  }
+  if (job.stage && LOW_CONFIDENCE_ETA_STAGES.has(job.stage)) {
     return null;
   }
   const progress = Math.min(Math.max(job.progress, 0), 1);
