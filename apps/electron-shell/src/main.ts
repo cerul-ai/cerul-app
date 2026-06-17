@@ -16,6 +16,7 @@ import {
   shell,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http, { type Server } from "node:http";
 import os from "node:os";
@@ -35,6 +36,8 @@ const cloudAccountOrigin = "https://accounts.cerul.ai";
 const defaultUpdateRepository = "cerul-ai/cerul-app";
 const packagedCoreBinaryName = "cerul-core";
 const devCoreBinaryName = "cerul-api";
+const packagedMlxRuntimeArchiveName = "mlx-runtime.tar.gz";
+const packagedMlxRuntimeReadyMarker = ".cerul-mlx-runtime-ready.json";
 const apiStartupTimeoutMs = positiveIntegerEnv("CERUL_API_STARTUP_TIMEOUT_MS", 90_000);
 const apiOutputTailBytes = 32 * 1024;
 const contentSecurityPolicy = [
@@ -1475,15 +1478,123 @@ function runtimeEnv() {
   );
   if (fs.existsSync(mlxSidecar)) env.CERUL_MLX_SIDECAR = mlxSidecar;
 
-  // Packaged builds ship a self-contained MLX Python runtime so on-device
-  // models run from a clean install with no user setup. In dev we leave
-  // CERUL_MLX_PYTHON unset and the core falls back to the repo venv / system
-  // python (see default_python_path in cerul-pipeline).
+  // Packaged builds ship a signed MLX Python runtime as a single archive. We
+  // extract it into user data on first launch so Gatekeeper does not recursively
+  // scan hundreds of nested mach-O files inside the .app bundle.
   if (app.isPackaged) {
-    const mlxPython = path.join(process.resourcesPath, "mlx-runtime", "bin", "python3");
-    if (fs.existsSync(mlxPython)) env.CERUL_MLX_PYTHON = mlxPython;
+    const mlxPython = preparePackagedMlxRuntime();
+    if (mlxPython) env.CERUL_MLX_PYTHON = mlxPython;
   }
   return env;
+}
+
+function preparePackagedMlxRuntime() {
+  if (!app.isPackaged || process.platform !== "darwin") {
+    return null;
+  }
+
+  const archive = path.join(process.resourcesPath, packagedMlxRuntimeArchiveName);
+  if (!fs.existsSync(archive)) {
+    return null;
+  }
+
+  const digest = packagedMlxRuntimeDigest(archive);
+  const runtimesRoot = path.join(appPaths().data_dir, "runtimes", "mlx");
+  const runtimeDir = path.join(runtimesRoot, digest.slice(0, 16));
+  const python = path.join(runtimeDir, "bin", "python3");
+  const marker = path.join(runtimeDir, packagedMlxRuntimeReadyMarker);
+  if (packagedMlxRuntimeReady(marker, digest, python)) {
+    return python;
+  }
+
+  const tmpDir = `${runtimeDir}.tmp-${process.pid}-${Date.now()}`;
+  fs.rmSync(runtimeDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    const tar = spawnSync("/usr/bin/tar", ["-xzf", archive, "-C", tmpDir], {
+      encoding: "utf8",
+    });
+    if (tar.status !== 0) {
+      throw new Error(
+        `failed to extract MLX runtime archive: ${tar.stderr || tar.stdout || `status ${tar.status}`}`,
+      );
+    }
+    stripQuarantineXattrs(tmpDir);
+    fs.accessSync(path.join(tmpDir, "bin", "python3"), fs.constants.X_OK);
+    fs.writeFileSync(
+      path.join(tmpDir, packagedMlxRuntimeReadyMarker),
+      `${JSON.stringify({ archive_sha256: digest, created_at: new Date().toISOString() })}\n`,
+    );
+    fs.mkdirSync(runtimesRoot, { recursive: true });
+    fs.renameSync(tmpDir, runtimeDir);
+    pruneOldPackagedMlxRuntimes(runtimesRoot, path.basename(runtimeDir));
+    console.log(`Prepared packaged MLX runtime at ${runtimeDir}`);
+    return python;
+  } catch (error) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function packagedMlxRuntimeReady(marker: string, digest: string, python: string) {
+  try {
+    fs.accessSync(python, fs.constants.X_OK);
+    const state = JSON.parse(fs.readFileSync(marker, "utf8")) as { archive_sha256?: string };
+    return state.archive_sha256 === digest;
+  } catch {
+    return false;
+  }
+}
+
+function packagedMlxRuntimeDigest(archive: string) {
+  try {
+    const text = fs.readFileSync(`${archive}.sha256`, "utf8");
+    const match = text.match(/\b[a-fA-F0-9]{64}\b/);
+    if (match) {
+      return match[0].toLowerCase();
+    }
+  } catch {
+    // Older development packages may not include the sidecar digest file.
+  }
+  return fileSha256(archive);
+}
+
+function fileSha256(file: string) {
+  const hash = createHash("sha256");
+  const fd = fs.openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (;;) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+function stripQuarantineXattrs(dir: string) {
+  const result = spawnSync("/usr/bin/xattr", ["-dr", "com.apple.quarantine", dir], {
+    encoding: "utf8",
+  });
+  if (result.error && (result.error as NodeJS.ErrnoException).code !== "ENOENT") {
+    console.warn(`Unable to strip quarantine xattrs from MLX runtime: ${result.error.message}`);
+  }
+}
+
+function pruneOldPackagedMlxRuntimes(runtimesRoot: string, keepName: string) {
+  try {
+    for (const entry of fs.readdirSync(runtimesRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === keepName) continue;
+      fs.rmSync(path.join(runtimesRoot, entry.name), { recursive: true, force: true });
+    }
+  } catch (error) {
+    console.warn(`Unable to prune old packaged MLX runtimes: ${(error as Error).message}`);
+  }
 }
 
 function setBundledBinaryEnv(

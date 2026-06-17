@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the self-contained, relocatable Python runtime that ships INSIDE the
+# Build the self-contained, relocatable Python runtime that ships WITH the
 # packaged app so on-device (MLX) models run from a clean install with no user
 # setup. Output: apps/electron-shell/mlx-runtime/ (bin/python3 + full stdlib +
-# the locked MLX stack). electron-builder copies it to
-# Contents/Resources/mlx-runtime, and main.ts points CERUL_MLX_PYTHON at it.
+# the locked MLX stack). build-installers.sh signs it, archives it as
+# mlx-runtime.tar.gz, and main.ts extracts that archive into Application Support
+# before pointing CERUL_MLX_PYTHON at it.
 #
 # Approach: uv fetches a python-build-standalone CPython (relocatable by
 # design); we drop the PEP-668 marker and install the FLATTENED lock with
