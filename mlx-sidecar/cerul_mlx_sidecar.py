@@ -12,17 +12,24 @@ from __future__ import annotations
 import argparse
 import contextlib
 import gc
+import hashlib
 import importlib.metadata
 import json
 import os
 import platform
+import shutil
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import traceback
 import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 
 DEFAULT_EMBEDDING_MODEL = "mlx-community/Qwen3-VL-Embedding-2B-6bit"
@@ -32,6 +39,8 @@ DEFAULT_OCR_MODEL = "mlx-community/Qwen3-VL-2B-Instruct-4bit"
 DEFAULT_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_TEXT_EMBED_BATCH_SIZE = 8
 DEFAULT_IMAGE_EMBED_BATCH_SIZE = 2
+DEFAULT_MODEL_MIRROR_BASE_URL = "https://cdn.cerul.ai/models/v1"
+DEFAULT_MODEL_MIRROR_USER_AGENT = "Cerul model-mirror"
 
 QWEN3_VL_ALLOW_PATTERNS = [
     "*.json",
@@ -45,6 +54,9 @@ QWEN3_VL_ALLOW_PATTERNS = [
 
 ORIGINAL_STDOUT = sys.stdout
 _STDOUT_LOCK = threading.Lock()
+MODELS_CACHE_ROOT: Path | None = None
+_MIRROR_MANIFEST_LOADED = False
+_MIRROR_MANIFEST_CACHE: dict[str, Any] | None = None
 
 # Supply-chain pinning: default models always resolve to a reviewed revision
 # instead of whatever the upstream repo's main branch points at today.
@@ -107,7 +119,9 @@ def package_version(name: str) -> str | None:
 
 
 def configure_cache(models_cache: Path) -> None:
+    global MODELS_CACHE_ROOT
     models_cache = models_cache.resolve()
+    MODELS_CACHE_ROOT = models_cache
     hf_home = models_cache / "huggingface"
     hf_home.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(hf_home))
@@ -119,6 +133,250 @@ def env_positive_int(name: str, fallback: int) -> int:
     except ValueError:
         return fallback
     return max(1, value)
+
+
+def env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def model_cache_dir_name(model_id_or_path: str) -> str:
+    return f"models--{model_id_or_path.replace('/', '--')}"
+
+
+def model_mirror_base_url() -> str | None:
+    if env_truthy("CERUL_DISABLE_MODEL_MIRROR"):
+        return None
+    value = os.environ.get("CERUL_MODEL_MIRROR_BASE_URL", DEFAULT_MODEL_MIRROR_BASE_URL).strip()
+    if value.lower() in {"", "0", "false", "off", "none"}:
+        return None
+    return value.rstrip("/")
+
+
+def model_mirror_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("CERUL_MODEL_MIRROR_TIMEOUT_SECS", "30")))
+    except ValueError:
+        return 30.0
+
+
+def model_mirror_user_agent() -> str:
+    return os.getenv("CERUL_MODEL_MIRROR_USER_AGENT") or DEFAULT_MODEL_MIRROR_USER_AGENT
+
+
+def model_mirror_request(url: str) -> urllib.request.Request:
+    return urllib.request.Request(url, headers={"User-Agent": model_mirror_user_agent()})
+
+
+def load_model_mirror_manifest() -> dict[str, Any] | None:
+    global _MIRROR_MANIFEST_CACHE, _MIRROR_MANIFEST_LOADED
+    if _MIRROR_MANIFEST_LOADED:
+        return _MIRROR_MANIFEST_CACHE
+    _MIRROR_MANIFEST_LOADED = True
+
+    base_url = model_mirror_base_url()
+    if not base_url:
+        return None
+
+    url = f"{base_url}/manifest.json"
+    try:
+        with urllib.request.urlopen(model_mirror_request(url), timeout=model_mirror_timeout()) as response:
+            _MIRROR_MANIFEST_CACHE = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - mirror is optional.
+        print(f"prepare: model mirror manifest unavailable ({exc}); falling back to Hugging Face", file=sys.stderr)
+        _MIRROR_MANIFEST_CACHE = None
+    return _MIRROR_MANIFEST_CACHE
+
+
+def mirror_snapshot_dir(model_id_or_path: str, revision: str) -> Path | None:
+    if MODELS_CACHE_ROOT is None:
+        return None
+    return (
+        MODELS_CACHE_ROOT
+        / "cerul-mirror"
+        / model_cache_dir_name(model_id_or_path)
+        / "snapshots"
+        / revision
+    )
+
+
+def mirror_archive_paths(model_id_or_path: str, revision: str) -> tuple[Path, Path] | None:
+    if MODELS_CACHE_ROOT is None:
+        return None
+    downloads = (
+        MODELS_CACHE_ROOT
+        / "cerul-mirror"
+        / model_cache_dir_name(model_id_or_path)
+        / "downloads"
+    )
+    archive = downloads / f"{revision}.tar.gz"
+    partial = downloads / f"{revision}.tar.gz.partial"
+    return archive, partial
+
+
+def mirror_entry(model_id_or_path: str, revision: str) -> dict[str, Any] | None:
+    manifest = load_model_mirror_manifest()
+    if not manifest:
+        return None
+    entry = (manifest.get("models") or {}).get(model_id_or_path)
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("revision") != revision:
+        print(
+            "prepare: model mirror revision mismatch for "
+            f"{model_id_or_path} (wanted {revision}, got {entry.get('revision')}); falling back",
+            file=sys.stderr,
+        )
+        return None
+    archive = entry.get("archive") or {}
+    if not archive.get("sha256"):
+        return None
+    base_url = model_mirror_base_url()
+    archive_url = archive.get("url")
+    if not archive_url and base_url and archive.get("path"):
+        archive_url = urljoin(f"{base_url}/", str(archive["path"]))
+    chunks = []
+    for chunk in archive.get("chunks") or []:
+        chunk_url = chunk.get("url")
+        if not chunk_url and base_url and chunk.get("path"):
+            chunk_url = urljoin(f"{base_url}/", str(chunk["path"]))
+        if not chunk_url or not chunk.get("sha256"):
+            return None
+        chunks.append({**chunk, "url": chunk_url})
+    if not archive_url and not chunks:
+        return None
+    return {
+        **entry,
+        "archive": {
+            **archive,
+            "url": archive_url,
+            "chunks": chunks,
+        },
+    }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download_url_to_file(url: str, destination: Path, expected_sha256: str) -> None:
+    expected_sha256 = expected_sha256.lower()
+    if destination.is_file() and sha256_file(destination).lower() == expected_sha256:
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial_path = destination.with_name(f"{destination.name}.partial")
+    resume_at = partial_path.stat().st_size if partial_path.exists() else 0
+    request = model_mirror_request(url)
+    if resume_at > 0:
+        request.add_header("Range", f"bytes={resume_at}-")
+
+    mode = "ab" if resume_at > 0 else "wb"
+    try:
+        with urllib.request.urlopen(request, timeout=model_mirror_timeout()) as response:
+            if resume_at > 0 and getattr(response, "status", None) != 206:
+                mode = "wb"
+            with partial_path.open(mode) as file:
+                shutil.copyfileobj(response, file, length=1024 * 1024)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and partial_path.exists():
+            os.replace(partial_path, destination)
+        else:
+            raise
+    else:
+        os.replace(partial_path, destination)
+
+    actual_sha256 = sha256_file(destination).lower()
+    if actual_sha256 != expected_sha256:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"download checksum mismatch for {url}: expected {expected_sha256}, got {actual_sha256}"
+        )
+
+
+def download_mirror_archive(entry: dict[str, Any], archive_path: Path, partial_path: Path) -> None:
+    archive = entry["archive"]
+    expected_sha256 = str(archive["sha256"]).lower()
+    if archive_path.is_file() and sha256_file(archive_path).lower() == expected_sha256:
+        return
+
+    chunks = archive.get("chunks") or []
+    if chunks:
+        chunks_dir = archive_path.parent / "chunks"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        partial_path.unlink(missing_ok=True)
+        with partial_path.open("wb") as output:
+            for chunk in chunks:
+                chunk_name = Path(str(chunk["path"])).name
+                chunk_path = chunks_dir / chunk_name
+                download_url_to_file(str(chunk["url"]), chunk_path, str(chunk["sha256"]))
+                with chunk_path.open("rb") as input_file:
+                    shutil.copyfileobj(input_file, output, length=1024 * 1024)
+        os.replace(partial_path, archive_path)
+        actual_sha256 = sha256_file(archive_path).lower()
+        if actual_sha256 != expected_sha256:
+            archive_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "model mirror archive checksum mismatch for "
+                f"{entry.get('repo_id') or 'model'}: expected {expected_sha256}, got {actual_sha256}"
+            )
+        return
+
+    if not archive.get("url"):
+        raise RuntimeError("model mirror archive has neither url nor chunks")
+    download_url_to_file(str(archive["url"]), archive_path, expected_sha256)
+
+
+def safe_extract_tar_gz(archive_path: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    temp_root = temp_dir.resolve()
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                target = (temp_dir / member.name).resolve()
+                if os.path.commonpath([str(temp_root), str(target)]) != str(temp_root):
+                    raise RuntimeError(f"unsafe path in model mirror archive: {member.name}")
+                if member.issym() or member.islnk():
+                    raise RuntimeError(f"symlink not allowed in model mirror archive: {member.name}")
+            tar.extractall(temp_dir)
+        if destination.exists():
+            shutil.rmtree(destination)
+        temp_dir.rename(destination)
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
+def resolve_mirror_snapshot(model_id_or_path: str, revision: str) -> Path | None:
+    snapshot = mirror_snapshot_dir(model_id_or_path, revision)
+    paths = mirror_archive_paths(model_id_or_path, revision)
+    if snapshot is None or paths is None:
+        return None
+    missing_reasons = pinned_snapshot_missing_reasons(snapshot, model_id_or_path)
+    if not missing_reasons:
+        return snapshot
+
+    entry = mirror_entry(model_id_or_path, revision)
+    if entry is None:
+        return None
+
+    archive_path, partial_path = paths
+    print(f"prepare: downloading {model_id_or_path} from Cerul mirror", file=sys.stderr)
+    download_mirror_archive(entry, archive_path, partial_path)
+    safe_extract_tar_gz(archive_path, snapshot)
+    archive_path.unlink(missing_ok=True)
+
+    missing_reasons = pinned_snapshot_missing_reasons(snapshot, model_id_or_path)
+    if missing_reasons:
+        raise RuntimeError(
+            "model mirror snapshot incomplete for "
+            f"{model_id_or_path} ({'; '.join(missing_reasons)})"
+        )
+    return snapshot
 
 
 def pinned_snapshot_missing_reasons(snapshot: Path, model_id_or_path: str) -> list[str]:
@@ -163,6 +421,14 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
             f"{model_id_or_path} ({'; '.join(missing_reasons)}); repairing",
             file=sys.stderr,
         )
+
+    if pinned:
+        try:
+            mirror_snapshot = resolve_mirror_snapshot(model_id_or_path, pinned)
+            if mirror_snapshot is not None:
+                return mirror_snapshot
+        except Exception as exc:  # noqa: BLE001 - mirror is optional.
+            print(f"prepare: model mirror failed for {model_id_or_path} ({exc}); falling back to Hugging Face", file=sys.stderr)
 
     from huggingface_hub import snapshot_download
 
