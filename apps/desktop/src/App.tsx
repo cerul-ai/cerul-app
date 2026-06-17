@@ -78,6 +78,7 @@ import {
   extractChunkIdFromThumbnail,
   formatBytes,
   formatDuration,
+  formatSpeed,
   formatTimestamp,
   formatUsd,
   metadataString,
@@ -634,7 +635,7 @@ function AppWorkspace() {
     apiStatus === "online" &&
     view !== "onboarding" &&
     !settingBoolean(data.settings, "local_models_prompted", false);
-  const lm = useLocalModelConsent({ trigger: lmTrigger });
+  const lm = useLocalModelConsent({ trigger: lmTrigger, apiOnline: apiStatus === "online" });
   const handleLmAgree = useCallback(() => {
     lm.agree();
     void api
@@ -1285,7 +1286,15 @@ function AppWorkspace() {
             <button
               type="button"
               className="rail-dl-pill"
-              onClick={lm.reopen}
+              onClick={() => {
+                // First-run minimized → reopen the dialog; a relaunch-resumed
+                // download (no dialog) → jump to the persistent Models panel.
+                if (lm.show) {
+                  lm.reopen();
+                } else {
+                  navigate("settings", { settingsSection: "Models" });
+                }
+              }}
               title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
             >
               <span className="ring" aria-hidden="true" />
@@ -1433,10 +1442,23 @@ function AppWorkspace() {
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
             onDeleteItems={async (itemIds) => {
-              for (const itemId of itemIds) {
-                await api.deleteItem(itemId);
-              }
+              const deletingIds = new Set(itemIds);
+              setData((current) => ({
+                ...current,
+                items: current.items.filter((item) => !deletingIds.has(item.id)),
+                jobs: current.jobs.filter((job) => !job.item_id || !deletingIds.has(job.item_id)),
+              }));
+              setLiveResults((current) =>
+                current.filter((result) => !deletingIds.has(result.itemId)),
+              );
+              const results = await Promise.allSettled(
+                itemIds.map((itemId) => api.deleteItem(itemId)),
+              );
               await refreshCoreData();
+              const failed = results.find((result) => result.status === "rejected");
+              if (failed?.status === "rejected") {
+                throw failed.reason;
+              }
             }}
             onReindexItems={async (itemIds) => {
               for (const itemId of itemIds) {
@@ -2465,12 +2487,12 @@ function DetailActionsMenu({
             </button>
           ) : null}
           <button type="button" disabled={busy} onClick={() => run(onReindex)}>
-            <RefreshCcw size={15} />
+            {reindexing ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
             <span>{reindexing ? t("common.reindexing") : t("common.reindex")}</span>
           </button>
           <span className="msep" />
           <button className="danger" type="button" disabled={busy} onClick={() => run(onDelete)}>
-            <Trash2 size={15} />
+            {deleting ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
             <span>{deleting ? t("common.deleting") : t("common.delete")}</span>
           </button>
         </div>
@@ -3779,6 +3801,9 @@ function LibraryScreen({
     })
     .sort((a, b) => sortLibraryItems(a, b, sortKey));
   const selectedCount = selectedItemIds.size;
+  const filteredItemIds = filteredItems.map((item) => item.id);
+  const visibleSelectedCount = filteredItemIds.filter((itemId) => selectedItemIds.has(itemId)).length;
+  const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
 
   useEffect(() => {
@@ -3823,6 +3848,23 @@ function LibraryScreen({
         next.add(itemId);
       } else {
         next.delete(itemId);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllFilteredItems() {
+    setBatchState({ status: "idle", message: null });
+    setSelectedItemIds((current) => {
+      const next = new Set(current);
+      if (allFilteredSelected) {
+        for (const itemId of filteredItemIds) {
+          next.delete(itemId);
+        }
+      } else {
+        for (const itemId of filteredItemIds) {
+          next.add(itemId);
+        }
       }
       return next;
     });
@@ -3960,6 +4002,21 @@ function LibraryScreen({
             {t("common.clearFilters")}
           </button>
         ) : null}
+        {filteredItems.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost sm library-select-all"
+            disabled={batchPending}
+            onClick={toggleAllFilteredItems}
+          >
+            <Check size={14} />
+            <span>
+              {allFilteredSelected
+                ? t("library.batch.selectNone")
+                : t("library.batch.selectAll")}
+            </span>
+          </button>
+        ) : null}
       </div>
       {entities.length > 0 ? (
         <div className="entity-chip-row" aria-label={t("entities.eyebrow")}>
@@ -3997,7 +4054,7 @@ function LibraryScreen({
             disabled={batchPending || !actionsEnabled}
             onClick={() => void runBatchAction("reindex")}
           >
-            {batchState.status === "reindexing" ? <Loader2 size={15} /> : <RefreshCcw size={15} />}
+            {batchState.status === "reindexing" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
             <span>{batchState.status === "reindexing" ? t("common.reindexing") : t("common.reindex")}</span>
           </button>
           <button
@@ -4006,7 +4063,7 @@ function LibraryScreen({
             disabled={batchPending || !actionsEnabled}
             onClick={() => void runBatchAction("delete")}
           >
-            {batchState.status === "deleting" ? <Loader2 size={15} /> : <Trash2 size={15} />}
+            {batchState.status === "deleting" ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
             <span>{batchState.status === "deleting" ? t("common.deleting") : t("common.delete")}</span>
           </button>
           <button
@@ -5085,6 +5142,33 @@ function ModelsSettings({
     }
   }
 
+  async function pauseLocalDownload() {
+    try {
+      // Cancel keeps partial files on disk, so a later "download" resumes.
+      const next = await api.cancelLocalModelPrepare();
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
+
+  async function deleteLocalModel(modelKey: string) {
+    const confirmed = await requestConfirm({
+      title: t("settings.models.localDownload.deleteConfirm.title"),
+      body: t("settings.models.localDownload.deleteConfirm.body"),
+      confirmLabel: t("settings.models.localDownload.deleteConfirm.confirm"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const next = await api.deleteLocalModels([modelKey]);
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
+
   async function loadProviders() {
     try {
       const next = await api.listProviders();
@@ -5288,6 +5372,9 @@ function ModelsSettings({
           requestConfirm={requestConfirm}
           localPrep={localPrep}
           onDownloadLocal={downloadLocalModels}
+          onPauseLocal={pauseLocalDownload}
+          onDeleteLocal={deleteLocalModel}
+          inferenceMode={inferenceMode}
         />
       </section>
     </div>
@@ -5618,6 +5705,190 @@ const providerTypeOptions: { value: RemoteProviderType; label: string; placehold
   },
 ];
 
+// Persistent download status for on-device models: while a download runs it
+// shows the live source + speed + ETA + a progress bar + pause; otherwise it
+// surfaces a "download missing models" CTA (local mode), a cloud-mode note, or
+// the last-used source/peak speed once a run has finished. Backs the
+// "看不到下载速度 / 找不到下载页面" fix — the speed/source were previously only
+// visible in the one-shot first-run dialog.
+function LocalDownloadStatus({
+  localPrep,
+  inferenceMode,
+  capabilities,
+  disabled,
+  onDownloadLocal,
+  onPauseLocal,
+}: {
+  localPrep: api.LocalPrepareStatus | null;
+  inferenceMode: string;
+  capabilities: CapabilityRowModel[];
+  disabled: boolean;
+  onDownloadLocal: (modelKey?: string) => void;
+  onPauseLocal: () => void;
+}) {
+  const t = useT();
+  const [showProbes, setShowProbes] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  if (!localPrep) {
+    return null;
+  }
+  const status = localPrep;
+  const downloading = status.phase === "downloading";
+  const isLocalMode = inferenceMode === "local" || inferenceMode === "auto";
+
+  // Only the local models actually shown as cards here (embed/asr) drive the
+  // "missing" CTA — OCR/aligner repos aren't user-actionable in this view.
+  const localKeys = new Set(
+    capabilities
+      .filter((c) => c.isLocal && c.localModelKey)
+      .map((c) => c.localModelKey as string),
+  );
+  const shownModels = status.models.filter((m) => localKeys.has(m.id));
+  const missingCount = shownModels.filter((m) => m.status !== "ready").length;
+
+  const speed = formatSpeed(status.download_bps);
+  const lastSpeed = formatSpeed(status.last_download_bps);
+  const eta = status.eta_seconds != null ? formatDuration(status.eta_seconds, t) : null;
+  const probes = status.probes ?? [];
+
+  const showMissingCta = !downloading && isLocalMode && missingCount > 0;
+  const showLastUsed =
+    !downloading && !showMissingCta && !!status.last_source_label && missingCount === 0;
+
+  if (!downloading && !showMissingCta && !showLastUsed) {
+    return null;
+  }
+
+  function copyDiagnostics() {
+    const lines = [
+      `platform: ${navigator.platform || "unknown"}`,
+      `inference_mode: ${inferenceMode}`,
+      `phase: ${status.phase}`,
+      `source: ${status.active_source ?? status.last_source ?? "-"}`,
+      `bps: ${status.download_bps ?? status.last_download_bps ?? "-"}`,
+      `overall: ${status.overall_progress}% (${status.done_mb}/${status.total_mb} MB)`,
+      ...status.models.map((m) => `model ${m.id}: ${m.status} ${m.progress}%`),
+      ...(status.last_source_error ? [`last_error: ${status.last_source_error}`] : []),
+      ...probes.map(
+        (p) => `probe ${p.source}: ${p.ok ? `${p.bytes_per_second} B/s` : `fail ${p.error ?? ""}`}`,
+      ),
+    ];
+    void navigator.clipboard?.writeText(lines.join("\n"));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <div className={downloading ? "lm-dl-status is-active" : "lm-dl-status"}>
+      <div className="lm-dl-status__row">
+        <div className="lm-dl-status__main">
+          {downloading ? (
+            <>
+              <span className="lm-dl-status__title">
+                {t("settings.models.localDownload.downloading")}
+              </span>
+              <span className="lm-dl-status__meta mono">
+                {[
+                  status.source_label
+                    ? t("localModel.downloading.source", { source: status.source_label })
+                    : null,
+                  speed,
+                  eta ? t("home.continueRemaining", { remaining: eta }) : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </>
+          ) : showMissingCta ? (
+            <span className="lm-dl-status__title">
+              {t("settings.models.localDownload.missing", { count: missingCount })}
+            </span>
+          ) : (
+            <span className="lm-dl-status__note">
+              {lastSpeed
+                ? t("settings.models.localDownload.lastUsed", {
+                    source: status.last_source_label ?? "",
+                    speed: lastSpeed,
+                  })
+                : t("settings.models.localDownload.lastUsedNoSpeed", {
+                    source: status.last_source_label ?? "",
+                  })}
+            </span>
+          )}
+        </div>
+        <div className="lm-dl-status__actions">
+          {downloading ? (
+            <button
+              type="button"
+              className="btn btn-ghost sm"
+              disabled={disabled || !status.can_pause}
+              onClick={onPauseLocal}
+            >
+              {t("settings.models.localDownload.pause")}
+            </button>
+          ) : showMissingCta ? (
+            <button
+              type="button"
+              className="btn btn-secondary sm"
+              disabled={disabled}
+              onClick={() => onDownloadLocal()}
+            >
+              {t("settings.models.localDownload.prepareMissing")}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {downloading ? (
+        <span className="lm-track lm-dl-status__track">
+          <span className="lm-fill" style={{ width: `${status.overall_progress}%` }} />
+        </span>
+      ) : null}
+      {status.last_source_error && !downloading ? (
+        <p className="lm-dl-status__error">{status.last_source_error}</p>
+      ) : null}
+      <div className="lm-dl-status__foot">
+        {probes.length > 0 ? (
+          <button
+            type="button"
+            className="lm-dl-status__link"
+            onClick={() => setShowProbes((v) => !v)}
+          >
+            {t("settings.models.localDownload.whyToggle")}
+          </button>
+        ) : (
+          <span />
+        )}
+        <button type="button" className="lm-dl-status__link" onClick={copyDiagnostics}>
+          {copied
+            ? t("settings.models.localDownload.copied")
+            : t("settings.models.localDownload.copyDiagnostics")}
+        </button>
+      </div>
+      {showProbes && probes.length > 0 ? (
+        <div className="lm-dl-status__probes">
+          {probes.map((p) => {
+            const selected = p.source === (status.active_source ?? status.last_source);
+            return (
+              <div className="lm-dl-status__probe" key={p.source}>
+                <span>
+                  {p.source}
+                  {selected ? ` · ${t("settings.models.localDownload.probeSelected")}` : ""}
+                </span>
+                <span className={p.ok ? "mono" : "mono faint"}>
+                  {p.ok
+                    ? formatSpeed(p.bytes_per_second) ?? `${p.bytes_per_second} B/s`
+                    : t("settings.models.localDownload.probeFailed")}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderConnections({
   capabilities,
   providers,
@@ -5627,6 +5898,9 @@ function ProviderConnections({
   requestConfirm,
   localPrep,
   onDownloadLocal,
+  onPauseLocal,
+  onDeleteLocal,
+  inferenceMode,
 }: {
   capabilities: CapabilityRowModel[];
   providers: api.ProviderRecord[];
@@ -5636,6 +5910,9 @@ function ProviderConnections({
   requestConfirm: RequestConfirm;
   localPrep: api.LocalPrepareStatus | null;
   onDownloadLocal: (modelKey?: string) => void;
+  onPauseLocal: () => void;
+  onDeleteLocal: (modelKey: string) => void;
+  inferenceMode: string;
 }) {
   const t = useT();
   const typeLabel = (type: api.ProviderType) =>
@@ -5837,6 +6114,15 @@ function ProviderConnections({
       {error ? <InlineNotice tone="error" message={error} /> : null}
       {discoverError ? <InlineNotice tone="error" message={discoverError} /> : null}
 
+      <LocalDownloadStatus
+        localPrep={localPrep}
+        inferenceMode={inferenceMode}
+        capabilities={capabilities}
+        disabled={disabled}
+        onDownloadLocal={onDownloadLocal}
+        onPauseLocal={onPauseLocal}
+      />
+
       {/* One unified list: the three FIXED capabilities, each carrying its model
           and the connection + key it routes through, handled together. */}
       <div className="cap-list">
@@ -5922,6 +6208,15 @@ function ProviderConnections({
                           onClick={() => onDownloadLocal(cap.localModelKey ?? undefined)}
                         >
                           {t("settings.models.capability.download")}
+                        </button>
+                      ) : cap.localModelKey && localState === "ready" ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost sm cap-row__edit"
+                          disabled={disabled}
+                          onClick={() => onDeleteLocal(cap.localModelKey as string)}
+                        >
+                          {t("settings.models.localDownload.delete")}
                         </button>
                       ) : null
                     ) : (

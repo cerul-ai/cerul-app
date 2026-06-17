@@ -77,6 +77,16 @@ MODELS_CACHE_ROOT: Path | None = None
 _MIRROR_MANIFEST_LOADED = False
 _MIRROR_MANIFEST_CACHE: dict[str, Any] | None = None
 
+# Sticky diagnostics for the most recent prepare run. Each write_prepare_status()
+# replaces the whole status file, so the live `active_source`/`download_bps`
+# fields go null once a download finishes. We accumulate the run's source,
+# peak speed and probe results here and fold them into the final "ready"/error
+# status so the UI can still show "last used ModelScope · peak 22 MB/s".
+_LAST_DOWNLOAD_SOURCE: str | None = None
+_LAST_DOWNLOAD_SOURCE_LABEL: str | None = None
+_LAST_DOWNLOAD_PEAK_BPS: int = 0
+_LAST_PROBE_RESULTS: list[dict[str, Any]] | None = None
+
 # Supply-chain pinning: default models always resolve to a reviewed revision
 # instead of whatever the upstream repo's main branch points at today.
 # Custom model ids supplied by the user are downloaded at their latest
@@ -191,10 +201,13 @@ def configured_download_source() -> str:
 
 
 def default_source_order() -> list[str]:
+    # Candidate order is not the decision. In auto mode we probe every available
+    # source and pick the fastest measured result; this list only breaks close
+    # ties and provides a fallback if every probe fails.
     region = os.environ.get("CERUL_MODEL_DOWNLOAD_REGION", "").strip().lower()
-    if region in {"cn", "china", "mainland", "zh-cn"}:
+    if region in {"cn", "china", "mainland", "zh-cn", "zh_cn", "zh_hans_cn"}:
         return [SOURCE_MODELSCOPE, SOURCE_CERUL_CDN, SOURCE_HUGGINGFACE]
-    return [SOURCE_HUGGINGFACE, SOURCE_CERUL_CDN, SOURCE_MODELSCOPE]
+    return [SOURCE_CERUL_CDN, SOURCE_HUGGINGFACE, SOURCE_MODELSCOPE]
 
 
 def source_label(source: str) -> str:
@@ -402,6 +415,7 @@ def download_url_to_file(
     model_id: str,
     file_label: str | None = None,
 ) -> None:
+    global _LAST_DOWNLOAD_SOURCE, _LAST_DOWNLOAD_SOURCE_LABEL, _LAST_DOWNLOAD_PEAK_BPS
     expected_sha256 = (expected_sha256 or "").lower()
     if destination.is_file() and (not expected_sha256 or sha256_file(destination).lower() == expected_sha256):
         return
@@ -431,13 +445,18 @@ def download_url_to_file(
                     now = time.monotonic()
                     if now - last_emit >= 0.75:
                         elapsed = max(0.001, now - started)
+                        bps = round(transferred / elapsed)
+                        _LAST_DOWNLOAD_SOURCE = source
+                        _LAST_DOWNLOAD_SOURCE_LABEL = source_label(source)
+                        if bps > _LAST_DOWNLOAD_PEAK_BPS:
+                            _LAST_DOWNLOAD_PEAK_BPS = bps
                         write_prepare_status(
                             phase="downloading",
                             active_source=source,
                             source_label=source_label(source),
                             model_id=model_id,
                             file=file_label or destination.name,
-                            download_bps=round(transferred / elapsed),
+                            download_bps=bps,
                         )
                         last_emit = now
     except urllib.error.HTTPError as exc:
@@ -701,7 +720,7 @@ def probe_url(source: str, url: str) -> dict[str, Any]:
 
 
 def probe_url_for_source(source: str, model_id_or_path: str, revision: str) -> str | None:
-    probe_file = "model.safetensors"
+    probe_file = probe_file_for_model(model_id_or_path)
     if source == SOURCE_HUGGINGFACE:
         return hf_resolve_url(model_id_or_path, revision, probe_file)
     if source == SOURCE_MODELSCOPE:
@@ -719,7 +738,14 @@ def probe_url_for_source(source: str, model_id_or_path: str, revision: str) -> s
     return None
 
 
+def probe_file_for_model(model_id_or_path: str) -> str:
+    if model_id_or_path in {DEFAULT_OCR_DET_MODEL, DEFAULT_OCR_REC_MODEL}:
+        return "inference.onnx"
+    return "model.safetensors"
+
+
 def select_download_source(model_id_or_path: str, revision: str) -> str:
+    global _LAST_PROBE_RESULTS
     configured = configured_download_source()
     if configured != "auto":
         write_prepare_status(
@@ -750,10 +776,12 @@ def select_download_source(model_id_or_path: str, revision: str) -> str:
         futures = [executor.submit(probe_url, source, url) for source, url in probe_inputs]
         for future in concurrent.futures.as_completed(futures):
             results.append(future.result())
+    _LAST_PROBE_RESULTS = results
 
     ok_results = [result for result in results if result.get("ok")]
     if ok_results:
-        # Prefer real throughput. For close ties, keep the default order stable.
+        # Prefer real throughput. The region/env order only breaks ties, never
+        # overrides a measured winner.
         order_index = {source: index for index, source in enumerate(order)}
         ok_results.sort(
             key=lambda result: (
@@ -1871,28 +1899,44 @@ def main() -> int:
             download_bps=None,
             total_repos=len(repos),
         )
-        for index, repo in enumerate(repos, start=1):
-            print(f"prepare: ({index}/{len(repos)}) downloading {repo}", file=sys.stderr)
+        try:
+            for index, repo in enumerate(repos, start=1):
+                print(f"prepare: ({index}/{len(repos)}) downloading {repo}", file=sys.stderr)
+                write_prepare_status(
+                    phase="probing",
+                    active_source=None,
+                    source_label=None,
+                    model_id=repo,
+                    download_bps=None,
+                    repo_index=index,
+                    total_repos=len(repos),
+                )
+                resolve_snapshot(repo, allow_patterns_for_model(repo))
+                print(f"prepare: ({index}/{len(repos)}) ready {repo}", file=sys.stderr)
+                write_prepare_status(
+                    phase="downloading",
+                    active_source=None,
+                    source_label=None,
+                    model_id=repo,
+                    download_bps=None,
+                    repo_index=index,
+                    total_repos=len(repos),
+                )
+        except Exception as exc:  # noqa: BLE001 - record the source diagnostics, then re-raise.
             write_prepare_status(
-                phase="probing",
+                phase="error",
                 active_source=None,
                 source_label=None,
-                model_id=repo,
+                model_id=None,
                 download_bps=None,
-                repo_index=index,
                 total_repos=len(repos),
+                last_source=_LAST_DOWNLOAD_SOURCE,
+                last_source_label=_LAST_DOWNLOAD_SOURCE_LABEL,
+                last_download_bps=_LAST_DOWNLOAD_PEAK_BPS or None,
+                last_source_error=str(exc),
+                probes=_LAST_PROBE_RESULTS,
             )
-            resolve_snapshot(repo, allow_patterns_for_model(repo))
-            print(f"prepare: ({index}/{len(repos)}) ready {repo}", file=sys.stderr)
-            write_prepare_status(
-                phase="downloading",
-                active_source=None,
-                source_label=None,
-                model_id=repo,
-                download_bps=None,
-                repo_index=index,
-                total_repos=len(repos),
-            )
+            raise
         write_prepare_status(
             phase="ready",
             active_source=None,
@@ -1900,6 +1944,10 @@ def main() -> int:
             model_id=None,
             download_bps=None,
             total_repos=len(repos),
+            last_source=_LAST_DOWNLOAD_SOURCE,
+            last_source_label=_LAST_DOWNLOAD_SOURCE_LABEL,
+            last_download_bps=_LAST_DOWNLOAD_PEAK_BPS or None,
+            probes=_LAST_PROBE_RESULTS,
         )
         print(f"prepare: complete ({len(repos)} repos)", file=sys.stderr)
         return 0

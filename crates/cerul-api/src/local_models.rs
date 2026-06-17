@@ -124,6 +124,14 @@ pub struct LocalPrepareStatus {
     pub can_pause: bool,
     pub can_cancel: bool,
     pub last_source_error: Option<String>,
+    /// Source used by the most recent run, kept after it finishes so the UI can
+    /// show "last used ModelScope" once `active_source` has gone null.
+    pub last_source: Option<String>,
+    pub last_source_label: Option<String>,
+    /// Peak observed speed (B/s) of the most recent run.
+    pub last_download_bps: Option<u64>,
+    /// Per-source probe results from the most recent auto-selection.
+    pub probes: Option<Value>,
     pub models: Vec<LocalModelInfo>,
     pub error: Option<String>,
 }
@@ -309,6 +317,61 @@ pub async fn cancel_local_prepare(
     Ok(Json(compute_status(&cfg)))
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct DeleteRequest {
+    /// Restrict deletion to these model group ids; `null`/absent deletes all
+    /// downloadable groups (OCR is bundled and never deleted).
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+}
+
+/// POST /models/local/delete — remove downloaded weights for the given on-device
+/// model groups (embed/asr). Only touches the model cache (HF hub, Cerul mirror,
+/// ModelScope); never the bundled OCR weights, the user's library, or originals.
+pub async fn delete_local_models(
+    State(state): State<ApiState>,
+    body: Option<Json<DeleteRequest>>,
+) -> ApiResult<Json<LocalPrepareStatus>> {
+    if PREPARE_IN_PROGRESS.load(Ordering::Acquire) {
+        return Err(ApiError::bad_request(
+            "a model download is in progress; pause it before deleting",
+        ));
+    }
+    let cfg = runtime_config(&state.paths).map_err(ApiError::internal)?;
+    let wanted = body.and_then(|Json(b)| b.models);
+    let hub = cfg.models_cache.join("huggingface").join("hub");
+    let mirror = cfg.models_cache.join("cerul-mirror");
+    let modelscope = cfg.models_cache.join("modelscope");
+
+    for group in model_groups(&cfg) {
+        // OCR ships inside the installer — there is no user-deletable copy.
+        if group.id == "ocr" {
+            continue;
+        }
+        let selected = wanted
+            .as_ref()
+            .map(|ids| ids.iter().any(|id| id == group.id))
+            .unwrap_or(true);
+        if !selected {
+            continue;
+        }
+        for repo in &group.repos {
+            let name = cache_dir_name(repo);
+            for root in [&hub, &mirror, &modelscope] {
+                let dir = root.join(&name);
+                if dir.is_dir() {
+                    if let Err(error) = fs::remove_dir_all(&dir) {
+                        tracing::warn!(error = %error, dir = %dir.display(), "failed to delete local model cache");
+                    }
+                }
+            }
+        }
+        tracing::info!(group = group.id, "deleted local model weights");
+    }
+
+    Ok(Json(compute_status(&cfg)))
+}
+
 /// GET /models/local/prepare-status
 pub async fn local_prepare_status(
     State(state): State<ApiState>,
@@ -414,6 +477,10 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         can_pause: in_progress,
         can_cancel: in_progress,
         last_source_error: sidecar_status.last_source_error,
+        last_source: sidecar_status.last_source,
+        last_source_label: sidecar_status.last_source_label,
+        last_download_bps: sidecar_status.last_download_bps,
+        probes: sidecar_status.probes,
         models,
         error,
     }
@@ -425,6 +492,10 @@ struct SidecarPrepareStatus {
     source_label: Option<String>,
     download_bps: Option<u64>,
     last_source_error: Option<String>,
+    last_source: Option<String>,
+    last_source_label: Option<String>,
+    last_download_bps: Option<u64>,
+    probes: Option<Value>,
 }
 
 fn read_sidecar_prepare_status(models_cache: &Path) -> SidecarPrepareStatus {
@@ -449,6 +520,16 @@ fn read_sidecar_prepare_status(models_cache: &Path) -> SidecarPrepareStatus {
             .get("last_source_error")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        last_source: value
+            .get("last_source")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        last_source_label: value
+            .get("last_source_label")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        last_download_bps: value.get("last_download_bps").and_then(Value::as_u64),
+        probes: value.get("probes").filter(|v| !v.is_null()).cloned(),
     }
 }
 
@@ -478,6 +559,24 @@ fn repo_cached_bytes(
         + bundled_root
             .map(|root| dir_size_bytes(&root.join(name)))
             .unwrap_or(0)
+}
+
+/// True if a non-trivial amount of weights for `repo` are already cached on
+/// disk (HF hub, Cerul mirror, ModelScope, or bundled). The model catalog uses
+/// this so a "local" model only reports installed once its weights actually
+/// exist — a ready MLX runtime alone does not mean the weights are downloaded.
+pub fn repo_weights_present(paths: &cerul_storage::AppPaths, repo: &str) -> bool {
+    // 64 MB floor distinguishes real weights from a config-only / empty cache;
+    // the precise per-model "ready" signal lives in the prepare-status scan.
+    const MIN_WEIGHT_BYTES: u64 = 64 * 1_000_000;
+    let Ok(cfg) = runtime_config(paths) else {
+        return false;
+    };
+    let hub = cfg.models_cache.join("huggingface").join("hub");
+    let mirror = cfg.models_cache.join("cerul-mirror");
+    let modelscope = cfg.models_cache.join("modelscope");
+    let bundled = bundled_models_root();
+    repo_cached_bytes(&hub, &mirror, &modelscope, bundled.as_deref(), repo) >= MIN_WEIGHT_BYTES
 }
 
 fn model_download_source_setting(paths: &cerul_storage::AppPaths) -> anyhow::Result<String> {

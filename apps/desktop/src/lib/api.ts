@@ -676,8 +676,21 @@ export type LocalPrepareStatus = {
   can_pause: boolean;
   can_cancel: boolean;
   last_source_error: string | null;
+  last_source: string | null;
+  last_source_label: string | null;
+  last_download_bps: number | null;
+  probes: ProbeResult[] | null;
   models: LocalModelInfo[];
   error: string | null;
+};
+
+export type ProbeResult = {
+  source: string;
+  ok: boolean;
+  bytes_per_second: number;
+  ttfb_ms: number | null;
+  bytes: number;
+  error?: string;
 };
 
 export async function localModelCapability() {
@@ -698,6 +711,13 @@ export async function localPrepareStatus() {
 export async function cancelLocalModelPrepare() {
   return fetchJson<LocalPrepareStatus>("/models/local/prepare-cancel", {
     method: "POST",
+  });
+}
+
+export async function deleteLocalModels(modelIds?: string[]) {
+  return fetchJson<LocalPrepareStatus>("/models/local/delete", {
+    method: "POST",
+    body: JSON.stringify({ models: modelIds ?? null }),
   });
 }
 

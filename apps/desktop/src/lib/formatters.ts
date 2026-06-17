@@ -122,6 +122,19 @@ export function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+/** Download speed from bytes/sec → "21.4 MB/s" or "640 KB/s". Null when there
+ * is no live rate (idle / between samples). */
+export function formatSpeed(bps: number | null | undefined): string | null {
+  if (!bps || !Number.isFinite(bps) || bps <= 0) {
+    return null;
+  }
+  const mb = bps / 1024 / 1024;
+  if (mb >= 1) {
+    return `${mb.toFixed(1)} MB/s`;
+  }
+  return `${Math.max(1, Math.round(bps / 1024))} KB/s`;
+}
+
 export function formatUsd(value: number | null | undefined) {
   if (!value || value <= 0) {
     return "$0.00";

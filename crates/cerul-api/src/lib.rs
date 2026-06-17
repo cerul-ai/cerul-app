@@ -404,6 +404,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             post(local_models::cancel_local_prepare),
         )
         .route(
+            "/models/local/delete",
+            post(local_models::delete_local_models),
+        )
+        .route(
             "/providers",
             get(providers::list_providers).post(providers::create_provider),
         )

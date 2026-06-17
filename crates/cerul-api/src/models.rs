@@ -581,7 +581,12 @@ fn model_installed(
     match spec.install_behavior {
         "api-openai" => provider_ready(paths, &["openai", "openai-compatible"]),
         "api-gemini" => gemini_provider_ready(paths),
-        "local-mlx" => runtime.local_runtime_ready,
+        // A ready MLX runtime is necessary but not sufficient — the model only
+        // counts as installed once its weights are actually on disk.
+        "local-mlx" => {
+            runtime.local_runtime_ready
+                && crate::local_models::repo_weights_present(paths, spec.source)
+        }
         "embedding-profile" => {
             spec.id == DEFAULT_EMBEDDING_MODEL_ID
                 && cerul_storage::vectors::is_default_embedding_profile_id(
@@ -618,12 +623,16 @@ fn model_blocked_reason(
             return Some("Connect a Gemini provider".to_string());
         }
         "local-mlx" if !installed => {
-            return Some(
+            // Distinguish "runtime missing" from "runtime fine, weights not
+            // downloaded yet" so the UI can show the right next step.
+            return Some(if runtime.local_runtime_ready {
+                "Model weights not downloaded yet".to_string()
+            } else {
                 runtime
                     .local_runtime_error
                     .clone()
-                    .unwrap_or_else(|| "Local MLX runtime is not available".to_string()),
-            );
+                    .unwrap_or_else(|| "Local MLX runtime is not available".to_string())
+            });
         }
         _ => {}
     }
