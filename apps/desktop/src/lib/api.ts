@@ -260,6 +260,40 @@ export type SearchResultRecord = {
   nearest_frame_chunk_id?: string | null;
 };
 
+export type SearchDiagnostics = {
+  retrieval_mode: "hybrid" | "vector" | "fts" | "fts_fallback" | "empty" | string;
+  fallback_reason: string | null;
+  vector_hits_count: number;
+  text_vector_hits_count: number;
+  image_vector_hits_count: number;
+  fts_hits_count: number;
+  embedding_profile_id: string | null;
+  qdrant_collection: string | null;
+  qdrant_text_collection: string | null;
+  qdrant_image_collection: string | null;
+  qdrant_text_points: number | null;
+  qdrant_image_points: number | null;
+};
+
+export type SearchResponseRecord = {
+  results: SearchResultRecord[];
+  diagnostics: SearchDiagnostics;
+};
+
+export type SearchHealthDiagnostics = {
+  item_count: number;
+  indexed_item_count: number;
+  chunk_count: number;
+  searchable_text_chunk_count: number;
+  image_chunk_count: number;
+  embedding_profile_id: string | null;
+  qdrant_text_collection: string | null;
+  qdrant_image_collection: string | null;
+  qdrant_text_points: number | null;
+  qdrant_image_points: number | null;
+  qdrant_error: string | null;
+};
+
 export type SettingsMap = Record<string, unknown>;
 
 export type WhisperModelRecord = {
@@ -546,10 +580,14 @@ export async function analyzeItemUnderstanding(id: string) {
 }
 
 export async function search(q: string, limit = 20) {
-  return fetchJson<SearchResultRecord[]>("/search", {
+  return fetchJson<SearchResponseRecord>("/search", {
     method: "POST",
     body: JSON.stringify({ q, limit }),
   });
+}
+
+export async function searchDiagnostics() {
+  return fetchJson<SearchHealthDiagnostics>("/search/diagnostics");
 }
 
 export async function listWhisperModels() {

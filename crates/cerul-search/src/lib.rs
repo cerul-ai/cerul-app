@@ -29,6 +29,28 @@ pub struct SearchResult {
     pub nearest_frame_chunk_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchDiagnostics {
+    pub retrieval_mode: String,
+    pub fallback_reason: Option<String>,
+    pub vector_hits_count: usize,
+    pub text_vector_hits_count: usize,
+    pub image_vector_hits_count: usize,
+    pub fts_hits_count: usize,
+    pub embedding_profile_id: Option<String>,
+    pub qdrant_collection: Option<String>,
+    pub qdrant_text_collection: Option<String>,
+    pub qdrant_image_collection: Option<String>,
+    pub qdrant_text_points: Option<usize>,
+    pub qdrant_image_points: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResult>,
+    pub diagnostics: SearchDiagnostics,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawHit {
     pub chunk_id: String,
@@ -49,6 +71,13 @@ pub async fn search_with_paths(
     paths: &AppPaths,
     req: SearchRequest,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    Ok(search_with_paths_diagnostics(paths, req).await?.results)
+}
+
+pub async fn search_with_paths_diagnostics(
+    paths: &AppPaths,
+    req: SearchRequest,
+) -> anyhow::Result<SearchResponse> {
     let mut text_query_vectors = match cerul_embed::embed_texts(&[req.q.as_str()]) {
         Ok(vectors) => vectors,
         Err(error) => {
@@ -56,7 +85,12 @@ pub async fn search_with_paths(
                 %error,
                 "semantic search unavailable; falling back to SQLite FTS"
             );
-            return search_fts_only(paths, req).await;
+            return search_fts_only_with_diagnostics(
+                paths,
+                req,
+                Some("embedding_unavailable".to_string()),
+            )
+            .await;
         }
     };
     let query_vector = text_query_vectors
@@ -65,7 +99,7 @@ pub async fn search_with_paths(
 
     // Qwen3-VL embeds text and images into one space, so the text query vector
     // drives both the transcript and the frame indexes.
-    search_with_vectors(paths, req, query_vector.clone(), query_vector).await
+    search_with_vectors_diagnostics(paths, req, query_vector.clone(), query_vector).await
 }
 
 pub async fn search_with_vector(
@@ -85,14 +119,44 @@ pub async fn search_with_vector_for_profile(
     search_with_vectors_for_profile(paths, req, query_vector.clone(), query_vector, profile).await
 }
 
+pub async fn search_with_vector_for_profile_diagnostics(
+    paths: &AppPaths,
+    req: SearchRequest,
+    query_vector: Vec<f32>,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
+) -> anyhow::Result<SearchResponse> {
+    search_with_vectors_for_profile_diagnostics(
+        paths,
+        req,
+        query_vector.clone(),
+        query_vector,
+        profile,
+    )
+    .await
+}
+
 pub async fn search_fts_only(
     paths: &AppPaths,
     req: SearchRequest,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    Ok(search_fts_only_with_diagnostics(paths, req, None)
+        .await?
+        .results)
+}
+
+pub async fn search_fts_only_with_diagnostics(
+    paths: &AppPaths,
+    req: SearchRequest,
+    fallback_reason: Option<String>,
+) -> anyhow::Result<SearchResponse> {
     let limit = req.limit.clamp(1, 50);
     let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
+    let fts_hits_count = hits.len();
     let results = hydrate(paths, &hits)?;
-    Ok(dedupe_results(results, limit))
+    Ok(SearchResponse {
+        results: dedupe_results(results, limit),
+        diagnostics: SearchDiagnostics::fts_only(fts_hits_count, fallback_reason),
+    })
 }
 
 pub async fn search_with_vectors(
@@ -101,9 +165,28 @@ pub async fn search_with_vectors(
     text_query_vector: Vec<f32>,
     image_query_vector: Vec<f32>,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    Ok(
+        search_with_vectors_diagnostics(paths, req, text_query_vector, image_query_vector)
+            .await?
+            .results,
+    )
+}
+
+pub async fn search_with_vectors_diagnostics(
+    paths: &AppPaths,
+    req: SearchRequest,
+    text_query_vector: Vec<f32>,
+    image_query_vector: Vec<f32>,
+) -> anyhow::Result<SearchResponse> {
     let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
-    search_with_vectors_for_profile(paths, req, text_query_vector, image_query_vector, &profile)
-        .await
+    search_with_vectors_for_profile_diagnostics(
+        paths,
+        req,
+        text_query_vector,
+        image_query_vector,
+        &profile,
+    )
+    .await
 }
 
 pub async fn search_with_vectors_for_profile(
@@ -113,6 +196,24 @@ pub async fn search_with_vectors_for_profile(
     image_query_vector: Vec<f32>,
     profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    Ok(search_with_vectors_for_profile_diagnostics(
+        paths,
+        req,
+        text_query_vector,
+        image_query_vector,
+        profile,
+    )
+    .await?
+    .results)
+}
+
+pub async fn search_with_vectors_for_profile_diagnostics(
+    paths: &AppPaths,
+    req: SearchRequest,
+    text_query_vector: Vec<f32>,
+    image_query_vector: Vec<f32>,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
+) -> anyhow::Result<SearchResponse> {
     anyhow::ensure!(
         text_query_vector.len() == profile.output_dimension as usize,
         "text query vector has {} dimensions, expected {}",
@@ -146,11 +247,107 @@ pub async fn search_with_vectors_for_profile(
             &profile.distance_metric
         ),
     )?;
+    let fts_hits_count = bm25_hits.len();
+    let text_vector_hits_count = text_hits.len();
+    let image_vector_hits_count = image_hits.len();
+    let vector_hits_count = text_vector_hits_count + image_vector_hits_count;
+    let (qdrant_text_points, qdrant_image_points, fallback_reason) =
+        vector_health_hint(paths, &collections, vector_hits_count).await;
     let merged = rrf_merge(vec![bm25_hits, text_hits, image_hits], 60);
     let top_hits = merged.into_iter().take(retrieval_limit).collect::<Vec<_>>();
 
     let results = hydrate(paths, &top_hits)?;
-    Ok(dedupe_results(results, limit))
+    let results = dedupe_results(results, limit);
+    let retrieval_mode = retrieval_mode(vector_hits_count, fts_hits_count);
+    Ok(SearchResponse {
+        results,
+        diagnostics: SearchDiagnostics {
+            retrieval_mode,
+            fallback_reason,
+            vector_hits_count,
+            text_vector_hits_count,
+            image_vector_hits_count,
+            fts_hits_count,
+            embedding_profile_id: Some(profile.id.clone()),
+            qdrant_collection: Some(collections.text.clone()),
+            qdrant_text_collection: Some(collections.text),
+            qdrant_image_collection: Some(collections.image),
+            qdrant_text_points,
+            qdrant_image_points,
+        },
+    })
+}
+
+impl SearchDiagnostics {
+    fn fts_only(fts_hits_count: usize, fallback_reason: Option<String>) -> Self {
+        Self {
+            retrieval_mode: if fallback_reason.is_some() {
+                "fts_fallback".to_string()
+            } else if fts_hits_count == 0 {
+                "empty".to_string()
+            } else {
+                "fts".to_string()
+            },
+            fallback_reason,
+            vector_hits_count: 0,
+            text_vector_hits_count: 0,
+            image_vector_hits_count: 0,
+            fts_hits_count,
+            embedding_profile_id: None,
+            qdrant_collection: None,
+            qdrant_text_collection: None,
+            qdrant_image_collection: None,
+            qdrant_text_points: None,
+            qdrant_image_points: None,
+        }
+    }
+}
+
+fn retrieval_mode(vector_hits_count: usize, fts_hits_count: usize) -> String {
+    match (vector_hits_count > 0, fts_hits_count > 0) {
+        (true, true) => "hybrid",
+        (true, false) => "vector",
+        (false, true) => "fts",
+        (false, false) => "empty",
+    }
+    .to_string()
+}
+
+async fn vector_health_hint(
+    paths: &AppPaths,
+    collections: &cerul_storage::vectors::VectorCollectionNames,
+    vector_hits_count: usize,
+) -> (Option<usize>, Option<usize>, Option<String>) {
+    if vector_hits_count > 0 {
+        return (None, None, None);
+    }
+
+    let text_points =
+        cerul_storage::vectors::collection_point_count(paths, &collections.text).await;
+    let image_points =
+        cerul_storage::vectors::collection_point_count(paths, &collections.image).await;
+
+    match (text_points, image_points) {
+        (Ok(text), Ok(image)) if text == 0 && image == 0 => (
+            Some(text),
+            Some(image),
+            Some("vector_index_empty".to_string()),
+        ),
+        (Ok(text), Ok(image)) => (Some(text), Some(image), Some("no_vector_hits".to_string())),
+        (text_result, image_result) => {
+            if let Err(error) = &text_result {
+                tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
+            }
+            if let Err(error) = &image_result {
+                tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
+            }
+            (
+                text_result.ok(),
+                image_result.ok(),
+                Some("qdrant_health_check_failed".to_string()),
+            )
+        }
+    }
 }
 
 fn retrieval_limit(limit: usize) -> usize {
@@ -751,6 +948,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fts_fallback_reports_search_diagnostics() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let chunks = vec![StorageTranscriptChunk {
+            start: 4.0,
+            end: 9.0,
+            text: "fallback search should still report diagnostics".to_string(),
+        }];
+        cerul_storage::write_video_chunks(&paths, "item-1", &chunks, &[], &[fake_vector(0)], &[])
+            .await
+            .unwrap();
+
+        let response = search_fts_only_with_diagnostics(
+            &paths,
+            SearchRequest {
+                q: "fallback diagnostics".to_string(),
+                limit: 5,
+            },
+            Some("query_embedding_failed".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.diagnostics.retrieval_mode, "fts_fallback");
+        assert_eq!(
+            response.diagnostics.fallback_reason.as_deref(),
+            Some("query_embedding_failed")
+        );
+        assert_eq!(response.diagnostics.vector_hits_count, 0);
+        assert!(response.diagnostics.fts_hits_count >= 1);
+        assert_eq!(response.results[0].chunk_id, "item-1:transcript:000000");
+    }
+
+    #[tokio::test]
     async fn hydrate_preserves_hit_order_with_batch_query() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -882,6 +1114,53 @@ mod tests {
             .as_deref()
             .unwrap()
             .ends_with("blue.jpg"));
+    }
+
+    #[tokio::test]
+    async fn vector_search_reports_search_diagnostics() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let frames = temp.path().join("frames");
+        std::fs::create_dir(&frames).unwrap();
+
+        cerul_storage::write_media_chunks(
+            &paths,
+            "item-1",
+            &[],
+            &[
+                StorageImageChunk::keyframe(frames.join("red.jpg")),
+                StorageImageChunk::keyframe(frames.join("blue.jpg")),
+            ],
+            &[],
+            &[fake_vector(20), fake_vector(21)],
+        )
+        .await
+        .unwrap();
+
+        let response = search_with_vectors_diagnostics(
+            &paths,
+            SearchRequest {
+                q: "not in transcript".to_string(),
+                limit: 1,
+            },
+            fake_vector(0),
+            fake_vector(21),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.diagnostics.retrieval_mode, "vector");
+        assert!(response.diagnostics.vector_hits_count >= 1);
+        assert_eq!(response.diagnostics.fts_hits_count, 0);
+        assert!(response.diagnostics.embedding_profile_id.is_some());
+        assert!(response
+            .diagnostics
+            .qdrant_text_collection
+            .as_deref()
+            .unwrap()
+            .contains("text_chunks"));
+        assert_eq!(response.results[0].chunk_id, "item-1:keyframe:000001");
     }
 
     #[tokio::test]

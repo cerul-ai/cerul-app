@@ -3,7 +3,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -338,6 +338,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
         .route("/search", post(search))
+        .route("/search/diagnostics", get(search_diagnostics))
         .route("/ask", post(ask_library))
         .route("/sources", get(list_sources).post(add_source))
         .route("/sources/preview/rss", post(preview_rss_source))
@@ -679,7 +680,7 @@ async fn openapi_json() -> Json<Value> {
 async fn search(
     State(state): State<ApiState>,
     Json(mut req): Json<cerul_search::SearchRequest>,
-) -> ApiResult<Json<Vec<cerul_search::SearchResult>>> {
+) -> ApiResult<Json<cerul_search::SearchResponse>> {
     // The limit fans out 4x into vector + FTS retrieval and pre-allocates
     // buffers; an unclamped client value is a one-request memory DoS.
     req.limit = req.limit.clamp(1, 50);
@@ -689,9 +690,10 @@ async fn search(
 async fn search_records(
     paths: &AppPaths,
     req: cerul_search::SearchRequest,
-) -> anyhow::Result<Vec<cerul_search::SearchResult>> {
+) -> anyhow::Result<cerul_search::SearchResponse> {
     let query = req.q.clone();
     let paths_for_embedding = paths.clone();
+    let embedding_started = Instant::now();
     let query_embedding = tokio::time::timeout(
         QUERY_EMBEDDING_TIMEOUT,
         tokio::task::spawn_blocking(move || api_models::embed_query(&paths_for_embedding, &query)),
@@ -700,21 +702,47 @@ async fn search_records(
 
     match query_embedding {
         Ok(Ok(Ok(embedding))) => {
-            cerul_search::search_with_vector_for_profile(
+            let embedding_elapsed = embedding_started.elapsed();
+            tracing::info!(
+                embedding_profile_id = %embedding.profile.id,
+                query_embedding_ms = embedding_elapsed.as_millis(),
+                "API semantic query embedding completed"
+            );
+            let fallback_req = req.clone();
+            let search_started = Instant::now();
+            match cerul_search::search_with_vector_for_profile_diagnostics(
                 paths,
                 req,
                 embedding.vector,
                 &embedding.profile,
             )
             .await
+            {
+                Ok(response) => {
+                    tracing::info!(
+                        retrieval_mode = %response.diagnostics.retrieval_mode,
+                        vector_hits_count = response.diagnostics.vector_hits_count,
+                        fts_hits_count = response.diagnostics.fts_hits_count,
+                        qdrant_text_points = ?response.diagnostics.qdrant_text_points,
+                        qdrant_image_points = ?response.diagnostics.qdrant_image_points,
+                        search_ms = search_started.elapsed().as_millis(),
+                        "API search completed"
+                    );
+                    Ok(response)
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "API vector search failed; falling back to FTS");
+                    search_fts_fallback(paths, fallback_req, "vector_search_failed").await
+                }
+            }
         }
         Ok(Ok(Err(error))) => {
             tracing::warn!(%error, "API semantic query embedding unavailable; falling back to FTS");
-            cerul_search::search_fts_only(paths, req).await
+            search_fts_fallback(paths, req, "query_embedding_failed").await
         }
         Ok(Err(error)) => {
             tracing::warn!(%error, "API query embedding task failed; falling back to FTS");
-            cerul_search::search_fts_only(paths, req).await
+            search_fts_fallback(paths, req, "query_embedding_task_failed").await
         }
         Err(error) => {
             tracing::warn!(
@@ -722,9 +750,118 @@ async fn search_records(
                 timeout_sec = QUERY_EMBEDDING_TIMEOUT.as_secs(),
                 "API query embedding timed out; falling back to FTS"
             );
-            cerul_search::search_fts_only(paths, req).await
+            search_fts_fallback(paths, req, "query_embedding_timeout").await
         }
     }
+}
+
+async fn search_fts_fallback(
+    paths: &AppPaths,
+    req: cerul_search::SearchRequest,
+    fallback_reason: &str,
+) -> anyhow::Result<cerul_search::SearchResponse> {
+    let started = Instant::now();
+    let response = cerul_search::search_fts_only_with_diagnostics(
+        paths,
+        req,
+        Some(fallback_reason.to_string()),
+    )
+    .await?;
+    tracing::info!(
+        retrieval_mode = %response.diagnostics.retrieval_mode,
+        fallback_reason,
+        fts_hits_count = response.diagnostics.fts_hits_count,
+        search_ms = started.elapsed().as_millis(),
+        "API search completed with FTS fallback"
+    );
+    Ok(response)
+}
+
+#[derive(Debug, Serialize)]
+struct SearchHealthDiagnostics {
+    item_count: usize,
+    indexed_item_count: usize,
+    chunk_count: usize,
+    searchable_text_chunk_count: usize,
+    image_chunk_count: usize,
+    embedding_profile_id: Option<String>,
+    qdrant_text_collection: Option<String>,
+    qdrant_image_collection: Option<String>,
+    qdrant_text_points: Option<usize>,
+    qdrant_image_points: Option<usize>,
+    qdrant_error: Option<String>,
+}
+
+async fn search_diagnostics(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<SearchHealthDiagnostics>> {
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let item_count = count_query(&conn, "SELECT COUNT(*) FROM items")?;
+    let indexed_item_count =
+        count_query(&conn, "SELECT COUNT(*) FROM items WHERE status = 'indexed'")?;
+    let chunk_count = count_query(&conn, "SELECT COUNT(*) FROM chunks")?;
+    let searchable_text_chunk_count = count_query(
+        &conn,
+        "SELECT COUNT(*) FROM chunks WHERE text IS NOT NULL AND TRIM(text) <> ''",
+    )?;
+    let image_chunk_count = count_query(
+        &conn,
+        "SELECT COUNT(*) FROM chunks WHERE frame_path IS NOT NULL AND TRIM(frame_path) <> ''",
+    )?;
+    drop(conn);
+
+    let mut diagnostics = SearchHealthDiagnostics {
+        item_count,
+        indexed_item_count,
+        chunk_count,
+        searchable_text_chunk_count,
+        image_chunk_count,
+        embedding_profile_id: None,
+        qdrant_text_collection: None,
+        qdrant_image_collection: None,
+        qdrant_text_points: None,
+        qdrant_image_points: None,
+        qdrant_error: None,
+    };
+
+    let profile = match cerul_storage::vectors::ensure_active_embedding_profile(&state.paths) {
+        Ok(profile) => profile,
+        Err(error) => {
+            tracing::warn!(%error, "failed to load active embedding profile for search diagnostics");
+            diagnostics.qdrant_error = Some("embedding_profile_unavailable".to_string());
+            return Ok(Json(diagnostics));
+        }
+    };
+    let collections = cerul_storage::vectors::collection_names(&state.paths, &profile);
+    diagnostics.embedding_profile_id = Some(profile.id);
+    diagnostics.qdrant_text_collection = Some(collections.text.clone());
+    diagnostics.qdrant_image_collection = Some(collections.image.clone());
+
+    let text_points =
+        cerul_storage::vectors::collection_point_count(&state.paths, &collections.text).await;
+    let image_points =
+        cerul_storage::vectors::collection_point_count(&state.paths, &collections.image).await;
+    match text_points {
+        Ok(count) => diagnostics.qdrant_text_points = Some(count),
+        Err(error) => {
+            tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
+            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
+        }
+    }
+    match image_points {
+        Ok(count) => diagnostics.qdrant_image_points = Some(count),
+        Err(error) => {
+            tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
+            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
+        }
+    }
+
+    Ok(Json(diagnostics))
+}
+
+fn count_query(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<usize> {
+    conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+        .map(|count| count.max(0) as usize)
 }
 
 async fn ask_library(
@@ -746,6 +883,7 @@ async fn ask_library(
     )
     .await?;
     let citations = results
+        .results
         .into_iter()
         .filter(|result| !result.snippet.trim().is_empty())
         .take(limit)
@@ -3364,6 +3502,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/metrics", &["get"]),
     ("/openapi.json", &["get"]),
     ("/search", &["post"]),
+    ("/search/diagnostics", &["get"]),
     ("/ask", &["post"]),
     ("/sources", &["get", "post"]),
     ("/sources/preview/rss", &["post"]),

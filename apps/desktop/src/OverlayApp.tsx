@@ -200,11 +200,11 @@ export function OverlayApp() {
       setError(null);
 
       api.search(trimmedQuery, 6)
-        .then((records) => {
+        .then((response) => {
           if (cancelled) {
             return;
           }
-          setResults(records.map((record) => mapOverlayResult(record, items, sources, t)));
+          setResults(response.results.map((record) => mapOverlayResult(record, items, sources, t)));
           setSearchState("ready");
         })
         .catch((searchError) => {

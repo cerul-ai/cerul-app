@@ -602,6 +602,7 @@ function AppWorkspace() {
     version: null,
   });
   const [liveResults, setLiveResults] = useState<Result[]>([]);
+  const [searchDiagnostics, setSearchDiagnostics] = useState<api.SearchDiagnostics | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const lastSearchRef = useRef<{ query: string; retryWhenIdle: boolean } | null>(null);
@@ -935,10 +936,11 @@ function AppWorkspace() {
         const seqAtSchedule = searchSeqRef.current;
         api
           .search(pendingRetry.query, 20)
-          .then((records) => {
+          .then((response) => {
             // A newer user-initiated search supersedes this idle retry.
             if (seqAtSchedule !== searchSeqRef.current) return;
-            setLiveResults(mapSearchResults(records, mappedItems, t));
+            setLiveResults(mapSearchResults(response.results, mappedItems, t));
+            setSearchDiagnostics(response.diagnostics);
             lastSearchRef.current = {
               query: pendingRetry.query,
               retryWhenIdle: false,
@@ -1064,6 +1066,7 @@ function AppWorkspace() {
   async function runSearch(value: string) {
     const trimmed = value.trim();
     if (!trimmed) {
+      setSearchDiagnostics(null);
       return;
     }
 
@@ -1072,6 +1075,7 @@ function AppWorkspace() {
     const isCurrent = () => seq === searchSeqRef.current;
     setIsSearching(true);
     setSearchError(null);
+    setSearchDiagnostics(null);
     try {
       const latestData = await refreshCoreData();
       if (!latestData && apiStatus !== "online") {
@@ -1080,17 +1084,19 @@ function AppWorkspace() {
       const searchData = latestData ?? data;
       const itemsForResults = searchData.items;
       let retryWhenIndexSettles = searchIndexIsSettling(searchData);
-      let found = await api.search(trimmed, 20);
+      let response = await api.search(trimmed, 20);
       if (!isCurrent()) return;
-      setLiveResults(mapSearchResults(found, itemsForResults, t));
-      if (found.length === 0 || retryWhenIndexSettles) {
+      setLiveResults(mapSearchResults(response.results, itemsForResults, t));
+      setSearchDiagnostics(response.diagnostics);
+      if (response.results.length === 0 || retryWhenIndexSettles) {
         await wait(650);
         if (!isCurrent()) return;
         const refreshed = await refreshCoreData();
         retryWhenIndexSettles = refreshed ? searchIndexIsSettling(refreshed) : retryWhenIndexSettles;
-        found = await api.search(trimmed, 20);
+        response = await api.search(trimmed, 20);
         if (!isCurrent()) return;
-        setLiveResults(mapSearchResults(found, refreshed?.items ?? itemsForResults, t));
+        setLiveResults(mapSearchResults(response.results, refreshed?.items ?? itemsForResults, t));
+        setSearchDiagnostics(response.diagnostics);
       }
       lastSearchRef.current = {
         query: trimmed,
@@ -1393,6 +1399,7 @@ function AppWorkspace() {
               })
             }
             results={visibleResults}
+            diagnostics={searchDiagnostics}
             isSearching={isSearching}
             error={searchError}
             apiStatus={apiStatus}
@@ -2114,6 +2121,7 @@ function ResultsScreen({
   onBack,
   onOpen,
   results,
+  diagnostics,
   isSearching,
   error,
   apiStatus,
@@ -2126,6 +2134,7 @@ function ResultsScreen({
   onBack: () => void;
   onOpen: (result: Result) => void;
   results: Result[];
+  diagnostics: api.SearchDiagnostics | null;
   isSearching: boolean;
   error: string | null;
   apiStatus: ApiStatus;
@@ -2159,6 +2168,8 @@ function ResultsScreen({
   };
   const hasQuery = query.trim().length > 0;
   const hasSearched = hasQuery || results.length > 0;
+  const diagnosticsText = diagnostics ? searchDiagnosticsSummary(diagnostics, t) : null;
+  const diagnosticsTitle = diagnostics ? searchDiagnosticsTitle(diagnostics) : undefined;
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -2318,6 +2329,11 @@ function ResultsScreen({
               </button>
             ) : null}
           </div>
+        ) : null}
+        {diagnosticsText ? (
+          <p className="field-hint" style={{ marginTop: 6 }} title={diagnosticsTitle}>
+            {diagnosticsText}
+          </p>
         ) : null}
 
         <div
@@ -2649,6 +2665,69 @@ function TranscriptReadingView({
       ))}
     </article>
   );
+}
+
+function searchDiagnosticsSummary(diagnostics: api.SearchDiagnostics, t: TFunction) {
+  const base = t("results.diagnostics.summary", {
+    mode: searchRetrievalModeLabel(diagnostics.retrieval_mode, t),
+    vector: diagnostics.vector_hits_count,
+    fts: diagnostics.fts_hits_count,
+  });
+  if (!diagnostics.fallback_reason) {
+    return base;
+  }
+  return `${base} · ${t("results.diagnostics.reason", {
+    reason: searchFallbackReasonLabel(diagnostics.fallback_reason, t),
+  })}`;
+}
+
+function searchRetrievalModeLabel(mode: string, t: TFunction) {
+  switch (mode) {
+    case "hybrid":
+      return t("results.diagnostics.mode.hybrid");
+    case "vector":
+      return t("results.diagnostics.mode.vector");
+    case "fts":
+      return t("results.diagnostics.mode.fts");
+    case "fts_fallback":
+      return t("results.diagnostics.mode.ftsFallback");
+    case "empty":
+      return t("results.diagnostics.mode.empty");
+    default:
+      return mode;
+  }
+}
+
+function searchFallbackReasonLabel(reason: string, t: TFunction) {
+  switch (reason) {
+    case "embedding_unavailable":
+    case "query_embedding_failed":
+      return t("results.diagnostics.reason.queryEmbeddingFailed");
+    case "query_embedding_task_failed":
+      return t("results.diagnostics.reason.queryEmbeddingTaskFailed");
+    case "query_embedding_timeout":
+      return t("results.diagnostics.reason.queryEmbeddingTimeout");
+    case "vector_search_failed":
+      return t("results.diagnostics.reason.vectorSearchFailed");
+    case "vector_index_empty":
+      return t("results.diagnostics.reason.vectorIndexEmpty");
+    case "no_vector_hits":
+      return t("results.diagnostics.reason.noVectorHits");
+    case "qdrant_health_check_failed":
+      return t("results.diagnostics.reason.qdrantHealthCheckFailed");
+    default:
+      return reason;
+  }
+}
+
+function searchDiagnosticsTitle(diagnostics: api.SearchDiagnostics) {
+  return [
+    `profile=${diagnostics.embedding_profile_id ?? "-"}`,
+    `text_collection=${diagnostics.qdrant_text_collection ?? "-"}`,
+    `image_collection=${diagnostics.qdrant_image_collection ?? "-"}`,
+    `text_points=${diagnostics.qdrant_text_points ?? "-"}`,
+    `image_points=${diagnostics.qdrant_image_points ?? "-"}`,
+  ].join(" ");
 }
 
 function ResultDetail({

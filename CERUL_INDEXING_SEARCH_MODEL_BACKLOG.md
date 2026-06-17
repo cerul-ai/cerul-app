@@ -75,6 +75,8 @@
 
 ### 4. 搜索结果和 API 增加检索模式诊断
 
+状态：已完成，等待本次提交。`POST /search` 返回 `results + diagnostics`，包含 `retrieval_mode`、fallback reason、vector/FTS 命中数、active embedding profile、Qdrant collection 和 point count hint；前端结果页显示本次检索模式 debug 文案；新增 `GET /search/diagnostics` 返回 item/chunk/Qdrant point 健康计数。
+
 问题：用户无法判断搜索是语义向量、hybrid 还是文本 fallback；图 2/图 3 表现更像 FTS 文本匹配或向量索引缺失。
 
 需要做：
