@@ -443,6 +443,7 @@ function itemJobStageLabel(stage: string | null, t: TFunction): string | null {
 
 const LOW_CONFIDENCE_ETA_STAGES = new Set([
   "preparing_models",
+  "waiting_model",
   "transcribing",
   "chunking_transcript",
 ]);

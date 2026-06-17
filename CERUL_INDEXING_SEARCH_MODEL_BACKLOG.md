@@ -242,6 +242,8 @@
 
 ### 12. 索引阶段拆分和并行
 
+状态：已完成并推送到 PR #60。本地模式不再把 job worker 并发强制降到 1，而是按 `concurrent_jobs` 配置允许多个视频同时推进非模型阶段；ASR/OCR/embedding/runtime release 这些模型阶段共享一个 pipeline semaphore，默认单并发，避免多个本地模型同时加载导致内存/Metal 压力失控。等待模型 permit 时会显示 `waiting_model` / “等待本地模型”，不再只给用户看“排队中”或误导性的“转写中”。
+
 问题：用户看到多个视频排队，但一个视频卡在 step 2/5，其他视频没有明显进展。
 
 需要做：

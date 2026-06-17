@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use cerul_pipeline::run::{Embedder, OcrEngine, PipelineProgress, Transcriber, VideoPipeline};
 use cerul_storage::AppPaths;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use tokio::sync::Semaphore;
 
 static DEFAULT_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 const INDEXING_PAUSED_SETTING: &str = "indexing_paused";
@@ -100,7 +101,7 @@ impl JobProcessor for PipelineJobProcessor {
             other => Err(anyhow::anyhow!("unsupported job type: {other}")),
         };
 
-        self.pipeline.release_all_runtime_models(&job.item_id);
+        self.pipeline.release_all_runtime_models(&job.item_id).await;
         result
     }
 }
@@ -403,11 +404,8 @@ fn effective_concurrent_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
 
 fn concurrent_jobs_for_effective_mode(
     paths: &AppPaths,
-    effective_mode: &str,
+    _effective_mode: &str,
 ) -> anyhow::Result<usize> {
-    if effective_mode == "local" {
-        return Ok(1);
-    }
     configured_concurrent_jobs(paths)
 }
 
@@ -472,10 +470,12 @@ fn build_pipeline_processor(
         let embedder: Arc<dyn Embedder> = sidecar.clone();
         let ocr: Arc<dyn OcrEngine> = sidecar.clone();
         let runtime_control: Arc<dyn cerul_pipeline::run::ModelRuntimeControl> = sidecar;
+        let model_permits = Arc::new(Semaphore::new(1));
         VideoPipeline::new(paths.clone(), transcriber, embedder)
             .with_embedding_profile(profile)
             .with_ocr(ocr)
             .with_runtime_control(runtime_control)
+            .with_model_permits(model_permits)
     } else {
         let profile =
             cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(&paths, "remote")?;
@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_concurrent_jobs_limits_local_model_indexing_to_one_job() {
+    fn effective_concurrent_jobs_respects_setting_for_local_and_remote_modes() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         set_setting(&paths, CONCURRENT_JOBS_SETTING, serde_json::json!(4));
@@ -1116,7 +1116,7 @@ mod tests {
         );
         assert_eq!(
             concurrent_jobs_for_effective_mode(&paths, "local").unwrap(),
-            1
+            4
         );
     }
 
