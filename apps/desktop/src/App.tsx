@@ -211,6 +211,7 @@ import {
   checkForDesktopUpdate,
   downloadDesktopUpdate,
   getDesktopAppVersion,
+  getDesktopUpdaterDiagnostics,
   getDesktopUpdaterState,
   hasDesktopHost,
   installDesktopUpdate,
@@ -1043,6 +1044,8 @@ function AppWorkspace() {
       setUpdaterState(next);
     } else if (updaterState.phase === "downloaded") {
       await installDesktopUpdate();
+    } else if (updaterState.phase === "error") {
+      window.open(updaterState.releaseUrl, "_blank", "noopener,noreferrer");
     }
   }
 
@@ -1179,6 +1182,8 @@ function AppWorkspace() {
                     ? t("shell.updateInstallingTip")
                     : updaterState.phase === "downloaded"
                     ? t("shell.updateReadyTip", { version: updaterState.version })
+                    : updaterState.phase === "error"
+                    ? t("shell.updateErrorTip", { message: updaterState.message })
                     : t("shell.updateAvailableTip", { version: updaterState.version })
               }
               onClick={() => void handleUpdateActivate()}
@@ -1197,6 +1202,11 @@ function AppWorkspace() {
                 <>
                   <RefreshCcw size={13} />
                   <span className="rail-update-label">{t("shell.updateRestart")}</span>
+                </>
+              ) : updaterState.phase === "error" ? (
+                <>
+                  <AlertTriangle size={13} />
+                  <span className="rail-update-label">{t("shell.updateError")}</span>
                 </>
               ) : (
                 <>
@@ -6675,6 +6685,10 @@ function AboutSettings() {
     message: string | null;
     update: AvailableDesktopUpdate | null;
   }>({ status: "idle", message: null, update: null });
+  const [diagnosticsState, setDiagnosticsState] = useState<{
+    status: SettingsActionStatus;
+    message: string | null;
+  }>({ status: "idle", message: null });
 
   useEffect(() => {
     let cancelled = false;
@@ -6707,6 +6721,23 @@ function AboutSettings() {
       });
     } catch (error) {
       setUpdateState({ status: "error", message: errorMessage(error), update: null });
+    }
+  }
+
+  async function copyUpdateDiagnostics() {
+    setDiagnosticsState({ status: "running", message: null });
+    try {
+      const diagnostics = await getDesktopUpdaterDiagnostics();
+      if (!diagnostics) {
+        throw new Error(t("settings.about.update.diagnosticsUnavailable"));
+      }
+      await navigator.clipboard.writeText(diagnostics);
+      setDiagnosticsState({
+        status: "done",
+        message: t("settings.about.update.diagnosticsCopied"),
+      });
+    } catch (error) {
+      setDiagnosticsState({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -6764,6 +6795,17 @@ function AboutSettings() {
           {updateState.status === "running" ? <Loader2 size={16} /> : <RefreshCcw size={16} />}
           <span>{t("settings.about.checkUpdates")}</span>
         </button>
+        {hasDesktopHost() ? (
+          <button
+            className="btn btn-secondary sm"
+            type="button"
+            disabled={diagnosticsState.status === "running"}
+            onClick={() => void copyUpdateDiagnostics()}
+          >
+            {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+            <span>{t("settings.about.update.copyDiagnostics")}</span>
+          </button>
+        ) : null}
         {updateState.update ? (
           <button
             className="btn btn-secondary sm"
@@ -6779,6 +6821,12 @@ function AboutSettings() {
         <InlineNotice
           tone={updateState.status === "error" ? "error" : "muted"}
           message={updateState.message}
+        />
+      ) : null}
+      {diagnosticsState.message ? (
+        <InlineNotice
+          tone={diagnosticsState.status === "error" ? "error" : "muted"}
+          message={diagnosticsState.message}
         />
       ) : null}
     </>

@@ -20,7 +20,8 @@ export type DesktopUpdaterState =
   | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
   | { phase: "downloading"; version: string; percent: number }
   | { phase: "installing"; version: string }
-  | { phase: "downloaded"; version: string };
+  | { phase: "downloaded"; version: string }
+  | { phase: "error"; version?: string; message: string; releaseUrl: string };
 
 export type DesktopStore = {
   get<T>(key: string): Promise<T | undefined>;
@@ -35,6 +36,7 @@ type ElectronDesktopHost = {
   checkForUpdate(): Promise<DesktopUpdate>;
   updaterCheck(): Promise<DesktopUpdaterState>;
   updaterGetState(): Promise<DesktopUpdaterState>;
+  updaterDiagnostics(): Promise<string>;
   updaterDownload(): Promise<DesktopUpdaterState>;
   updaterInstall(): Promise<void>;
   onUpdaterEvent(callback: (state: DesktopUpdaterState) => void): () => void;
@@ -101,6 +103,13 @@ export async function getDesktopUpdaterState(): Promise<DesktopUpdaterState> {
     return window.cerulDesktop.updaterGetState();
   }
   return { phase: "idle" };
+}
+
+export async function getDesktopUpdaterDiagnostics(): Promise<string | null> {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.updaterDiagnostics();
+  }
+  return null;
 }
 
 export async function downloadDesktopUpdate(): Promise<DesktopUpdaterState> {
