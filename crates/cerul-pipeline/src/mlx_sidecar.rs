@@ -574,8 +574,6 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         // it would break the app's code seal and dirty the read-only bundle.
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("HF_HOME", &hf_home)
-        // Xet-backed downloads stall behind the Great Firewall; the classic
-        // LFS transport from huggingface.co works, so force it.
         .env("HF_HUB_DISABLE_XET", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

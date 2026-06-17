@@ -2,9 +2,10 @@
 //! weight download driven by the sidecar's `--prepare` one-shot, and disk-scan
 //! progress. Backs the first-run "run on this Mac" consent flow.
 //!
-//! Progress is measured from the Hugging Face cache on disk (the `blobs/` dir
-//! of each repo) rather than streamed from the downloader — that decouples the
-//! status endpoint from the download process and survives restarts.
+//! Progress is measured from the model cache on disk rather than streamed from
+//! the downloader. The scanner recognizes both the native Hugging Face cache
+//! and Cerul's R2/CDN mirror cache, so progress survives restarts and works for
+//! fallback downloads.
 
 use std::{
     path::Path,
@@ -261,6 +262,7 @@ pub async fn local_prepare_status(
 
 fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
     let hub = cfg.models_cache.join("huggingface").join("hub");
+    let mirror = cfg.models_cache.join("cerul-mirror");
     let in_progress = PREPARE_IN_PROGRESS.load(Ordering::Acquire);
     let error = PREPARE_LAST_ERROR.lock().ok().and_then(|g| g.clone());
     let active_ids: Vec<&'static str> = PREPARE_ACTIVE_IDS
@@ -279,7 +281,7 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         let on_disk_mb: u64 = group
             .repos
             .iter()
-            .map(|repo| dir_size_bytes(&hub.join(cache_dir_name(repo))) / 1_000_000)
+            .map(|repo| repo_cached_bytes(&hub, &mirror, repo) / 1_000_000)
             .sum();
         let capped = on_disk_mb.min(group.size_mb);
         done_mb += capped;
@@ -355,6 +357,11 @@ fn cache_dir_name(repo: &str) -> String {
     format!("models--{}", repo.replace('/', "--"))
 }
 
+fn repo_cached_bytes(hf_hub: &Path, mirror_root: &Path, repo: &str) -> u64 {
+    let name = cache_dir_name(repo);
+    dir_size_bytes(&hf_hub.join(&name)) + dir_size_bytes(&mirror_root.join(name))
+}
+
 /// Sum of real file bytes under `path`. Skips symlinks, so the HF `snapshots/`
 /// symlink tree is not double-counted against the `blobs/` it points at.
 fn dir_size_bytes(path: &Path) -> u64 {
@@ -416,5 +423,29 @@ mod tests {
     #[test]
     fn missing_cache_dir_is_zero_bytes() {
         assert_eq!(dir_size_bytes(Path::new("/nonexistent/cerul/cache")), 0);
+    }
+
+    #[test]
+    fn repo_cached_bytes_counts_hf_and_mirror_roots() {
+        let unique = format!(
+            "cerul-model-cache-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let hf = root.join("hf");
+        let mirror = root.join("mirror");
+        let repo = "Qwen/Qwen3-ASR-0.6B";
+        let name = cache_dir_name(repo);
+        std::fs::create_dir_all(hf.join(&name)).unwrap();
+        std::fs::create_dir_all(mirror.join(&name)).unwrap();
+        std::fs::write(hf.join(&name).join("a.bin"), vec![0u8; 3]).unwrap();
+        std::fs::write(mirror.join(&name).join("b.bin"), vec![0u8; 5]).unwrap();
+
+        assert_eq!(repo_cached_bytes(&hf, &mirror, repo), 8);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

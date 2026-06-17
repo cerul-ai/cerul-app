@@ -38,7 +38,9 @@ Release builds may copy these generated artifacts into the app bundle:
 ## Local Model Runtime
 
 The base app should not bundle model weights. Local model support is optional
-and should download runtime packs and model snapshots on demand.
+and should download runtime packs and model snapshots on demand. Release builds
+may fetch reviewed, pinned model snapshots from the Cerul R2/CDN mirror before
+falling back to the original upstream repository.
 
 Release candidates must review the licenses and terms for every model snapshot
 and Python wheel used by local runtime packs. In particular:
@@ -48,6 +50,13 @@ and Python wheel used by local runtime packs. In particular:
 - Model weights must be checked for commercial-use, attribution, and usage-scale
   restrictions.
 - macOS arm64 MLX local mode is the first supported local runtime target.
+
+Current default local model mirror candidates:
+
+- `mlx-community/Qwen3-VL-Embedding-2B-6bit` — Apache-2.0
+- `Qwen/Qwen3-ASR-0.6B` — Apache-2.0
+- `Qwen/Qwen3-ForcedAligner-0.6B` — Apache-2.0
+- `mlx-community/Qwen3-VL-2B-Instruct-4bit` — Apache-2.0
   Windows/Linux local runtimes require separate backend work and license review.
 
 ## Brand Assets

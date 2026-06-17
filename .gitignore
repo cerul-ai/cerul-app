@@ -70,7 +70,8 @@ third-party/*
 apps/electron-shell/mlx-runtime/
 
 # Internal design/spec docs (kept local, not published)
-docs/
+docs/*
+!docs/model-mirror.md
 
 # Build artifacts
 *.tar
