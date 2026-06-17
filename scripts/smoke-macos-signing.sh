@@ -9,6 +9,8 @@ SKIP_NOTARIZATION=0
 ALLOW_AD_HOC=0
 DRY_RUN=0
 MOUNT_DIR=""
+RUNTIME_EXTRACT_DIR=""
+RUNTIME_PYTHON=""
 MAX_CODESIGN_XATTR_FILES="${CERUL_MAX_CODESIGN_XATTR_FILES:-0}"
 GATEKEEPER_NOFILE_LIMIT="${CERUL_GATEKEEPER_NOFILE_LIMIT:-256}"
 
@@ -172,24 +174,50 @@ require_entitlement() {
 
 require_release_entitlements() {
   local app_exec="$APP/Contents/MacOS/Cerul"
-  local runtime_python="$APP/Contents/Resources/mlx-runtime/bin/python3.12"
 
   if [ "$DRY_RUN" -eq 0 ]; then
     if [ ! -x "$app_exec" ]; then
       echo "Cerul app executable not found: $app_exec" >&2
       exit 1
     fi
-    if [ ! -x "$runtime_python" ]; then
-      echo "Bundled MLX Python interpreter not found: $runtime_python" >&2
-      exit 1
-    fi
   fi
 
-  for subject in "$app_exec" "$runtime_python"; do
+  prepare_runtime_python_for_entitlement_check
+
+  for subject in "$app_exec" "$RUNTIME_PYTHON"; do
     require_entitlement "$subject" "com.apple.security.cs.allow-jit"
     require_entitlement "$subject" "com.apple.security.cs.allow-unsigned-executable-memory"
     require_entitlement "$subject" "com.apple.security.cs.disable-library-validation"
   done
+}
+
+prepare_runtime_python_for_entitlement_check() {
+  local bundled_runtime_python="$APP/Contents/Resources/mlx-runtime/bin/python3.12"
+  local runtime_archive="$APP/Contents/Resources/mlx-runtime.tar.gz"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    RUNTIME_PYTHON="$runtime_archive#bin/python3.12"
+    echo "+ extract $runtime_archive and verify bundled MLX Python entitlements"
+    return
+  fi
+
+  if [ -x "$bundled_runtime_python" ]; then
+    RUNTIME_PYTHON="$bundled_runtime_python"
+    return
+  fi
+
+  if [ ! -f "$runtime_archive" ]; then
+    echo "Bundled MLX runtime archive not found: $runtime_archive" >&2
+    exit 1
+  fi
+
+  RUNTIME_EXTRACT_DIR="$(mktemp -d)"
+  tar -xzf "$runtime_archive" -C "$RUNTIME_EXTRACT_DIR"
+  RUNTIME_PYTHON="$RUNTIME_EXTRACT_DIR/bin/python3.12"
+  if [ ! -x "$RUNTIME_PYTHON" ]; then
+    echo "Bundled MLX Python interpreter not found in archive: $RUNTIME_PYTHON" >&2
+    exit 1
+  fi
 }
 
 cleanup() {
@@ -197,6 +225,9 @@ cleanup() {
     hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || \
       hdiutil detach "$MOUNT_DIR" -force -quiet >/dev/null 2>&1 || true
     rmdir "$MOUNT_DIR" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$RUNTIME_EXTRACT_DIR" ]; then
+    rm -rf "$RUNTIME_EXTRACT_DIR" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT

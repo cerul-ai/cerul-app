@@ -112,6 +112,16 @@ run() {
   fi
 }
 
+create_mlx_runtime_archive() {
+  run rm -f "$MLX_RUNTIME_ARCHIVE" "$MLX_RUNTIME_ARCHIVE.sha256"
+  run tar -czf "$MLX_RUNTIME_ARCHIVE" -C "$MLX_RUNTIME_DIR" .
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '+ shasum -a 256 %q > %q\n' "$MLX_RUNTIME_ARCHIVE" "$MLX_RUNTIME_ARCHIVE.sha256"
+  else
+    shasum -a 256 "$MLX_RUNTIME_ARCHIVE" | awk '{print $1}' > "$MLX_RUNTIME_ARCHIVE.sha256"
+  fi
+}
+
 timer_now() {
   date +%s
 }
@@ -286,8 +296,9 @@ fi
 
 # Bundled on-device MLX Python runtime (macOS only). Reuse an existing build
 # unless --rebuild-mlx-runtime is passed; always ensure the directory exists so
-# electron-builder's extraResources copy never fails on other platforms.
+# electron-builder's extraResources archive never fails on other platforms.
 MLX_RUNTIME_DIR="$ROOT/apps/electron-shell/mlx-runtime"
+MLX_RUNTIME_ARCHIVE="$ROOT/apps/electron-shell/mlx-runtime.tar.gz"
 mkdir -p "$MLX_RUNTIME_DIR"
 if target_is_macos; then
   if [ -z "$PREPACKAGED_APP" ]; then
@@ -304,6 +315,9 @@ if target_is_macos; then
       time_step mlx_runtime_signing run node "$ROOT/apps/electron-shell/scripts/sign-mlx-runtime.cjs" "${sign_args[@]}"
     fi
   fi
+fi
+if [ -z "$PREPACKAGED_APP" ]; then
+  time_step mlx_runtime_archive create_mlx_runtime_archive
 fi
 
 builder_args=(--publish never)

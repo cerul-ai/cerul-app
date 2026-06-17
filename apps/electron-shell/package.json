@@ -1,6 +1,6 @@
 {
   "name": "@cerul/electron-shell",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "description": "Cerul desktop shell",
@@ -87,8 +87,12 @@
         ]
       },
       {
-        "from": "mlx-runtime",
-        "to": "mlx-runtime"
+        "from": "mlx-runtime.tar.gz",
+        "to": "mlx-runtime.tar.gz"
+      },
+      {
+        "from": "mlx-runtime.tar.gz.sha256",
+        "to": "mlx-runtime.tar.gz.sha256"
       }
     ],
     "mac": {

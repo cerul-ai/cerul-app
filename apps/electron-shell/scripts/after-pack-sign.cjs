@@ -2,11 +2,11 @@
 //
 // Two jobs on macOS:
 //
-// 1. The bundled MLX Python runtime (Contents/Resources/mlx-runtime) ships
-//    hundreds of loose mach-O (.so/.dylib + the interpreter) that
-//    `codesign --deep` does not reliably reach. We sign them inside-out so the
-//    app's resource seal is valid and — when a Developer ID is configured —
-//    the nested code is signed for notarization too.
+// 1. Older packaged builds copied the MLX Python runtime into
+//    Contents/Resources/mlx-runtime as hundreds of loose mach-O files. Keep the
+//    hook able to sign that shape for local/debug packaging. Public releases now
+//    ship mlx-runtime.tar.gz and extract it on first launch to avoid Gatekeeper
+//    recursively scanning the runtime inside the .app.
 //
 // 2. When no Apple Developer ID is configured, electron-builder skips macOS
 //    code signing and leaves the app with Electron's own partial (linker)
