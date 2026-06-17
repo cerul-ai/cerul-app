@@ -410,6 +410,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             post(local_models::delete_local_models),
         )
         .route(
+            "/models/local/repair",
+            post(local_models::repair_local_models),
+        )
+        .route(
             "/providers",
             get(providers::list_providers).post(providers::create_provider),
         )
@@ -3533,6 +3537,12 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/models/whisper/auto-download-status", &["get"]),
     ("/models/embed/status", &["get"]),
     ("/models/embed/prepare", &["post"]),
+    ("/models/local/capability", &["get"]),
+    ("/models/local/prepare", &["post"]),
+    ("/models/local/prepare-status", &["get"]),
+    ("/models/local/prepare-cancel", &["post"]),
+    ("/models/local/delete", &["post"]),
+    ("/models/local/repair", &["post"]),
     ("/providers", &["get", "post"]),
     ("/providers/{id}", &["patch", "delete"]),
     ("/providers/{id}/test", &["post"]),

@@ -18,6 +18,7 @@ use std::{
     time::Instant,
 };
 
+use anyhow::Context;
 use axum::{extract::State, Json};
 use cerul_pipeline::mlx_sidecar::{runtime_config, runtime_status, MlxSidecarConfig};
 use serde::{Deserialize, Serialize};
@@ -371,15 +372,61 @@ pub async fn delete_local_models(
             for root in [&hub, &mirror, &modelscope] {
                 let dir = root.join(&name);
                 if dir.is_dir() {
-                    if let Err(error) = fs::remove_dir_all(&dir) {
-                        tracing::warn!(error = %error, dir = %dir.display(), "failed to delete local model cache");
-                    }
+                    fs::remove_dir_all(&dir)
+                        .with_context(|| format!("failed to delete {}", dir.display()))
+                        .map_err(ApiError::internal)?;
                 }
             }
         }
         tracing::info!(group = group.id, "deleted local model weights");
     }
 
+    Ok(Json(compute_status(&cfg)))
+}
+
+/// POST /models/local/repair — remove interrupted download artifacts for the
+/// given model groups. This is intentionally narrower than delete: it only
+/// removes temporary files/locks so a later prepare can resume cleanly.
+pub async fn repair_local_models(
+    State(state): State<ApiState>,
+    body: Option<Json<DeleteRequest>>,
+) -> ApiResult<Json<LocalPrepareStatus>> {
+    if PREPARE_IN_PROGRESS.load(Ordering::Acquire) {
+        return Err(ApiError::bad_request(
+            "a model download is in progress; pause it before repairing",
+        ));
+    }
+    let cfg = runtime_config(&state.paths).map_err(ApiError::internal)?;
+    let wanted = body.and_then(|Json(b)| b.models);
+    let hub = cfg.models_cache.join("huggingface").join("hub");
+    let hf_locks = cfg.models_cache.join("huggingface").join(".locks");
+    let mirror = cfg.models_cache.join("cerul-mirror");
+    let modelscope = cfg.models_cache.join("modelscope");
+    let mut removed = 0usize;
+
+    for group in model_groups(&cfg) {
+        if group.id == "ocr" {
+            continue;
+        }
+        let selected = wanted
+            .as_ref()
+            .map(|ids| ids.iter().any(|id| id == group.id))
+            .unwrap_or(true);
+        if !selected {
+            continue;
+        }
+        for repo in &group.repos {
+            let name = cache_dir_name(repo);
+            for root in [&hub, &mirror, &modelscope] {
+                removed +=
+                    remove_temporary_model_files(&root.join(&name)).map_err(ApiError::internal)?;
+            }
+            removed +=
+                remove_temporary_model_files(&hf_locks.join(&name)).map_err(ApiError::internal)?;
+        }
+    }
+
+    tracing::info!(removed, "repaired local model cache");
     Ok(Json(compute_status(&cfg)))
 }
 
@@ -740,6 +787,49 @@ fn is_temporary_download_file(path: &Path) -> bool {
     )
 }
 
+fn is_repairable_model_file(path: &Path) -> bool {
+    if is_temporary_download_file(path) {
+        return true;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.ends_with(".lock"))
+        .unwrap_or(false)
+}
+
+fn remove_temporary_model_files(root: &Path) -> anyhow::Result<usize> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+            }
+        };
+        for entry in entries {
+            let entry =
+                entry.with_context(|| format!("failed to read entry under {}", dir.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() && is_repairable_model_file(&path) {
+                fs::remove_file(&path)
+                    .with_context(|| format!("failed to remove {}", path.display()))?;
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// Installed physical RAM in GiB via `sysctl hw.memsize` (macOS). 0 if unknown.
 fn detect_ram_gb() -> u32 {
     if !cfg!(target_os = "macos") {
@@ -836,6 +926,24 @@ mod tests {
             repo_complete_cached_bytes(&hf, &mirror, &modelscope, None, repo),
             3
         );
+    }
+
+    #[test]
+    fn repair_removes_only_temporary_model_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("models--repo");
+        let nested = root.join("snapshots").join("rev");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("model.safetensors"), vec![0u8; 3]).unwrap();
+        std::fs::write(nested.join("model.safetensors.incomplete"), vec![0u8; 3]).unwrap();
+        std::fs::write(nested.join("archive.tar.gz.partial"), vec![0u8; 3]).unwrap();
+        std::fs::write(nested.join("download.lock"), vec![0u8; 3]).unwrap();
+
+        assert_eq!(remove_temporary_model_files(&root).unwrap(), 3);
+        assert!(nested.join("model.safetensors").exists());
+        assert!(!nested.join("model.safetensors.incomplete").exists());
+        assert!(!nested.join("archive.tar.gz.partial").exists());
+        assert!(!nested.join("download.lock").exists());
     }
 
     #[test]

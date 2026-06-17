@@ -760,6 +760,13 @@ export async function deleteLocalModels(modelIds?: string[]) {
   });
 }
 
+export async function repairLocalModels(modelIds?: string[]) {
+  return fetchJson<LocalPrepareStatus>("/models/local/repair", {
+    method: "POST",
+    body: JSON.stringify({ models: modelIds ?? null }),
+  });
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {

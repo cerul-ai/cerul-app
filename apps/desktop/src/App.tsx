@@ -5254,6 +5254,15 @@ function ModelsSettings({
     }
   }
 
+  async function repairLocalModels(modelKey?: string) {
+    try {
+      const next = await api.repairLocalModels(modelKey ? [modelKey] : undefined);
+      setLocalPrep(next);
+    } catch {
+      /* best-effort; the poller will reflect the real state */
+    }
+  }
+
   async function loadProviders() {
     try {
       const next = await api.listProviders();
@@ -5458,6 +5467,7 @@ function ModelsSettings({
           localPrep={localPrep}
           onDownloadLocal={downloadLocalModels}
           onPauseLocal={pauseLocalDownload}
+          onRepairLocal={repairLocalModels}
           onDeleteLocal={deleteLocalModel}
           inferenceMode={inferenceMode}
         />
@@ -5803,6 +5813,7 @@ function LocalDownloadStatus({
   disabled,
   onDownloadLocal,
   onPauseLocal,
+  onRepairLocal,
 }: {
   localPrep: api.LocalPrepareStatus | null;
   inferenceMode: string;
@@ -5810,6 +5821,7 @@ function LocalDownloadStatus({
   disabled: boolean;
   onDownloadLocal: (modelKey?: string) => void;
   onPauseLocal: () => void;
+  onRepairLocal: (modelKey?: string) => void;
 }) {
   const t = useT();
   const [showProbes, setShowProbes] = useState(false);
@@ -5913,14 +5925,24 @@ function LocalDownloadStatus({
               {t("settings.models.localDownload.pause")}
             </button>
           ) : showMissingCta ? (
-            <button
-              type="button"
-              className="btn btn-secondary sm"
-              disabled={disabled}
-              onClick={() => onDownloadLocal()}
-            >
-              {t("settings.models.localDownload.prepareMissing")}
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn-ghost sm"
+                disabled={disabled}
+                onClick={() => onRepairLocal()}
+              >
+                {t("settings.models.localDownload.repair")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary sm"
+                disabled={disabled}
+                onClick={() => onDownloadLocal()}
+              >
+                {t("settings.models.localDownload.prepareMissing")}
+              </button>
+            </>
           ) : null}
         </div>
       </div>
@@ -5984,6 +6006,7 @@ function ProviderConnections({
   localPrep,
   onDownloadLocal,
   onPauseLocal,
+  onRepairLocal,
   onDeleteLocal,
   inferenceMode,
 }: {
@@ -5996,6 +6019,7 @@ function ProviderConnections({
   localPrep: api.LocalPrepareStatus | null;
   onDownloadLocal: (modelKey?: string) => void;
   onPauseLocal: () => void;
+  onRepairLocal: (modelKey?: string) => void;
   onDeleteLocal: (modelKey: string) => void;
   inferenceMode: string;
 }) {
@@ -6206,6 +6230,7 @@ function ProviderConnections({
         disabled={disabled}
         onDownloadLocal={onDownloadLocal}
         onPauseLocal={onPauseLocal}
+        onRepairLocal={onRepairLocal}
       />
 
       {/* One unified list: the three FIXED capabilities, each carrying its model

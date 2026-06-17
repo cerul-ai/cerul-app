@@ -310,6 +310,8 @@
 
 ### 15. 本地模型修复/清理工具
 
+状态：已完成并推送到 PR #60。新增 `POST /models/local/repair`，在没有 active downloader 时清理所选模型 cache 内的 `.incomplete` / `.partial` / `.lock` 文件并返回最新 prepare status；设置页本地模型缺失状态新增“修复”按钮；删除模型 cache 失败现在会返回 API 错误，不再只写 warn。
+
 需要做：
 
 - 设置页增加“修复本地模型”或诊断入口。
