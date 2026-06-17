@@ -6,13 +6,14 @@ PLATFORM=""
 PROFILE="release"
 TARGET=""
 BUNDLE_ROOT=""
+APP_PATH=""
 DRY_RUN=0
 DIR_ONLY=0
 MACOS_UPDATE_ONLY=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/smoke-release-artifacts.sh [--platform <macos|linux|windows>] [--profile <release|debug>] [--target <triple>] [--bundle-root <path>] [--dir-only] [--macos-update-only] [--dry-run]
+Usage: scripts/smoke-release-artifacts.sh [--platform <macos|linux|windows>] [--profile <release|debug>] [--target <triple>] [--bundle-root <path>] [--app <Cerul.app>] [--dir-only] [--macos-update-only] [--dry-run]
 
 Checks that the current platform produced the expected Electron release artifacts:
 
@@ -42,6 +43,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --bundle-root)
       BUNDLE_ROOT="${2:?missing bundle root}"
+      shift 2
+      ;;
+    --app)
+      APP_PATH="${2:?missing Cerul.app path}"
       shift 2
       ;;
     --dir-only)
@@ -101,7 +106,7 @@ if [ -z "$BUNDLE_ROOT" ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "+ inspect $PLATFORM Electron artifacts under $BUNDLE_ROOT dir_only=$DIR_ONLY macos_update_only=$MACOS_UPDATE_ONLY"
+  echo "+ inspect $PLATFORM Electron artifacts under $BUNDLE_ROOT app=${APP_PATH:-auto} dir_only=$DIR_ONLY macos_update_only=$MACOS_UPDATE_ONLY"
   exit 0
 fi
 
@@ -130,9 +135,16 @@ artifact_count=0
 
 case "$PLATFORM" in
   macos)
-    app_path="$(find "$BUNDLE_ROOT" -type d -name "Cerul.app" -print -quit 2>/dev/null || true)"
+    app_path="$APP_PATH"
+    if [ -z "$app_path" ]; then
+      app_path="$(find "$BUNDLE_ROOT" -type d -name "Cerul.app" -print -quit 2>/dev/null || true)"
+    fi
     if [ -z "$app_path" ]; then
       echo "No Cerul.app bundle found under $BUNDLE_ROOT." >&2
+      exit 1
+    fi
+    if [ ! -d "$app_path" ]; then
+      echo "Cerul.app bundle was not found: $app_path" >&2
       exit 1
     fi
 
