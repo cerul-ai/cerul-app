@@ -6832,6 +6832,10 @@ function AdvancedSettings({
     status: SettingsActionStatus;
     message: string | null;
   }>({ status: "idle", message: null });
+  const [diagnosticBundleAction, setDiagnosticBundleAction] = useState<{
+    status: SettingsActionStatus;
+    message: string | null;
+  }>({ status: "idle", message: null });
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
 
   async function openLogsFolder() {
@@ -6841,6 +6845,20 @@ function AdvancedSettings({
       setLogAction({ status: "done", message: t("settings.advanced.message.logsOpened") });
     } catch (error) {
       setLogAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function copyDiagnosticBundle() {
+    setDiagnosticBundleAction({ status: "running", message: null });
+    try {
+      const diagnostics = await api.diagnosticsBundle();
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      setDiagnosticBundleAction({
+        status: "done",
+        message: t("settings.advanced.message.diagnosticsCopied"),
+      });
+    } catch (error) {
+      setDiagnosticBundleAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -6962,6 +6980,15 @@ function AdvancedSettings({
         <button
           className="btn btn-secondary sm"
           type="button"
+          disabled={diagnosticBundleAction.status === "running"}
+          onClick={() => void copyDiagnosticBundle()}
+        >
+          {diagnosticBundleAction.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+          <span>{t("settings.advanced.copyDiagnostics")}</span>
+        </button>
+        <button
+          className="btn btn-secondary sm"
+          type="button"
           onClick={() => {
             // Route straight to the onboarding wizard via the hash. The previous
             // version only persisted the route and reloaded, but the reload kept
@@ -6980,6 +7007,12 @@ function AdvancedSettings({
         <InlineNotice
           tone={logAction.status === "error" ? "error" : "muted"}
           message={logAction.message}
+        />
+      ) : null}
+      {diagnosticBundleAction.message ? (
+        <InlineNotice
+          tone={diagnosticBundleAction.status === "error" ? "error" : "muted"}
+          message={diagnosticBundleAction.message}
         />
       ) : null}
     </>

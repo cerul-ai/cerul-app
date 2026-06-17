@@ -306,6 +306,18 @@ export type SearchRebuildResponse = {
   diagnostics: SearchHealthDiagnostics;
 };
 
+export type DiagnosticsBundle = {
+  generated_at: number;
+  app_version: string;
+  runtime: Record<string, unknown>;
+  settings: SettingsMap;
+  local_models: LocalPrepareStatus | null;
+  local_models_error: string | null;
+  search: SearchHealthDiagnostics;
+  jobs: Record<string, unknown>[];
+  recent_errors: Record<string, unknown>[];
+};
+
 export type SettingsMap = Record<string, unknown>;
 
 export type WhisperModelRecord = {
@@ -606,6 +618,10 @@ export async function rebuildSearchIndex() {
   return fetchJson<SearchRebuildResponse>("/search/rebuild", {
     method: "POST",
   });
+}
+
+export async function diagnosticsBundle() {
+  return fetchJson<DiagnosticsBundle>("/diagnostics");
 }
 
 export async function listWhisperModels() {

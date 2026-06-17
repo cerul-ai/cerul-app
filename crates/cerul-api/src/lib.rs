@@ -337,6 +337,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
+        .route("/diagnostics", get(diagnostics_bundle))
         .route("/search", post(search))
         .route("/search/diagnostics", get(search_diagnostics))
         .route("/search/rebuild", post(rebuild_search_index))
@@ -938,6 +939,248 @@ fn count_missing_raw_paths(conn: &rusqlite::Connection) -> anyhow::Result<usize>
 fn count_query(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<usize> {
     conn.query_row(sql, [], |row| row.get::<_, i64>(0))
         .map(|count| count.max(0) as usize)
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsBundle {
+    generated_at: u64,
+    app_version: &'static str,
+    runtime: DiagnosticsRuntime,
+    settings: BTreeMap<String, Value>,
+    local_models: Option<local_models::LocalPrepareStatus>,
+    local_models_error: Option<String>,
+    search: SearchHealthDiagnostics,
+    jobs: Vec<DiagnosticsJob>,
+    recent_errors: Vec<DiagnosticsItemError>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsRuntime {
+    platform: String,
+    api_runtime_ready: bool,
+    local_runtime_ready: bool,
+    openai_ready: bool,
+    gemini_ready: bool,
+    configured_inference_mode: String,
+    effective_inference_mode: String,
+    last_error: Option<String>,
+    local_runtime_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsJob {
+    id: String,
+    item_id: Option<String>,
+    job_type: String,
+    status: String,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+    progress: f64,
+    stage: Option<String>,
+    stage_message: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsItemError {
+    item_id: String,
+    title: Option<String>,
+    status: String,
+    error: String,
+}
+
+const DIAGNOSTIC_SETTING_KEYS: &[&str] = &[
+    "api_binding",
+    "asr_model",
+    "concurrent_jobs",
+    "inference_mode",
+    "log_level",
+    "model_download_source",
+    "telemetry",
+    "video_understanding_model",
+    "whisper_model",
+];
+
+async fn diagnostics_bundle(State(state): State<ApiState>) -> ApiResult<Json<DiagnosticsBundle>> {
+    let generated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let runtime_status = models::model_runtime_status(&state.paths);
+    let configured_inference_mode = configured_inference_mode(&state.paths)?;
+    let effective_inference_mode =
+        effective_inference_mode_for_runtime(&configured_inference_mode, &runtime_status);
+    let settings = diagnostics_settings_snapshot(
+        &state.paths,
+        &configured_inference_mode,
+        &effective_inference_mode,
+    )?;
+    let (local_models, local_models_error) =
+        match local_models::local_prepare_status_snapshot(&state.paths) {
+            Ok(status) => (Some(status), None),
+            Err(error) => (None, Some(redact_diagnostic_text(&error.to_string()))),
+        };
+
+    Ok(Json(DiagnosticsBundle {
+        generated_at,
+        app_version: env!("CARGO_PKG_VERSION"),
+        runtime: DiagnosticsRuntime {
+            platform: runtime_status.platform,
+            api_runtime_ready: runtime_status.api_runtime_ready,
+            local_runtime_ready: runtime_status.local_runtime_ready,
+            openai_ready: runtime_status.openai_ready,
+            gemini_ready: runtime_status.gemini_ready,
+            configured_inference_mode,
+            effective_inference_mode,
+            last_error: runtime_status
+                .last_error
+                .map(|error| redact_diagnostic_text(&error)),
+            local_runtime_error: runtime_status
+                .local_runtime_error
+                .map(|error| redact_diagnostic_text(&error)),
+        },
+        settings,
+        local_models,
+        local_models_error,
+        search: search_health_diagnostics(&state.paths).await?,
+        jobs: diagnostics_recent_jobs(&state.paths)?,
+        recent_errors: diagnostics_recent_item_errors(&state.paths)?,
+    }))
+}
+
+fn diagnostics_settings_snapshot(
+    paths: &AppPaths,
+    configured_inference_mode: &str,
+    effective_inference_mode: &str,
+) -> anyhow::Result<BTreeMap<String, Value>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut settings = BTreeMap::new();
+    for key in DIAGNOSTIC_SETTING_KEYS {
+        let value: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(value) = value {
+            settings.insert(
+                (*key).to_string(),
+                normalize_setting_value(key, parse_json(&value)),
+            );
+        }
+    }
+
+    settings.insert(
+        "configured_inference_mode".to_string(),
+        Value::String(configured_inference_mode.to_string()),
+    );
+    settings.insert(
+        "effective_inference_mode".to_string(),
+        Value::String(effective_inference_mode.to_string()),
+    );
+    settings.insert(
+        "remote_api_key_set".to_string(),
+        Value::Bool(secret_setting_present(&conn, "remote_api_key")?),
+    );
+
+    Ok(settings)
+}
+
+fn secret_setting_present(conn: &rusqlite::Connection, key: &str) -> anyhow::Result<bool> {
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(value
+        .and_then(|raw| parse_json(&raw).as_str().map(str::to_string))
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false))
+}
+
+fn diagnostics_recent_jobs(paths: &AppPaths) -> anyhow::Result<Vec<DiagnosticsJob>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, item_id, job_type, status, started_at, finished_at, progress,
+               stage, stage_message, error
+        FROM jobs
+        ORDER BY COALESCE(started_at, finished_at, 0) DESC, id DESC
+        LIMIT 20
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(DiagnosticsJob {
+            id: row.get(0)?,
+            item_id: row.get(1)?,
+            job_type: row.get(2)?,
+            status: row.get(3)?,
+            started_at: row.get(4)?,
+            finished_at: row.get(5)?,
+            progress: row.get(6)?,
+            stage: row.get(7)?,
+            stage_message: row
+                .get::<_, Option<String>>(8)?
+                .map(|message| redact_diagnostic_text(&message)),
+            error: row
+                .get::<_, Option<String>>(9)?
+                .map(|error| redact_diagnostic_text(&error)),
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn diagnostics_recent_item_errors(paths: &AppPaths) -> anyhow::Result<Vec<DiagnosticsItemError>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, title, status, error
+        FROM items
+        WHERE error IS NOT NULL
+          AND TRIM(error) <> ''
+        ORDER BY COALESCE(indexed_at, 0) DESC, id DESC
+        LIMIT 20
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let error: String = row.get(3)?;
+        Ok(DiagnosticsItemError {
+            item_id: row.get(0)?,
+            title: row.get(1)?,
+            status: row.get(2)?,
+            error: redact_diagnostic_text(&error),
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn redact_diagnostic_text(value: &str) -> String {
+    let mut redacted = value.to_string();
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            redacted = redacted.replace(&home, "~");
+        }
+    }
+    redact_users_path_segments(&redacted)
+}
+
+fn redact_users_path_segments(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(index) = rest.find("/Users/") {
+        output.push_str(&rest[..index]);
+        let after_prefix = &rest[index + "/Users/".len()..];
+        if let Some(next_slash) = after_prefix.find('/') {
+            output.push_str("~/");
+            rest = &after_prefix[next_slash + 1..];
+        } else {
+            output.push('~');
+            rest = "";
+        }
+    }
+    output.push_str(rest);
+    output
 }
 
 async fn ask_library(
@@ -3577,8 +3820,10 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/health", &["get"]),
     ("/metrics", &["get"]),
     ("/openapi.json", &["get"]),
+    ("/diagnostics", &["get"]),
     ("/search", &["post"]),
     ("/search/diagnostics", &["get"]),
+    ("/search/rebuild", &["post"]),
     ("/ask", &["post"]),
     ("/sources", &["get", "post"]),
     ("/sources/preview/rss", &["post"]),
@@ -3603,7 +3848,6 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/usage/events", &["get"]),
     ("/usage/summary", &["get"]),
     ("/storage/usage", &["get"]),
-    ("/search/rebuild", &["post"]),
     ("/models/catalog", &["get"]),
     ("/models/whisper", &["get"]),
     ("/models/whisper/{id}/download", &["post"]),
@@ -3704,6 +3948,91 @@ mod tests {
         assert_eq!(openapi.status(), StatusCode::OK);
         let openapi_json = response_json(openapi).await;
         assert!(openapi_json["paths"].as_object().unwrap().len() >= 19);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_bundle_redacts_private_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/tester".to_string());
+        let missing_path = format!("{home}/Downloads/missing.mp4");
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at) VALUES
+                    ('remote_api_key', '"super-secret"', strftime('%s','now')),
+                    ('inference_mode', '"auto"', strftime('%s','now')),
+                    ('model_download_source', '"auto"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO sources (id, type, config, status)
+                VALUES ('source-1', 'local', '{}', 'active')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, title, raw_path, indexed_at, status, error, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'Missing video', ?1, 10, 'failed', ?2, '{}')
+                "#,
+                (
+                    &missing_path,
+                    format!("source file does not exist: {missing_path}"),
+                ),
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, error, progress, stage, stage_message
+                )
+                VALUES ('job-1', 'item-1', 'index_video', 'failed', 11, ?1, 0.4, 'transcribing', ?2)
+                "#,
+                (
+                    format!("failed to read {missing_path}"),
+                    format!("Reading {missing_path}"),
+                ),
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json["settings"]["remote_api_key_set"], true);
+        assert!(json["settings"].get("remote_api_key").is_none());
+        assert_eq!(
+            json["recent_errors"][0]["error"],
+            "source file does not exist: ~/Downloads/missing.mp4"
+        );
+        assert_eq!(
+            json["jobs"][0]["error"],
+            "failed to read ~/Downloads/missing.mp4"
+        );
+
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(!serialized.contains("super-secret"));
+        if !home.trim().is_empty() {
+            assert!(!serialized.contains(&home));
+        }
     }
 
     #[tokio::test]

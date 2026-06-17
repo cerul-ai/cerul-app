@@ -346,6 +346,8 @@
 
 ### 17. 诊断包
 
+状态：已完成并推送到 PR #60。新增 `GET /diagnostics`，返回 app/API 版本、配置和实际生效 inference mode、安全设置快照、本地模型 ready/download 状态、搜索健康计数、最近 jobs/stage、最近 item 错误；错误文本会脱敏用户 home path，不返回 API key。设置页新增“复制诊断包”按钮，直接复制 JSON。
+
 需要做：
 
 - 一键复制诊断包含：

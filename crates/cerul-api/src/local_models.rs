@@ -438,6 +438,13 @@ pub async fn local_prepare_status(
     Ok(Json(compute_status(&cfg)))
 }
 
+pub(crate) fn local_prepare_status_snapshot(
+    paths: &cerul_storage::AppPaths,
+) -> anyhow::Result<LocalPrepareStatus> {
+    let cfg = runtime_config(paths)?;
+    Ok(compute_status(&cfg))
+}
+
 fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
     let hub = cfg.models_cache.join("huggingface").join("hub");
     let mirror = cfg.models_cache.join("cerul-mirror");
