@@ -3416,12 +3416,14 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json = response_json(response).await;
-        // Three user-facing models (embed / asr / ocr), ~7.6 GB total.
+        // Three user-facing models (embed / asr / ocr); the exact total follows
+        // the current model size estimates instead of a stale fixture constant.
         let models = json["models"].as_array().unwrap();
         assert_eq!(models.len(), 3);
         let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["embed", "asr", "ocr"]);
-        assert_eq!(json["total_mb"].as_u64().unwrap(), 7745);
+        let summed_model_sizes: u64 = models.iter().map(|m| m["size_mb"].as_u64().unwrap()).sum();
+        assert_eq!(json["total_mb"].as_u64().unwrap(), summed_model_sizes);
         // recommended is one of the two known values; can_run_local is a bool.
         assert!(matches!(
             json["recommended"].as_str(),

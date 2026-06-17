@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
   checkForUpdate: () => ipcRenderer.invoke("cerul:check-update"),
   updaterCheck: () => ipcRenderer.invoke("cerul:updater-check"),
   updaterGetState: () => ipcRenderer.invoke("cerul:updater-get-state"),
+  updaterDiagnostics: () => ipcRenderer.invoke("cerul:updater-diagnostics"),
   updaterDownload: () => ipcRenderer.invoke("cerul:updater-download"),
   updaterInstall: () => ipcRenderer.invoke("cerul:updater-install"),
   onUpdaterEvent: (callback: (state: unknown) => void) => {

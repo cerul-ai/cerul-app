@@ -34,6 +34,7 @@ const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
 const cloudAccountOrigin = "https://accounts.cerul.ai";
 const defaultUpdateRepository = "cerul-ai/cerul-app";
+const macBundleIdentifier = "ai.cerul.desktop";
 const packagedCoreBinaryName = "cerul-core";
 const devCoreBinaryName = "cerul-api";
 const packagedMlxRuntimeArchiveName = "mlx-runtime.tar.gz";
@@ -79,6 +80,8 @@ let oauthCallbackPort: number | null = null;
 let autoUpdaterInstance: AppUpdater | null = null;
 let autoUpdaterWired = false;
 let updateInstallRequested = false;
+let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
+let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
@@ -108,7 +111,8 @@ type UpdaterState =
   | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
   | { phase: "downloading"; version: string; percent: number }
   | { phase: "installing"; version: string }
-  | { phase: "downloaded"; version: string };
+  | { phase: "downloaded"; version: string }
+  | { phase: "error"; version?: string; message: string; releaseUrl: string };
 
 type ApiOutputTail = {
   stdout: string;
@@ -1753,6 +1757,10 @@ function registerIpcHandlers() {
     assertTrustedIpcSender(event);
     return latestUpdaterState;
   });
+  ipcMain.handle("cerul:updater-diagnostics", async (event) => {
+    assertTrustedIpcSender(event);
+    return collectUpdaterDiagnostics();
+  });
   ipcMain.handle("cerul:updater-download", async (event) => {
     assertTrustedIpcSender(event);
     await startDesktopUpdateDownload();
@@ -1760,7 +1768,7 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("cerul:updater-install", async (event) => {
     assertTrustedIpcSender(event);
-    installDesktopUpdate();
+    await installDesktopUpdate();
   });
   ipcMain.handle("cerul:store-get", async (event, storePath: string, key: string) => {
     assertTrustedIpcSender(event);
@@ -1842,6 +1850,104 @@ function releasesPageUrl() {
   return `https://github.com/${updateRepository()}/releases`;
 }
 
+function readTextIfExists(filePath: string, maxBytes = 64 * 1024) {
+  try {
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      return null;
+    }
+    const file = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(Math.min(maxBytes, fs.statSync(filePath).size));
+      fs.readSync(file, buffer, 0, buffer.length, 0);
+      return buffer.toString("utf8");
+    } finally {
+      fs.closeSync(file);
+    }
+  } catch (error) {
+    return `[[read failed: ${error instanceof Error ? error.message : String(error)}]]`;
+  }
+}
+
+function listTree(root: string, maxEntries = 160) {
+  const output: string[] = [];
+  function walk(current: string, depth: number) {
+    if (output.length >= maxEntries || depth > 4) {
+      return;
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      output.push(`${current} [[stat failed: ${error instanceof Error ? error.message : String(error)}]]`);
+      return;
+    }
+    const kind = stat.isDirectory() ? "dir" : stat.isSymbolicLink() ? "link" : "file";
+    output.push(`${current} ${kind} ${stat.size} ${stat.mtime.toISOString()}`);
+    if (!stat.isDirectory()) {
+      return;
+    }
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(current).sort();
+    } catch (error) {
+      output.push(`${current} [[readdir failed: ${error instanceof Error ? error.message : String(error)}]]`);
+      return;
+    }
+    for (const entry of entries) {
+      walk(path.join(current, entry), depth + 1);
+      if (output.length >= maxEntries) {
+        break;
+      }
+    }
+  }
+  walk(root, 0);
+  return output;
+}
+
+function collectUpdaterDiagnostics() {
+  const userData = app.getPath("userData");
+  const appCache = path.join(os.homedir(), "Library", "Caches", macBundleIdentifier);
+  const updaterCache = path.join(os.homedir(), "Library", "Caches", "@cerulelectron-shell-updater");
+  const shipItCache = path.join(os.homedir(), "Library", "Caches", `${macBundleIdentifier}.ShipIt`);
+  const bundlePath = macAppBundlePath();
+  const appUpdateYml = path.join(process.resourcesPath, "app-update.yml");
+  const shipItState = path.join(shipItCache, "ShipItState.plist");
+  const pendingInfo = path.join(updaterCache, "pending", "update-info.json");
+  const lines = [
+    "== Cerul updater diagnostics ==",
+    `createdAt=${new Date().toISOString()}`,
+    `platform=${process.platform}`,
+    `arch=${process.arch}`,
+    `appVersion=${app.getVersion()}`,
+    `isPackaged=${app.isPackaged}`,
+    `appPath=${app.getAppPath()}`,
+    `bundlePath=${bundlePath ?? ""}`,
+    `resourcesPath=${process.resourcesPath}`,
+    `userData=${userData}`,
+    `cache=${appCache}`,
+    `latestUpdaterState=${JSON.stringify(latestUpdaterState)}`,
+    "",
+    "== app-update.yml ==",
+    readTextIfExists(appUpdateYml) ?? "[[missing]]",
+    "",
+    "== pending update-info.json ==",
+    readTextIfExists(pendingInfo) ?? "[[missing]]",
+    "",
+    "== ShipItState.plist raw ==",
+    readTextIfExists(shipItState) ?? "[[missing]]",
+    "",
+    "== updater cache tree ==",
+    ...listTree(updaterCache),
+    "",
+    "== ShipIt cache tree ==",
+    ...listTree(shipItCache),
+    "",
+    "== last core exit ==",
+    JSON.stringify(lastApiExit),
+  ];
+  return lines.join("\n");
+}
+
 function setUpdaterState(next: UpdaterState) {
   latestUpdaterState = next;
   // The renderer also pulls the current state on mount (cerul:updater-get-state)
@@ -1849,6 +1955,17 @@ function setUpdaterState(next: UpdaterState) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("cerul:updater-event", next);
   }
+}
+
+function setUpdaterError(error: unknown, version?: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("desktop updater error", error);
+  setUpdaterState({
+    phase: "error",
+    version,
+    message,
+    releaseUrl: releasesPageUrl(),
+  });
 }
 
 function getAutoUpdater(): AppUpdater | null {
@@ -1898,27 +2015,30 @@ function wireAutoUpdater(updater: AppUpdater) {
       return;
     }
     setUpdaterState({ phase: "installing", version });
-    setTimeout(() => {
-      try {
-        installDesktopUpdate();
-      } catch (error) {
-        console.error("electron-updater install failed; waiting for manual restart", error);
-        setUpdaterState({ phase: "downloaded", version });
-      }
-    }, 500);
+    setTimeout(() => void installDesktopUpdate(version), 500);
   });
   updater.on("error", (error) => {
     // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
     // failure. Degrade to the GitHub-release fallback so the pill still lets the
     // user grab the new version from the download page.
-    console.error("electron-updater error; falling back to release page", error);
+    console.error("electron-updater error", error);
     const fallbackUrl =
       latestUpdaterState.phase === "available" ? latestUpdaterState.releaseUrl : releasesPageUrl();
     if (updateInstallRequested) {
       updateInstallRequested = false;
-      void shell.openExternal(fallbackUrl);
     }
-    void refreshManualUpdateState();
+    setUpdaterState({
+      phase: "error",
+      version:
+        latestUpdaterState.phase === "available" ||
+        latestUpdaterState.phase === "downloading" ||
+        latestUpdaterState.phase === "installing" ||
+        latestUpdaterState.phase === "downloaded"
+          ? latestUpdaterState.version
+          : undefined,
+      message: error instanceof Error ? error.message : String(error),
+      releaseUrl: fallbackUrl,
+    });
   });
 }
 
@@ -2003,20 +2123,65 @@ async function startDesktopUpdateDownload() {
   } catch (error) {
     console.error("electron-updater download failed; opening release page", error);
     updateInstallRequested = false;
-    await shell.openExternal(releaseUrl);
+    setUpdaterState({
+      phase: "error",
+      version: latestUpdaterState.phase === "available" ? latestUpdaterState.version : undefined,
+      message: error instanceof Error ? error.message : String(error),
+      releaseUrl,
+    });
   }
 }
 
-function installDesktopUpdate() {
+function clearUpdateInstallFallbackTimers() {
+  if (updateInstallFallbackTimer) {
+    clearTimeout(updateInstallFallbackTimer);
+    updateInstallFallbackTimer = null;
+  }
+  if (updateInstallForceExitTimer) {
+    clearTimeout(updateInstallForceExitTimer);
+    updateInstallForceExitTimer = null;
+  }
+}
+
+function scheduleUpdateInstallExitFallback() {
+  clearUpdateInstallFallbackTimers();
+  updateInstallFallbackTimer = setTimeout(() => {
+    if (!isQuitting) {
+      isQuitting = true;
+    }
+    app.quit();
+  }, 1500);
+  updateInstallForceExitTimer = setTimeout(() => {
+    app.exit(0);
+  }, 9000);
+}
+
+async function installDesktopUpdate(version?: string) {
   const updater = getAutoUpdater();
   if (!updater) {
+    setUpdaterError(new Error("electron-updater is unavailable"), version);
     return;
   }
-  // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
-  // app as quitting up front so our close-to-tray handler does not hide the
-  // main window and leave ShipIt blocked on a still-running app instance.
-  isQuitting = true;
-  updater.quitAndInstall(false, true);
+  const installingVersion =
+    version ??
+    (latestUpdaterState.phase === "downloaded" || latestUpdaterState.phase === "installing"
+      ? latestUpdaterState.version
+      : app.getVersion());
+  setUpdaterState({ phase: "installing", version: installingVersion });
+  try {
+    stopStatusMonitor();
+    stopOAuthCallbackServer();
+    await stopRustCoreGracefully(1500);
+    // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
+    // app as quitting up front so our close-to-tray handler does not hide the
+    // main window and leave ShipIt blocked on a still-running app instance.
+    isQuitting = true;
+    updater.quitAndInstall(false, true);
+    scheduleUpdateInstallExitFallback();
+  } catch (error) {
+    clearUpdateInstallFallbackTimers();
+    setUpdaterError(error, installingVersion);
+  }
 }
 
 function releaseVersionFromTag(tag: string | undefined) {
