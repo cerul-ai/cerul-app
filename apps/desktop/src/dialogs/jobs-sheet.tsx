@@ -5,7 +5,6 @@ import { useRef, useState } from "react";
 
 import { Check, Pause, Play, Trash2, X } from "lucide-react";
 import * as api from "../lib/api";
-import { formatUsd } from "../lib/formatters";
 import { useT } from "../lib/i18n";
 import { isActiveJob } from "../lib/items";
 import {
@@ -76,8 +75,6 @@ export function JobsSheet({
   const activeJobs = sortedJobs.filter(isActiveJob);
   const failedJobs = sortedJobs.filter((job) => jobGroup(job) === "failed");
   const doneJobs = sortedJobs.filter((job) => jobGroup(job) === "done");
-  // Incurred remote cost across the running batch — $0 while everything is local.
-  const activeCostUsd = activeJobs.reduce((sum, job) => sum + (job.usage?.estimated_usd ?? 0), 0);
   const now = useNowSeconds(activeJobs.length > 0);
 
   const filters: { id: "all" | JobGroup; label: string; n: number }[] = [
@@ -119,9 +116,7 @@ export function JobsSheet({
     ]
       .filter(Boolean)
       .join(" · ");
-    const canCancel =
-      onCancelJob && controlsEnabled && job.item_id &&
-      (isRunning || job.status === "queued" || isFailed);
+    const canCancel = onCancelJob && controlsEnabled && job.item_id && (isRunning || job.status === "queued");
 
     return (
       <div className="jobs-tl-item" key={job.id}>
@@ -262,7 +257,7 @@ export function JobsSheet({
                 ))}
                 <span className="jobs-cost-pill">
                   <span className="jobs-cost-pill-dot" />
-                  {t("jobs.batch")} <b className="mono">{formatUsd(activeCostUsd)}</b> · {t("jobs.allLocal")}
+                  {t("jobs.localProcessing")}
                 </span>
               </div>
 

@@ -368,6 +368,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/chunks/:id/video-segment", get(get_chunk_video_segment))
         .route("/chunks/:id/video-clip", get(get_chunk_video_clip))
         .route("/jobs", get(list_jobs))
+        .route("/jobs/:id/cancel", post(cancel_job))
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
         .route("/storage/usage", get(storage_usage))
@@ -397,6 +398,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route(
             "/models/local/prepare-status",
             get(local_models::local_prepare_status),
+        )
+        .route(
+            "/models/local/prepare-cancel",
+            post(local_models::cancel_local_prepare),
         )
         .route(
             "/providers",
@@ -1414,7 +1419,7 @@ async fn remove_item(
     Ok(Json(json!({ "status": "removed", "id": id })))
 }
 
-async fn cleanup_item_artifacts(
+pub(crate) async fn cleanup_item_artifacts(
     paths: &AppPaths,
     item: &cerul_storage::StoredItem,
 ) -> anyhow::Result<()> {
@@ -1436,21 +1441,9 @@ async fn cleanup_item_artifacts(
     .await?;
     remove_dir_if_exists(paths.cache.join("pipeline").join("frames").join(cache_key)).await?;
     remove_clip_cache_for_item(paths, &item.id).await?;
-    // Downloaded source media (youtube / web_video / rss enclosures) lives in
-    // the cache too and used to be left behind forever after deletion. Only
-    // delete raw_path when it actually sits inside our cache directory —
-    // never a user's own file.
-    if matches!(
-        item.source_type.as_str(),
-        "youtube" | "web_video" | "rss_podcast"
-    ) {
-        if let Some(raw_path) = item.raw_path.as_deref() {
-            let raw = FsPath::new(raw_path);
-            if raw.starts_with(&paths.cache) {
-                remove_file_if_exists(raw.to_path_buf()).await?;
-            }
-        }
-    }
+    // Never remove raw_path here. "Remove from library" means delete Cerul's
+    // index and processed derivatives only; source media needs a separate,
+    // explicit cache-cleaning action.
     Ok(())
 }
 
@@ -1704,6 +1697,28 @@ async fn list_jobs(
         }
     }
     Ok(Json(jobs))
+}
+
+async fn cancel_job(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let item_id = jobs::cancel_job(&state.paths, &id)?
+        .ok_or_else(|| ApiError::not_found(format!("job not found: {id}")))?;
+    match cerul_storage::get_item(&state.paths, &item_id) {
+        Ok(item) => cleanup_item_artifacts(&state.paths, &item).await?,
+        Err(error) => tracing::warn!(
+            %error,
+            job_id = %id,
+            item_id = %item_id,
+            "cancelled job item was not available for artifact cleanup"
+        ),
+    }
+    Ok(Json(json!({
+        "status": "cancelled",
+        "id": id,
+        "item_id": item_id,
+    })))
 }
 
 async fn usage_summary(

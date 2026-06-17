@@ -549,10 +549,11 @@ function secureDesktopWindow(window: BrowserWindow) {
 function setupTray() {
   const iconPath = trayIconPath();
   const image = nativeImage.createFromPath(iconPath);
-  if (!image.isEmpty() && process.platform === "darwin") {
-    image.setTemplateImage(true);
+  const trayImage = image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 });
+  if (!trayImage.isEmpty() && process.platform === "darwin") {
+    trayImage.setTemplateImage(true);
   }
-  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 }));
+  tray = new Tray(trayImage);
   tray.setToolTip("Cerul");
   tray.on("click", () => toggleMenuBarWindow());
   tray.setContextMenu(
@@ -1477,6 +1478,9 @@ function runtimeEnv() {
     "cerul_mlx_sidecar.py",
   );
   if (fs.existsSync(mlxSidecar)) env.CERUL_MLX_SIDECAR = mlxSidecar;
+
+  const bundledModels = path.join(app.isPackaged ? process.resourcesPath : root, "bundled-models");
+  if (fs.existsSync(bundledModels)) env.CERUL_BUNDLED_MODELS_DIR = bundledModels;
 
   // Packaged builds ship a signed MLX Python runtime as a single archive. We
   // extract it into user data on first launch so Gatekeeper does not recursively

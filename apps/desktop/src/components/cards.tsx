@@ -7,6 +7,7 @@
 // overlay.
 
 import {
+  Check,
   Eye,
   FileAudio,
   FileVideo,
@@ -275,6 +276,9 @@ export function ItemCard({
             checked={selected}
             onChange={(event) => onSelect?.(event.currentTarget.checked)}
           />
+          <span className="item-select-box" aria-hidden="true">
+            {selected ? <Check size={12} strokeWidth={3} /> : null}
+          </span>
           <span className="faint">{t("library.itemCard.selectAria")}</span>
         </label>
       ) : null}

@@ -3,7 +3,7 @@
 // a "downloading" progress view (the same dialog), backed by the host's live
 // prepare status. Mirrors design/Cerul_local-model-flow-proposal.html (屏 A/B).
 
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check, Pause, Play, X } from "lucide-react";
 import { brandAssets } from "../lib/brand";
 import { formatDuration } from "../lib/formatters";
 import { useT } from "../lib/i18n";
@@ -13,6 +13,17 @@ function formatSize(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
 }
 
+function formatSpeed(bps: number | null | undefined): string | null {
+  if (!bps || !Number.isFinite(bps) || bps <= 0) {
+    return null;
+  }
+  const mb = bps / 1024 / 1024;
+  if (mb >= 1) {
+    return `${mb.toFixed(1)} MB/s`;
+  }
+  return `${Math.max(1, Math.round(bps / 1024))} KB/s`;
+}
+
 // The core returns English labels; localize the three known model ids and fall
 // back to whatever label the server sent for anything unrecognized.
 const KNOWN_MODEL_IDS = new Set(["embed", "asr", "ocr"]);
@@ -20,42 +31,61 @@ const KNOWN_MODEL_IDS = new Set(["embed", "asr", "ocr"]);
 export function LocalModelConsent({
   capability,
   download,
+  paused,
   onAgree,
   onDecline,
+  onPause,
+  onResume,
+  onCancelDownload,
   onBackground,
 }: {
   capability: LocalModelCapability | null;
   download: LocalPrepareStatus | null;
+  paused?: boolean;
   onAgree: () => void;
   onDecline: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onCancelDownload: () => void;
   onBackground: () => void;
 }) {
   const t = useT();
-  const downloading = download?.phase === "downloading";
+  const preparing = !!download && download.phase !== "ready";
   const totalMb = capability?.total_mb ?? download?.total_mb ?? 2100;
   const canLocal = capability?.can_run_local ?? true;
+  const speed = formatSpeed(download?.download_bps);
+  const statusParts = [
+    download?.source_label ? t("localModel.downloading.source", { source: download.source_label }) : null,
+    speed,
+    download?.eta_seconds != null
+      ? t("home.continueRemaining", { remaining: formatDuration(download.eta_seconds) })
+      : null,
+  ].filter(Boolean);
 
   return (
     <div className="scrim lm-scrim" role="presentation">
       <div className="lm-dialog" role="dialog" aria-modal="true" aria-label={t("localModel.consent.title")}>
-        <span className={downloading ? "lm-icon pulse" : "lm-icon"}>
+        <span className={preparing && !paused ? "lm-icon pulse" : "lm-icon"}>
           <img src={brandAssets.appIcon} alt="" />
         </span>
 
-        {downloading && download ? (
+        {preparing && download ? (
           <>
-            <h3 className="lm-title">{t("localModel.downloading.title")}</h3>
+            <h3 className="lm-title">
+              {paused ? t("localModel.downloading.pausedTitle") : t("localModel.downloading.title")}
+            </h3>
             <div className="lm-overall">
               <span className="lm-track">
                 <span className="lm-fill" style={{ width: `${download.overall_progress}%` }} />
               </span>
               <p className="lm-meta mono">
                 {formatSize(download.done_mb)} / {formatSize(download.total_mb)}
-                {download.eta_seconds != null ? ` · ${t("home.continueRemaining", { remaining: formatDuration(download.eta_seconds) })}` : ""}
-                {" · "}
-                <b className="lm-free">$0</b>
+                {statusParts.length > 0 ? ` · ${statusParts.join(" · ")}` : ""}
               </p>
             </div>
+            {download.last_source_error ? (
+              <p className="lm-source-warning">{download.last_source_error}</p>
+            ) : null}
             <div className="lm-list">
               {download.models.map((m) => (
                 <div key={m.id} className={`lm-row ${m.status}`}>
@@ -73,10 +103,32 @@ export function LocalModelConsent({
                 </div>
               ))}
             </div>
-            <button type="button" className="btn btn-ghost lm-btn" onClick={onBackground}>
-              <span>{t("localModel.downloading.background")}</span>
-              <ArrowRight size={15} />
-            </button>
+            <div className="lm-actions">
+              {paused ? (
+                <button type="button" className="btn btn-primary lm-btn" onClick={onResume}>
+                  <Play size={15} />
+                  <span>{t("localModel.downloading.resume")}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-secondary lm-btn"
+                  disabled={!download.can_pause}
+                  onClick={onPause}
+                >
+                  <Pause size={15} />
+                  <span>{t("localModel.downloading.pause")}</span>
+                </button>
+              )}
+              <button type="button" className="btn btn-ghost lm-btn" onClick={onCancelDownload}>
+                <X size={15} />
+                <span>{t("localModel.downloading.cancel")}</span>
+              </button>
+              <button type="button" className="btn btn-ghost lm-btn" onClick={onBackground}>
+                <span>{t("localModel.downloading.background")}</span>
+                <ArrowRight size={15} />
+              </button>
+            </div>
           </>
         ) : (
           <>

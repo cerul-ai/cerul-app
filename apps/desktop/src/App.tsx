@@ -616,9 +616,8 @@ function AppWorkspace() {
   const themePreference = settingString(data.settings, "theme", "System");
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
-  // The Tasks drawer hides jobs whose item no longer exists, so cancelling a task
-  // (which deletes its item) makes it disappear even though the job row lingers in
-  // the DB.
+  // The Tasks drawer hides orphaned jobs whose item was removed from the
+  // library; cancelling a task now keeps the item and marks the job cancelled.
   const drawerJobs = visibleJobs.filter(
     (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
   );
@@ -1272,7 +1271,7 @@ function AppWorkspace() {
             <span className="rail-label">{t("nav.settings")}</span>
           </button>
           <AccountRailButton />
-          {lm.minimized && lm.download?.phase === "downloading" ? (
+          {lm.minimized && lm.download && lm.download.phase !== "ready" ? (
             <button
               type="button"
               className="rail-dl-pill"
@@ -1581,11 +1580,11 @@ function AppWorkspace() {
               body: t("jobs.confirm.cancel.body"),
               confirmLabel: t("jobs.confirm.cancel.confirm"),
             });
-            if (!confirmed || !job.item_id) {
+            if (!confirmed) {
               return;
             }
             try {
-              await api.deleteItem(job.item_id);
+              await api.cancelJob(job.id);
               await refreshCoreData();
             } catch (error) {
               console.warn("failed to cancel job", error);
@@ -1611,8 +1610,12 @@ function AppWorkspace() {
         <LocalModelConsent
           capability={lm.capability}
           download={lm.download}
+          paused={lm.paused}
           onAgree={handleLmAgree}
           onDecline={handleLmDecline}
+          onPause={lm.pauseDownload}
+          onResume={lm.resumeDownload}
+          onCancelDownload={lm.cancelDownload}
           onBackground={lm.background}
         />
       ) : null}
@@ -5202,11 +5205,6 @@ function ModelsSettings({
       activeProfile?.model_id ??
       "Qwen3-VL Embedding local"
     : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
-  // Video understanding runs locally too when processing is on-device: prefer
-  // catalog-reported local vision models, else the bundled fallback list.
-  const catalogLocalVision = videoUnderstandingModels.filter((model) => model.tier === "local");
-  const videoLocalOptions =
-    catalogLocalVision.length > 0 ? toComboOptions(catalogLocalVision) : localVisionModels;
   const capabilities: CapabilityRowModel[] = [
     {
       key: "asr",
@@ -5241,26 +5239,16 @@ function ModelsSettings({
       key: "video",
       badge: t("settings.models.capability.video.badge"),
       name: t("settings.models.video.kicker"),
-      isLocal: effectiveLocalMode,
+      isLocal: false,
       locked: false,
       modelEditable: true,
       localLabel: "",
-      modelValue:
-        effectiveLocalMode &&
-        !videoLocalOptions.some((option) => option.id === selectedVideoUnderstandingModel)
-          ? videoLocalOptions[0]?.id ?? selectedVideoUnderstandingModel
-          : selectedVideoUnderstandingModel,
-      modelOptions: effectiveLocalMode
-        ? videoLocalOptions
-        : toComboOptions(videoUnderstandingModels),
+      modelValue: selectedVideoUnderstandingModel,
+      modelOptions: toComboOptions(videoUnderstandingModels),
       onSelectModel: (id) => void onSettingsChange({ video_understanding_model: id }),
-      provider: effectiveLocalMode
-        ? null
-        : providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
+      provider: providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
       note: null,
-      // On-device video understanding uses the bundled Qwen3-VL vision model
-      // (same weights as OCR), so its readiness tracks the "ocr" download.
-      localModelKey: "ocr",
+      localModelKey: null,
     },
   ];
 
@@ -5464,24 +5452,6 @@ const fallbackAsrModels: AsrModelOption[] = [
   { id: "whisper-1", label: "OpenAI Whisper", size_label: "usage-based" },
   { id: "gpt-4o-mini-transcribe", label: "OpenAI GPT-4o mini transcribe", size_label: "usage-based" },
   { id: "gpt-4o-transcribe", label: "OpenAI GPT-4o transcribe", size_label: "usage-based" },
-];
-
-// On-device video-understanding VLMs offered when processing runs locally
-// (mlx-community Qwen3-VL collection + Gemma 4). All Instruct + quantized for
-// practical on-device use. The first entry is the default; Qwen3-VL options
-// run small -> large below it. The daemon must ship/serve these for a
-// selection to take effect.
-const localVisionModels: ModelComboOption[] = [
-  { id: "gemma-4-12B-it-qat-4bit", label: "Gemma 4 12B", hint: "本地 · MLX · QAT 量化 · 默认" },
-  { id: "Qwen3-VL-4B-Instruct-4bit", label: "Qwen3-VL 4B", hint: "本地 · MLX · 4-bit · 轻量" },
-  { id: "Qwen3-VL-2B-Instruct-4bit", label: "Qwen3-VL 2B", hint: "本地 · MLX · 4-bit · 最省资源" },
-  { id: "Qwen3-VL-8B-Instruct-4bit", label: "Qwen3-VL 8B", hint: "本地 · MLX · 4-bit · 更准确" },
-  {
-    id: "Qwen3-VL-30B-A3B-Instruct-4bit",
-    label: "Qwen3-VL 30B (MoE)",
-    hint: "本地 · MLX · 4-bit · 强 · 30B 总 / 3B 激活",
-  },
-  { id: "Qwen3-VL-32B-Instruct-4bit", label: "Qwen3-VL 32B", hint: "本地 · MLX · 4-bit · 最强 · 占用大" },
 ];
 
 function isGeminiAsrModelId(modelId: string) {
@@ -6442,6 +6412,7 @@ function AdvancedSettings({
   const remoteApiKeySet = settings["remote_api_key_set"] === true;
   const [remoteKeyDraft, setRemoteKeyDraft] = useState("");
   const logLevel = settingString(settings, "log_level", "info");
+  const modelDownloadSource = settingString(settings, "model_download_source", "auto");
   const [logAction, setLogAction] = useState<{
     status: SettingsActionStatus;
     message: string | null;
@@ -6525,6 +6496,26 @@ function AdvancedSettings({
                 <p className="settings-help">{t("settings.advanced.telemetry.detailsBody")}</p>
               ) : null}
             </div>
+          }
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t("settings.advanced.modelDownload.title")}>
+        <SettingRow
+          label={t("settings.advanced.modelDownload.source.label")}
+          description={t("settings.advanced.modelDownload.source.description")}
+          control={
+            <select
+              value={modelDownloadSource}
+              disabled={disabled}
+              onChange={(event) =>
+                void onSettingsChange({ model_download_source: event.currentTarget.value })
+              }
+            >
+              <option value="auto">{t("settings.advanced.modelDownload.source.auto")}</option>
+              <option value="huggingface">{t("settings.advanced.modelDownload.source.huggingface")}</option>
+              <option value="modelscope">{t("settings.advanced.modelDownload.source.modelscope")}</option>
+              <option value="cerul_cdn">{t("settings.advanced.modelDownload.source.cerulCdn")}</option>
+            </select>
           }
         />
       </SettingsGroup>

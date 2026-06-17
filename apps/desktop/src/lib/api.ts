@@ -419,6 +419,13 @@ export async function listJobs() {
   return fetchJson<JobRecord[]>("/jobs");
 }
 
+export async function cancelJob(id: string) {
+  return fetchJson<{ status: string; id: string; item_id: string | null }>(
+    `/jobs/${encodeURIComponent(id)}/cancel`,
+    { method: "POST" },
+  );
+}
+
 export async function listMoments() {
   return fetchJson<MomentRecord[]>("/moments");
 }
@@ -663,6 +670,12 @@ export type LocalPrepareStatus = {
   done_mb: number;
   total_mb: number;
   eta_seconds: number | null;
+  active_source: string | null;
+  source_label: string | null;
+  download_bps: number | null;
+  can_pause: boolean;
+  can_cancel: boolean;
+  last_source_error: string | null;
   models: LocalModelInfo[];
   error: string | null;
 };
@@ -680,6 +693,12 @@ export async function prepareLocalModels(modelIds?: string[]) {
 
 export async function localPrepareStatus() {
   return fetchJson<LocalPrepareStatus>("/models/local/prepare-status");
+}
+
+export async function cancelLocalModelPrepare() {
+  return fetchJson<LocalPrepareStatus>("/models/local/prepare-cancel", {
+    method: "POST",
+  });
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {

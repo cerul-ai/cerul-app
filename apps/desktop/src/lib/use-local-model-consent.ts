@@ -8,6 +8,7 @@ import * as api from "./api";
 type State = {
   show: boolean;
   minimized: boolean;
+  paused: boolean;
   ready: boolean;
   capability: api.LocalModelCapability | null;
   download: api.LocalPrepareStatus | null;
@@ -16,6 +17,7 @@ type State = {
 const IDLE: State = {
   show: false,
   minimized: false,
+  paused: false,
   ready: false,
   capability: null,
   download: null,
@@ -61,9 +63,9 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
         setS((p) => {
           if (download.phase === "ready") {
             clear();
-            return { ...p, download, show: false, minimized: false, ready: true };
+            return { ...p, download, show: false, minimized: false, paused: false, ready: true };
           }
-          return { ...p, download };
+          return { ...p, download, paused: false };
         });
       })
       .catch(() => undefined);
@@ -83,6 +85,12 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
         done_mb: 0,
         total_mb: cap.total_mb,
         eta_seconds: null,
+        active_source: null,
+        source_label: null,
+        download_bps: null,
+        can_pause: false,
+        can_cancel: false,
+        last_source_error: null,
         models: cap.models.map((m, i) => ({
           id: m.id,
           label: m.label,
@@ -92,7 +100,7 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
         })),
         error: null,
       };
-      return { ...p, download: seed };
+      return { ...p, download: seed, paused: false };
     });
     api.prepareLocalModels().catch(() => undefined);
     clear();
@@ -101,7 +109,26 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
 
   const decline = useCallback(() => {
     clear();
-    setS((p) => ({ ...p, show: false, download: null }));
+    setS((p) => ({ ...p, show: false, paused: false, download: null }));
+  }, []);
+  const pauseDownload = useCallback(() => {
+    clear();
+    api
+      .cancelLocalModelPrepare()
+      .then((download) => setS((p) => ({ ...p, download, paused: true })))
+      .catch(() => setS((p) => ({ ...p, paused: true })));
+  }, []);
+  const resumeDownload = useCallback(() => {
+    setS((p) => ({ ...p, paused: false, show: true, minimized: false }));
+    api.prepareLocalModels().catch(() => undefined);
+    clear();
+    timer.current = window.setInterval(pollStatus, 1200);
+    pollStatus();
+  }, [pollStatus]);
+  const cancelDownload = useCallback(() => {
+    clear();
+    api.cancelLocalModelPrepare().catch(() => undefined);
+    setS((p) => ({ ...p, show: false, minimized: false, paused: false, download: null }));
   }, []);
   const background = useCallback(() => setS((p) => ({ ...p, minimized: true })), []);
   const reopen = useCallback(() => setS((p) => ({ ...p, minimized: false })), []);
@@ -109,5 +136,15 @@ export function useLocalModelConsent(args: { trigger: boolean }) {
 
   useEffect(() => () => clear(), []);
 
-  return { ...s, agree, decline, background, reopen, dismissReady };
+  return {
+    ...s,
+    agree,
+    decline,
+    pauseDownload,
+    resumeDownload,
+    cancelDownload,
+    background,
+    reopen,
+    dismissReady,
+  };
 }

@@ -67,7 +67,7 @@ export function jobBadgeStatus(status: string) {
   if (status === "failed" || status === "error") {
     return "failed";
   }
-  if (status === "completed" || status === "done") {
+  if (status === "completed" || status === "done" || status === "cancelled" || status === "canceled") {
     return "indexed";
   }
   return "indexing";
@@ -85,6 +85,9 @@ export function jobStatusLabel(status: string, t: TFunction) {
     case "completed":
     case "done":
       return t("jobs.status.completed");
+    case "cancelled":
+    case "canceled":
+      return t("jobs.status.cancelled");
     default:
       return status;
   }

@@ -14,6 +14,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -54,6 +55,42 @@ def cache_dir_name(repo_id: str) -> str:
 
 def snapshot_files(snapshot: Path) -> list[Path]:
     return sorted(path for path in snapshot.rglob("*") if path.is_file())
+
+
+def content_type_for(path: Path) -> str:
+    if path.suffix == ".json":
+        return "application/json"
+    if path.suffix in {".txt", ".md", ".jinja", ".yml", ".yaml"}:
+        return "text/plain; charset=utf-8"
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def build_file_entries(
+    snapshot: Path,
+    *,
+    repo_id: str,
+    revision: str,
+    prefix: str,
+    base_url: str,
+) -> list[dict[str, Any]]:
+    repo_root = f"{prefix.rstrip('/')}/{cache_dir_name(repo_id)}/{revision}/files"
+    prefix_root = f"{prefix.rstrip('/')}/"
+    entries: list[dict[str, Any]] = []
+    for file_path in snapshot_files(snapshot):
+        relative = file_path.relative_to(snapshot).as_posix()
+        key = f"{repo_root}/{relative}"
+        rel_key = key.removeprefix(prefix_root)
+        entries.append(
+            {
+                "snapshot_path": relative,
+                "path": rel_key,
+                "url": f"{base_url.rstrip('/')}/{rel_key}",
+                "sha256": sha256_file(file_path),
+                "size": file_path.stat().st_size,
+                "content_type": content_type_for(file_path),
+            }
+        )
+    return entries
 
 
 def create_archive(snapshot: Path, archive: Path) -> None:
@@ -185,7 +222,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         sidecar.DEFAULT_EMBEDDING_MODEL,
         sidecar.DEFAULT_ASR_MODEL,
         sidecar.DEFAULT_FORCED_ALIGNER_MODEL,
-        sidecar.DEFAULT_OCR_MODEL,
+        sidecar.DEFAULT_OCR_DET_MODEL,
+        sidecar.DEFAULT_OCR_REC_MODEL,
     ]
     if args.include_whisper:
         models.append(sidecar.DEFAULT_WHISPER_MODEL)
@@ -194,17 +232,20 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         sidecar.DEFAULT_EMBEDDING_MODEL: "apache-2.0",
         sidecar.DEFAULT_ASR_MODEL: "apache-2.0",
         sidecar.DEFAULT_FORCED_ALIGNER_MODEL: "apache-2.0",
-        sidecar.DEFAULT_OCR_MODEL: "apache-2.0",
+        sidecar.DEFAULT_OCR_DET_MODEL: "apache-2.0",
+        sidecar.DEFAULT_OCR_REC_MODEL: "apache-2.0",
         sidecar.DEFAULT_WHISPER_MODEL: "mit",
     }
     source_models = {
         sidecar.DEFAULT_EMBEDDING_MODEL: "Qwen/Qwen3-VL-Embedding-2B",
-        sidecar.DEFAULT_OCR_MODEL: "Qwen/Qwen3-VL-2B-Instruct",
+        sidecar.DEFAULT_OCR_DET_MODEL: "PaddlePaddle/PP-OCRv6_small_det_onnx",
+        sidecar.DEFAULT_OCR_REC_MODEL: "PaddlePaddle/PP-OCRv6_small_rec_onnx",
         sidecar.DEFAULT_WHISPER_MODEL: "openai/whisper-large-v3-turbo",
     }
     allow_patterns = {
         sidecar.DEFAULT_EMBEDDING_MODEL: sidecar.QWEN3_VL_ALLOW_PATTERNS,
-        sidecar.DEFAULT_OCR_MODEL: sidecar.QWEN3_VL_ALLOW_PATTERNS,
+        sidecar.DEFAULT_OCR_DET_MODEL: sidecar.ONNX_OCR_ALLOW_PATTERNS,
+        sidecar.DEFAULT_OCR_REC_MODEL: sidecar.ONNX_OCR_ALLOW_PATTERNS,
     }
 
     env = os.environ.copy()
@@ -250,6 +291,13 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             base_url=args.base_url,
             chunk_size_mib=args.chunk_size_mb,
         )
+        files = build_file_entries(
+            snapshot,
+            repo_id=repo_id,
+            revision=revision,
+            prefix=args.prefix,
+            base_url=args.base_url,
+        )
         rel_path = archive_key.removeprefix(f"{args.prefix.rstrip('/')}/")
         manifest["models"][repo_id] = {
             "repo_id": repo_id,
@@ -265,6 +313,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                 "chunk_size": args.chunk_size_mb * 1024 * 1024,
                 "chunks": chunks,
             },
+            "files": files,
         }
         print(
             f"Built {archive_path} ({size:,} bytes sha256={digest}, chunks={len(chunks)})",
@@ -275,6 +324,10 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                 chunk_key = f"{args.prefix.rstrip('/')}/{chunk['path']}"
                 chunk_path = args.out_dir / chunk_key
                 upload(args.bucket, chunk_key, chunk_path, "application/octet-stream")
+            for file_entry in files:
+                file_key = f"{args.prefix.rstrip('/')}/{file_entry['path']}"
+                source = snapshot / file_entry["snapshot_path"]
+                upload(args.bucket, file_key, source, file_entry["content_type"])
 
     return manifest
 

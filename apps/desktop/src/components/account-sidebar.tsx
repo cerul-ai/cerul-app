@@ -72,7 +72,6 @@ export function AccountRailButton() {
   const hydrate = useAuthStore((state) => state.hydrate);
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const [pos, setPos] = useState({ left: 10, bottom: 56 });
   useEscapeToClose(() => setOpen(false), open);
 
   useEffect(() => {
@@ -88,14 +87,6 @@ export function AccountRailButton() {
     window.addEventListener("cerul:open-account", onOpenRequest);
     return () => window.removeEventListener("cerul:open-account", onOpenRequest);
   }, []);
-
-  // Anchor the popover just above the button, left-aligned (works at any size).
-  useEffect(() => {
-    if (open && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      setPos({ left: Math.round(rect.left), bottom: Math.round(window.innerHeight - rect.top + 8) });
-    }
-  }, [open]);
 
   const signedIn = status === "signedIn" && !!user;
   const label = signedIn && user ? user.email : t("settings.account.signIn");
@@ -126,7 +117,6 @@ export function AccountRailButton() {
             className="account-pop"
             role="dialog"
             aria-label={t("settings.section.account")}
-            style={{ left: pos.left, bottom: pos.bottom }}
           >
             {signedIn ? <AccountSummary /> : <AccountAuthForm />}
           </div>
