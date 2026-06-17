@@ -9,7 +9,7 @@ SKIP_NOTARIZATION=0
 ALLOW_AD_HOC=0
 DRY_RUN=0
 MOUNT_DIR=""
-MAX_CODESIGN_XATTR_FILES="${CERUL_MAX_CODESIGN_XATTR_FILES:-1000}"
+MAX_CODESIGN_XATTR_FILES="${CERUL_MAX_CODESIGN_XATTR_FILES:-0}"
 GATEKEEPER_NOFILE_LIMIT="${CERUL_GATEKEEPER_NOFILE_LIMIT:-256}"
 
 usage() {
@@ -90,6 +90,34 @@ run_low_nofile() {
   else
     (ulimit -n "$GATEKEEPER_NOFILE_LIMIT" 2>/dev/null || true; "$@")
   fi
+}
+
+require_quarantined_dmg_assessment() {
+  if [ -z "$DMG" ]; then
+    return
+  fi
+  if [ "$ALLOW_AD_HOC" -eq 1 ] || [ "$SKIP_NOTARIZATION" -eq 1 ]; then
+    return
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "+ copy $DMG to a fresh temp path, add browser quarantine, and assess before mounting"
+    echo "+ verify quarantined DMG opens under Gatekeeper with nofile <= $GATEKEEPER_NOFILE_LIMIT"
+    return
+  fi
+
+  local temp_base
+  local temp_dmg
+  temp_base="$(mktemp "${TMPDIR:-/tmp}/cerul-quarantine-smoke.XXXXXX")"
+  temp_dmg="$temp_base.dmg"
+  cp "$DMG" "$temp_dmg"
+  xattr -c "$temp_dmg" >/dev/null 2>&1 || true
+  xattr -w com.apple.quarantine "0281;$(printf '%x' "$(date +%s)");Chrome;00000000-0000-0000-0000-000000000000" "$temp_dmg"
+  if ! run_low_nofile spctl --assess --type open --context context:primary-signature --verbose "$temp_dmg"; then
+    rm -f "$temp_dmg" "$temp_base"
+    exit 1
+  fi
+  rm -f "$temp_dmg" "$temp_base"
 }
 
 require_codesign_xattr_budget() {
@@ -187,6 +215,8 @@ if [ -n "$DMG" ]; then
     echo "DMG not found: $DMG" >&2
     exit 1
   fi
+
+  require_quarantined_dmg_assessment
 
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "+ mount $DMG and discover Cerul.app"

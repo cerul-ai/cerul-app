@@ -1,6 +1,6 @@
 {
   "name": "@cerul/electron-shell",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "description": "Cerul desktop shell",
@@ -32,6 +32,7 @@
     "productName": "Cerul",
     "icon": "../desktop/public/brand/app-store-icon-1024.png",
     "afterPack": "./scripts/after-pack-sign.cjs",
+    "afterSign": "./scripts/after-sign-strip-resource-xattrs.cjs",
     "publish": [
       {
         "provider": "github",

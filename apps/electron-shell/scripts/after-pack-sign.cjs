@@ -21,6 +21,10 @@
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  stripDetachedCodeSignatureXattrs,
+  verifyAppSignature,
+} = require("./after-sign-strip-resource-xattrs.cjs");
 
 function collectMachO(dir) {
   const out = [];
@@ -119,5 +123,10 @@ exports.default = async function afterPack(context) {
   execFileSync("codesign", ["--force", "--deep", "--sign", "-", appPath], {
     stdio: "inherit",
   });
+  const result = stripDetachedCodeSignatureXattrs(appPath);
+  if (result.stripped > 0) {
+    console.log(`afterPack: stripped ${result.stripped} detached com.apple.cs.CodeSignature xattrs`);
+  }
+  verifyAppSignature(appPath);
   console.log(`afterPack: deep ad-hoc signed ${appName}`);
 };
