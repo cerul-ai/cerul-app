@@ -75,7 +75,7 @@
 
 ### 4. 搜索结果和 API 增加检索模式诊断
 
-状态：已完成，等待本次提交。`POST /search` 返回 `results + diagnostics`，包含 `retrieval_mode`、fallback reason、vector/FTS 命中数、active embedding profile、Qdrant collection 和 point count hint；前端结果页显示本次检索模式 debug 文案；新增 `GET /search/diagnostics` 返回 item/chunk/Qdrant point 健康计数。
+状态：已完成并推送到 PR #60，commit `860ea69`。`POST /search` 返回 `results + diagnostics`，包含 `retrieval_mode`、fallback reason、vector/FTS 命中数、active embedding profile、Qdrant collection 和 point count hint；前端结果页显示本次检索模式 debug 文案；新增 `GET /search/diagnostics` 返回 item/chunk/Qdrant point 健康计数。
 
 问题：用户无法判断搜索是语义向量、hybrid 还是文本 fallback；图 2/图 3 表现更像 FTS 文本匹配或向量索引缺失。
 
@@ -182,6 +182,8 @@
 ## P1：用户体验和索引性能
 
 ### 9. 删除 UI 修复收口
+
+状态：已完成，本地验证通过。`components/cards.tsx` 已改用完整 `.item-select` 热区，避免被旧 `.sel-check` 缩成 20px 小框；`detail-issue-panel.tsx` 的定位/重索引/删除 loading icon 已补 `spin` class。批量删除当前已有乐观移除，失败后会刷新后端真实状态并显示错误。
 
 现状：
 
