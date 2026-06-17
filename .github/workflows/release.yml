@@ -311,7 +311,7 @@ jobs:
           scripts/build-installers.sh "${args[@]}"
       - name: Smoke macOS DMG artifacts
         shell: bash
-        run: scripts/smoke-release-artifacts.sh
+        run: scripts/smoke-release-artifacts.sh --app "${{ steps.prepackaged-app.outputs.app_path }}"
       - name: Smoke release footprint
         shell: bash
         run: scripts/smoke-release-footprint.sh
@@ -322,7 +322,7 @@ jobs:
       - name: Smoke daemon autostart macOS
         continue-on-error: true
         shell: bash
-        run: scripts/smoke-daemon-autostart-macos.sh
+        run: scripts/smoke-daemon-autostart-macos.sh --app "${{ steps.prepackaged-app.outputs.app_path }}"
       - name: Smoke macOS DMG signing
         shell: bash
         env:
