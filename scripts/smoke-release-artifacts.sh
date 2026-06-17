@@ -8,14 +8,15 @@ TARGET=""
 BUNDLE_ROOT=""
 DRY_RUN=0
 DIR_ONLY=0
+MACOS_UPDATE_ONLY=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/smoke-release-artifacts.sh [--platform <macos|linux|windows>] [--profile <release|debug>] [--target <triple>] [--bundle-root <path>] [--dir-only] [--dry-run]
+Usage: scripts/smoke-release-artifacts.sh [--platform <macos|linux|windows>] [--profile <release|debug>] [--target <triple>] [--bundle-root <path>] [--dir-only] [--macos-update-only] [--dry-run]
 
 Checks that the current platform produced the expected Electron release artifacts:
 
-  macos   Cerul.app plus at least one non-empty .dmg
+  macos   Cerul.app plus at least one non-empty .dmg, or update zip metadata with --macos-update-only
   linux   at least one non-empty .AppImage, .deb, or .rpm
   windows at least one non-empty .msi or .exe
 
@@ -45,6 +46,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dir-only)
       DIR_ONLY=1
+      shift
+      ;;
+    --macos-update-only)
+      MACOS_UPDATE_ONLY=1
       shift
       ;;
     --dry-run)
@@ -96,7 +101,7 @@ if [ -z "$BUNDLE_ROOT" ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "+ inspect $PLATFORM Electron artifacts under $BUNDLE_ROOT dir_only=$DIR_ONLY"
+  echo "+ inspect $PLATFORM Electron artifacts under $BUNDLE_ROOT dir_only=$DIR_ONLY macos_update_only=$MACOS_UPDATE_ONLY"
   exit 0
 fi
 
@@ -151,6 +156,13 @@ case "$PLATFORM" in
     if [ "$DIR_ONLY" -eq 1 ]; then
       echo "release_artifact_smoke platform=macos app=$app_path executable=$bin_path api=$api_path dir_only=true"
       artifacts="$app_path"
+    elif [ "$MACOS_UPDATE_ONLY" -eq 1 ]; then
+      zip_artifacts="$(require_any_artifact "macOS update ZIP" -name "*.zip")"
+      yml_artifacts="$(require_any_artifact "macOS update metadata" -name "latest-mac.yml")"
+      blockmap_artifacts="$(require_any_artifact "macOS update blockmap" -name "*.zip.blockmap")"
+      artifact_count="$(printf '%s\n%s\n%s\n' "$zip_artifacts" "$yml_artifacts" "$blockmap_artifacts" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+      echo "release_artifact_smoke platform=macos app=$app_path executable=$bin_path api=$api_path update_only=true artifact_count=$artifact_count"
+      artifacts="$(printf '%s\n%s\n%s\n' "$zip_artifacts" "$yml_artifacts" "$blockmap_artifacts")"
     else
       artifacts="$(require_any_artifact "macOS DMG" -name "*.dmg")"
       artifact_count="$(printf '%s\n' "$artifacts" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
