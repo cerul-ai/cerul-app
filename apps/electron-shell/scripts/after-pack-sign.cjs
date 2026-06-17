@@ -70,7 +70,9 @@ exports.default = async function afterPack(context) {
   });
   const result = stripDetachedCodeSignatureXattrs(appPath);
   if (result.stripped > 0) {
-    console.log(`afterPack: stripped ${result.stripped} detached com.apple.cs.CodeSignature xattrs`);
+    console.log(
+      `afterPack: stripped ${result.stripped} detached com.apple.cs.* xattrs from ${result.filesStripped} files`,
+    );
   }
   verifyAppSignature(appPath);
   console.log(`afterPack: deep ad-hoc signed ${appName}`);
