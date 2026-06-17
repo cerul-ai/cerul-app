@@ -8,6 +8,7 @@
 //! fallback downloads.
 
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -20,6 +21,7 @@ use std::{
 use axum::{extract::State, Json};
 use cerul_pipeline::mlx_sidecar::{runtime_config, runtime_status, MlxSidecarConfig};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{ApiError, ApiResult, ApiState};
 
@@ -32,8 +34,10 @@ const READY_RATIO: f64 = 0.98;
 const MIN_LOCAL_RAM_GB: u32 = 8;
 
 static PREPARE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static PREPARE_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static PREPARE_LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static PREPARE_STARTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static PREPARE_PID: Mutex<Option<u32>> = Mutex::new(None);
 /// The model ids in the current prepare run, so status can mark the right rows
 /// as "downloading" (not just the first incomplete one — matters when only one
 /// capability's model is being fetched from Settings).
@@ -114,6 +118,12 @@ pub struct LocalPrepareStatus {
     pub done_mb: u64,
     pub total_mb: u64,
     pub eta_seconds: Option<u64>,
+    pub active_source: Option<String>,
+    pub source_label: Option<String>,
+    pub download_bps: Option<u64>,
+    pub can_pause: bool,
+    pub can_cancel: bool,
+    pub last_source_error: Option<String>,
     pub models: Vec<LocalModelInfo>,
     pub error: Option<String>,
 }
@@ -196,6 +206,7 @@ pub async fn prepare_local_models(
         .collect();
 
     if !repos.is_empty() && !PREPARE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        PREPARE_CANCEL_REQUESTED.store(false, Ordering::Release);
         if let Ok(mut guard) = PREPARE_LAST_ERROR.lock() {
             *guard = None;
         }
@@ -208,6 +219,8 @@ pub async fn prepare_local_models(
         let python = cfg.python.clone();
         let script = cfg.script.clone();
         let cache = cfg.models_cache.clone();
+        let download_source = model_download_source_setting(&state.paths)
+            .unwrap_or_else(|_| "auto".to_string());
         tokio::task::spawn_blocking(move || {
             let result = Command::new(&python)
                 .arg(&script)
@@ -217,22 +230,46 @@ pub async fn prepare_local_models(
                 .args(&repos)
                 .env("PYTHONUNBUFFERED", "1")
                 .env("HF_HUB_DISABLE_XET", "1")
-                .output();
+                .env("CERUL_MODEL_DOWNLOAD_SOURCE", &download_source)
+                .spawn();
             match result {
-                Ok(output) if output.status.success() => {
-                    tracing::info!("local model prepare complete ({} repos)", repos.len());
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let message = stderr
-                        .lines()
-                        .rev()
-                        .find(|line| !line.trim().is_empty())
-                        .unwrap_or("local model download failed")
-                        .to_string();
-                    tracing::warn!(error = %message, "local model prepare failed");
-                    if let Ok(mut guard) = PREPARE_LAST_ERROR.lock() {
-                        *guard = Some(message);
+                Ok(child) => {
+                    if let Ok(mut guard) = PREPARE_PID.lock() {
+                        *guard = Some(child.id());
+                    }
+                    match child.wait_with_output() {
+                        Ok(output) if output.status.success() => {
+                            tracing::info!("local model prepare complete ({} repos)", repos.len());
+                        }
+                        Ok(output) => {
+                            let cancelled = PREPARE_CANCEL_REQUESTED.swap(false, Ordering::AcqRel);
+                            if cancelled {
+                                tracing::info!("local model prepare cancelled");
+                            } else {
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                let message = stderr
+                                    .lines()
+                                    .rev()
+                                    .find(|line| !line.trim().is_empty())
+                                    .unwrap_or("local model download failed")
+                                    .to_string();
+                                tracing::warn!(error = %message, "local model prepare failed");
+                                if let Ok(mut guard) = PREPARE_LAST_ERROR.lock() {
+                                    *guard = Some(message);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let cancelled = PREPARE_CANCEL_REQUESTED.swap(false, Ordering::AcqRel);
+                            if cancelled {
+                                tracing::info!("local model prepare cancelled");
+                            } else {
+                                tracing::warn!(error = %error, "local model prepare wait failed");
+                                if let Ok(mut guard) = PREPARE_LAST_ERROR.lock() {
+                                    *guard = Some(error.to_string());
+                                }
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -243,12 +280,32 @@ pub async fn prepare_local_models(
                 }
             }
             PREPARE_IN_PROGRESS.store(false, Ordering::Release);
+            if let Ok(mut guard) = PREPARE_PID.lock() {
+                *guard = None;
+            }
             if let Ok(mut guard) = PREPARE_ACTIVE_IDS.lock() {
                 guard.clear();
             }
         });
     }
 
+    Ok(Json(compute_status(&cfg)))
+}
+
+/// POST /models/local/prepare-cancel — stop the active one-shot downloader.
+/// Partial files remain on disk so a later prepare can resume or reuse cache.
+pub async fn cancel_local_prepare(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<LocalPrepareStatus>> {
+    PREPARE_CANCEL_REQUESTED.store(true, Ordering::Release);
+    let pid = PREPARE_PID.lock().ok().and_then(|guard| *guard);
+    if let Some(pid) = pid {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
+    let cfg = runtime_config(&state.paths).map_err(ApiError::internal)?;
     Ok(Json(compute_status(&cfg)))
 }
 
@@ -263,7 +320,9 @@ pub async fn local_prepare_status(
 fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
     let hub = cfg.models_cache.join("huggingface").join("hub");
     let mirror = cfg.models_cache.join("cerul-mirror");
+    let modelscope = cfg.models_cache.join("modelscope");
     let bundled = bundled_models_root();
+    let sidecar_status = read_sidecar_prepare_status(&cfg.models_cache);
     let in_progress = PREPARE_IN_PROGRESS.load(Ordering::Acquire);
     let error = PREPARE_LAST_ERROR.lock().ok().and_then(|g| g.clone());
     let active_ids: Vec<&'static str> = PREPARE_ACTIVE_IDS
@@ -282,7 +341,9 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         let on_disk_mb: u64 = group
             .repos
             .iter()
-            .map(|repo| repo_cached_bytes(&hub, &mirror, bundled.as_deref(), repo) / 1_000_000)
+            .map(|repo| {
+                repo_cached_bytes(&hub, &mirror, &modelscope, bundled.as_deref(), repo) / 1_000_000
+            })
             .sum();
         let capped = on_disk_mb.min(group.size_mb);
         done_mb += capped;
@@ -347,8 +408,47 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         done_mb,
         total_mb,
         eta_seconds,
+        active_source: sidecar_status.active_source,
+        source_label: sidecar_status.source_label,
+        download_bps: sidecar_status.download_bps,
+        can_pause: in_progress,
+        can_cancel: in_progress,
+        last_source_error: sidecar_status.last_source_error,
         models,
         error,
+    }
+}
+
+#[derive(Debug, Default)]
+struct SidecarPrepareStatus {
+    active_source: Option<String>,
+    source_label: Option<String>,
+    download_bps: Option<u64>,
+    last_source_error: Option<String>,
+}
+
+fn read_sidecar_prepare_status(models_cache: &Path) -> SidecarPrepareStatus {
+    let path = models_cache.join("prepare-status.json");
+    let Ok(raw) = fs::read_to_string(path) else {
+        return SidecarPrepareStatus::default();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return SidecarPrepareStatus::default();
+    };
+    SidecarPrepareStatus {
+        active_source: value
+            .get("active_source")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        source_label: value
+            .get("source_label")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        download_bps: value.get("download_bps").and_then(Value::as_u64),
+        last_source_error: value
+            .get("last_source_error")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
     }
 }
 
@@ -367,15 +467,31 @@ fn bundled_models_root() -> Option<PathBuf> {
 fn repo_cached_bytes(
     hf_hub: &Path,
     mirror_root: &Path,
+    modelscope_root: &Path,
     bundled_root: Option<&Path>,
     repo: &str,
 ) -> u64 {
     let name = cache_dir_name(repo);
     dir_size_bytes(&hf_hub.join(&name))
         + dir_size_bytes(&mirror_root.join(&name))
+        + dir_size_bytes(&modelscope_root.join(&name))
         + bundled_root
             .map(|root| dir_size_bytes(&root.join(name)))
             .unwrap_or(0)
+}
+
+fn model_download_source_setting(paths: &cerul_storage::AppPaths) -> anyhow::Result<String> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'model_download_source'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(value
+        .and_then(|raw| serde_json::from_str::<String>(&raw).ok())
+        .unwrap_or_else(|| "auto".to_string()))
 }
 
 /// Sum of real file bytes under `path`. Skips symlinks, so the HF `snapshots/`
@@ -457,17 +573,20 @@ mod tests {
         let root = std::env::temp_dir().join(unique);
         let hf = root.join("hf");
         let mirror = root.join("mirror");
+        let modelscope = root.join("modelscope");
         let bundled = root.join("bundled");
         let repo = "Qwen/Qwen3-ASR-0.6B";
         let name = cache_dir_name(repo);
         std::fs::create_dir_all(hf.join(&name)).unwrap();
         std::fs::create_dir_all(mirror.join(&name)).unwrap();
+        std::fs::create_dir_all(modelscope.join(&name)).unwrap();
         std::fs::create_dir_all(bundled.join(&name)).unwrap();
         std::fs::write(hf.join(&name).join("a.bin"), vec![0u8; 3]).unwrap();
         std::fs::write(mirror.join(&name).join("b.bin"), vec![0u8; 5]).unwrap();
+        std::fs::write(modelscope.join(&name).join("c.bin"), vec![0u8; 7]).unwrap();
         std::fs::write(bundled.join(&name).join("c.bin"), vec![0u8; 7]).unwrap();
 
-        assert_eq!(repo_cached_bytes(&hf, &mirror, Some(&bundled), repo), 15);
+        assert_eq!(repo_cached_bytes(&hf, &mirror, &modelscope, Some(&bundled), repo), 22);
 
         let _ = std::fs::remove_dir_all(root);
     }

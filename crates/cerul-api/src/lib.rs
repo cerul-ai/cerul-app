@@ -399,6 +399,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             get(local_models::local_prepare_status),
         )
         .route(
+            "/models/local/prepare-cancel",
+            post(local_models::cancel_local_prepare),
+        )
+        .route(
             "/providers",
             get(providers::list_providers).post(providers::create_provider),
         )

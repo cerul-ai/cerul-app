@@ -14,6 +14,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -54,6 +55,42 @@ def cache_dir_name(repo_id: str) -> str:
 
 def snapshot_files(snapshot: Path) -> list[Path]:
     return sorted(path for path in snapshot.rglob("*") if path.is_file())
+
+
+def content_type_for(path: Path) -> str:
+    if path.suffix == ".json":
+        return "application/json"
+    if path.suffix in {".txt", ".md", ".jinja", ".yml", ".yaml"}:
+        return "text/plain; charset=utf-8"
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def build_file_entries(
+    snapshot: Path,
+    *,
+    repo_id: str,
+    revision: str,
+    prefix: str,
+    base_url: str,
+) -> list[dict[str, Any]]:
+    repo_root = f"{prefix.rstrip('/')}/{cache_dir_name(repo_id)}/{revision}/files"
+    prefix_root = f"{prefix.rstrip('/')}/"
+    entries: list[dict[str, Any]] = []
+    for file_path in snapshot_files(snapshot):
+        relative = file_path.relative_to(snapshot).as_posix()
+        key = f"{repo_root}/{relative}"
+        rel_key = key.removeprefix(prefix_root)
+        entries.append(
+            {
+                "snapshot_path": relative,
+                "path": rel_key,
+                "url": f"{base_url.rstrip('/')}/{rel_key}",
+                "sha256": sha256_file(file_path),
+                "size": file_path.stat().st_size,
+                "content_type": content_type_for(file_path),
+            }
+        )
+    return entries
 
 
 def create_archive(snapshot: Path, archive: Path) -> None:
@@ -254,6 +291,13 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             base_url=args.base_url,
             chunk_size_mib=args.chunk_size_mb,
         )
+        files = build_file_entries(
+            snapshot,
+            repo_id=repo_id,
+            revision=revision,
+            prefix=args.prefix,
+            base_url=args.base_url,
+        )
         rel_path = archive_key.removeprefix(f"{args.prefix.rstrip('/')}/")
         manifest["models"][repo_id] = {
             "repo_id": repo_id,
@@ -269,6 +313,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                 "chunk_size": args.chunk_size_mb * 1024 * 1024,
                 "chunks": chunks,
             },
+            "files": files,
         }
         print(
             f"Built {archive_path} ({size:,} bytes sha256={digest}, chunks={len(chunks)})",
@@ -279,6 +324,10 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                 chunk_key = f"{args.prefix.rstrip('/')}/{chunk['path']}"
                 chunk_path = args.out_dir / chunk_key
                 upload(args.bucket, chunk_key, chunk_path, "application/octet-stream")
+            for file_entry in files:
+                file_key = f"{args.prefix.rstrip('/')}/{file_entry['path']}"
+                source = snapshot / file_entry["snapshot_path"]
+                upload(args.bucket, file_key, source, file_entry["content_type"])
 
     return manifest
 

@@ -1272,7 +1272,7 @@ function AppWorkspace() {
             <span className="rail-label">{t("nav.settings")}</span>
           </button>
           <AccountRailButton />
-          {lm.minimized && lm.download?.phase === "downloading" ? (
+          {lm.minimized && lm.download && lm.download.phase !== "ready" ? (
             <button
               type="button"
               className="rail-dl-pill"
@@ -1611,8 +1611,12 @@ function AppWorkspace() {
         <LocalModelConsent
           capability={lm.capability}
           download={lm.download}
+          paused={lm.paused}
           onAgree={handleLmAgree}
           onDecline={handleLmDecline}
+          onPause={lm.pauseDownload}
+          onResume={lm.resumeDownload}
+          onCancelDownload={lm.cancelDownload}
           onBackground={lm.background}
         />
       ) : null}
@@ -6409,6 +6413,7 @@ function AdvancedSettings({
   const remoteApiKeySet = settings["remote_api_key_set"] === true;
   const [remoteKeyDraft, setRemoteKeyDraft] = useState("");
   const logLevel = settingString(settings, "log_level", "info");
+  const modelDownloadSource = settingString(settings, "model_download_source", "auto");
   const [logAction, setLogAction] = useState<{
     status: SettingsActionStatus;
     message: string | null;
@@ -6492,6 +6497,26 @@ function AdvancedSettings({
                 <p className="settings-help">{t("settings.advanced.telemetry.detailsBody")}</p>
               ) : null}
             </div>
+          }
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t("settings.advanced.modelDownload.title")}>
+        <SettingRow
+          label={t("settings.advanced.modelDownload.source.label")}
+          description={t("settings.advanced.modelDownload.source.description")}
+          control={
+            <select
+              value={modelDownloadSource}
+              disabled={disabled}
+              onChange={(event) =>
+                void onSettingsChange({ model_download_source: event.currentTarget.value })
+              }
+            >
+              <option value="auto">{t("settings.advanced.modelDownload.source.auto")}</option>
+              <option value="huggingface">{t("settings.advanced.modelDownload.source.huggingface")}</option>
+              <option value="modelscope">{t("settings.advanced.modelDownload.source.modelscope")}</option>
+              <option value="cerul_cdn">{t("settings.advanced.modelDownload.source.cerulCdn")}</option>
+            </select>
           }
         />
       </SettingsGroup>
