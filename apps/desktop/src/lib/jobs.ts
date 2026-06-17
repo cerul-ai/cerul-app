@@ -20,14 +20,14 @@ type CoarseStep = { key: string; stages: string[]; lo: number; hi: number };
 
 const COARSE_STEPS: Record<string, CoarseStep[]> = {
   index_video: [
-    { key: "prepare", stages: ["processing", "fetching", "downloading", "extracting_audio", "sampling_frames"], lo: 0, hi: 0.2 },
-    { key: "transcribe", stages: ["transcribing", "chunking_transcript"], lo: 0.2, hi: 0.62 },
+    { key: "prepare", stages: ["processing", "fetching", "downloading", "extracting_audio", "sampling_frames", "preparing_models"], lo: 0, hi: 0.25 },
+    { key: "transcribe", stages: ["transcribing", "chunking_transcript"], lo: 0.25, hi: 0.62 },
     { key: "embed_text", stages: ["ocr_frames", "writing_transcript", "embedding_text"], lo: 0.62, hi: 0.8 },
     { key: "embed_frames", stages: ["embedding_frames", "visual_failed"], lo: 0.8, hi: 0.92 },
     { key: "write_index", stages: ["writing_index", "partial", "completed"], lo: 0.92, hi: 1 },
   ],
   index_audio: [
-    { key: "prepare", stages: ["processing", "fetching", "extracting_audio"], lo: 0, hi: 0.25 },
+    { key: "prepare", stages: ["processing", "fetching", "extracting_audio", "preparing_models"], lo: 0, hi: 0.25 },
     { key: "transcribe", stages: ["transcribing", "chunking_transcript", "writing_transcript"], lo: 0.25, hi: 0.68 },
     { key: "embed_text", stages: ["embedding_text"], lo: 0.68, hi: 0.92 },
     { key: "write_index", stages: ["writing_index", "partial", "completed"], lo: 0.92, hi: 1 },

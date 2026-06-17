@@ -344,6 +344,11 @@ impl Drop for MlxSidecar {
 }
 
 impl Transcriber for MlxSidecar {
+    fn prepare_transcription(&self) -> anyhow::Result<()> {
+        let _ = self.request("prepare_transcription", json!({}))?;
+        Ok(())
+    }
+
     fn transcribe(
         &self,
         audio_path: &Path,

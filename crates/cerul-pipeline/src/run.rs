@@ -25,6 +25,10 @@ const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
 
 pub trait Transcriber: Send + Sync {
+    fn prepare_transcription(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn transcribe(
         &self,
         audio_path: &Path,
@@ -398,6 +402,15 @@ impl VideoPipeline {
             let transcriber = Arc::clone(&self.transcriber);
             let audio_for_transcribe = audio_path.clone();
             let progress = Arc::clone(&self.progress);
+            self.report_progress(
+                item_id,
+                "preparing_models",
+                0.23,
+                "Preparing transcription models",
+            );
+            let transcriber_for_prepare = Arc::clone(&transcriber);
+            tokio::task::spawn_blocking(move || transcriber_for_prepare.prepare_transcription())
+                .await??;
             let progress_item_id = item_id.to_string();
             self.report_progress(item_id, "transcribing", 0.25, "Transcribing audio");
             // Whole-file transcription reports no real sub-progress, so ease the
@@ -1944,6 +1957,19 @@ mod tests {
             summary.image_vectors
         );
         let stages = progress.stages.lock().unwrap();
+        let preparing_index = stages
+            .iter()
+            .position(|(stage, progress)| {
+                stage == "preparing_models" && (*progress - 0.23).abs() < f64::EPSILON
+            })
+            .expect("video indexing should report model preparation before transcription");
+        let transcribing_index = stages
+            .iter()
+            .position(|(stage, progress)| {
+                stage == "transcribing" && *progress >= 0.25 && *progress <= 0.60
+            })
+            .expect("video indexing should report transcription progress");
+        assert!(preparing_index < transcribing_index);
         assert!(stages.iter().any(|(stage, progress)| {
             stage == "transcribing" && *progress >= 0.25 && *progress <= 0.60
         }));

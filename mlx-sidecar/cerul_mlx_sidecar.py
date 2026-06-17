@@ -1543,6 +1543,42 @@ class CerulMlxRuntime:
             return model_id_or_path
         return str(resolve_snapshot(model_id_or_path, allow_patterns_for_model(model_id_or_path)))
 
+    def _resolved_whisper_path(self) -> str:
+        """Resolve whisper weights through Cerul's source router."""
+        whisper_model = (
+            self.args.asr_model
+            if "whisper" in self.args.asr_model.rsplit("/", 1)[-1].lower()
+            and "/" in self.args.asr_model
+            else self.args.whisper_model
+        )
+        if Path(whisper_model).exists():
+            return whisper_model
+        return str(resolve_snapshot(whisper_model, allow_patterns_for_model(whisper_model)))
+
+    def prepare_transcription(self) -> dict[str, Any]:
+        asr_model_name = self.args.asr_model.rsplit("/", 1)[-1].lower()
+        if asr_model_name.startswith("whisper"):
+            model_path = self._resolved_whisper_path()
+            return {
+                "model": self.args.asr_model,
+                "model_path": model_path,
+                "engine": "mlx-whisper",
+            }
+
+        asr_path = self._resolved_qwen_asr_path(self.args.asr_model)
+        aligner_path = (
+            self._resolved_qwen_asr_path(self.args.forced_aligner_model)
+            if self.args.forced_aligner_model
+            else None
+        )
+        return {
+            "model": self.args.asr_model,
+            "model_path": asr_path,
+            "forced_aligner": self.args.forced_aligner_model,
+            "forced_aligner_path": aligner_path,
+            "engine": "mlx-qwen3-asr",
+        }
+
     def _transcription_components(self, module: Any) -> tuple[Any, Any]:
         """Resolve the (model, forced_aligner) arguments for transcribe().
 
@@ -1639,7 +1675,7 @@ class CerulMlxRuntime:
                 else self.args.whisper_model
             )
             kwargs: dict[str, Any] = {
-                "path_or_hf_repo": whisper_model,
+                "path_or_hf_repo": self._resolved_whisper_path(),
                 "word_timestamps": True,
             }
             if language:
@@ -1869,6 +1905,8 @@ def dispatch(runtime: CerulMlxRuntime, request: dict[str, Any]) -> Any:
         return runtime.embed_images(list(params.get("paths") or []))
     if method == "transcribe":
         return runtime.transcribe(str(params["audio_path"]), params.get("language"))
+    if method == "prepare_transcription":
+        return runtime.prepare_transcription()
     if method == "ocr_images":
         return runtime.ocr_images(list(params.get("paths") or []), params.get("prompt"))
     if method == "release_models":

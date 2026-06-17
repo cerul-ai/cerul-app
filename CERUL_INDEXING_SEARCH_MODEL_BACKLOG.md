@@ -122,7 +122,7 @@
 
 ### 6. 修 Qwen ASR 隐式 Hugging Face 下载
 
-状态：部分完成并推送到 PR #60，commit `087b842`。Qwen ASR / ForcedAligner 已先通过 `resolve_snapshot()` 解析为本地 snapshot 路径，再交给 `mlx_qwen3_asr`；转写前 preflight 和 `preparing_models` stage 仍作为后续任务保留。
+状态：已完成并推送到 PR #60。Qwen ASR / ForcedAligner 已先通过 `resolve_snapshot()` 解析为本地 snapshot 路径，再交给 `mlx_qwen3_asr`；pipeline 现在会在转写前进入 `preparing_models` stage 并调用 sidecar `prepare_transcription` 预解析 ASR/ForcedAligner snapshot，Whisper 路径也会先解析为本地 snapshot，避免在 `transcribing` 中隐式走 Hugging Face 下载。
 
 问题：转写路径直接把 `Qwen/Qwen3-ASR-0.6B` 和 `Qwen/Qwen3-ForcedAligner-0.6B` repo id 传给 `mlx_qwen3_asr`，该库会自己走 Hugging Face 下载，绕过 Cerul 的 ModelScope/CDN/cache 路由。
 
