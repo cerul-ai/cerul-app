@@ -81,6 +81,33 @@ run() {
   fi
 }
 
+timer_now() {
+  date +%s
+}
+
+time_step() {
+  local name="$1"
+  shift
+  local start
+  local end
+  local status
+  start="$(timer_now)"
+  echo "release_timing_start step=$name epoch=$start"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::group::$name"
+  fi
+  set +e
+  "$@"
+  status=$?
+  set -e
+  end="$(timer_now)"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::endgroup::"
+  fi
+  echo "release_timing step=$name seconds=$((end - start)) status=$status"
+  return "$status"
+}
+
 submit_notary() {
   local dmg="$1"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -127,11 +154,11 @@ if [ "${#dmgs[@]}" -eq 0 ]; then
 fi
 
 for dmg in "${dmgs[@]}"; do
-  run codesign --force --sign "$identity" --timestamp "$dmg"
-  run codesign --verify --verbose=2 "$dmg"
+  time_step dmg_sign run codesign --force --sign "$identity" --timestamp "$dmg"
+  time_step dmg_sign_verify run codesign --verify --verbose=2 "$dmg"
   if [ "${CERUL_NOTARIZE:-0}" = "1" ]; then
-    submit_notary "$dmg"
-    staple_dmg "$dmg"
+    time_step dmg_notarization submit_notary "$dmg"
+    time_step dmg_staple staple_dmg "$dmg"
   else
     echo "CERUL_NOTARIZE is not 1; leaving $dmg signed but not notarized."
   fi
@@ -141,6 +168,6 @@ metadata_args=(--bundle-root "$BUNDLE_ROOT")
 if [ "$DRY_RUN" -eq 1 ]; then
   metadata_args+=(--dry-run)
 fi
-run node "$ROOT/scripts/regenerate-macos-update-metadata.cjs" "${metadata_args[@]}"
+time_step macos_update_metadata run node "$ROOT/scripts/regenerate-macos-update-metadata.cjs" "${metadata_args[@]}"
 
 echo "finalize_macos_release_artifacts status=passed bundle_root=$BUNDLE_ROOT dmg_count=${#dmgs[@]}"

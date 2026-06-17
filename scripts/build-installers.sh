@@ -13,16 +13,21 @@ SKIP_FETCH=0
 DRY_RUN=0
 REQUIRE_SIGNING=0
 REBUILD_MLX=0
+MAC_TARGETS=""
+PREPACKAGED_APP=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/build-installers.sh [--target <triple>] [--debug] [--no-bundle] [--skip-fetch] [--require-signing] [--dry-run]
+Usage: scripts/build-installers.sh [--target <triple>] [--mac-targets <targets>] [--prepackaged-app <path>] [--debug] [--no-bundle] [--skip-fetch] [--require-signing] [--dry-run]
 
 Builds Cerul installers with Electron. The build contract is:
   1. build the React renderer
   2. build release Cerul Core
   3. stage Cerul Core into apps/electron-shell/bin/
   4. run electron-builder, which copies bin/, desktop-dist/, third-party/, and mlx-sidecar/
+
+Pass --mac-targets zip for fast auto-update artifacts or --mac-targets dmg
+to build only the DMG from a prepackaged app bundle.
 
 Signing is handled by electron-builder. For public macOS release candidates,
 provide Developer ID and notarization credentials through CI secrets or local
@@ -59,6 +64,14 @@ while [ "$#" -gt 0 ]; do
     --rebuild-mlx-runtime)
       REBUILD_MLX=1
       shift
+      ;;
+    --mac-targets)
+      MAC_TARGETS="${2:?missing mac targets}"
+      shift 2
+      ;;
+    --prepackaged-app)
+      PREPACKAGED_APP="${2:?missing prepackaged app path}"
+      shift 2
       ;;
     --dry-run)
       DRY_RUN=1
@@ -97,6 +110,33 @@ run() {
   else
     "$@"
   fi
+}
+
+timer_now() {
+  date +%s
+}
+
+time_step() {
+  local name="$1"
+  shift
+  local start
+  local end
+  local status
+  start="$(timer_now)"
+  echo "release_timing_start step=$name epoch=$start"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::group::$name"
+  fi
+  set +e
+  "$@"
+  status=$?
+  set -e
+  end="$(timer_now)"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::endgroup::"
+  fi
+  echo "release_timing step=$name seconds=$((end - start)) status=$status"
+  return "$status"
 }
 
 require_command() {
@@ -175,8 +215,20 @@ electron_builder_args() {
   fi
 
   case "$TARGET" in
-    aarch64-apple-darwin) printf '%s\n' --mac --arm64 ;;
-    x86_64-apple-darwin) printf '%s\n' --mac --x64 ;;
+    aarch64-apple-darwin)
+      if [ -n "$MAC_TARGETS" ]; then
+        printf '%s\n' --arm64
+      else
+        printf '%s\n' --mac --arm64
+      fi
+      ;;
+    x86_64-apple-darwin)
+      if [ -n "$MAC_TARGETS" ]; then
+        printf '%s\n' --x64
+      else
+        printf '%s\n' --mac --x64
+      fi
+      ;;
     aarch64-unknown-linux-gnu) printf '%s\n' --linux --arm64 ;;
     x86_64-unknown-linux-gnu) printf '%s\n' --linux --x64 ;;
     x86_64-pc-windows-msvc) printf '%s\n' --win --x64 ;;
@@ -199,7 +251,12 @@ if target_is_macos &&
   export CSC_IDENTITY_AUTO_DISCOVERY="${CSC_IDENTITY_AUTO_DISCOVERY:-false}"
 fi
 
-if [ "$SKIP_FETCH" -eq 0 ]; then
+if [ -n "$PREPACKAGED_APP" ] && [ ! -d "$PREPACKAGED_APP" ] && [ "$DRY_RUN" -eq 0 ]; then
+  echo "Prepackaged app was not found: $PREPACKAGED_APP" >&2
+  exit 1
+fi
+
+if [ "$SKIP_FETCH" -eq 0 ] && [ -z "$PREPACKAGED_APP" ]; then
   fetch_args=()
   if [ -n "$TARGET" ]; then
     fetch_args+=(--target "$TARGET")
@@ -207,21 +264,25 @@ if [ "$SKIP_FETCH" -eq 0 ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
     fetch_args+=(--dry-run)
   fi
-  run "$ROOT/scripts/fetch-binaries.sh" ${fetch_args[@]+"${fetch_args[@]}"}
+  time_step fetch_binaries run "$ROOT/scripts/fetch-binaries.sh" ${fetch_args[@]+"${fetch_args[@]}"}
 fi
 
-run pnpm --filter @cerul/desktop build
-cargo_args=(build -p cerul-api --release)
-if [ -n "$TARGET" ]; then
-  cargo_args+=(--target "$TARGET")
-fi
-run cargo "${cargo_args[@]}"
-if [ -n "$TARGET" ]; then
-  run env CERUL_TARGET_TRIPLE="$TARGET" pnpm --filter @cerul/electron-shell stage:cerul-core
+if [ -z "$PREPACKAGED_APP" ]; then
+  time_step react_build run pnpm --filter @cerul/desktop build
+  cargo_args=(build -p cerul-api --release)
+  if [ -n "$TARGET" ]; then
+    cargo_args+=(--target "$TARGET")
+  fi
+  time_step cargo_release_build run cargo "${cargo_args[@]}"
+  if [ -n "$TARGET" ]; then
+    time_step stage_cerul_core run env CERUL_TARGET_TRIPLE="$TARGET" pnpm --filter @cerul/electron-shell stage:cerul-core
+  else
+    time_step stage_cerul_core run pnpm --filter @cerul/electron-shell stage:cerul-core
+  fi
+  time_step electron_main_build run pnpm --filter @cerul/electron-shell build
 else
-  run pnpm --filter @cerul/electron-shell stage:cerul-core
+  echo "Using prepackaged app bundle: $PREPACKAGED_APP"
 fi
-run pnpm --filter @cerul/electron-shell build
 
 # Bundled on-device MLX Python runtime (macOS only). Reuse an existing build
 # unless --rebuild-mlx-runtime is passed; always ensure the directory exists so
@@ -229,29 +290,75 @@ run pnpm --filter @cerul/electron-shell build
 MLX_RUNTIME_DIR="$ROOT/apps/electron-shell/mlx-runtime"
 mkdir -p "$MLX_RUNTIME_DIR"
 if target_is_macos; then
-  if [ "$REBUILD_MLX" -eq 1 ] || [ ! -x "$MLX_RUNTIME_DIR/bin/python3" ]; then
-    run "$ROOT/scripts/build-mlx-runtime.sh"
-  else
-    echo "Reusing existing MLX runtime at $MLX_RUNTIME_DIR (pass --rebuild-mlx-runtime to force a fresh build)."
+  if [ -z "$PREPACKAGED_APP" ]; then
+    if [ "$REBUILD_MLX" -eq 1 ] || [ ! -x "$MLX_RUNTIME_DIR/bin/python3" ]; then
+      time_step mlx_runtime_build run "$ROOT/scripts/build-mlx-runtime.sh"
+    else
+      echo "Reusing existing MLX runtime at $MLX_RUNTIME_DIR (pass --rebuild-mlx-runtime to force a fresh build)."
+    fi
+    if [ -x "$MLX_RUNTIME_DIR/bin/python3" ] && [ -n "${APPLE_SIGNING_IDENTITY:-${CSC_NAME:-}}" ]; then
+      sign_args=(--runtime-dir "$MLX_RUNTIME_DIR" --identity "${APPLE_SIGNING_IDENTITY:-$CSC_NAME}")
+      if [ -n "${APPLE_TEAM_ID:-}" ]; then
+        sign_args+=(--expected-team-id "$APPLE_TEAM_ID")
+      fi
+      time_step mlx_runtime_signing run node "$ROOT/apps/electron-shell/scripts/sign-mlx-runtime.cjs" "${sign_args[@]}"
+    fi
   fi
 fi
 
 builder_args=(--publish never)
+if target_is_macos && [ -n "$MAC_TARGETS" ]; then
+  builder_args+=(--mac)
+  IFS=',' read -r -a mac_targets_array <<< "$MAC_TARGETS"
+  for mac_target in "${mac_targets_array[@]}"; do
+    mac_target="${mac_target#"${mac_target%%[![:space:]]*}"}"
+    mac_target="${mac_target%"${mac_target##*[![:space:]]}"}"
+    [ -n "$mac_target" ] && builder_args+=("$mac_target")
+  done
+fi
 while IFS= read -r arg; do
   [ -n "$arg" ] && builder_args+=("$arg")
 done < <(electron_builder_args)
+
+if [ -n "$PREPACKAGED_APP" ]; then
+  builder_args+=(--prepackaged "$PREPACKAGED_APP")
+fi
 
 if [ "$NO_BUNDLE" -eq 1 ] || [ "$DEBUG" -eq 1 ]; then
   builder_args+=(--dir)
 fi
 
-run pnpm --filter @cerul/electron-shell exec electron-builder "${builder_args[@]}"
+bundle_root="$ROOT/target/electron"
+preserved_update_assets_dir=""
+if target_is_macos &&
+  [ "$MAC_TARGETS" = "dmg" ] &&
+  [ -n "$PREPACKAGED_APP" ] &&
+  [ "$DRY_RUN" -eq 0 ] &&
+  [ -d "$bundle_root" ]; then
+  preserved_update_assets_dir="$(mktemp -d)"
+  while IFS= read -r artifact; do
+    cp "$artifact" "$preserved_update_assets_dir/"
+  done < <(find "$bundle_root" -maxdepth 1 -type f \( -name "*.zip" -o -name "*.zip.blockmap" -o -name "latest-mac.yml" \) -print)
+fi
+
+builder_step="electron_builder"
+if target_is_macos && [ "$MAC_TARGETS" = "dmg" ]; then
+  builder_step="dmg_build"
+fi
+time_step "$builder_step" run pnpm --filter @cerul/electron-shell exec electron-builder "${builder_args[@]}"
+
+if [ -n "$preserved_update_assets_dir" ]; then
+  mkdir -p "$bundle_root"
+  while IFS= read -r artifact; do
+    cp "$artifact" "$bundle_root/"
+  done < <(find "$preserved_update_assets_dir" -maxdepth 1 -type f -print)
+  rm -rf "$preserved_update_assets_dir"
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-bundle_root="$ROOT/target/electron"
 if [ ! -d "$bundle_root" ]; then
   echo "Electron output directory was not created: $bundle_root" >&2
   exit 1
@@ -263,8 +370,9 @@ fi
 
 if target_is_macos &&
   [ -n "${APPLE_SIGNING_IDENTITY:-${CSC_NAME:-}}" ] &&
-  [ "${CERUL_NOTARIZE:-0}" = "1" ]; then
-  run "$ROOT/scripts/finalize-macos-release-artifacts.sh" --bundle-root "$bundle_root"
+  [ "${CERUL_NOTARIZE:-0}" = "1" ] &&
+  find "$bundle_root" -maxdepth 1 -type f -name "*.dmg" -print -quit | grep -q .; then
+  time_step macos_release_finalize run "$ROOT/scripts/finalize-macos-release-artifacts.sh" --bundle-root "$bundle_root"
 fi
 
 echo "Installer artifacts:"

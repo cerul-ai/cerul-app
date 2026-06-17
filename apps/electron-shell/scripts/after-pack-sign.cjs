@@ -18,56 +18,14 @@
 // When a real Developer ID IS provided, electron-builder signs the .app itself;
 // we still sign the runtime above and attach JIT entitlements to the embedded
 // Python interpreter so the local MLX process can run under hardened runtime.
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
   stripDetachedCodeSignatureXattrs,
   verifyAppSignature,
 } = require("./after-sign-strip-resource-xattrs.cjs");
-
-function collectMachO(dir) {
-  const out = [];
-  for (const name of fs.readdirSync(dir)) {
-    const full = path.join(dir, name);
-    const st = fs.lstatSync(full);
-    if (st.isSymbolicLink()) continue; // sign the real file, not the symlink
-    if (st.isDirectory()) out.push(...collectMachO(full));
-    else if (/\.(so|dylib)$/.test(name) || name === "python3.12") out.push(full);
-  }
-  return out;
-}
-
-function prunePythonBytecode(dir) {
-  let removed = 0;
-  for (const name of fs.readdirSync(dir)) {
-    const full = path.join(dir, name);
-    const st = fs.lstatSync(full);
-    if (st.isSymbolicLink()) continue;
-    if (st.isDirectory()) {
-      if (name === "__pycache__") {
-        fs.rmSync(full, { recursive: true, force: true });
-        removed += 1;
-      } else {
-        removed += prunePythonBytecode(full);
-      }
-    } else if (name.endsWith(".pyc") || name.endsWith(".pyo")) {
-      fs.rmSync(full, { force: true });
-      removed += 1;
-    }
-  }
-  return removed;
-}
-
-function chunk(arr, size) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-function isPythonInterpreter(file) {
-  return path.basename(file) === "python3.12" && path.basename(path.dirname(file)) === "bin";
-}
+const { execFileSync } = require("node:child_process");
+const { signRuntime } = require("./sign-mlx-runtime.cjs");
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "darwin") {
@@ -86,31 +44,18 @@ exports.default = async function afterPack(context) {
   // 1. Sign the bundled Python runtime's mach-O inside-out.
   const runtimeDir = path.join(appPath, "Contents", "Resources", "mlx-runtime");
   if (fs.existsSync(runtimeDir)) {
-    const prunedBytecode = prunePythonBytecode(runtimeDir);
-    if (prunedBytecode > 0) {
-      console.log(`afterPack: pruned ${prunedBytecode} Python bytecode entries from mlx-runtime`);
-    }
-    const machO = collectMachO(runtimeDir);
-    const interpreters = machO.filter(isPythonInterpreter);
-    const libraries = machO.filter((file) => !isPythonInterpreter(file));
-    const args = ["--force", "--sign", identity];
-    if (hasIdentity) args.push("--options", "runtime", "--timestamp");
-    // execFileSync: no shell, so paths with $/backticks/spaces are safe.
-    for (const batch of chunk(libraries, 100)) {
-      execFileSync("codesign", [...args, ...batch], { stdio: "inherit" });
-    }
-    const runtimeEntitlements = path.join(
-      __dirname,
-      "../entitlements/entitlements.mlx-runtime.plist",
+    const result = signRuntime({
+      runtimeDir,
+      identity,
+      hasIdentity,
+      expectedTeamId: process.env.APPLE_TEAM_ID || "",
+      entitlements: path.join(__dirname, "../entitlements/entitlements.mlx-runtime.plist"),
+      pruneBytecode: true,
+      force: process.env.CERUL_FORCE_MLX_RUNTIME_SIGNING === "1",
+    });
+    console.log(
+      `afterPack: mlx-runtime signatures total=${result.total} signed=${result.signed} skipped=${result.skipped}`,
     );
-    const interpreterArgs =
-      hasIdentity && fs.existsSync(runtimeEntitlements)
-        ? [...args, "--entitlements", runtimeEntitlements]
-        : args;
-    for (const batch of chunk(interpreters, 20)) {
-      execFileSync("codesign", [...interpreterArgs, ...batch], { stdio: "inherit" });
-    }
-    console.log(`afterPack: signed ${machO.length} mach-O files in mlx-runtime`);
   }
 
   // 2. If a real signing identity is configured, let electron-builder own the
