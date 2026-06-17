@@ -1,6 +1,6 @@
 {
   "name": "@cerul/electron-shell",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "description": "Cerul desktop shell",
@@ -12,9 +12,10 @@
     "start": "electron dist/main.js",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && node scripts/build.mjs --check",
-    "stage:cerul-api": "node scripts/stage-cerul-api.mjs",
-    "package": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api --release && pnpm stage:cerul-api && pnpm build && electron-builder --publish never --dir",
-    "package:dist": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api --release && pnpm stage:cerul-api && pnpm build && electron-builder --publish never"
+    "stage:cerul-core": "node scripts/stage-cerul-core.mjs",
+    "stage:cerul-api": "pnpm stage:cerul-core",
+    "package": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api --release && pnpm stage:cerul-core && pnpm build && electron-builder --publish never --dir",
+    "package:dist": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api --release && pnpm stage:cerul-core && pnpm build && electron-builder --publish never"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
@@ -37,6 +38,10 @@
         "owner": "cerul-ai",
         "repo": "cerul-app"
       }
+    ],
+    "electronLanguages": [
+      "en",
+      "zh_cn"
     ],
     "directories": {
       "output": "../../target/electron"

@@ -20,8 +20,8 @@ Usage: scripts/build-installers.sh [--target <triple>] [--debug] [--no-bundle] [
 
 Builds Cerul installers with Electron. The build contract is:
   1. build the React renderer
-  2. build release cerul-api
-  3. stage cerul-api into apps/electron-shell/bin/
+  2. build release Cerul Core
+  3. stage Cerul Core into apps/electron-shell/bin/
   4. run electron-builder, which copies bin/, desktop-dist/, third-party/, and mlx-sidecar/
 
 Signing is handled by electron-builder. For public macOS release candidates,
@@ -217,9 +217,9 @@ if [ -n "$TARGET" ]; then
 fi
 run cargo "${cargo_args[@]}"
 if [ -n "$TARGET" ]; then
-  run env CERUL_TARGET_TRIPLE="$TARGET" pnpm --filter @cerul/electron-shell stage:cerul-api
+  run env CERUL_TARGET_TRIPLE="$TARGET" pnpm --filter @cerul/electron-shell stage:cerul-core
 else
-  run pnpm --filter @cerul/electron-shell stage:cerul-api
+  run pnpm --filter @cerul/electron-shell stage:cerul-core
 fi
 run pnpm --filter @cerul/electron-shell build
 

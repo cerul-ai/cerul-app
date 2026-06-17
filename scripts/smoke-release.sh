@@ -19,7 +19,7 @@ RUN_INSTALLED_HOTKEY_MANUAL=0
 MODELS_CACHE="${CERUL_MODEL_SMOKE_CACHE:-}"
 MODEL_RETRIES="${CERUL_MODEL_SMOKE_RETRIES:-2}"
 REPORT_PATH="$ROOT/.tmp/smoke-release-checklist.md"
-DEFAULT_APP_VERSION="0.0.3"
+DEFAULT_APP_VERSION="0.0.4"
 
 if command -v node >/dev/null 2>&1 && [ -f "$ROOT/apps/electron-shell/package.json" ]; then
   DEFAULT_APP_VERSION="$(cd "$ROOT" && node -p "require('./apps/electron-shell/package.json').version")"

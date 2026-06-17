@@ -75,12 +75,12 @@ if [ -z "${CERUL_FFMPEG_PATH:-}" ]; then
 fi
 
 if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is already in use; stop the existing Cerul API before running local model smoke." >&2
+  echo "Port 7777 is already in use; stop the existing Cerul Core before running local model smoke." >&2
   exit 2
 fi
 
 TMP_DIR="$(mktemp -d)"
-LOG_FILE="$TMP_DIR/cerul-api.log"
+LOG_FILE="$TMP_DIR/cerul-core.log"
 export CERUL_DATA_DIR="$TMP_DIR/data"
 
 cleanup() {
@@ -125,14 +125,14 @@ for _ in $(seq 1 120); do
     break
   fi
   if ! kill -0 "$API_PID" 2>/dev/null; then
-    echo "cerul-api exited before health became ready." >&2
+    echo "Cerul Core exited before health became ready." >&2
     sed -n '1,200p' "$LOG_FILE" >&2 || true
     exit 1
   fi
   sleep 0.5
 done
 if [ "$API_READY" != "1" ]; then
-  echo "cerul-api did not become healthy before the local model smoke timeout." >&2
+  echo "Cerul Core did not become healthy before the local model smoke timeout." >&2
   sed -n '1,240p' "$LOG_FILE" >&2 || true
   exit 1
 fi

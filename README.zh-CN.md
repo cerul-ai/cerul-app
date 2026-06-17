@@ -8,7 +8,7 @@
   </a>
   <h1>Cerul App</h1>
   <p><strong>把你看过、听过的一切，变成可搜索的本地记忆。</strong></p>
-  <p>把它指向你的文件夹、YouTube 频道和播客订阅源。Cerul 会在<strong>本地</strong>监看、转写并索引它们 —— 然后让你跨语音与画面内容按语义搜索，入口可以是桌面应用、全局浮层，或本地 API。</p>
+  <p>把它指向你的文件夹、YouTube 频道和播客订阅源。Cerul 会在<strong>本地</strong>监看、转写并索引它们 —— 然后让你跨语音与画面内容按语义搜索，入口可以是桌面应用、全局浮层，或 Cerul Core API。</p>
 
   <p>
     <a href="https://cerul.ai"><strong>官网</strong></a> &middot;
@@ -20,7 +20,7 @@
   <p>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
-    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.3-22c55e?style=flat-square" />
+    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.4-22c55e?style=flat-square" />
   </p>
 
   <p>
@@ -32,7 +32,7 @@
 <br />
 
 > [!NOTE]
-> **初版发布。** Cerul App 是 [Cerul Cloud](https://cerul.ai) 的源码可得、可自托管配套客户端。当前版本：**0.0.3**。核心已可运行 —— 桌面外壳、本地 API、索引流水线、混合搜索、浮层和托盘今天就能跑。公开安装包通过 GitHub Releases 发布；release workflow 配置 Developer ID 凭据时，macOS 制品会经过签名与公证。
+> **初版发布。** Cerul App 是 [Cerul Cloud](https://cerul.ai) 的源码可得、可自托管配套客户端。当前版本：**0.0.4**。核心已可运行 —— 桌面外壳、Cerul Core、索引流水线、混合搜索、浮层和托盘今天就能跑。公开安装包通过 GitHub Releases 发布；release workflow 配置 Developer ID 凭据时，macOS 制品会经过签名与公证。
 
 ## 为什么用 Cerul App
 
@@ -43,7 +43,7 @@ Cerul App 把你自己的媒体变成一份可搜索、**本地优先**的记忆
 - **你的机器，你的数据。** 媒体、转录稿和向量索引全部留在本地磁盘。推理通过*你自己*掌控的 provider key 运行，或使用完全本地的模型 —— 无需 Cerul 账号。
 - **按语义搜索。** 混合检索把全文检索（SQLite/FTS）与向量搜索（内置本地 [Qdrant](https://qdrant.tech)）结合，让你找到的是那个"瞬间"，而不只是关键词。
 - **常驻而不打扰。** 全局快捷键浮层、菜单栏托盘、后台索引、开机自启，让它始终离你一个按键之遥。
-- **面向 Agent。** 本地 REST API 监听在 `127.0.0.1:7777`，让编码 Agent 和脚本能查询你的媒体库。
+- **面向 Agent。** Cerul Core 在 `127.0.0.1:7777` 暴露本地 REST API，让编码 Agent 和脚本能查询你的媒体库。
 
 ## 工作原理
 
@@ -103,7 +103,7 @@ CERUL_EMBEDDING_BASE_URL=...
 
 也可以在应用的 Models 设置里切换到完全本地的模型（Qwen3-VL / MLX）。
 
-## 本地 API
+## Cerul Core API
 
 应用运行后，可以通过 HTTP 查询你的媒体库 —— 方便 Agent 和自动化使用：
 
@@ -132,7 +132,7 @@ scripts/           构建、打包与冒烟测试脚本
 
 ## 项目状态与路线图
 
-Cerul App 处于 **0.0.3 初版发布** 阶段。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
+Cerul App 处于 **0.0.4 初版发布** 阶段。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
 
 **今天已可用**
 - Electron 桌面外壳、本地 REST API、存储与索引流水线

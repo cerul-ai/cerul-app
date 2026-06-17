@@ -34,6 +34,27 @@ function collectMachO(dir) {
   return out;
 }
 
+function prunePythonBytecode(dir) {
+  let removed = 0;
+  for (const name of fs.readdirSync(dir)) {
+    const full = path.join(dir, name);
+    const st = fs.lstatSync(full);
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) {
+      if (name === "__pycache__") {
+        fs.rmSync(full, { recursive: true, force: true });
+        removed += 1;
+      } else {
+        removed += prunePythonBytecode(full);
+      }
+    } else if (name.endsWith(".pyc") || name.endsWith(".pyo")) {
+      fs.rmSync(full, { force: true });
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -61,6 +82,10 @@ exports.default = async function afterPack(context) {
   // 1. Sign the bundled Python runtime's mach-O inside-out.
   const runtimeDir = path.join(appPath, "Contents", "Resources", "mlx-runtime");
   if (fs.existsSync(runtimeDir)) {
+    const prunedBytecode = prunePythonBytecode(runtimeDir);
+    if (prunedBytecode > 0) {
+      console.log(`afterPack: pruned ${prunedBytecode} Python bytecode entries from mlx-runtime`);
+    }
     const machO = collectMachO(runtimeDir);
     const interpreters = machO.filter(isPythonInterpreter);
     const libraries = machO.filter((file) => !isPythonInterpreter(file));

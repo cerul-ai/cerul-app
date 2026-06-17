@@ -60,6 +60,7 @@ TARGETS=(
 
 is_running() {
   pgrep -f "/Applications/Cerul.app/Contents/MacOS/Cerul" >/dev/null 2>&1 ||
+    pgrep -f "Resources/bin/cerul-core" >/dev/null 2>&1 ||
     pgrep -f "Resources/bin/cerul-api" >/dev/null 2>&1 ||
     pgrep -f "target/(debug|release)/cerul-api" >/dev/null 2>&1
 }
