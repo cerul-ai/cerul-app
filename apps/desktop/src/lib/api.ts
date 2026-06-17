@@ -286,12 +286,24 @@ export type SearchHealthDiagnostics = {
   chunk_count: number;
   searchable_text_chunk_count: number;
   image_chunk_count: number;
+  fts_row_count: number;
+  orphan_job_count: number;
+  missing_raw_path_count: number;
   embedding_profile_id: string | null;
   qdrant_text_collection: string | null;
   qdrant_image_collection: string | null;
   qdrant_text_points: number | null;
   qdrant_image_points: number | null;
+  embedded_text_chunk_count: number | null;
+  embedded_image_chunk_count: number | null;
+  text_embedding_gap_count: number | null;
+  image_embedding_gap_count: number | null;
   qdrant_error: string | null;
+};
+
+export type SearchRebuildResponse = {
+  fts_rebuilt: boolean;
+  diagnostics: SearchHealthDiagnostics;
 };
 
 export type SettingsMap = Record<string, unknown>;
@@ -588,6 +600,12 @@ export async function search(q: string, limit = 20) {
 
 export async function searchDiagnostics() {
   return fetchJson<SearchHealthDiagnostics>("/search/diagnostics");
+}
+
+export async function rebuildSearchIndex() {
+  return fetchJson<SearchRebuildResponse>("/search/rebuild", {
+    method: "POST",
+  });
 }
 
 export async function listWhisperModels() {

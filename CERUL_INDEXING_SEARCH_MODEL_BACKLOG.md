@@ -325,6 +325,8 @@
 
 ### 16. 索引和搜索健康检查
 
+状态：已完成并推送到 PR #60。`GET /search/diagnostics` 已扩展 item/chunk/FTS/Qdrant/embedding gap/orphan jobs/missing raw paths 计数；新增 `POST /search/rebuild` 只重建 SQLite FTS 表并返回最新诊断，不重新转写视频。向量缺口会在 diagnostics 里明确暴露，避免把全量重索引伪装成“搜索索引修复”。
+
 需要做：
 
 - 增加健康检查命令/API：

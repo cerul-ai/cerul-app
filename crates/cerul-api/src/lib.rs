@@ -339,6 +339,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/search", post(search))
         .route("/search/diagnostics", get(search_diagnostics))
+        .route("/search/rebuild", post(rebuild_search_index))
         .route("/ask", post(ask_library))
         .route("/sources", get(list_sources).post(add_source))
         .route("/sources/preview/rss", post(preview_rss_source))
@@ -788,18 +789,47 @@ struct SearchHealthDiagnostics {
     chunk_count: usize,
     searchable_text_chunk_count: usize,
     image_chunk_count: usize,
+    fts_row_count: usize,
+    orphan_job_count: usize,
+    missing_raw_path_count: usize,
     embedding_profile_id: Option<String>,
     qdrant_text_collection: Option<String>,
     qdrant_image_collection: Option<String>,
     qdrant_text_points: Option<usize>,
     qdrant_image_points: Option<usize>,
+    embedded_text_chunk_count: Option<usize>,
+    embedded_image_chunk_count: Option<usize>,
+    text_embedding_gap_count: Option<usize>,
+    image_embedding_gap_count: Option<usize>,
     qdrant_error: Option<String>,
 }
 
 async fn search_diagnostics(
     State(state): State<ApiState>,
 ) -> ApiResult<Json<SearchHealthDiagnostics>> {
+    Ok(Json(search_health_diagnostics(&state.paths).await?))
+}
+
+#[derive(Debug, Serialize)]
+struct SearchRebuildResponse {
+    fts_rebuilt: bool,
+    diagnostics: SearchHealthDiagnostics,
+}
+
+async fn rebuild_search_index(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<SearchRebuildResponse>> {
     let conn = cerul_storage::sqlite::open(&state.paths)?;
+    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')", [])?;
+    drop(conn);
+    Ok(Json(SearchRebuildResponse {
+        fts_rebuilt: true,
+        diagnostics: search_health_diagnostics(&state.paths).await?,
+    }))
+}
+
+async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHealthDiagnostics> {
+    let conn = cerul_storage::sqlite::open(paths)?;
     let item_count = count_query(&conn, "SELECT COUNT(*) FROM items")?;
     let indexed_item_count =
         count_query(&conn, "SELECT COUNT(*) FROM items WHERE status = 'indexed'")?;
@@ -812,6 +842,12 @@ async fn search_diagnostics(
         &conn,
         "SELECT COUNT(*) FROM chunks WHERE frame_path IS NOT NULL AND TRIM(frame_path) <> ''",
     )?;
+    let fts_row_count = count_query(&conn, "SELECT COUNT(*) FROM chunks_fts")?;
+    let orphan_job_count = count_query(
+        &conn,
+        "SELECT COUNT(*) FROM jobs AS j LEFT JOIN items AS i ON i.id = j.item_id WHERE i.id IS NULL",
+    )?;
+    let missing_raw_path_count = count_missing_raw_paths(&conn)?;
     drop(conn);
 
     let mut diagnostics = SearchHealthDiagnostics {
@@ -820,47 +856,83 @@ async fn search_diagnostics(
         chunk_count,
         searchable_text_chunk_count,
         image_chunk_count,
+        fts_row_count,
+        orphan_job_count,
+        missing_raw_path_count,
         embedding_profile_id: None,
         qdrant_text_collection: None,
         qdrant_image_collection: None,
         qdrant_text_points: None,
         qdrant_image_points: None,
+        embedded_text_chunk_count: None,
+        embedded_image_chunk_count: None,
+        text_embedding_gap_count: None,
+        image_embedding_gap_count: None,
         qdrant_error: None,
     };
 
-    let profile = match cerul_storage::vectors::ensure_active_embedding_profile(&state.paths) {
+    let profile = match cerul_storage::vectors::ensure_active_embedding_profile(paths) {
         Ok(profile) => profile,
         Err(error) => {
             tracing::warn!(%error, "failed to load active embedding profile for search diagnostics");
             diagnostics.qdrant_error = Some("embedding_profile_unavailable".to_string());
-            return Ok(Json(diagnostics));
+            return Ok(diagnostics);
         }
     };
-    let collections = cerul_storage::vectors::collection_names(&state.paths, &profile);
+    let collections = cerul_storage::vectors::collection_names(paths, &profile);
     diagnostics.embedding_profile_id = Some(profile.id);
     diagnostics.qdrant_text_collection = Some(collections.text.clone());
     diagnostics.qdrant_image_collection = Some(collections.image.clone());
 
     let text_points =
-        cerul_storage::vectors::collection_point_count(&state.paths, &collections.text).await;
+        cerul_storage::vectors::collection_point_count(paths, &collections.text).await;
     let image_points =
-        cerul_storage::vectors::collection_point_count(&state.paths, &collections.image).await;
+        cerul_storage::vectors::collection_point_count(paths, &collections.image).await;
     match text_points {
-        Ok(count) => diagnostics.qdrant_text_points = Some(count),
+        Ok(count) => {
+            diagnostics.qdrant_text_points = Some(count);
+            diagnostics.embedded_text_chunk_count = Some(count);
+            diagnostics.text_embedding_gap_count =
+                Some(searchable_text_chunk_count.saturating_sub(count));
+        }
         Err(error) => {
             tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
             diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
         }
     }
     match image_points {
-        Ok(count) => diagnostics.qdrant_image_points = Some(count),
+        Ok(count) => {
+            diagnostics.qdrant_image_points = Some(count);
+            diagnostics.embedded_image_chunk_count = Some(count);
+            diagnostics.image_embedding_gap_count = Some(image_chunk_count.saturating_sub(count));
+        }
         Err(error) => {
             tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
             diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
         }
     }
 
-    Ok(Json(diagnostics))
+    Ok(diagnostics)
+}
+
+fn count_missing_raw_paths(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT raw_path
+        FROM items
+        WHERE raw_path IS NOT NULL
+          AND TRIM(raw_path) <> ''
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut missing = 0usize;
+    for row in rows {
+        let raw_path = row?;
+        if !FsPath::new(&raw_path).exists() {
+            missing += 1;
+        }
+    }
+    Ok(missing)
 }
 
 fn count_query(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<usize> {
@@ -3531,6 +3603,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/usage/events", &["get"]),
     ("/usage/summary", &["get"]),
     ("/storage/usage", &["get"]),
+    ("/search/rebuild", &["post"]),
     ("/models/catalog", &["get"]),
     ("/models/whisper", &["get"]),
     ("/models/whisper/{id}/download", &["post"]),
