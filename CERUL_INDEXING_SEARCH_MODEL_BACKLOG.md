@@ -183,7 +183,7 @@
 
 ### 9. 删除 UI 修复收口
 
-状态：已完成，本地验证通过。`components/cards.tsx` 已改用完整 `.item-select` 热区，避免被旧 `.sel-check` 缩成 20px 小框；`detail-issue-panel.tsx` 的定位/重索引/删除 loading icon 已补 `spin` class。批量删除当前已有乐观移除，失败后会刷新后端真实状态并显示错误。
+状态：已完成并推送到 PR #60，commit `3cccde0`。`components/cards.tsx` 已改用完整 `.item-select` 热区，避免被旧 `.sel-check` 缩成 20px 小框；`detail-issue-panel.tsx` 的定位/重索引/删除 loading icon 已补 `spin` class。批量删除当前已有乐观移除，失败后会刷新后端真实状态并显示错误。
 
 现状：
 
@@ -205,6 +205,8 @@
 - 全选只作用于当前过滤结果，并支持取消全选。
 
 ### 10. 模型下载 UI 不展示 OCR 过程
+
+状态：已完成，本地验证通过。默认本地模型准备只包含 embed/asr，`local_capability.total_mb` 和 `prepare-status` overall 进度也只按用户可管理模型计算；OCR 仍保留在 `models` 诊断列表里，但不会进入默认下载步骤。
 
 现状：首启下载弹窗已经隐藏 `ocr`，但其他设置页/诊断仍要确认边界。
 

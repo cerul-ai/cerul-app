@@ -29,6 +29,7 @@ use crate::{ApiError, ApiResult, ApiState};
 /// before we call it ready. Downloads are exact (safetensors only), so the
 /// threshold mainly guards against a size estimate that is a touch high.
 const READY_RATIO: f64 = 0.98;
+const USER_MANAGED_MODEL_IDS: &[&str] = &["embed", "asr"];
 
 /// Minimum installed RAM (GiB) before we recommend on-device inference.
 const MIN_LOCAL_RAM_GB: u32 = 8;
@@ -77,6 +78,10 @@ fn model_groups(cfg: &MlxSidecarConfig) -> Vec<LocalModelGroup> {
             size_mb: 30,
         },
     ]
+}
+
+fn is_user_managed_model(id: &str) -> bool {
+    USER_MANAGED_MODEL_IDS.contains(&id)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,7 +168,11 @@ pub async fn local_capability(
     let ram_gb = detect_ram_gb();
 
     let groups = model_groups(&cfg);
-    let total_mb = groups.iter().map(|g| g.size_mb).sum();
+    let total_mb = groups
+        .iter()
+        .filter(|g| is_user_managed_model(g.id))
+        .map(|g| g.size_mb)
+        .sum();
     let can_run_local = apple_silicon && runtime_ready && ram_gb >= MIN_LOCAL_RAM_GB;
 
     Ok(Json(LocalModelCapability {
@@ -197,16 +206,18 @@ pub async fn prepare_local_models(
     let cfg = runtime_config(&state.paths).map_err(ApiError::internal)?;
     let groups = model_groups(&cfg);
     let wanted = body.and_then(|Json(b)| b.models);
-    let active_ids: Vec<&'static str> = groups
-        .iter()
-        .filter(|g| {
-            wanted
-                .as_ref()
-                .map(|ids| ids.iter().any(|id| id == g.id))
-                .unwrap_or(true)
-        })
-        .map(|g| g.id)
-        .collect();
+    let active_ids: Vec<&'static str> = match wanted.as_ref() {
+        Some(ids) => groups
+            .iter()
+            .filter(|g| ids.iter().any(|id| id == g.id))
+            .map(|g| g.id)
+            .collect(),
+        None => groups
+            .iter()
+            .filter(|g| is_user_managed_model(g.id))
+            .map(|g| g.id)
+            .collect(),
+    };
     let repos: Vec<String> = groups
         .iter()
         .filter(|g| active_ids.contains(&g.id))
@@ -394,16 +405,27 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         .unwrap_or_default();
 
     let groups = model_groups(cfg);
+    let progress_ids = if !active_ids.is_empty() {
+        active_ids.clone()
+    } else {
+        groups
+            .iter()
+            .filter(|g| is_user_managed_model(g.id))
+            .map(|g| g.id)
+            .collect()
+    };
     let mut models = Vec::with_capacity(groups.len());
     let mut done_mb = 0u64;
     let mut total_mb = 0u64;
     let mut downloading_assigned = false;
 
     for group in &groups {
-        total_mb += group.size_mb;
         let on_disk_mb = group_cached_mb(&hub, &mirror, &modelscope, bundled.as_deref(), group);
         let capped = on_disk_mb.min(group.size_mb);
-        done_mb += capped;
+        if progress_ids.contains(&group.id) {
+            total_mb += group.size_mb;
+            done_mb += capped;
+        }
         let progress = ((capped as f64 / group.size_mb as f64) * 100.0).round() as u32;
         let ready = group_weights_ready(&hub, &mirror, &modelscope, bundled.as_deref(), group);
         // Only mark a model "downloading" if it's actually in the active prepare
@@ -427,7 +449,10 @@ fn compute_status(cfg: &MlxSidecarConfig) -> LocalPrepareStatus {
         });
     }
 
-    let all_ready = models.iter().all(|m| m.status == "ready");
+    let all_ready = models
+        .iter()
+        .filter(|m| progress_ids.contains(&m.id))
+        .all(|m| m.status == "ready");
     let overall_progress = if total_mb == 0 {
         0
     } else {
