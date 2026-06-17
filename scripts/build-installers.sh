@@ -266,6 +266,19 @@ if [ -n "$PREPACKAGED_APP" ] && [ ! -d "$PREPACKAGED_APP" ] && [ "$DRY_RUN" -eq 
   exit 1
 fi
 
+if [ -n "$PREPACKAGED_APP" ] && [ "$DRY_RUN" -eq 0 ]; then
+  prepackaged_parent="$(cd "$(dirname "$PREPACKAGED_APP")" && pwd -P)"
+  prepackaged_abs="$prepackaged_parent/$(basename "$PREPACKAGED_APP")"
+  mkdir -p "$ROOT/target/electron"
+  electron_output_abs="$(cd "$ROOT/target/electron" && pwd -P)"
+  case "$prepackaged_abs" in
+    "$electron_output_abs"/*)
+      echo "Prepackaged app must be outside $electron_output_abs because electron-builder cleans its output directory." >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if [ "$SKIP_FETCH" -eq 0 ] && [ -z "$PREPACKAGED_APP" ]; then
   fetch_args=()
   if [ -n "$TARGET" ]; then
