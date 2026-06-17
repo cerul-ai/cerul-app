@@ -275,15 +275,24 @@ jobs:
           name: cerul-macos-update
           path: target/electron
       - name: Extract prepackaged app bundle
+        id: prepackaged-app
         shell: bash
         run: |
           if [ ! -f target/electron/Cerul.app.tar.gz ]; then
             echo "Update artifact did not include Cerul.app.tar.gz." >&2
             exit 1
           fi
-          rm -rf target/electron/prepackaged
-          mkdir -p target/electron/prepackaged
-          tar -C target/electron/prepackaged -xzf target/electron/Cerul.app.tar.gz
+          prepackaged_dir="$RUNNER_TEMP/cerul-prepackaged-app"
+          rm -rf "$prepackaged_dir"
+          mkdir -p "$prepackaged_dir"
+          tar -C "$prepackaged_dir" -xzf target/electron/Cerul.app.tar.gz
+          app_path="$prepackaged_dir/Cerul.app"
+          if [ ! -d "$app_path" ]; then
+            echo "Extracted prepackaged app was not found at $app_path." >&2
+            find "$prepackaged_dir" -maxdepth 3 -print >&2
+            exit 1
+          fi
+          echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
       - name: Build macOS DMG from prepackaged app
         shell: bash
         env:
@@ -295,7 +304,7 @@ jobs:
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
           REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
         run: |
-          args=(--mac-targets dmg --prepackaged-app target/electron/prepackaged/Cerul.app)
+          args=(--mac-targets dmg --prepackaged-app "${{ steps.prepackaged-app.outputs.app_path }}")
           if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
             args+=(--require-signing)
           fi
