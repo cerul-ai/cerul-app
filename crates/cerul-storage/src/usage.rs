@@ -290,8 +290,7 @@ fn usage_totals_grouped_for_ids(
     if ids.is_empty() {
         return Ok(Default::default());
     }
-    let placeholders = std::iter::repeat("?")
-        .take(ids.len())
+    let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     let conn = sqlite::open(paths)?;

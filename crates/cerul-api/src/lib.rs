@@ -1247,8 +1247,7 @@ async fn list_items(
     if !statuses.is_empty() {
         sql.push_str(" AND i.status IN (");
         sql.push_str(
-            &std::iter::repeat("?")
-                .take(statuses.len())
+            &std::iter::repeat_n("?", statuses.len())
                 .collect::<Vec<_>>()
                 .join(", "),
         );
@@ -1646,8 +1645,7 @@ async fn list_jobs(
     if !statuses.is_empty() {
         sql.push_str(" AND j.status IN (");
         sql.push_str(
-            &std::iter::repeat("?")
-                .take(statuses.len())
+            &std::iter::repeat_n("?", statuses.len())
                 .collect::<Vec<_>>()
                 .join(", "),
         );

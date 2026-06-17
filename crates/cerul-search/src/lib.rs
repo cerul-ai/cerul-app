@@ -397,8 +397,7 @@ fn load_chunks_for_hits(
         return Ok(HashMap::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(chunk_ids.len())
+    let placeholders = std::iter::repeat_n("?", chunk_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
@@ -490,8 +489,7 @@ fn load_frame_chunks_by_item(
     if item_ids.is_empty() {
         return Ok(HashMap::new());
     };
-    let placeholders = std::iter::repeat("?")
-        .take(item_ids.len())
+    let placeholders = std::iter::repeat_n("?", item_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
