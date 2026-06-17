@@ -223,6 +223,8 @@
 
 ### 11. 模型下载路由改成点击后实测
 
+状态：已完成并推送到 PR #60。`auto` 模式已经在用户点击下载时并行 probe Cerul CDN / Hugging Face / ModelScope，然后按实测吞吐选择来源；`CERUL_MODEL_DOWNLOAD_REGION` 只作为 tie-break 和全失败 fallback。新增无网络 smoke 覆盖 ModelScope 最快会被选中、国内 region 不会压过实测速度、ModelScope 探测失败会进入诊断。
+
 问题：靠 locale/timezone 判断国内用户不可靠；显式 `CERUL_MODEL_DOWNLOAD_REGION` 也不适合普通用户理解。
 
 需要做：
