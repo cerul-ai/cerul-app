@@ -7,7 +7,6 @@ Contributions are welcome, but release-sensitive areas need extra care.
 ## Development
 
 ```bash
-cp .env.example .env
 pnpm install
 ./run.sh
 ```

@@ -6,9 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-use crate::SourcePlugin;
+use crate::{
+    url_policy::{safe_http_client, validate_external_http_url},
+    SourcePlugin,
+};
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Audio];
+const MAX_FEED_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ENCLOSURE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct RssPodcast {
@@ -158,37 +163,6 @@ fn allow_local_feeds() -> bool {
     std::env::var("CERUL_ALLOW_LOCAL_FEEDS").map_or(cfg!(test), |v| v == "1")
 }
 
-fn validate_remote_feed_url(location: &str) -> anyhow::Result<reqwest::Url> {
-    let url = reqwest::Url::parse(location)
-        .map_err(|_| anyhow::anyhow!("invalid feed URL: {location}"))?;
-    anyhow::ensure!(
-        matches!(url.scheme(), "http" | "https"),
-        "feed URL must be http(s): {location}"
-    );
-    match url.host() {
-        Some(url::Host::Ipv4(ip)) => {
-            anyhow::ensure!(
-                !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()),
-                "feed URL must not target an internal address: {location}"
-            );
-        }
-        Some(url::Host::Ipv6(ip)) => {
-            anyhow::ensure!(
-                !(ip.is_loopback() || ip.is_unspecified()),
-                "feed URL must not target an internal address: {location}"
-            );
-        }
-        Some(url::Host::Domain(domain)) => {
-            anyhow::ensure!(
-                domain != "localhost",
-                "feed URL must not target an internal address: {location}"
-            );
-        }
-        None => anyhow::bail!("feed URL has no host: {location}"),
-    }
-    Ok(url)
-}
-
 async fn read_url_or_file(location: &str) -> anyhow::Result<Vec<u8>> {
     if allow_local_feeds() {
         if let Some(path) = file_url_path(location) {
@@ -199,8 +173,21 @@ async fn read_url_or_file(location: &str) -> anyhow::Result<Vec<u8>> {
         }
     }
 
-    let url = validate_remote_feed_url(location)?;
-    let bytes = reqwest::get(url).await?.error_for_status()?.bytes().await?;
+    let url = validate_external_http_url(location, "feed URL")?;
+    let client = safe_http_client("feed URL")?;
+    let response = client.get(url).send().await?.error_for_status()?;
+    if let Some(length) = response.content_length() {
+        anyhow::ensure!(
+            length <= MAX_FEED_BYTES,
+            "feed response is too large: {length} bytes"
+        );
+    }
+    let bytes = response.bytes().await?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_FEED_BYTES,
+        "feed response is too large: {} bytes",
+        bytes.len()
+    );
     Ok(bytes.to_vec())
 }
 
@@ -216,14 +203,27 @@ async fn download_url_or_file(location: &str, out: &Path) -> anyhow::Result<()> 
         }
     }
 
-    let url = validate_remote_feed_url(location)?;
+    let url = validate_external_http_url(location, "podcast enclosure URL")?;
     // Stream to disk: episodes can be hundreds of MB and used to be
     // buffered fully in memory before writing.
     use tokio::io::AsyncWriteExt;
-    let mut response = reqwest::get(url).await?.error_for_status()?;
+    let client = safe_http_client("podcast enclosure URL")?;
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if let Some(length) = response.content_length() {
+        anyhow::ensure!(
+            length <= MAX_ENCLOSURE_BYTES,
+            "podcast enclosure is too large: {length} bytes"
+        );
+    }
     let tmp = out.with_extension("partial");
     let mut file = tokio::fs::File::create(&tmp).await?;
+    let mut written = 0_u64;
     while let Some(chunk) = response.chunk().await? {
+        written += chunk.len() as u64;
+        anyhow::ensure!(
+            written <= MAX_ENCLOSURE_BYTES,
+            "podcast enclosure is too large: {written} bytes"
+        );
         file.write_all(&chunk).await?;
     }
     file.flush().await?;

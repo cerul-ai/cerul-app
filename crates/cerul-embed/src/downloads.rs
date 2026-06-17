@@ -390,8 +390,18 @@ fn prefetch_into_hf_cache(
         }
         let temp = destination.with_extension("download");
         let mut response = client.get(&remote.url).send()?.error_for_status()?;
+        let expected_len = response.content_length();
         let mut file = fs::File::create(&temp)?;
-        std::io::copy(&mut response, &mut file)?;
+        let written = std::io::copy(&mut response, &mut file)?;
+        if let Some(expected_len) = expected_len {
+            anyhow::ensure!(
+                written == expected_len,
+                "downloaded {} bytes for {}, expected {}",
+                written,
+                remote.path,
+                expected_len
+            );
+        }
         file.flush()?;
         drop(file);
         fs::rename(temp, destination)?;

@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::process::Command;
 
-use crate::SourcePlugin;
+use crate::{url_policy::validate_external_http_url, SourcePlugin};
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
 
@@ -28,8 +28,8 @@ impl YouTube {
             .get("url")
             .or_else(|| config.get("channel_url"))
             .and_then(|value| value.as_str())
-            .context("youtube requires config.url")?
-            .to_string();
+            .context("youtube requires config.url")
+            .and_then(validate_youtube_source_url)?;
         let max_videos = config
             .get("max_videos")
             .or_else(|| config.get("max"))
@@ -127,6 +127,7 @@ impl SourcePlugin for YouTube {
             command.arg("--playlist-end").arg(max_videos.to_string());
         }
         command
+            .arg("--")
             .arg(&self.channel_url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -190,6 +191,7 @@ impl SourcePlugin for YouTube {
         command
             .arg("-o")
             .arg(&output_path)
+            .arg("--")
             .arg(format!(
                 "https://www.youtube.com/watch?v={}",
                 item.external_id
@@ -206,6 +208,19 @@ impl SourcePlugin for YouTube {
 
         Ok(output_path)
     }
+}
+
+fn validate_youtube_source_url(value: &str) -> anyhow::Result<String> {
+    let url = validate_external_http_url(value, "YouTube source URL")?;
+    let host = url
+        .host_str()
+        .map(|host| host.trim_start_matches("www.").to_ascii_lowercase())
+        .context("YouTube source URL is missing a host")?;
+    anyhow::ensure!(
+        host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be",
+        "YouTube source URL must use youtube.com or youtu.be"
+    );
+    Ok(url.to_string())
 }
 
 pub(crate) fn default_ytdlp_path() -> PathBuf {
@@ -438,6 +453,17 @@ fi
         let error = YouTube::new(json!({})).unwrap_err().to_string();
 
         assert!(error.contains("config.url"));
+    }
+
+    #[test]
+    fn rejects_non_youtube_source_url() {
+        let error = YouTube::new(json!({
+            "url": "https://example.com/@cerul"
+        }))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("youtube.com"));
     }
 
     #[test]

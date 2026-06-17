@@ -14,6 +14,7 @@ use tokio::{
 };
 
 use crate::{
+    url_policy::validate_external_http_url,
     youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem},
     FetchProgress, SourcePlugin,
 };
@@ -170,6 +171,7 @@ impl WebVideo {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
         command
+            .arg("--")
             .arg(&self.classified.canonical_url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -193,6 +195,7 @@ impl WebVideo {
             command.arg("--playlist-end").arg(max_videos.to_string());
         }
         command
+            .arg("--")
             .arg(&self.classified.canonical_url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -291,6 +294,20 @@ impl WebVideo {
             .or_else(|| metadata_string(&item.metadata, "source_url"))
             .or_else(|| metadata_string(&item.metadata, "url"))
             .unwrap_or_else(|| self.video_url_for_external_id(&item.external_id))
+    }
+
+    fn validated_fetch_url(&self, item: &DiscoveredItem) -> anyhow::Result<String> {
+        let fetch_url = self.fetch_url(item);
+        let classified = classify_web_video_url(&fetch_url)?;
+        anyhow::ensure!(
+            classified.platform == self.classified.platform,
+            "yt-dlp returned a different video platform than the source URL"
+        );
+        anyhow::ensure!(
+            classified.kind == WebVideoSourceKind::Single,
+            "yt-dlp returned a non-video download URL"
+        );
+        Ok(classified.canonical_url)
     }
 
     fn output_path(&self, item: &DiscoveredItem) -> PathBuf {
@@ -407,10 +424,12 @@ impl SourcePlugin for WebVideo {
                 .arg(format!("*0-{duration_sec}"))
                 .arg("--force-keyframes-at-cuts");
         }
+        let fetch_url = self.validated_fetch_url(item)?;
         command
             .arg("-o")
             .arg(&output_path)
-            .arg(self.fetch_url(item))
+            .arg("--")
+            .arg(fetch_url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -430,11 +449,7 @@ impl SourcePlugin for WebVideo {
 }
 
 fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
-    let parsed = Url::parse(value.trim()).context("invalid web video URL")?;
-    anyhow::ensure!(
-        matches!(parsed.scheme(), "https" | "http"),
-        "web_video URL must be http or https"
-    );
+    let parsed = validate_external_http_url(value, "web_video URL")?;
     let host = parsed
         .host_str()
         .map(|host| host.trim_start_matches("www.").to_ascii_lowercase())
@@ -830,6 +845,32 @@ fi
         assert!(updates
             .iter()
             .any(|(fraction, _)| (*fraction - 1.0).abs() < f64::EPSILON));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fetch_rejects_cross_platform_metadata_url() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+        let item = DiscoveredItem {
+            external_id: "abc123".to_string(),
+            title: Some("Single video".to_string()),
+            duration_sec: Some(45.0),
+            metadata: json!({
+                "webpage_url": "https://www.bilibili.com/video/BV1aa411c7mD",
+                "platform": "youtube",
+                "source_kind": "single"
+            }),
+        };
+
+        let error = source.fetch(&item).await.unwrap_err().to_string();
+
+        assert!(error.contains("different video platform"));
     }
 
     #[test]

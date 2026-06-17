@@ -7,6 +7,7 @@ pub mod folder_audio;
 pub mod folder_image;
 pub mod folder_video;
 pub mod rss_podcast;
+mod url_policy;
 pub mod web_video;
 pub mod youtube;
 

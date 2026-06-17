@@ -338,7 +338,10 @@ async fn ensure_collection(
     collection: &str,
     profile: &EmbeddingProfile,
 ) -> anyhow::Result<()> {
-    if collection_exists(paths, collection).await? {
+    if let Some(info) = collection_info(paths, collection).await? {
+        validate_collection_config(collection, profile, &info)?;
+        ensure_payload_index(paths, collection, "item_id").await;
+        ensure_payload_index(paths, collection, "chunk_id").await;
         return Ok(());
     }
 
@@ -380,11 +383,62 @@ async fn ensure_payload_index(paths: &AppPaths, collection: &str, field: &str) {
 }
 
 async fn collection_exists(paths: &AppPaths, collection: &str) -> anyhow::Result<bool> {
+    Ok(collection_info(paths, collection).await?.is_some())
+}
+
+async fn collection_info(paths: &AppPaths, collection: &str) -> anyhow::Result<Option<Value>> {
     match qdrant_get::<Value>(paths, &format!("/collections/{collection}")).await {
-        Ok(_) => Ok(true),
-        Err(error) if qdrant_error_is_not_found(&error) => Ok(false),
+        Ok(value) => Ok(Some(value)),
+        Err(error) if qdrant_error_is_not_found(&error) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn validate_collection_config(
+    collection: &str,
+    profile: &EmbeddingProfile,
+    info: &Value,
+) -> anyhow::Result<()> {
+    let vectors = info.pointer("/result/config/params/vectors");
+    let Some(vectors) = vectors else {
+        tracing::warn!(
+            collection,
+            "Qdrant collection config did not include vector params"
+        );
+        return Ok(());
+    };
+    let size = vectors.get("size").and_then(Value::as_i64);
+    let distance = vectors.get("distance").and_then(Value::as_str);
+
+    if let Some(size) = size {
+        anyhow::ensure!(
+            size == i64::from(profile.output_dimension),
+            "Qdrant collection {collection} has vector size {size}, expected {} for profile {}",
+            profile.output_dimension,
+            profile.id
+        );
+    } else {
+        tracing::warn!(
+            collection,
+            "Qdrant collection config did not include vector size"
+        );
+    }
+
+    if let Some(distance) = distance {
+        let expected = qdrant_distance(&profile.distance_metric)?;
+        anyhow::ensure!(
+            distance.eq_ignore_ascii_case(expected),
+            "Qdrant collection {collection} uses distance {distance}, expected {expected} for profile {}",
+            profile.id
+        );
+    } else {
+        tracing::warn!(
+            collection,
+            "Qdrant collection config did not include distance metric"
+        );
+    }
+
+    Ok(())
 }
 
 async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {

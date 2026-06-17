@@ -33,7 +33,6 @@ apps/desktop/src-tauri/gen/
 # Environment
 .env
 .env.*
-!.env.example
 *.local
 
 # Editors / IDE
@@ -82,4 +81,6 @@ docs/*
 
 # Local design / writing workspace (never publish to the public repo)
 design/
+designs/
 web-articles/
+skills-lock.json

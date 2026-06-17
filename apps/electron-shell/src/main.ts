@@ -1705,10 +1705,11 @@ function isPathInsideDirectory(filePath: string, directory: string) {
 // behalf.
 function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent) {
   const url = event.senderFrame?.url ?? "";
-  const trusted =
-    url.startsWith(`${appScheme}://`) ||
-    url.startsWith("http://127.0.0.1:1420") ||
-    url.startsWith("http://localhost:1420");
+  const trustedAppFrame = url.startsWith(`${appScheme}://`);
+  const trustedDevFrame =
+    !app.isPackaged &&
+    (url.startsWith("http://127.0.0.1:1420") || url.startsWith("http://localhost:1420"));
+  const trusted = trustedAppFrame || trustedDevFrame;
   if (!trusted) {
     throw new Error(`IPC call from untrusted sender: ${url || "<unknown>"}`);
   }

@@ -87,7 +87,7 @@ pnpm install
 
 请在应用的 **设置 → 模型** 中配置 provider 连接。兼容 OpenAI 的端点也可用：基础 URL 可填写类似 `https://api.lazu.ai/v1`，然后探索模型列表，或直接手动输入模型 ID。
 
-从源码开发时，`run.sh` 也可以读取从 [`.env.example`](.env.example) 复制出来的本地 `.env` 文件。这只是为了方便开发时预置默认 provider 参数：
+从源码开发时，`run.sh` 也可以读取一个本地 `.env` 文件来预置默认 provider 参数，这只是开发时的便利：
 
 ```bash
 # 转写（ASR）
