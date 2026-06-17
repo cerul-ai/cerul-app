@@ -17,7 +17,10 @@ rg -qF "jobStepProgressPercent(job)" apps/desktop/src
 rg -qF "jobDisplayStatus(job, t)" apps/desktop/src
 rg -qF "jobItemTitle(job, items, t)" apps/desktop/src
 rg -qF 'await api.updateSettings({ indexing_paused: !indexingPaused })' apps/desktop/src
-rg -qF 'await api.deleteItem(job.item_id)' apps/desktop/src
+rg -qF 'await api.cancelJob(job.id)' apps/desktop/src
+rg -qF 'export async function cancelJob' apps/desktop/src/lib/api.ts
+rg -qF '"/jobs/:id/cancel"' crates/cerul-api/src/lib.rs
+rg -qF "async fn cancel_job" crates/cerul-api/src/lib.rs
 rg -qF 'className="btn-icon sm job-cancel"' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF '"jobs.noneTitle": "No active jobs"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "sheet-backdrop" apps/desktop/src/dialogs/jobs-sheet.tsx
