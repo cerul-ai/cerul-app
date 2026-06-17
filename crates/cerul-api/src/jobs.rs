@@ -183,6 +183,26 @@ impl JobWorker {
         mark_item_processing(&self.paths, &job)?;
         let result = self.processor.process(&job).await;
 
+        if is_job_cancelled(&self.paths, &job.id)? {
+            if let Ok(item) = cerul_storage::get_item(&self.paths, &job.item_id) {
+                if let Err(error) = crate::cleanup_item_artifacts(&self.paths, &item).await {
+                    tracing::warn!(
+                        %error,
+                        job_id = %job.id,
+                        item_id = %job.item_id,
+                        "failed to clean cancelled job artifacts"
+                    );
+                }
+            }
+            mark_job_cancelled_after_processing(&self.paths, &job)?;
+            return Ok(Some(JobOutcome {
+                id: job.id,
+                item_id: job.item_id,
+                job_type: job.job_type,
+                status: "cancelled".to_string(),
+            }));
+        }
+
         match result {
             Ok(()) => {
                 complete_job(&self.paths, &job)?;
@@ -796,6 +816,93 @@ fn fail_job(paths: &AppPaths, job: &ClaimedJob, error: &str) -> anyhow::Result<(
     Ok(())
 }
 
+pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<String>> {
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let job = tx
+        .query_row(
+            "SELECT item_id, status FROM jobs WHERE id = ?1",
+            [job_id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+
+    let Some((item_id, status)) = job else {
+        tx.commit()?;
+        return Ok(None);
+    };
+
+    if matches!(status.as_str(), "queued" | "running" | "failed") {
+        tx.execute(
+            r#"
+            UPDATE jobs
+            SET status = 'cancelled',
+                finished_at = strftime('%s','now'),
+                error = NULL,
+                progress = 1,
+                stage = 'cancelled',
+                stage_message = 'Cancelled'
+            WHERE id = ?1
+            "#,
+            [job_id],
+        )?;
+        if let Some(item_id) = item_id.as_deref() {
+            tx.execute(
+                r#"
+                UPDATE items
+                SET status = 'discovered',
+                    error = NULL,
+                    indexed_at = NULL
+                WHERE id = ?1
+                  AND status IN ('fetching', 'processing', 'failed')
+                "#,
+                [item_id],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(item_id)
+}
+
+fn is_job_cancelled(paths: &AppPaths, job_id: &str) -> anyhow::Result<bool> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let status = conn
+        .query_row("SELECT status FROM jobs WHERE id = ?1", [job_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?;
+    Ok(status.as_deref() == Some("cancelled"))
+}
+
+fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.execute(
+        r#"
+        UPDATE jobs
+        SET status = 'cancelled',
+            finished_at = COALESCE(finished_at, strftime('%s','now')),
+            error = NULL,
+            progress = 1,
+            stage = 'cancelled',
+            stage_message = 'Cancelled'
+        WHERE id = ?1
+        "#,
+        [job.id.as_str()],
+    )?;
+    conn.execute(
+        r#"
+        UPDATE items
+        SET status = 'discovered',
+            error = NULL,
+            indexed_at = NULL
+        WHERE id = ?1
+        "#,
+        [job.item_id.as_str()],
+    )?;
+    Ok(())
+}
+
 fn update_job_stage(
     paths: &AppPaths,
     job_id: &str,
@@ -1248,6 +1355,26 @@ mod tests {
         assert_job(&paths, "job-1", "queued", 0.0, None);
         assert_item_status(&paths, "item-1", "discovered", None);
         assert_item_indexed_at(&paths, "item-1", None);
+    }
+
+    #[test]
+    fn cancel_job_marks_job_cancelled_and_keeps_item_retryable() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "queued",
+            "processing",
+        );
+
+        let item_id = cancel_job(&paths, "job-1").unwrap();
+
+        assert_eq!(item_id.as_deref(), Some("item-1"));
+        assert_job(&paths, "job-1", "cancelled", 1.0, None);
+        assert_item_status(&paths, "item-1", "discovered", None);
     }
 
     #[test]

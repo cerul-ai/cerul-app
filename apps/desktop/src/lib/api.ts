@@ -419,6 +419,13 @@ export async function listJobs() {
   return fetchJson<JobRecord[]>("/jobs");
 }
 
+export async function cancelJob(id: string) {
+  return fetchJson<{ status: string; id: string; item_id: string | null }>(
+    `/jobs/${encodeURIComponent(id)}/cancel`,
+    { method: "POST" },
+  );
+}
+
 export async function listMoments() {
   return fetchJson<MomentRecord[]>("/moments");
 }

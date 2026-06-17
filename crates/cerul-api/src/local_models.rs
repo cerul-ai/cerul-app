@@ -219,8 +219,8 @@ pub async fn prepare_local_models(
         let python = cfg.python.clone();
         let script = cfg.script.clone();
         let cache = cfg.models_cache.clone();
-        let download_source = model_download_source_setting(&state.paths)
-            .unwrap_or_else(|_| "auto".to_string());
+        let download_source =
+            model_download_source_setting(&state.paths).unwrap_or_else(|_| "auto".to_string());
         tokio::task::spawn_blocking(move || {
             let result = Command::new(&python)
                 .arg(&script)
@@ -586,7 +586,10 @@ mod tests {
         std::fs::write(modelscope.join(&name).join("c.bin"), vec![0u8; 7]).unwrap();
         std::fs::write(bundled.join(&name).join("c.bin"), vec![0u8; 7]).unwrap();
 
-        assert_eq!(repo_cached_bytes(&hf, &mirror, &modelscope, Some(&bundled), repo), 22);
+        assert_eq!(
+            repo_cached_bytes(&hf, &mirror, &modelscope, Some(&bundled), repo),
+            22
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

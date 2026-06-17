@@ -549,10 +549,11 @@ function secureDesktopWindow(window: BrowserWindow) {
 function setupTray() {
   const iconPath = trayIconPath();
   const image = nativeImage.createFromPath(iconPath);
-  if (!image.isEmpty() && process.platform === "darwin") {
-    image.setTemplateImage(true);
+  const trayImage = image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 });
+  if (!trayImage.isEmpty() && process.platform === "darwin") {
+    trayImage.setTemplateImage(true);
   }
-  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 }));
+  tray = new Tray(trayImage);
   tray.setToolTip("Cerul");
   tray.on("click", () => toggleMenuBarWindow());
   tray.setContextMenu(

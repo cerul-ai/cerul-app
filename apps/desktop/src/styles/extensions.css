@@ -2801,6 +2801,9 @@ body.overlay-body {
   left: 8px;
   z-index: 4;
   opacity: 0;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
 }
 .item-card-shell:hover .item-select,
 .item-card-shell.selected .item-select {
@@ -2810,7 +2813,25 @@ body.overlay-body {
   position: absolute;
   opacity: 0;
 }
-.item-select span {
+.item-select .item-select-box {
+  position: static;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+.item-card-shell.selected .item-select .item-select-box {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.item-select .faint {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -3266,18 +3287,34 @@ body.overlay-body {
   position: fixed;
   inset: 0;
   z-index: 190;
+  background: rgb(20 28 42 / 18%);
+  backdrop-filter: blur(2px);
 }
 .account-pop {
   position: fixed;
   z-index: 200;
-  width: 320px;
-  max-width: calc(100vw - 20px);
+  left: 50%;
+  top: 50%;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-pop);
   padding: 16px;
-  animation: menu-in var(--dur-fast) var(--ease);
+  transform: translate(-50%, -50%);
+  animation: account-modal-in var(--dur-fast) var(--ease);
+}
+@keyframes account-modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 .account-pop-title {
   display: flex;

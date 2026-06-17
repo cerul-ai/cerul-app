@@ -133,22 +133,22 @@ function urlHostMatches(value: string, hosts: string[]) {
 // that at the user, so map the few recurring shapes to a plain-language reason.
 // Returns null when nothing specific matches, so the caller falls back to the
 // source-kind branches (missing file / unavailable source / generic).
-export type FailureReason = "no_audio" | "unreadable_media" | "ffmpeg_unavailable";
+export type FailureReason = "unreadable_media" | "ffmpeg_unavailable";
+
+function isNoAudioOnlyError(rawError: string): boolean {
+  const e = rawError.toLowerCase();
+  return (
+    e.includes("does not contain any stream") ||
+    e.includes("output file is empty") ||
+    e.includes("stream map") ||
+    /\bno audio\b/.test(e)
+  );
+}
 
 export function classifyFailureReason(rawError: string): FailureReason | null {
   const e = rawError.toLowerCase();
   if (!e) {
     return null;
-  }
-  // ffmpeg wrote an audio-only output but the input carried no audio stream
-  // to map (common for screen-recording captures, which keep audio separate).
-  if (
-    e.includes("does not contain any stream") ||
-    e.includes("output file is empty") ||
-    e.includes("stream map") ||
-    /\bno audio\b/.test(e)
-  ) {
-    return "no_audio";
   }
   // Container can't be parsed: unfinalised/corrupt file (e.g. an in-progress
   // Screen Studio recording with no moov atom -> "Duration: N/A").
@@ -175,6 +175,13 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
   }
   const rawError = error || null;
 
+  // No-audio videos are valid for Cerul: the backend indexes visual frames and
+  // skips speech transcription. Older failed rows with this exact error should
+  // not keep showing a red "cannot transcribe" panel.
+  if (isNoAudioOnlyError(error)) {
+    return null;
+  }
+
   // A classified pipeline failure is more accurate than the source-kind guess:
   // a local file that ffmpeg can't transcribe is NOT "missing", so this takes
   // precedence over the missing-file branch below.
@@ -184,9 +191,9 @@ export function itemDetailIssue(item: Item, t: TFunction): DetailIssue | null {
       kind: "failed",
       title: t(`item.issue.${reason}.title`),
       message: t(`item.issue.${reason}.message`),
-      // Re-indexing won't fix a file with no audio / a broken container, so for
-      // local files point at the file instead; otherwise allow a retry.
-      primaryAction: reason === "no_audio" || reason === "unreadable_media"
+      // Re-indexing won't fix a broken container, so for local files point at
+      // the file instead; otherwise allow a retry.
+      primaryAction: reason === "unreadable_media"
         ? item.rawPath
           ? "locate"
           : null

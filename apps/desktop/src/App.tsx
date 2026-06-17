@@ -616,9 +616,8 @@ function AppWorkspace() {
   const themePreference = settingString(data.settings, "theme", "System");
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
-  // The Tasks drawer hides jobs whose item no longer exists, so cancelling a task
-  // (which deletes its item) makes it disappear even though the job row lingers in
-  // the DB.
+  // The Tasks drawer hides orphaned jobs whose item was removed from the
+  // library; cancelling a task now keeps the item and marks the job cancelled.
   const drawerJobs = visibleJobs.filter(
     (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
   );
@@ -1581,11 +1580,11 @@ function AppWorkspace() {
               body: t("jobs.confirm.cancel.body"),
               confirmLabel: t("jobs.confirm.cancel.confirm"),
             });
-            if (!confirmed || !job.item_id) {
+            if (!confirmed) {
               return;
             }
             try {
-              await api.deleteItem(job.item_id);
+              await api.cancelJob(job.id);
               await refreshCoreData();
             } catch (error) {
               console.warn("failed to cancel job", error);
