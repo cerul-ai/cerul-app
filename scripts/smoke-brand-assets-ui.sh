@@ -49,7 +49,7 @@ rg -qF "brand/app-store-icon-1024.png" apps/electron-shell/src/main.ts
 rg -qF "function trayIconPath" apps/electron-shell/src/main.ts
 rg -qF "brand/cerul-menubarTemplate.png" apps/electron-shell/src/main.ts
 rg -qF "brand/icon-192.png" apps/electron-shell/src/main.ts
-rg -qF "image.setTemplateImage(true)" apps/electron-shell/src/main.ts
+rg -qF "trayImage.setTemplateImage(true)" apps/electron-shell/src/main.ts
 rg -qF "\"background\": \"../desktop/public/brand/dmg/dmg-background.png\"" apps/electron-shell/package.json
 rg -qF "\"oneClick\": false" apps/electron-shell/package.json
 rg -qF "\"installerSidebar\": \"../desktop/public/brand/nsis/installerSidebar.bmp\"" apps/electron-shell/package.json
