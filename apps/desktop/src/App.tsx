@@ -7338,6 +7338,8 @@ function AboutSettings() {
     status: SettingsActionStatus;
     message: string | null;
   }>({ status: "idle", message: null });
+  const [aboutUpdaterState, setAboutUpdaterState] = useState<DesktopUpdaterState>({ phase: "idle" });
+  const [updateActionStatus, setUpdateActionStatus] = useState<SettingsActionStatus>("idle");
   const lastManualUpdateCheckAt = useRef(0);
 
   useEffect(() => {
@@ -7358,6 +7360,15 @@ function AboutSettings() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!hasDesktopHost()) {
+      return;
+    }
+    const unsubscribe = subscribeDesktopUpdater(setAboutUpdaterState);
+    void getDesktopUpdaterState().then(setAboutUpdaterState).catch(() => undefined);
+    return unsubscribe;
+  }, []);
+
   async function checkForUpdates() {
     const now = Date.now();
     if (now - lastManualUpdateCheckAt.current < manualUpdateCheckCooldownMs) {
@@ -7367,6 +7378,10 @@ function AboutSettings() {
     setUpdateState({ status: "running", message: null, update: null });
     try {
       const update = await checkForDesktopUpdate();
+      if (hasDesktopHost()) {
+        const next = await runDesktopUpdaterCheck();
+        setAboutUpdaterState(next);
+      }
       setUpdateState({
         status: "done",
         message: update
@@ -7377,6 +7392,81 @@ function AboutSettings() {
     } catch (error) {
       setUpdateState({ status: "error", message: errorMessage(error), update: null });
     }
+  }
+
+  async function activateCheckedUpdate() {
+    const update = updateState.update;
+    if (!update) {
+      return;
+    }
+    if (!hasDesktopHost()) {
+      window.open(update.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setUpdateActionStatus("running");
+    try {
+      let next = await getDesktopUpdaterState();
+      setAboutUpdaterState(next);
+      if (next.phase === "idle" || next.phase === "error") {
+        next = await runDesktopUpdaterCheck();
+        setAboutUpdaterState(next);
+      }
+      if (next.phase === "downloaded") {
+        setAboutUpdaterState({ phase: "installing", version: next.version });
+        await installDesktopUpdate();
+        return;
+      }
+      if (next.phase === "available") {
+        const downloaded = await downloadDesktopUpdate();
+        setAboutUpdaterState(downloaded);
+        if (downloaded.phase === "idle") {
+          window.open(update.url, "_blank", "noopener,noreferrer");
+        }
+        return;
+      }
+      if (next.phase === "downloading" || next.phase === "installing") {
+        return;
+      }
+      window.open(update.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setUpdateState({
+        status: "error",
+        message: errorMessage(error),
+        update,
+      });
+    } finally {
+      setUpdateActionStatus("idle");
+    }
+  }
+
+  function updateActionLabel() {
+    if (updateActionStatus === "running") {
+      return t("settings.about.update.download");
+    }
+    if (aboutUpdaterState.phase === "downloading") {
+      return t("settings.about.update.downloading");
+    }
+    if (aboutUpdaterState.phase === "downloaded") {
+      return t("settings.about.update.restart");
+    }
+    if (aboutUpdaterState.phase === "installing") {
+      return t("settings.about.update.installing");
+    }
+    return t("settings.about.update.download");
+  }
+
+  function updateActionIcon() {
+    if (
+      updateActionStatus === "running" ||
+      aboutUpdaterState.phase === "downloading" ||
+      aboutUpdaterState.phase === "installing"
+    ) {
+      return <Loader2 size={16} />;
+    }
+    if (aboutUpdaterState.phase === "downloaded") {
+      return <RefreshCcw size={16} />;
+    }
+    return <Download size={16} />;
   }
 
   async function copyUpdateDiagnostics() {
@@ -7459,6 +7549,21 @@ function AboutSettings() {
           >
             {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
             <span>{t("settings.about.update.copyDiagnostics")}</span>
+          </button>
+        ) : null}
+        {updateState.update ? (
+          <button
+            className="btn btn-primary sm"
+            type="button"
+            disabled={
+              updateActionStatus === "running" ||
+              aboutUpdaterState.phase === "downloading" ||
+              aboutUpdaterState.phase === "installing"
+            }
+            onClick={() => void activateCheckedUpdate()}
+          >
+            {updateActionIcon()}
+            <span>{updateActionLabel()}</span>
           </button>
         ) : null}
         {updateState.update ? (
