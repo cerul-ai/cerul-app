@@ -533,3 +533,30 @@ jobs:
               --cache-control "public, max-age=31536000, immutable" \
               --content-type "$content_type"
           done
+          dmg="$(find release-assets -type f -name "*.dmg" -print | sort | tail -1)"
+          if [ -z "$dmg" ]; then
+            echo "No DMG found for stable macOS download alias." >&2
+            exit 1
+          fi
+          stable_dmg_key="Cerul-mac.dmg"
+          if [ -n "$prefix" ]; then
+            stable_dmg_key="$prefix/$stable_dmg_key"
+          fi
+          aws s3 cp "$dmg" "s3://${CERUL_UPDATES_R2_BUCKET}/${stable_dmg_key}" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=300" \
+            --content-type "application/x-apple-diskimage" \
+            --content-disposition "attachment; filename=\"$(basename "$dmg")\""
+
+          dmg_blockmap="${dmg}.blockmap"
+          if [ -f "$dmg_blockmap" ]; then
+            stable_blockmap_key="Cerul-mac.dmg.blockmap"
+            if [ -n "$prefix" ]; then
+              stable_blockmap_key="$prefix/$stable_blockmap_key"
+            fi
+            aws s3 cp "$dmg_blockmap" "s3://${CERUL_UPDATES_R2_BUCKET}/${stable_blockmap_key}" \
+              --endpoint-url "$endpoint" \
+              --cache-control "public, max-age=300" \
+              --content-type "application/octet-stream" \
+              --content-disposition "attachment; filename=\"$(basename "$dmg_blockmap")\""
+          fi
