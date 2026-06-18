@@ -8,7 +8,7 @@
   "type": "commonjs",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "pnpm --filter @cerul/desktop build && pnpm build && electron dist/main.js",
+    "dev": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api && pnpm build && electron dist/main.js",
     "start": "electron dist/main.js",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && node scripts/build.mjs --check",

@@ -30,4 +30,6 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
   secureTokenGet: (key: string) => ipcRenderer.invoke("cerul:secure-token-get", key),
   secureTokenSet: (key: string, value: string | null) => ipcRenderer.invoke("cerul:secure-token-set", key, value),
   startOAuth: (provider: "google" | "github") => ipcRenderer.invoke("cerul:oauth-start", provider),
+  reportRendererError: (payload: Record<string, unknown>) =>
+    ipcRenderer.invoke("cerul:renderer-error", payload).catch(() => undefined),
 });

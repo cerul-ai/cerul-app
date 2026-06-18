@@ -54,6 +54,7 @@ type ElectronDesktopHost = {
   secureTokenGet(key: string): Promise<string | undefined>;
   secureTokenSet(key: string, value: string | null): Promise<void>;
   startOAuth(provider: "google" | "github"): Promise<void>;
+  reportRendererError(payload: Record<string, unknown>): Promise<void>;
 };
 
 declare global {
@@ -165,4 +166,8 @@ export async function startDesktopOAuth(provider: "google" | "github"): Promise<
   }
   await window.cerulDesktop.startOAuth(provider);
   return true;
+}
+
+export async function reportRendererError(payload: Record<string, unknown>): Promise<void> {
+  await window.cerulDesktop?.reportRendererError(payload);
 }

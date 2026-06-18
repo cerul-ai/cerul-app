@@ -4646,6 +4646,36 @@ mod tests {
         assert_eq!(created_json["base_url"], "https://api.openai.com/v1");
         assert_eq!(created_json["has_key"], false);
 
+        let retargeted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri(format!(
+                        "/providers/{}",
+                        created_json["id"].as_str().unwrap()
+                    ))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "type": "openai-compatible",
+                            "label": "Groq ASR",
+                            "base_url": "https://api.groq.com/openai/v1/"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retargeted.status(), StatusCode::OK);
+        let retargeted_json = response_json(retargeted).await;
+        assert_eq!(retargeted_json["type"], "openai-compatible");
+        assert_eq!(
+            retargeted_json["base_url"],
+            "https://api.groq.com/openai/v1"
+        );
+
         let models_without_key = app
             .clone()
             .oneshot(

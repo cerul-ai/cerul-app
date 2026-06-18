@@ -142,6 +142,20 @@ type ApiExitInfo = {
   elapsedMs: number;
 };
 
+type RendererDiagnostic = {
+  window?: string;
+  kind: string;
+  message?: string;
+  stack?: string;
+  source?: string;
+  line?: number;
+  column?: number;
+  componentStack?: string;
+  href?: string;
+  userAgent?: string;
+  details?: Record<string, unknown>;
+};
+
 type BundleProcessHolder = {
   pid: number;
   command: string;
@@ -360,6 +374,115 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
   });
 }
 
+function rendererDiagnosticsLogPath() {
+  return path.join(app.getPath("userData"), "logs", "renderer.log");
+}
+
+function truncateDiagnosticValue(value: unknown, maxLength = 12_000) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)}…<truncated>`;
+}
+
+function writeRendererDiagnostic(entry: RendererDiagnostic) {
+  const safeEntry = {
+    ...entry,
+    message: entry.message ? truncateDiagnosticValue(entry.message, 8_000) : undefined,
+    stack: entry.stack ? truncateDiagnosticValue(entry.stack) : undefined,
+    componentStack: entry.componentStack
+      ? truncateDiagnosticValue(entry.componentStack)
+      : undefined,
+  };
+  const line = JSON.stringify({
+    time: new Date().toISOString(),
+    ...safeEntry,
+  });
+  console.error(`[cerul-renderer] ${line}`);
+  try {
+    const logPath = rendererDiagnosticsLogPath();
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > 1024 * 1024) {
+      fs.renameSync(logPath, `${logPath}.old`);
+    }
+    fs.appendFileSync(logPath, `${line}\n`, "utf8");
+  } catch (error) {
+    console.error("Failed to write renderer diagnostic log", error);
+  }
+}
+
+function wireRendererDiagnostics(
+  window: BrowserWindow,
+  windowName: string,
+  reloadUrl?: string,
+) {
+  let reloadAttempted = false;
+  const reloadOnce = (reason: string) => {
+    if (!reloadUrl || reloadAttempted || isQuitting || window.isDestroyed()) {
+      return;
+    }
+    reloadAttempted = true;
+    window.setTitle("Cerul");
+    setTimeout(() => {
+      if (!window.isDestroyed()) {
+        writeRendererDiagnostic({
+          window: windowName,
+          kind: "auto-reload",
+          message: `Reloading renderer after ${reason}`,
+          href: reloadUrl,
+        });
+        void window.loadURL(reloadUrl);
+      }
+    }, 500);
+  };
+
+  window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    if (level < 2 && !/\b(error|exception|uncaught|failed)\b/i.test(message)) {
+      return;
+    }
+    writeRendererDiagnostic({
+      window: windowName,
+      kind: "console",
+      message,
+      source: sourceId,
+      line,
+      details: { level },
+    });
+  });
+  window.webContents.on("did-fail-load", (_event, code, description, url) => {
+    writeRendererDiagnostic({
+      window: windowName,
+      kind: "did-fail-load",
+      message: description,
+      href: url,
+      details: { code },
+    });
+    if (code !== -3) {
+      reloadOnce(`load failure ${code}`);
+    }
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    writeRendererDiagnostic({
+      window: windowName,
+      kind: "render-process-gone",
+      message: details.reason,
+      details: {
+        reason: details.reason,
+        exitCode: details.exitCode,
+      },
+    });
+    reloadOnce(`renderer exit ${details.reason}`);
+  });
+  window.on("unresponsive", () => {
+    writeRendererDiagnostic({
+      window: windowName,
+      kind: "unresponsive",
+      message: "Renderer became unresponsive",
+    });
+  });
+}
+
 const WINDOW_STATE_STORE = "window-state";
 
 function savedMainWindowBounds(): Partial<Electron.Rectangle> {
@@ -404,6 +527,7 @@ function persistMainWindowBounds() {
 }
 
 function createMainWindow() {
+  const mainUrl = `${appScheme}://${appHost}/index.html`;
   const saved = savedMainWindowBounds();
   mainWindow = new BrowserWindow({
     width: saved.width ?? 1440,
@@ -427,6 +551,7 @@ function createMainWindow() {
   });
 
   secureDesktopWindow(mainWindow);
+  wireRendererDiagnostics(mainWindow, "main", mainUrl);
   mainWindow.on("close", () => persistMainWindowBounds());
   mainWindow.on("hide", () => persistMainWindowBounds());
   mainWindow.on("close", (event) => {
@@ -454,17 +579,11 @@ function createMainWindow() {
     flushQueuedMainRoute();
     maybeRunRendererVideoSmoke();
   });
-  mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
-    console.error(`Cerul main window failed to load code=${code} url=${url}: ${description}`);
-  });
-  mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    console.error(`Cerul main window renderer exited reason=${details.reason}`);
-  });
   mainWindow.on("closed", () => {
     mainWindow = null;
     mainWindowLoaded = false;
   });
-  void mainWindow.loadURL(`${appScheme}://${appHost}/index.html`);
+  void mainWindow.loadURL(mainUrl);
 }
 
 function createOverlayWindow() {
@@ -1113,7 +1232,9 @@ async function startRustCore() {
   } else {
     binary = path.join(repoRoot(), "target", "debug", executableName(devCoreBinaryName));
     if (!fs.existsSync(binary)) {
-      buildDevApiBinary(binary, env);
+      throw new Error(
+        `dev Cerul Core binary is missing: ${binary}. Run "cargo build -p cerul-api" before launching the Electron shell.`,
+      );
     }
     apiProcess = spawnApiProcess(binary, env, repoRoot());
   }
@@ -1482,71 +1603,6 @@ function sampleProcessDiagnostic(pid: number) {
 function formatOutputTail(label: string, text: string) {
   const trimmed = text.trimEnd();
   return `--- cerul-core ${label} tail ---\n${trimmed || "<empty>"}`;
-}
-
-function buildDevApiBinary(binary: string, env: NodeJS.ProcessEnv) {
-  const jobs = devCargoBuildJobs(env);
-  const attempts = devCargoBuildAttempts(env);
-  const args = ["build", "-p", "cerul-api", "-j", jobs];
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    if (attempt > 1) {
-      console.warn(`Retrying Cerul Core build (${attempt}/${attempts}) after transient Cargo failure.`);
-    }
-    const result = spawnSync("cargo", args, {
-      cwd: repoRoot(),
-      env,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    const stdout = String(result.stdout ?? "");
-    const stderr = String(result.stderr ?? "");
-    if (stdout) {
-      process.stdout.write(stdout);
-    }
-    if (stderr) {
-      process.stderr.write(stderr);
-    }
-    if (result.status === 0 && !result.signal) {
-      break;
-    }
-    if (result.error) {
-      throw result.error;
-    }
-    const output = `${stdout}\n${stderr}`;
-    const wasSigkill =
-      result.signal === "SIGKILL" ||
-      result.status === 137 ||
-      /SIGKILL|signal:\s*9|Killed:\s*9/.test(output);
-    const wasIncompleteArtifact = /error\[E0463\]|can't find crate for/.test(output);
-    if ((!wasSigkill && !wasIncompleteArtifact) || attempt === attempts) {
-      const status = result.signal ?? result.status ?? "unknown";
-      throw new Error(`failed to build Cerul Core binary (status ${status})`);
-    }
-    sleepSync(2_000);
-  }
-  if (!fs.existsSync(binary)) {
-    throw new Error(`Cerul Core binary was not produced: ${binary}`);
-  }
-}
-
-function devCargoBuildJobs(env: NodeJS.ProcessEnv) {
-  const configured = env.CERUL_DEV_CARGO_JOBS ?? env.CARGO_BUILD_JOBS;
-  if (configured && /^\d+$/.test(configured) && Number.parseInt(configured, 10) > 0) {
-    return configured;
-  }
-  return "1";
-}
-
-function devCargoBuildAttempts(env: NodeJS.ProcessEnv) {
-  const configured = env.CERUL_DEV_CARGO_RETRIES ?? env.CERUL_REBUILD_CARGO_RETRIES;
-  if (configured && /^\d+$/.test(configured) && Number.parseInt(configured, 10) > 0) {
-    return Number.parseInt(configured, 10);
-  }
-  return 16;
-}
-
-function sleepSync(ms: number) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null) {
@@ -1998,6 +2054,13 @@ function registerIpcHandlers() {
   ipcMain.handle("cerul:oauth-start", async (event, provider: OAuthProvider) => {
     assertTrustedIpcSender(event);
     await startOAuthLogin(provider);
+  });
+  ipcMain.handle("cerul:renderer-error", async (event, payload: RendererDiagnostic) => {
+    assertTrustedIpcSender(event);
+    writeRendererDiagnostic({
+      ...payload,
+      window: payload.window ?? "renderer",
+    });
   });
 }
 
