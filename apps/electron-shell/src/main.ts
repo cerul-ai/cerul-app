@@ -142,6 +142,12 @@ type ApiExitInfo = {
   elapsedMs: number;
 };
 
+type BundleProcessHolder = {
+  pid: number;
+  command: string;
+  paths: string[];
+};
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: appScheme,
@@ -1179,22 +1185,35 @@ async function stopRustCoreGracefully(timeoutMs = 4000) {
   apiProcess = null;
   ownsApiProcess = false;
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
+    let settled = false;
+    let termTimer: NodeJS.Timeout | null = null;
+    let resolveTimer: NodeJS.Timeout | null = null;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (termTimer) {
+        clearTimeout(termTimer);
+      }
+      if (resolveTimer) {
+        clearTimeout(resolveTimer);
+      }
+      resolve();
+    };
+    termTimer = setTimeout(() => {
       try {
         child.kill("SIGKILL");
       } catch {
         // already gone
       }
     }, timeoutMs);
-    child.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
+    resolveTimer = setTimeout(finish, timeoutMs + 2_000);
+    child.once("exit", finish);
     try {
       child.kill("SIGTERM");
     } catch {
-      clearTimeout(timer);
-      resolve();
+      finish();
     }
   });
 }
@@ -1291,6 +1310,141 @@ function diagnosticCommand(command: string, args: string[]) {
     return `$ ${command} ${args.join(" ")}\n${result.error.message}`;
   }
   return `$ ${command} ${args.join(" ")}\n${output || "<empty>"}`;
+}
+
+function readBundleProcessHolders(bundlePath: string) {
+  const result = spawnSync("lsof", ["-F", "pcn", "+D", bundlePath], {
+    encoding: "utf8",
+    maxBuffer: 256 * 1024,
+    timeout: 5_000,
+  });
+  if (result.error) {
+    return {
+      holders: [] as BundleProcessHolder[],
+      error: result.error.message,
+    };
+  }
+
+  const stdout = typeof result.stdout === "string" ? result.stdout : "";
+  const holdersByPid = new Map<number, BundleProcessHolder>();
+  let currentPid: number | null = null;
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    if (!rawLine) {
+      continue;
+    }
+    const field = rawLine[0];
+    const value = rawLine.slice(1);
+    if (field === "p") {
+      const pid = Number(value);
+      currentPid = Number.isFinite(pid) ? pid : null;
+      if (currentPid !== null && !holdersByPid.has(currentPid)) {
+        holdersByPid.set(currentPid, { pid: currentPid, command: "", paths: [] });
+      }
+      continue;
+    }
+    if (currentPid === null) {
+      continue;
+    }
+    const holder = holdersByPid.get(currentPid);
+    if (!holder) {
+      continue;
+    }
+    if (field === "c") {
+      holder.command = value;
+    } else if (field === "n") {
+      holder.paths.push(value);
+    }
+  }
+
+  return {
+    holders: Array.from(holdersByPid.values()).sort((left, right) => left.pid - right.pid),
+    error: null,
+  };
+}
+
+function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
+  if (holder.pid === process.pid) {
+    return false;
+  }
+  const command = path.basename(holder.command).toLowerCase();
+  return (
+    command === packagedCoreBinaryName ||
+    command === devCoreBinaryName ||
+    command === "qdrant" ||
+    command === "python" ||
+    command === "python3" ||
+    command.startsWith("python3.")
+  );
+}
+
+function formatBundleProcessHolders(holders: BundleProcessHolder[]) {
+  if (holders.length === 0) {
+    return "<empty>";
+  }
+  return holders
+    .map((holder) => {
+      const paths = holder.paths.slice(0, 4).join(", ");
+      const suffix = holder.paths.length > 4 ? `, ... +${holder.paths.length - 4}` : "";
+      return `pid=${holder.pid} command=${holder.command || "<unknown>"} paths=${paths}${suffix}`;
+    })
+    .join("\n");
+}
+
+async function waitForPidsToExit(pids: number[], timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  let alive = pids.filter(processAlive);
+  while (alive.length > 0 && Date.now() < deadline) {
+    await delay(Math.min(250, Math.max(25, deadline - Date.now())));
+    alive = pids.filter(processAlive);
+  }
+  return alive;
+}
+
+async function stopUpdateInstallBundleSidecars(bundlePath: string, lines: string[]) {
+  const before = readBundleProcessHolders(bundlePath);
+  if (before.error) {
+    lines.push(`bundle_holder_scan_error=${before.error}`);
+  }
+  lines.push("== bundle holders before sidecar cleanup ==");
+  lines.push(formatBundleProcessHolders(before.holders));
+
+  const targets = before.holders.filter(shouldTerminateUpdateInstallHolder);
+  if (targets.length === 0) {
+    lines.push("sidecar_cleanup_targets=<empty>");
+    return;
+  }
+
+  const targetPids = targets.map((target) => target.pid);
+  lines.push("== sidecar cleanup targets ==");
+  lines.push(formatBundleProcessHolders(targets));
+  for (const pid of targetPids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      lines.push(`sigterm_failed pid=${pid} error=${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  let remaining = await waitForPidsToExit(targetPids, 3_000);
+  if (remaining.length > 0) {
+    lines.push(`sidecar_sigkill_pids=${remaining.join(",")}`);
+    for (const pid of remaining) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        lines.push(`sigkill_failed pid=${pid} error=${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    remaining = await waitForPidsToExit(remaining, 2_000);
+  }
+  lines.push(`sidecar_cleanup_remaining_pids=${remaining.length > 0 ? remaining.join(",") : "<empty>"}`);
+
+  const after = readBundleProcessHolders(bundlePath);
+  if (after.error) {
+    lines.push(`bundle_holder_rescan_error=${after.error}`);
+  }
+  lines.push("== bundle holders after sidecar cleanup ==");
+  lines.push(formatBundleProcessHolders(after.holders));
 }
 
 function sampleProcessDiagnostic(pid: number) {
@@ -1900,6 +2054,18 @@ function releasesPageUrl() {
   return `https://github.com/${updateRepository()}/releases`;
 }
 
+function updaterInstallCleanupLogPath() {
+  return path.join(app.getPath("userData"), "updater-install-cleanup.log");
+}
+
+function writeUpdaterInstallCleanupLog(lines: string[]) {
+  try {
+    fs.writeFileSync(updaterInstallCleanupLogPath(), `${lines.join("\n")}\n`, "utf8");
+  } catch (error) {
+    console.warn("failed to write updater install cleanup log", error);
+  }
+}
+
 function readTextIfExists(filePath: string, maxBytes = 64 * 1024) {
   try {
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -1963,6 +2129,7 @@ function collectUpdaterDiagnostics() {
   const appUpdateYml = path.join(process.resourcesPath, "app-update.yml");
   const shipItState = path.join(shipItCache, "ShipItState.plist");
   const pendingInfo = path.join(updaterCache, "pending", "update-info.json");
+  const installCleanupLog = updaterInstallCleanupLogPath();
   const lines = [
     "== Cerul updater diagnostics ==",
     `createdAt=${new Date().toISOString()}`,
@@ -1985,6 +2152,9 @@ function collectUpdaterDiagnostics() {
     "",
     "== ShipItState.plist raw ==",
     readTextIfExists(shipItState) ?? "[[missing]]",
+    "",
+    "== last updater install cleanup ==",
+    readTextIfExists(installCleanupLog) ?? "[[missing]]",
     "",
     "== updater cache tree ==",
     ...listTree(updaterCache),
@@ -2243,6 +2413,33 @@ function scheduleUpdateInstallExitFallback() {
   }, 9000);
 }
 
+async function prepareDesktopUpdateInstall(version: string) {
+  const bundlePath = macAppBundlePath();
+  const lines = [
+    "== Cerul updater install cleanup ==",
+    `createdAt=${new Date().toISOString()}`,
+    `version=${version}`,
+    `pid=${process.pid}`,
+    `bundlePath=${bundlePath ?? ""}`,
+    `apiProcessPid=${apiProcess?.pid ?? ""}`,
+    `ownsApiProcess=${ownsApiProcess}`,
+  ];
+
+  stopStatusMonitor();
+  stopOAuthCallbackServer();
+  await stopRustCoreGracefully(10_000);
+
+  if (bundlePath) {
+    await stopUpdateInstallBundleSidecars(bundlePath, lines);
+    lines.push("== open files under app bundle before quitAndInstall ==");
+    lines.push(diagnosticCommand("lsof", ["+D", bundlePath]));
+  } else {
+    lines.push("bundle_holder_cleanup=skipped_not_macos_bundle");
+  }
+
+  writeUpdaterInstallCleanupLog(lines);
+}
+
 async function installDesktopUpdate(version?: string) {
   const updater = getAutoUpdater();
   if (!updater) {
@@ -2256,9 +2453,7 @@ async function installDesktopUpdate(version?: string) {
       : app.getVersion());
   setUpdaterState({ phase: "installing", version: installingVersion });
   try {
-    stopStatusMonitor();
-    stopOAuthCallbackServer();
-    await stopRustCoreGracefully(10_000);
+    await prepareDesktopUpdateInstall(installingVersion);
     // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
     // app as quitting up front so our close-to-tray handler does not hide the
     // main window and leave ShipIt blocked on a still-running app instance.
