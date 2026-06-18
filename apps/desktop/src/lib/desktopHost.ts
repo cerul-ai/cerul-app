@@ -37,12 +37,16 @@ export type DesktopStore = {
   save(): Promise<void>;
 };
 
+export type DesktopUpdaterCheckOptions = {
+  installWhenDownloaded?: boolean;
+};
+
 type ElectronDesktopHost = {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openDialog(options: OpenDialogOptions): Promise<string | string[] | null>;
   appVersion(): Promise<string>;
   checkForUpdate(): Promise<DesktopUpdate>;
-  updaterCheck(): Promise<DesktopUpdaterState>;
+  updaterCheck(options?: DesktopUpdaterCheckOptions): Promise<DesktopUpdaterState>;
   updaterGetState(): Promise<DesktopUpdaterState>;
   updaterDiagnostics(): Promise<string>;
   updaterDownload(): Promise<DesktopUpdaterState>;
@@ -100,9 +104,11 @@ export async function getDesktopAppVersion(): Promise<string | null> {
   return null;
 }
 
-export async function runDesktopUpdaterCheck(): Promise<DesktopUpdaterState> {
+export async function runDesktopUpdaterCheck(
+  options?: DesktopUpdaterCheckOptions,
+): Promise<DesktopUpdaterState> {
   if (window.cerulDesktop) {
-    return window.cerulDesktop.updaterCheck();
+    return window.cerulDesktop.updaterCheck(options);
   }
   return { phase: "idle" };
 }
