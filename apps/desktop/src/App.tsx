@@ -254,6 +254,14 @@ const sidebarParentFor: Partial<Record<View, View>> = {
 const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
 const lastOpenedStorageKey = "cerul.lastOpened.v1";
+const lastAutomaticUpdateCheckStorageKey = "cerul.updater.lastAutomaticCheckAt.v1";
+const automaticUpdateCheckIntervalMs = 6 * 60 * 60 * 1000;
+const automaticUpdateStartupDelayRangeMs = [30_000, 90_000] as const;
+const automaticUpdateResumeDelayRangeMs = [10_000, 60_000] as const;
+const automaticUpdateWakeProbeIntervalMs = 60_000;
+const automaticUpdateWakeGapMs = 5 * 60 * 1000;
+const automaticUpdateOfflineRetryMs = 15 * 60 * 1000;
+const manualUpdateCheckCooldownMs = 30_000;
 
 function recordLastOpened(itemId: string, timestamp?: string | null) {
   try {
@@ -464,6 +472,50 @@ function writeRecentSearches(searches: string[]) {
   } catch {
     // Recent searches are a convenience only; storage failures should not block search.
   }
+}
+
+function randomDelay([min, max]: readonly [number, number]) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function readLastAutomaticUpdateCheckAt() {
+  try {
+    const raw = window.localStorage.getItem(lastAutomaticUpdateCheckStorageKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastAutomaticUpdateCheckAt(timestamp: number) {
+  try {
+    window.localStorage.setItem(lastAutomaticUpdateCheckStorageKey, String(timestamp));
+  } catch {
+    // Update checks still work without persistence; they just fall back to this session.
+  }
+}
+
+function automaticUpdateCheckIsDue(now = Date.now()) {
+  const lastCheckAt = readLastAutomaticUpdateCheckAt();
+  if (!lastCheckAt) {
+    return true;
+  }
+  if (lastCheckAt > now + automaticUpdateCheckIntervalMs) {
+    return true;
+  }
+  return now - lastCheckAt >= automaticUpdateCheckIntervalMs;
+}
+
+function nextAutomaticUpdateCheckDelay(now = Date.now()) {
+  const lastCheckAt = readLastAutomaticUpdateCheckAt();
+  if (!lastCheckAt || lastCheckAt > now + automaticUpdateCheckIntervalMs) {
+    return 0;
+  }
+  return Math.max(0, lastCheckAt + automaticUpdateCheckIntervalMs - now);
 }
 
 function wait(ms: number) {
@@ -775,9 +827,9 @@ function AppWorkspace() {
   }, []);
 
   // Desktop auto-update: subscribe to shell-pushed updater state, sync the
-  // current value, and kick a check. A periodic re-check keeps long sessions
-  // current. In the browser/fixture harness, ?fakeUpdate=<version> renders the
-  // pill without a desktop host so the flow stays reviewable.
+  // current value, and keep background checks sparse. In the browser/fixture
+  // harness, ?fakeUpdate=<version> renders the pill without a desktop host so
+  // the flow stays reviewable.
   useEffect(() => {
     const fakeVersion = hashQueryParam("fakeUpdate");
     if (fakeVersion) {
@@ -793,15 +845,108 @@ function AppWorkspace() {
       return;
     }
     const unsubscribe = subscribeDesktopUpdater(setUpdaterState);
+    let cancelled = false;
+    let checkInFlight = false;
+    let timeoutId: number | null = null;
+    let wakeProbeId: number | null = null;
+    let lastWakeProbeAt = Date.now();
+
+    function clearScheduledCheck() {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    }
+
+    function scheduleNextDueCheck() {
+      if (cancelled) {
+        return;
+      }
+      const delay = nextAutomaticUpdateCheckDelay();
+      clearScheduledCheck();
+      timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), delay);
+    }
+
+    function scheduleOfflineRetry() {
+      if (cancelled) {
+        return;
+      }
+      clearScheduledCheck();
+      timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), automaticUpdateOfflineRetryMs);
+    }
+
+    async function runAutomaticUpdateCheck() {
+      clearScheduledCheck();
+      if (cancelled || checkInFlight) {
+        return;
+      }
+      if (window.navigator.onLine === false) {
+        scheduleOfflineRetry();
+        return;
+      }
+      if (!automaticUpdateCheckIsDue()) {
+        scheduleNextDueCheck();
+        return;
+      }
+      checkInFlight = true;
+      try {
+        const next = await runDesktopUpdaterCheck();
+        if (!cancelled) {
+          setUpdaterState(next);
+        }
+      } catch (error) {
+        console.error("desktop updater automatic check failed", error);
+      } finally {
+        checkInFlight = false;
+        writeLastAutomaticUpdateCheckAt(Date.now());
+        scheduleNextDueCheck();
+      }
+    }
+
+    function scheduleDueCheckAfter(delay: number) {
+      if (cancelled || !automaticUpdateCheckIsDue()) {
+        return;
+      }
+      clearScheduledCheck();
+      timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), delay);
+    }
+
+    function scheduleResumeCheck() {
+      scheduleDueCheckAfter(randomDelay(automaticUpdateResumeDelayRangeMs));
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        scheduleResumeCheck();
+      }
+    }
+
     void getDesktopUpdaterState().then(setUpdaterState);
-    void runDesktopUpdaterCheck();
-    const intervalId = window.setInterval(
-      () => void runDesktopUpdaterCheck(),
-      30 * 60 * 1000,
-    );
+    if (automaticUpdateCheckIsDue()) {
+      scheduleDueCheckAfter(randomDelay(automaticUpdateStartupDelayRangeMs));
+    } else {
+      scheduleNextDueCheck();
+    }
+    wakeProbeId = window.setInterval(() => {
+      const now = Date.now();
+      if (now - lastWakeProbeAt > automaticUpdateWakeGapMs) {
+        scheduleResumeCheck();
+      }
+      lastWakeProbeAt = now;
+    }, automaticUpdateWakeProbeIntervalMs);
+    window.addEventListener("online", scheduleResumeCheck);
+    window.addEventListener("focus", scheduleResumeCheck);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
+      cancelled = true;
       unsubscribe();
-      window.clearInterval(intervalId);
+      clearScheduledCheck();
+      if (wakeProbeId !== null) {
+        window.clearInterval(wakeProbeId);
+      }
+      window.removeEventListener("online", scheduleResumeCheck);
+      window.removeEventListener("focus", scheduleResumeCheck);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -7193,6 +7338,7 @@ function AboutSettings() {
     status: SettingsActionStatus;
     message: string | null;
   }>({ status: "idle", message: null });
+  const lastManualUpdateCheckAt = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -7213,6 +7359,11 @@ function AboutSettings() {
   }, []);
 
   async function checkForUpdates() {
+    const now = Date.now();
+    if (now - lastManualUpdateCheckAt.current < manualUpdateCheckCooldownMs) {
+      return;
+    }
+    lastManualUpdateCheckAt.current = now;
     setUpdateState({ status: "running", message: null, update: null });
     try {
       const update = await checkForDesktopUpdate();
