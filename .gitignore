@@ -75,6 +75,7 @@ docs/*
 # Build artifacts
 *.tar
 *.tar.gz
+*.tar.gz.sha256
 *.zst
 *.zip
 .claude/
