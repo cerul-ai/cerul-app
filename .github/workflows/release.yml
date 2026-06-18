@@ -360,14 +360,16 @@ jobs:
         id: prepackaged-app
         shell: bash
         run: |
-          if [ ! -f target/electron/Cerul.app.tar.gz ]; then
+          app_archive="$(find target/electron -type f -name Cerul.app.tar.gz -print -quit)"
+          if [ -z "$app_archive" ]; then
             echo "Update artifact did not include Cerul.app.tar.gz." >&2
+            find target/electron -maxdepth 4 -type f -print >&2
             exit 1
           fi
           prepackaged_dir="$RUNNER_TEMP/cerul-prepackaged-app"
           rm -rf "$prepackaged_dir"
           mkdir -p "$prepackaged_dir"
-          tar -C "$prepackaged_dir" -xzf target/electron/Cerul.app.tar.gz
+          tar -C "$prepackaged_dir" -xzf "$app_archive"
           app_path="$prepackaged_dir/Cerul.app"
           if [ ! -d "$app_path" ]; then
             echo "Extracted prepackaged app was not found at $app_path." >&2
