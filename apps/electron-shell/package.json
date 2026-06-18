@@ -35,9 +35,8 @@
     "afterSign": "./scripts/after-sign-strip-resource-xattrs.cjs",
     "publish": [
       {
-        "provider": "github",
-        "owner": "cerul-ai",
-        "repo": "cerul-app"
+        "provider": "generic",
+        "url": "https://updates.cerul.ai/"
       }
     ],
     "electronLanguages": [

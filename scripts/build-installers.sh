@@ -114,7 +114,34 @@ run() {
 
 create_mlx_runtime_archive() {
   run rm -f "$MLX_RUNTIME_ARCHIVE" "$MLX_RUNTIME_ARCHIVE.sha256"
-  run tar -czf "$MLX_RUNTIME_ARCHIVE" -C "$MLX_RUNTIME_DIR" .
+  run python3 - "$MLX_RUNTIME_DIR" "$MLX_RUNTIME_ARCHIVE" <<'PY'
+import gzip
+import os
+import sys
+import tarfile
+
+source, destination = sys.argv[1], sys.argv[2]
+with open(destination, "wb") as raw:
+    with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gzip_file:
+        with tarfile.open(fileobj=gzip_file, mode="w") as archive:
+            for root, dirs, files in os.walk(source):
+                dirs.sort()
+                files.sort()
+                for name in [*dirs, *files]:
+                    path = os.path.join(root, name)
+                    arcname = os.path.relpath(path, source)
+                    info = archive.gettarinfo(path, arcname=arcname)
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = ""
+                    info.gname = ""
+                    info.mtime = 0
+                    if info.isfile():
+                        with open(path, "rb") as file:
+                            archive.addfile(info, file)
+                    else:
+                        archive.addfile(info)
+PY
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '+ shasum -a 256 %q > %q\n' "$MLX_RUNTIME_ARCHIVE" "$MLX_RUNTIME_ARCHIVE.sha256"
   else
