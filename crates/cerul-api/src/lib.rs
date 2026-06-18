@@ -1565,7 +1565,9 @@ fn persist_discovered_items(
     queued_jobs: &mut usize,
 ) -> anyhow::Result<()> {
     for item in discovered_items {
-        let item_id = upsert_discovered_item(tx, source_id, content_type, item)?;
+        let Some(item_id) = upsert_discovered_item(tx, source_id, content_type, item)? else {
+            continue;
+        };
         let queued_job = enqueue_index_job(tx, &item_id, content_type)?;
         if queued_job {
             *queued_jobs += 1;
@@ -1618,7 +1620,9 @@ async fn remove_source(
     let item_ids = cerul_storage::item_ids_for_source(&state.paths, &id)?;
     for item_id in item_ids {
         let item = cerul_storage::get_item(&state.paths, &item_id)?;
-        cleanup_item_artifacts(&state.paths, &item).await?;
+        if !item_has_running_jobs(&state.paths, &item.id)? {
+            cleanup_item_artifacts(&state.paths, &item).await?;
+        }
     }
     let conn = cerul_storage::sqlite::open(&state.paths)?;
     conn.execute("DELETE FROM sources WHERE id = ?1", [id.as_str()])?;
@@ -1951,14 +1955,70 @@ async fn remove_item(
 ) -> ApiResult<Json<Value>> {
     let item = cerul_storage::get_item(&state.paths, &id)
         .map_err(|_| ApiError::not_found(format!("item not found: {id}")))?;
-    cleanup_item_artifacts(&state.paths, &item).await?;
-    let conn = cerul_storage::sqlite::open(&state.paths)?;
-    let removed = conn.execute("DELETE FROM items WHERE id = ?1", [id.as_str()])?;
+    let has_running_jobs = item_has_running_jobs(&state.paths, &item.id)?;
+    if !has_running_jobs {
+        cleanup_item_artifacts(&state.paths, &item).await?;
+    }
+
+    let mut conn = cerul_storage::sqlite::open(&state.paths)?;
+    let tx = conn.transaction()?;
+    remember_removed_item(&tx, &item)?;
+    tx.execute(
+        r#"
+        UPDATE jobs
+        SET status = 'cancelled',
+            finished_at = strftime('%s','now'),
+            error = NULL,
+            progress = 1,
+            stage = 'cancelled',
+            stage_message = 'Cancelled'
+        WHERE item_id = ?1
+          AND status IN ('queued', 'running', 'failed')
+        "#,
+        [id.as_str()],
+    )?;
+    let removed = tx.execute("DELETE FROM items WHERE id = ?1", [id.as_str()])?;
     if removed != 1 {
         return Err(ApiError::not_found(format!("item not found: {id}")));
     }
+    tx.commit()?;
 
     Ok(Json(json!({ "status": "removed", "id": id })))
+}
+
+fn item_has_running_jobs(paths: &AppPaths, item_id: &str) -> anyhow::Result<bool> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let running: i64 = conn.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM jobs
+        WHERE item_id = ?1
+          AND status = 'running'
+        "#,
+        [item_id],
+        |row| row.get(0),
+    )?;
+    Ok(running > 0)
+}
+
+fn remember_removed_item(
+    tx: &Transaction<'_>,
+    item: &cerul_storage::StoredItem,
+) -> anyhow::Result<()> {
+    let Some(external_id) = item.external_id.as_deref() else {
+        return Ok(());
+    };
+    tx.execute(
+        r#"
+        INSERT INTO ignored_items (source_id, external_id, reason, ignored_at)
+        VALUES (?1, ?2, 'removed_from_library', strftime('%s','now'))
+        ON CONFLICT(source_id, external_id) DO UPDATE SET
+            ignored_at = excluded.ignored_at,
+            reason = excluded.reason
+        "#,
+        (item.source_id.as_str(), external_id),
+    )?;
+    Ok(())
 }
 
 pub(crate) async fn cleanup_item_artifacts(
@@ -1972,21 +2032,32 @@ pub(crate) async fn cleanup_item_artifacts(
             "failed to delete item embeddings; continuing item cleanup"
         );
     }
-    let cache_key = cerul_pipeline::run::cache_key_for_discovery_id(item.discovery_id());
-    remove_file_if_exists(
-        paths
-            .cache
-            .join("pipeline")
-            .join("audio")
-            .join(format!("{cache_key}.wav")),
-    )
-    .await?;
-    remove_dir_if_exists(paths.cache.join("pipeline").join("frames").join(cache_key)).await?;
+    for cache_key in item_pipeline_cache_keys(item) {
+        remove_file_if_exists(
+            paths
+                .cache
+                .join("pipeline")
+                .join("audio")
+                .join(format!("{cache_key}.wav")),
+        )
+        .await?;
+        remove_dir_if_exists(paths.cache.join("pipeline").join("frames").join(cache_key)).await?;
+    }
     remove_clip_cache_for_item(paths, &item.id).await?;
     // Never remove raw_path here. "Remove from library" means delete Cerul's
     // index and processed derivatives only; source media needs a separate,
     // explicit cache-cleaning action.
     Ok(())
+}
+
+fn item_pipeline_cache_keys(item: &cerul_storage::StoredItem) -> Vec<String> {
+    let legacy = cerul_pipeline::run::cache_key_for_discovery_id(item.discovery_id());
+    let scoped = cerul_pipeline::run::cache_key_for_item(&item.id, item.discovery_id());
+    if legacy == scoped {
+        vec![legacy]
+    } else {
+        vec![legacy, scoped]
+    }
 }
 
 async fn remove_file_if_exists(path: PathBuf) -> anyhow::Result<()> {
@@ -2245,21 +2316,24 @@ async fn cancel_job(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let item_id = jobs::cancel_job(&state.paths, &id)?
+    let cancelled = jobs::cancel_job(&state.paths, &id)?
         .ok_or_else(|| ApiError::not_found(format!("job not found: {id}")))?;
-    match cerul_storage::get_item(&state.paths, &item_id) {
-        Ok(item) => cleanup_item_artifacts(&state.paths, &item).await?,
-        Err(error) => tracing::warn!(
-            %error,
-            job_id = %id,
-            item_id = %item_id,
-            "cancelled job item was not available for artifact cleanup"
-        ),
+    if !cancelled.was_running {
+        match cerul_storage::get_item(&state.paths, &cancelled.item_id) {
+            Ok(item) => cleanup_item_artifacts(&state.paths, &item).await?,
+            Err(error) => tracing::warn!(
+                %error,
+                job_id = %id,
+                item_id = %cancelled.item_id,
+                "cancelled job item was not available for artifact cleanup"
+            ),
+        }
     }
     Ok(Json(json!({
         "status": "cancelled",
         "id": id,
-        "item_id": item_id,
+        "item_id": cancelled.item_id,
+        "cleanup_deferred": cancelled.was_running,
     })))
 }
 
@@ -3177,7 +3251,11 @@ fn upsert_discovered_item(
     source_id: &str,
     content_type: ContentType,
     item: &DiscoveredItem,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Option<String>> {
+    if is_discovered_item_ignored(tx, source_id, &item.external_id)? {
+        return Ok(None);
+    }
+
     let item_id = new_id("item");
     let content_type = content_type_value(content_type);
     let raw_path = item.metadata.get("raw_path").and_then(Value::as_str);
@@ -3222,11 +3300,29 @@ fn upsert_discovered_item(
         ),
     )?;
 
-    Ok(tx.query_row(
+    Ok(Some(tx.query_row(
         "SELECT id FROM items WHERE source_id = ?1 AND external_id = ?2",
         (source_id, item.external_id.as_str()),
         |row| row.get(0),
-    )?)
+    )?))
+}
+
+fn is_discovered_item_ignored(
+    tx: &Transaction<'_>,
+    source_id: &str,
+    external_id: &str,
+) -> anyhow::Result<bool> {
+    let ignored: i64 = tx.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM ignored_items
+        WHERE source_id = ?1
+          AND external_id = ?2
+        "#,
+        (source_id, external_id),
+        |row| row.get(0),
+    )?;
+    Ok(ignored > 0)
 }
 
 fn enqueue_index_job(
@@ -4930,6 +5026,97 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table} should be empty after deleting item");
         }
+        let ignored: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ignored_items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ignored, 1);
+        drop(conn);
+
+        let mut conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let tx = conn.transaction().unwrap();
+        let rediscovered = upsert_discovered_item(
+            &tx,
+            "source-1",
+            ContentType::Video,
+            &DiscoveredItem {
+                external_id: "clip.mp4".to_string(),
+                title: Some("Clip".to_string()),
+                duration_sec: Some(10.0),
+                metadata: json!({ "raw_path": "/tmp/clip.mp4" }),
+            },
+        )
+        .unwrap();
+        assert_eq!(rediscovered, None);
+        tx.commit().unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let items: i64 = conn
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(items, 0, "ignored item should not be rediscovered");
+    }
+
+    #[tokio::test]
+    async fn cancelling_running_job_defers_temp_artifact_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 'processing', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES ('job-1', 'item-1', 'index_video', 'running', 0.5)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let audio_key = cerul_pipeline::run::cache_key_for_item("item-1", "clip.mp4");
+        let audio_path = paths
+            .cache
+            .join("pipeline")
+            .join("audio")
+            .join(format!("{audio_key}.wav"));
+        std::fs::create_dir_all(audio_path.parent().unwrap()).unwrap();
+        std::fs::write(&audio_path, b"temporary audio").unwrap();
+
+        let app = router_with_paths(paths.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/jobs/job-1/cancel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "cancelled");
+        assert_eq!(body["item_id"], "item-1");
+        assert_eq!(body["cleanup_deferred"], true);
+        assert!(
+            audio_path.exists(),
+            "running job cancellation must not remove audio still in use by the sidecar"
+        );
     }
 
     #[tokio::test]

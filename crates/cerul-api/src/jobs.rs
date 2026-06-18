@@ -36,6 +36,12 @@ pub struct JobOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelledJob {
+    pub item_id: String,
+    pub was_running: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexingSnapshot {
     pub paused: bool,
     pub indexed_items: u64,
@@ -818,7 +824,7 @@ fn fail_job(paths: &AppPaths, job: &ClaimedJob, error: &str) -> anyhow::Result<(
     Ok(())
 }
 
-pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<String>> {
+pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<CancelledJob>> {
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let job = tx
@@ -833,6 +839,7 @@ pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<Strin
         tx.commit()?;
         return Ok(None);
     };
+    let was_running = status == "running";
 
     if matches!(status.as_str(), "queued" | "running" | "failed") {
         tx.execute(
@@ -864,7 +871,10 @@ pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<Strin
     }
 
     tx.commit()?;
-    Ok(item_id)
+    Ok(item_id.map(|item_id| CancelledJob {
+        item_id,
+        was_running,
+    }))
 }
 
 fn is_job_cancelled(paths: &AppPaths, job_id: &str) -> anyhow::Result<bool> {
@@ -1372,9 +1382,15 @@ mod tests {
             "processing",
         );
 
-        let item_id = cancel_job(&paths, "job-1").unwrap();
+        let cancelled = cancel_job(&paths, "job-1").unwrap();
 
-        assert_eq!(item_id.as_deref(), Some("item-1"));
+        assert_eq!(
+            cancelled,
+            Some(CancelledJob {
+                item_id: "item-1".to_string(),
+                was_running: false,
+            })
+        );
         assert_job(&paths, "job-1", "cancelled", 1.0, None);
         assert_item_status(&paths, "item-1", "discovered", None);
     }
