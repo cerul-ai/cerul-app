@@ -467,33 +467,56 @@ async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
         );
     }
 
-    let launch = maybe_spawn_qdrant(paths, &config)?;
-    let started = Instant::now();
     let timeout = qdrant_ready_timeout();
+    let mut restarted = false;
 
     loop {
-        if qdrant_health().await {
-            return Ok(());
+        let launch = maybe_spawn_qdrant(paths, &config)?;
+        let started = Instant::now();
+        loop {
+            if qdrant_health().await {
+                return Ok(());
+            }
+            if let Some(status) = qdrant_sidecar_exit_status() {
+                if !restarted && std::env::var_os("CERUL_QDRANT_URL").is_none() {
+                    restarted = true;
+                    tracing::warn!(
+                        %status,
+                        url = %launch.url,
+                        "local Qdrant sidecar exited before ready; restarting once"
+                    );
+                    break;
+                }
+                anyhow::bail!(
+                    "Qdrant sidecar exited before becoming ready at {} (status: {}). Recent log from {}:\n{}",
+                    launch.url,
+                    status,
+                    launch.log_path.display(),
+                    qdrant_log_tail(&launch.log_path)
+                );
+            }
+            if started.elapsed() >= timeout {
+                if !restarted && std::env::var_os("CERUL_QDRANT_URL").is_none() {
+                    restarted = true;
+                    tracing::warn!(
+                        url = %launch.url,
+                        timeout_secs = timeout.as_secs(),
+                        "local Qdrant sidecar did not become ready; restarting once"
+                    );
+                    shutdown_qdrant_sidecar();
+                    set_local_qdrant_url(None);
+                    break;
+                }
+                anyhow::bail!(
+                    "Qdrant did not become ready at {} within {}s. Recent log from {}:\n{}",
+                    launch.url,
+                    timeout.as_secs(),
+                    launch.log_path.display(),
+                    qdrant_log_tail(&launch.log_path)
+                );
+            }
+            tokio::time::sleep(QDRANT_READY_POLL_INTERVAL).await;
         }
-        if let Some(status) = qdrant_sidecar_exit_status() {
-            anyhow::bail!(
-                "Qdrant sidecar exited before becoming ready at {} (status: {}). Recent log from {}:\n{}",
-                launch.url,
-                status,
-                launch.log_path.display(),
-                qdrant_log_tail(&launch.log_path)
-            );
-        }
-        if started.elapsed() >= timeout {
-            anyhow::bail!(
-                "Qdrant did not become ready at {} within {}s. Recent log from {}:\n{}",
-                launch.url,
-                timeout.as_secs(),
-                launch.log_path.display(),
-                qdrant_log_tail(&launch.log_path)
-            );
-        }
-        tokio::time::sleep(QDRANT_READY_POLL_INTERVAL).await;
     }
 }
 

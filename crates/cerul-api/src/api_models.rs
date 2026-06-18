@@ -195,56 +195,10 @@ fn local_embedding_model_cached(paths: &AppPaths) -> anyhow::Result<bool> {
     if model_path.exists() {
         return Ok(true);
     }
-
-    let repo_cache = config
-        .models_cache
-        .join("huggingface")
-        .join("hub")
-        .join(format!(
-            "models--{}",
-            config.embedding_model.replace('/', "--")
-        ));
-    if contains_incomplete_download(&repo_cache)? {
-        return Ok(false);
-    }
-
-    let snapshots = repo_cache.join("snapshots");
-    if !snapshots.is_dir() {
-        return Ok(false);
-    }
-
-    for entry in std::fs::read_dir(snapshots)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() && directory_has_entries(&entry.path())? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn contains_incomplete_download(path: &Path) -> anyhow::Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        for entry in std::fs::read_dir(current)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                stack.push(entry.path());
-                continue;
-            }
-            if entry.file_name().to_string_lossy().ends_with(".incomplete") {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-fn directory_has_entries(path: &Path) -> anyhow::Result<bool> {
-    Ok(std::fs::read_dir(path)?.next().transpose()?.is_some())
+    Ok(crate::local_models::local_model_weights_ready(
+        paths,
+        &config.embedding_model,
+    ))
 }
 
 fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
@@ -1459,7 +1413,7 @@ mod tests {
     }
 
     #[test]
-    fn local_embedding_model_cache_requires_complete_snapshot() {
+    fn local_embedding_model_cache_uses_shared_model_weight_readiness() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
 
@@ -1468,23 +1422,26 @@ mod tests {
         let repo_cache = paths
             .models
             .join("mlx")
-            .join("huggingface")
-            .join("hub")
+            .join("modelscope")
             .join("models--mlx-community--Qwen3-VL-Embedding-2B-6bit");
-        let snapshot = repo_cache.join("snapshots").join("test-snapshot");
+        let snapshot = repo_cache
+            .join("snapshots")
+            .join("27b74bcc0d0019a4d270abc5936c93f3f58c34fa");
         std::fs::create_dir_all(&snapshot).unwrap();
         std::fs::write(snapshot.join("config.json"), "{}").unwrap();
-        std::fs::create_dir_all(repo_cache.join("blobs")).unwrap();
+        std::fs::write(snapshot.join("model.safetensors"), vec![0u8; 1024]).unwrap();
+
+        assert!(!local_embedding_model_cached(&paths).unwrap());
+
+        std::fs::File::create(snapshot.join("model.safetensors"))
+            .unwrap()
+            .set_len(2_200_000_000)
+            .unwrap();
 
         assert!(local_embedding_model_cached(&paths).unwrap());
 
-        std::fs::write(
-            repo_cache
-                .join("blobs")
-                .join("model.safetensors.incomplete"),
-            "",
-        )
-        .unwrap();
+        std::fs::remove_file(snapshot.join("model.safetensors")).unwrap();
+        std::fs::write(snapshot.join("model.safetensors.incomplete"), "").unwrap();
 
         assert!(!local_embedding_model_cached(&paths).unwrap());
     }

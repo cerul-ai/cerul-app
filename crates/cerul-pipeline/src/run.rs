@@ -406,7 +406,7 @@ impl VideoPipeline {
             cerul_storage::set_item_raw_path(&self.paths, item_id, &video_path)?;
         }
         update_item_duration_from_media(&self.paths, item_id, &video_path).await;
-        let cache_key = cache_key(item.discovery_id());
+        let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
             .paths
             .cache
@@ -854,7 +854,7 @@ impl VideoPipeline {
         )?;
         let source_audio_path = source.fetch(&item.as_discovered_item()).await?;
         update_item_duration_from_media(&self.paths, item_id, &source_audio_path).await;
-        let cache_key = cache_key(item.discovery_id());
+        let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
             .paths
             .cache
@@ -1447,6 +1447,10 @@ impl Transcriber for crate::whisper::WhisperEngine {
 
 pub fn cache_key_for_discovery_id(input: &str) -> String {
     cache_key(input)
+}
+
+pub fn cache_key_for_item(item_id: &str, discovery_id: &str) -> String {
+    format!("{}-{}", cache_key(item_id), cache_key(discovery_id))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
