@@ -5313,7 +5313,7 @@ function IndexingSettings({
 // three are fixed; each carries its model + the connection/key it routes
 // through, handled together in a single list.
 type CapabilityRowModel = {
-  key: string;
+  key: "asr" | "embedding" | "video";
   badge: string;
   name: string;
   isLocal: boolean;
@@ -5327,6 +5327,9 @@ type CapabilityRowModel = {
   modelOptions: ModelComboOption[];
   onSelectModel?: (id: string) => void;
   provider: api.ProviderRecord | null;
+  providerSettingKey: "asr_provider_id" | "embedding_provider_id" | "video_understanding_provider_id";
+  preferredProviderType: RemoteProviderType;
+  providerTypeLocked: boolean;
   note: string | null;
   // Which bundled on-device model backs this capability — used to show the real
   // download state ("未下载 / 下载中 / 就绪") instead of a blanket "ready" when
@@ -5533,10 +5536,23 @@ function ModelsSettings({
     t("settings.models.localAsr.fallbackLabel");
   // Resolve the connection bound to each capability, falling back to the
   // env-seeded default for that capability.
-  const providerFor = (id: string, fallbackId: string) =>
-    providers.find((provider) => provider.id === id) ??
-    providers.find((provider) => provider.id === fallbackId) ??
-    null;
+  const providerFor = (id: string, fallbackId: string, allowedTypes: api.ProviderType[]) => {
+    const allowed = (provider: api.ProviderRecord | undefined | null) =>
+      !!provider && allowedTypes.includes(provider.type);
+    const selected = providers.find((provider) => provider.id === id);
+    if (allowed(selected)) return selected ?? null;
+    const envDefault = providers.find((provider) => provider.id === fallbackId);
+    if (allowed(envDefault)) return envDefault ?? null;
+    return (
+      providers.find(
+        (provider) =>
+          allowed(provider) && provider.has_key && provider.status !== "error",
+      ) ??
+      providers.find((provider) => allowed(provider) && provider.has_key) ??
+      providers.find((provider) => allowed(provider)) ??
+      null
+    );
+  };
   const toComboOptions = (
     list: { id: string; label: string; size_label?: string }[],
   ): ModelComboOption[] => list.map((m) => ({ id: m.id, label: m.label, hint: m.size_label }));
@@ -5548,6 +5564,12 @@ function ModelsSettings({
       activeProfile?.model_id ??
       "Qwen3-VL Embedding local"
     : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
+  const remoteAsrProviderTypes: api.ProviderType[] = isGeminiAsrModelId(activeRemoteAsr)
+    ? ["gemini"]
+    : ["openai", "openai-compatible"];
+  const preferredAsrProviderType: RemoteProviderType = isGeminiAsrModelId(activeRemoteAsr)
+    ? "gemini"
+    : "openai-compatible";
   const capabilities: CapabilityRowModel[] = [
     {
       key: "asr",
@@ -5560,7 +5582,10 @@ function ModelsSettings({
       modelValue: activeRemoteAsr,
       modelOptions: toComboOptions(remoteAsrOptions),
       onSelectModel: (id) => void onSettingsChange({ asr_model: id }),
-      provider: providerFor(selectedAsrProvider, "env-asr"),
+      provider: providerFor(selectedAsrProvider, "env-asr", remoteAsrProviderTypes),
+      providerSettingKey: "asr_provider_id",
+      preferredProviderType: preferredAsrProviderType,
+      providerTypeLocked: false,
       note: null,
       localModelKey: "asr",
     },
@@ -5574,7 +5599,10 @@ function ModelsSettings({
       localLabel: embeddingLabel,
       modelValue: embeddingLabel,
       modelOptions: [],
-      provider: providerFor(selectedEmbeddingProvider, "env-embedding"),
+      provider: providerFor(selectedEmbeddingProvider, "env-embedding", ["gemini"]),
+      providerSettingKey: "embedding_provider_id",
+      preferredProviderType: "gemini",
+      providerTypeLocked: true,
       note: t("settings.models.embedding.boundBadge"),
       localModelKey: "embed",
     },
@@ -5589,7 +5617,10 @@ function ModelsSettings({
       modelValue: selectedVideoUnderstandingModel,
       modelOptions: toComboOptions(videoUnderstandingModels),
       onSelectModel: (id) => void onSettingsChange({ video_understanding_model: id }),
-      provider: providerFor(selectedVideoUnderstandingProvider, "env-video-understanding"),
+      provider: providerFor(selectedVideoUnderstandingProvider, "env-video-understanding", ["gemini"]),
+      providerSettingKey: "video_understanding_provider_id",
+      preferredProviderType: "gemini",
+      providerTypeLocked: true,
       note: null,
       localModelKey: null,
     },
@@ -5618,6 +5649,7 @@ function ModelsSettings({
           error={providersError}
           disabled={disabled}
           onRefresh={loadProviders}
+          onSettingsChange={onSettingsChange}
           requestConfirm={requestConfirm}
           localPrep={localPrep}
           onDownloadLocal={downloadLocalModels}
@@ -5955,6 +5987,20 @@ const providerTypeOptions: { value: RemoteProviderType; label: string; placehold
   },
 ];
 
+function defaultBaseUrlForType(type: RemoteProviderType) {
+  if (type === "openai") return "https://api.openai.com/v1";
+  if (type === "gemini") return "https://generativelanguage.googleapis.com/v1beta";
+  return "";
+}
+
+function defaultProviderLabel(type: RemoteProviderType, capability?: CapabilityRowModel["key"]) {
+  if (type === "openai-compatible" && capability === "asr") return "OpenAI-compatible ASR";
+  if (type === "openai" && capability === "asr") return "OpenAI ASR";
+  if (type === "gemini" && capability === "embedding") return "Gemini Embedding";
+  if (type === "gemini" && capability === "video") return "Gemini Video";
+  return providerTypeOptions.find((item) => item.value === type)?.label ?? type;
+}
+
 // Persistent download status for on-device models: while a download runs it
 // shows the live source + speed + ETA + a progress bar + pause; otherwise it
 // surfaces a "download missing models" CTA (local mode), a cloud-mode note, or
@@ -6213,6 +6259,7 @@ function ProviderConnections({
   error,
   disabled,
   onRefresh,
+  onSettingsChange,
   requestConfirm,
   localPrep,
   onDownloadLocal,
@@ -6226,6 +6273,7 @@ function ProviderConnections({
   error: string | null;
   disabled: boolean;
   onRefresh: () => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
   requestConfirm: RequestConfirm;
   localPrep: api.LocalPrepareStatus | null;
   onDownloadLocal: (modelKey?: string) => void;
@@ -6245,6 +6293,7 @@ function ProviderConnections({
           : type;
   const [mode, setMode] = useState<"create" | "edit" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingCapability, setEditingCapability] = useState<CapabilityRowModel | null>(null);
   const [form, setForm] = useState({
     type: "gemini" as RemoteProviderType,
     label: "Gemini",
@@ -6255,6 +6304,10 @@ function ProviderConnections({
     status: "idle" | "running" | "done" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
+  const [flash, setFlash] = useState<{
+    tone: "muted" | "error";
+    message: string;
+  } | null>(null);
   // Models discovered from a provider's /models endpoint, keyed by capability,
   // merged into that row's combobox options so users can pick a real model id.
   const [discovered, setDiscovered] = useState<Record<string, ModelComboOption[]>>({});
@@ -6291,36 +6344,55 @@ function ProviderConnections({
   const providerDialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(providerDialogRef, mode !== null);
 
-  function openCreate() {
+  useEffect(() => {
+    if (!flash) return;
+    const timeout = window.setTimeout(() => setFlash(null), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [flash]);
+
+  function openCreate(capability?: CapabilityRowModel) {
+    const type = capability?.preferredProviderType ?? "gemini";
     setMode("create");
     setEditingId(null);
+    setEditingCapability(capability ?? null);
     setForm({
-      type: "gemini",
-      label: "Gemini",
-      base_url: "",
+      type,
+      label: defaultProviderLabel(type, capability?.key),
+      base_url: defaultBaseUrlForType(type),
       api_key: "",
     });
     setAction({ status: "idle", message: null });
+    setFlash(null);
   }
 
-  function openEdit(provider: api.ProviderRecord) {
+  function openEdit(provider: api.ProviderRecord, capability?: CapabilityRowModel) {
     if (provider.type === "local") {
       return;
     }
+    const lockedType = capability?.providerTypeLocked ? capability.preferredProviderType : null;
+    const type = lockedType ?? provider.type;
+    const retargetingLockedProvider = lockedType !== null && provider.type !== lockedType;
     setMode("edit");
     setEditingId(provider.id);
+    setEditingCapability(capability ?? null);
     setForm({
-      type: provider.type,
-      label: provider.label,
-      base_url: provider.base_url ?? "",
+      type,
+      label: retargetingLockedProvider
+        ? defaultProviderLabel(type, capability?.key)
+        : provider.label,
+      base_url: retargetingLockedProvider
+        ? defaultBaseUrlForType(type)
+        : provider.base_url ?? "",
       api_key: "",
     });
     setAction({ status: "idle", message: null });
+    setFlash(null);
   }
 
   function closeForm() {
     setMode(null);
     setEditingId(null);
+    setEditingCapability(null);
     setAction({ status: "idle", message: null });
   }
 
@@ -6332,8 +6404,13 @@ function ProviderConnections({
       type,
       label:
         !current.label.trim() || defaultLabels.includes(current.label)
-          ? option?.label ?? current.label
+          ? defaultProviderLabel(type, editingCapability?.key) || option?.label || current.label
           : current.label,
+      base_url:
+        !current.base_url.trim() ||
+        providerTypeOptions.some((item) => item.placeholder === current.base_url.trim())
+          ? defaultBaseUrlForType(type)
+          : current.base_url,
     }));
   }
 
@@ -6349,6 +6426,19 @@ function ProviderConnections({
       setAction({
         status: "error",
         message: t("settings.models.providers.error.baseUrlRequired"),
+      });
+      return;
+    }
+    if (
+      editingCapability?.providerTypeLocked &&
+      form.type !== editingCapability.preferredProviderType
+    ) {
+      setAction({
+        status: "error",
+        message: t("settings.models.providers.error.fixedType", {
+          capability: editingCapability.name,
+          type: typeLabel(editingCapability.preferredProviderType),
+        }),
       });
       return;
     }
@@ -6371,12 +6461,36 @@ function ProviderConnections({
               ...(apiKey ? { api_key: apiKey } : {}),
             })
           : await api.updateProvider(editingId ?? "", {
+              type: form.type,
               label: form.label,
               base_url: baseUrl,
               ...(apiKey ? { api_key: apiKey } : {}),
             });
       const tested = testAfterSave ? await api.testProvider(saved.id) : saved;
       await onRefresh();
+      const shouldBindCapability =
+        editingCapability &&
+        tested.type !== "local" &&
+        (!testAfterSave || tested.status !== "error");
+      if (shouldBindCapability) {
+        await onSettingsChange({ [editingCapability.providerSettingKey]: tested.id });
+      }
+      if (testAfterSave && tested.status !== "error") {
+        closeForm();
+        setFlash({
+          tone: "muted",
+          message: t("settings.models.providers.status.testedSucceeded"),
+        });
+        return;
+      }
+      if (!testAfterSave) {
+        closeForm();
+        setFlash({
+          tone: "muted",
+          message: t("settings.models.providers.status.saved"),
+        });
+        return;
+      }
       setMode("edit");
       setEditingId(tested.id);
       setForm({
@@ -6432,6 +6546,7 @@ function ProviderConnections({
   return (
     <section className="cap-list-shell">
       {error ? <InlineNotice tone="error" message={error} /> : null}
+      {flash ? <InlineNotice tone={flash.tone} message={flash.message} /> : null}
       {discoverError ? <InlineNotice tone="error" message={discoverError} /> : null}
 
       <LocalDownloadStatus
@@ -6545,7 +6660,7 @@ function ProviderConnections({
                         type="button"
                         className="btn btn-ghost sm cap-row__edit"
                         disabled={disabled}
-                        onClick={() => (provider ? openEdit(provider) : openCreate())}
+                        onClick={() => (provider ? openEdit(provider, cap) : openCreate(cap))}
                       >
                         {t("settings.models.capability.edit")}
                       </button>
@@ -6626,18 +6741,22 @@ function ProviderConnections({
           <div className="provider-form-grid">
             <label>
               <span>{t("settings.models.providers.form.type")}</span>
-              <select
-                className="select"
-                value={form.type}
-                disabled={disabled || mode === "edit"}
-                onChange={(event) => updateType(event.currentTarget.value as RemoteProviderType)}
-              >
-                {providerTypeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <span className="provider-select-wrap">
+                <select
+                  className="select"
+                  value={form.type}
+                  disabled={disabled || Boolean(editingCapability?.providerTypeLocked)}
+                  onChange={(event) => updateType(event.currentTarget.value as RemoteProviderType)}
+                >
+                  {providerTypeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={18} aria-hidden="true" />
+              </span>
+              <small>{t("settings.models.providers.form.typeHelp")}</small>
             </label>
             <label>
               <span>{t("settings.models.providers.form.label")}</span>
@@ -6646,6 +6765,7 @@ function ProviderConnections({
                 disabled={disabled}
                 onChange={(event) => setForm((current) => ({ ...current, label: event.currentTarget.value }))}
               />
+              <small>{t("settings.models.providers.form.labelHelp")}</small>
             </label>
             <label>
               <span>{t("settings.models.providers.form.baseUrl")}</span>

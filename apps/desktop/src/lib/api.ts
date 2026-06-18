@@ -418,6 +418,7 @@ export type CreateProviderRequest = {
 };
 
 export type UpdateProviderRequest = {
+  type?: Exclude<ProviderType, "local">;
   label?: string;
   base_url?: string;
   api_key?: string;

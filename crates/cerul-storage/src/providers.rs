@@ -37,6 +37,7 @@ pub struct NewProvider {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProviderUpdate {
+    pub provider_type: Option<String>,
     pub label: Option<String>,
     pub base_url: Option<String>,
 }
@@ -102,24 +103,51 @@ pub fn update_provider(
 ) -> anyhow::Result<Provider> {
     anyhow::ensure!(id != LOCAL_PROVIDER_ID, "local provider cannot be updated");
     let current = get_provider(paths, id)?.ok_or_else(|| anyhow::anyhow!("provider not found"))?;
+    let provider_type = match changes.provider_type {
+        Some(provider_type) => {
+            let normalized = normalized_provider_type(&provider_type)?;
+            anyhow::ensure!(
+                normalized != PROVIDER_TYPE_LOCAL,
+                "local provider is built in"
+            );
+            normalized.to_string()
+        }
+        None => current.provider_type.clone(),
+    };
     let label = match changes.label {
         Some(label) => normalize_label(&label)?,
         None => current.label,
     };
     let base_url = match changes.base_url {
-        Some(base_url) => normalize_base_url(&current.provider_type, Some(&base_url))?,
-        None => current.base_url,
+        Some(base_url) => normalize_base_url(&provider_type, Some(&base_url))?,
+        None if provider_type != current.provider_type => {
+            normalize_base_url(&provider_type, current.base_url.as_deref())?
+        }
+        None => current.base_url.clone(),
+    };
+    let status = if provider_type != current.provider_type || base_url != current.base_url {
+        PROVIDER_STATUS_UNCONFIGURED.to_string()
+    } else {
+        current.status
+    };
+    let last_error = if status == PROVIDER_STATUS_UNCONFIGURED {
+        None
+    } else {
+        current.last_error
     };
     let conn = crate::sqlite::open(paths)?;
     conn.execute(
         r#"
         UPDATE providers
-        SET label = ?2,
-            base_url = ?3,
+        SET type = ?2,
+            label = ?3,
+            base_url = ?4,
+            status = ?5,
+            last_error = ?6,
             updated_at = strftime('%s','now')
         WHERE id = ?1
         "#,
-        (id, label, base_url),
+        (id, provider_type, label, base_url, status, last_error),
     )?;
     get_provider(paths, id)?.ok_or_else(|| anyhow::anyhow!("provider not found"))
 }
@@ -274,6 +302,7 @@ mod tests {
             &paths,
             "provider-test",
             ProviderUpdate {
+                provider_type: None,
                 label: Some("Gemini prod".to_string()),
                 base_url: Some("https://example.com/v1beta/".to_string()),
             },
@@ -284,6 +313,24 @@ mod tests {
             updated.base_url.as_deref(),
             Some("https://example.com/v1beta")
         );
+
+        let retargeted = update_provider(
+            &paths,
+            "provider-test",
+            ProviderUpdate {
+                provider_type: Some("openai-compatible".to_string()),
+                label: None,
+                base_url: Some("https://api.groq.com/openai/v1/".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(retargeted.provider_type, "openai-compatible");
+        assert_eq!(
+            retargeted.base_url.as_deref(),
+            Some("https://api.groq.com/openai/v1")
+        );
+        assert_eq!(retargeted.status, PROVIDER_STATUS_UNCONFIGURED);
+        assert_eq!(retargeted.last_error, None);
 
         let ready =
             set_provider_status(&paths, "provider-test", PROVIDER_STATUS_READY, None).unwrap();
@@ -303,6 +350,7 @@ mod tests {
             &paths,
             LOCAL_PROVIDER_ID,
             ProviderUpdate {
+                provider_type: None,
                 label: Some("Other".to_string()),
                 base_url: None,
             },

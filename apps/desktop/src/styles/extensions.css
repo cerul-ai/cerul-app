@@ -521,6 +521,21 @@
     border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease);
 }
+.provider-select-wrap {
+  position: relative;
+  display: block;
+}
+.provider-select-wrap select {
+  padding-right: 40px;
+}
+.provider-select-wrap svg {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  color: var(--text-faint);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
 .provider-form-grid input:hover,
 .provider-form-grid select:hover {
   border-color: var(--text-faint);
@@ -4852,4 +4867,67 @@ body.overlay-body {
   .clip-pop {
     animation-duration: 0.01ms;
   }
+}
+
+.render-error-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: var(--bg-app);
+}
+
+.render-error-card {
+  width: min(560px, 100%);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  padding: 28px;
+}
+
+.render-error-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.render-error-copy {
+  margin-top: 18px;
+}
+
+.render-error-copy h1 {
+  margin: 6px 0 8px;
+  font-size: 26px;
+  line-height: 1.15;
+}
+
+.render-error-copy p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.render-error-detail {
+  max-height: 140px;
+  overflow: auto;
+  margin: 18px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.render-error-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 18px;
 }

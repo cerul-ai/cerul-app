@@ -29,6 +29,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 pnpm --filter @cerul/desktop build >/dev/null
+cargo build -p cerul-api >/dev/null
 pnpm --filter @cerul/electron-shell build >/dev/null
 
 pnpm --filter @cerul/electron-shell start >"$LOG_FILE" 2>&1 &

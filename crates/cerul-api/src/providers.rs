@@ -57,6 +57,8 @@ pub struct CreateProviderRequest {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateProviderRequest {
+    #[serde(rename = "type")]
+    pub provider_type: Option<String>,
     pub label: Option<String>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -171,29 +173,44 @@ pub async fn update_provider(
     if let Some(label) = req.label.as_deref() {
         validate_label(label)?;
     }
-    if existing.provider_type == "openai-compatible"
-        && req
-            .base_url
-            .as_deref()
-            .is_some_and(|base_url| base_url.trim().is_empty())
-    {
+    if let Some(provider_type) = req.provider_type.as_deref() {
+        if !cerul_storage::providers::is_supported_remote_provider_type(provider_type) {
+            return Err(ApiError::bad_request("unsupported provider type"));
+        }
+    }
+    let target_type = req
+        .provider_type
+        .as_deref()
+        .unwrap_or(existing.provider_type.as_str());
+    let target_base_url = req.base_url.as_deref().or(existing.base_url.as_deref());
+    if target_type == "openai-compatible" && is_blank(target_base_url) {
         return Err(ApiError::bad_request(
             "base_url is required for openai-compatible providers",
         ));
     }
 
+    let api_key_changed = clean_api_key(req.api_key.clone()).is_some();
     if let Some(api_key) = clean_api_key(req.api_key) {
         set_provider_key(&state.paths, &id, &api_key)?;
     }
 
-    let updated = cerul_storage::providers::update_provider(
+    let mut updated = cerul_storage::providers::update_provider(
         &state.paths,
         &id,
         cerul_storage::providers::ProviderUpdate {
+            provider_type: req.provider_type,
             label: req.label,
             base_url: req.base_url,
         },
     )?;
+    if api_key_changed {
+        updated = cerul_storage::providers::set_provider_status(
+            &state.paths,
+            &id,
+            cerul_storage::providers::PROVIDER_STATUS_UNCONFIGURED,
+            None,
+        )?;
+    }
     Ok(Json(provider_record(updated, &state.paths)))
 }
 
@@ -540,6 +557,7 @@ fn ensure_env_provider(
                 paths,
                 id,
                 cerul_storage::providers::ProviderUpdate {
+                    provider_type: None,
                     label: Some(label.to_string()),
                     base_url,
                 },
