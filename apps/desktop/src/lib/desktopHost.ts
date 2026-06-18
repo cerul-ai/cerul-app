@@ -18,7 +18,15 @@ export type DesktopUpdate = {
 export type DesktopUpdaterState =
   | { phase: "idle" }
   | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
-  | { phase: "downloading"; version: string; percent: number }
+  | {
+      phase: "downloading";
+      version: string;
+      percent: number;
+      bytesPerSecond?: number;
+      etaSeconds?: number;
+      transferredBytes?: number;
+      totalBytes?: number;
+    }
   | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string }
   | { phase: "error"; version?: string; message: string; releaseUrl: string };

@@ -109,10 +109,25 @@ type DesktopUpdateInfo = {
 type UpdaterState =
   | { phase: "idle" }
   | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
-  | { phase: "downloading"; version: string; percent: number }
+  | {
+      phase: "downloading";
+      version: string;
+      percent: number;
+      bytesPerSecond?: number;
+      etaSeconds?: number;
+      transferredBytes?: number;
+      totalBytes?: number;
+    }
   | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string }
   | { phase: "error"; version?: string; message: string; releaseUrl: string };
+
+type UpdaterProgress = {
+  percent?: number;
+  bytesPerSecond?: number;
+  transferred?: number;
+  total?: number;
+};
 
 type ApiOutputTail = {
   stdout: string;
@@ -1942,10 +1957,43 @@ function collectUpdaterDiagnostics() {
     "== ShipIt cache tree ==",
     ...listTree(shipItCache),
     "",
+    "== open files under app bundle ==",
+    bundlePath ? diagnosticCommand("lsof", ["+D", bundlePath]) : "[[not a macOS app bundle]]",
+    "",
     "== last core exit ==",
     JSON.stringify(lastApiExit),
   ];
   return lines.join("\n");
+}
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function updateDownloadState(version: string, progress: UpdaterProgress = {}): UpdaterState {
+  const rawPercent = Number.isFinite(progress.percent) ? Number(progress.percent) : 0;
+  const percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
+  const bytesPerSecond = positiveFiniteNumber(progress.bytesPerSecond);
+  const transferredBytes = positiveFiniteNumber(progress.transferred);
+  const totalBytes = positiveFiniteNumber(progress.total);
+  const remainingBytes =
+    totalBytes !== undefined && transferredBytes !== undefined
+      ? Math.max(0, totalBytes - transferredBytes)
+      : undefined;
+  const etaSeconds =
+    bytesPerSecond !== undefined && remainingBytes !== undefined
+      ? Math.ceil(remainingBytes / bytesPerSecond)
+      : undefined;
+  return {
+    phase: "downloading",
+    version,
+    percent,
+    bytesPerSecond,
+    etaSeconds,
+    transferredBytes,
+    totalBytes,
+  };
 }
 
 function setUpdaterState(next: UpdaterState) {
@@ -1987,24 +2035,19 @@ function wireAutoUpdater(updater: AppUpdater) {
     return;
   }
   autoUpdaterWired = true;
-  // User-driven: the pill triggers downloadUpdate(); once that download
-  // finishes, the shell automatically restarts into the installer.
-  updater.autoDownload = false;
+  // Codex-like flow: signed update assets download in the background after a
+  // successful check. The rail button then installs an already prepared update.
+  updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
   updater.on("update-available", (info) => {
-    setUpdaterState({
-      phase: "available",
-      version: normalizeVersion(info.version),
-      releaseUrl: releasesPageUrl(),
-      canAutoInstall: true,
-    });
+    setUpdaterState(updateDownloadState(normalizeVersion(info.version)));
   });
   updater.on("download-progress", (progress) => {
     const version =
       latestUpdaterState.phase === "available" || latestUpdaterState.phase === "downloading"
         ? latestUpdaterState.version
         : normalizeVersion(app.getVersion());
-    setUpdaterState({ phase: "downloading", version, percent: Math.round(progress.percent) });
+    setUpdaterState(updateDownloadState(version, progress));
   });
   updater.on("update-downloaded", (info) => {
     const version = normalizeVersion(info.version);
@@ -2081,6 +2124,14 @@ async function runDesktopUpdateCheck() {
     return;
   }
 
+  if (
+    latestUpdaterState.phase === "downloading" ||
+    latestUpdaterState.phase === "downloaded" ||
+    latestUpdaterState.phase === "installing"
+  ) {
+    return;
+  }
+
   await refreshManualUpdateState();
 
   // Opportunistic in-place updater — dormant until releases ship signed +
@@ -2106,7 +2157,7 @@ async function startDesktopUpdateDownload() {
   if (latestUpdaterState.phase !== "available") {
     return;
   }
-  const { releaseUrl, canAutoInstall } = latestUpdaterState;
+  const { releaseUrl, canAutoInstall, version } = latestUpdaterState;
   // Without a working in-place updater, "update" means open the download page.
   if (!canAutoInstall) {
     await shell.openExternal(releaseUrl);
@@ -2119,13 +2170,14 @@ async function startDesktopUpdateDownload() {
   }
   updateInstallRequested = true;
   try {
+    setUpdaterState(updateDownloadState(version));
     await updater.downloadUpdate();
   } catch (error) {
     console.error("electron-updater download failed; opening release page", error);
     updateInstallRequested = false;
     setUpdaterState({
       phase: "error",
-      version: latestUpdaterState.phase === "available" ? latestUpdaterState.version : undefined,
+      version,
       message: error instanceof Error ? error.message : String(error),
       releaseUrl,
     });
@@ -2171,7 +2223,7 @@ async function installDesktopUpdate(version?: string) {
   try {
     stopStatusMonitor();
     stopOAuthCallbackServer();
-    await stopRustCoreGracefully(1500);
+    await stopRustCoreGracefully(10_000);
     // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
     // app as quitting up front so our close-to-tray handler does not hide the
     // main window and leave ShipIt blocked on a still-running app instance.

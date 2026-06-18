@@ -49,6 +49,7 @@ DEFAULT_MODELSCOPE_ENDPOINT = "https://modelscope.cn"
 PROBE_BYTES = 16 * 1024 * 1024
 PROBE_WINDOW_SECS = 3.0
 PROBE_TIMEOUT_SECS = 5.0
+DEFAULT_PREPARE_DOWNLOAD_CONCURRENCY = 3
 
 SOURCE_HUGGINGFACE = "huggingface"
 SOURCE_MODELSCOPE = "modelscope"
@@ -58,6 +59,7 @@ SOURCE_LABELS = {
     SOURCE_MODELSCOPE: "ModelScope",
     SOURCE_CERUL_CDN: "Cerul CDN",
 }
+PRIMARY_DOWNLOAD_SOURCES = (SOURCE_MODELSCOPE, SOURCE_HUGGINGFACE)
 
 QWEN3_VL_ALLOW_PATTERNS = [
     "*.json",
@@ -98,6 +100,16 @@ PINNED_MODEL_REVISIONS = {
     DEFAULT_OCR_DET_MODEL: "4fda2ea33fb340a1a19592aec4604ba1d2d5587d",
     DEFAULT_OCR_REC_MODEL: "2f0724790c8b57946c89cc45d2fa79e405781f51",
     DEFAULT_WHISPER_MODEL: "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+}
+MODELSCOPE_MODEL_REVISIONS = {
+    # ModelScope mirrors this reviewed HF snapshot under its own commit id. Keep
+    # the source-specific pin instead of falling back to ModelScope's moving tip.
+    DEFAULT_EMBEDDING_MODEL: "27b74bcc0d0019a4d270abc5936c93f3f58c34fa",
+    DEFAULT_ASR_MODEL: "3b885f72b1733a6a50dc17a597fb4135c3d656a0",
+    DEFAULT_FORCED_ALIGNER_MODEL: "6f4d7c9606feb7adf282c9e4b139f28e8695d867",
+    DEFAULT_OCR_DET_MODEL: "37b02eded8dbca659f8ee5d51f822ea1ebd9bcba",
+    DEFAULT_OCR_REC_MODEL: "ba215b1cc49d9ed4459d161b96778e8643fe0c1f",
+    DEFAULT_WHISPER_MODEL: "2ea465385494dbe25b7d5a2ec15f2c4fdfe3e33b",
 }
 PINNED_SNAPSHOT_REQUIRED_FILES = {
     DEFAULT_EMBEDDING_MODEL: (
@@ -200,14 +212,53 @@ def configured_download_source() -> str:
     return normalize_download_source(os.environ.get("CERUL_MODEL_DOWNLOAD_SOURCE"))
 
 
+def normalize_download_region(value: str | None) -> str:
+    return (value or "").strip().lower().replace("_", "-")
+
+
+def inferred_download_region() -> str:
+    for name in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+        locale = normalize_download_region(os.environ.get(name))
+        if "zh-cn" in locale or "zh-hans-cn" in locale:
+            return "cn"
+
+    timezone = normalize_download_region(os.environ.get("TZ"))
+    if timezone in {"asia/shanghai", "asia/chongqing", "asia/harbin", "asia/urumqi"}:
+        return "cn"
+    return ""
+
+
+def configured_download_region() -> str:
+    return (
+        normalize_download_region(os.environ.get("CERUL_MODEL_DOWNLOAD_REGION"))
+        or inferred_download_region()
+    )
+
+
+def source_revision(source: str, model_id_or_path: str, revision: str) -> str:
+    if source == SOURCE_MODELSCOPE:
+        return MODELSCOPE_MODEL_REVISIONS.get(model_id_or_path, revision)
+    return revision
+
+
 def default_source_order() -> list[str]:
-    # Candidate order is not the decision. In auto mode we probe every available
-    # source and pick the fastest measured result; this list only breaks close
-    # ties and provides a fallback if every probe fails.
-    region = os.environ.get("CERUL_MODEL_DOWNLOAD_REGION", "").strip().lower()
-    if region in {"cn", "china", "mainland", "zh-cn", "zh_cn", "zh_hans_cn"}:
+    # Region is only the fallback/tie-breaker. Auto mode first races the public
+    # primary sources (ModelScope and Hugging Face), then falls back to this
+    # order if the probe is inconclusive.
+    region = configured_download_region()
+    if region in {"cn", "china", "mainland", "zh-cn", "zh-hans-cn"}:
         return [SOURCE_MODELSCOPE, SOURCE_CERUL_CDN, SOURCE_HUGGINGFACE]
-    return [SOURCE_CERUL_CDN, SOURCE_HUGGINGFACE, SOURCE_MODELSCOPE]
+    return [SOURCE_HUGGINGFACE, SOURCE_CERUL_CDN, SOURCE_MODELSCOPE]
+
+
+def download_source_order(selected_source: str) -> list[str]:
+    order = [selected_source]
+    if selected_source != SOURCE_CERUL_CDN:
+        order.append(SOURCE_CERUL_CDN)
+    for source in default_source_order():
+        if source not in order:
+            order.append(source)
+    return order
 
 
 def source_label(source: str) -> str:
@@ -220,6 +271,15 @@ def env_positive_int(name: str, fallback: int) -> int:
     except ValueError:
         return fallback
     return max(1, value)
+
+
+def prepare_download_concurrency(total_repos: int) -> int:
+    if total_repos <= 1:
+        return 1
+    return min(
+        total_repos,
+        env_positive_int("CERUL_MODEL_PREPARE_CONCURRENCY", DEFAULT_PREPARE_DOWNLOAD_CONCURRENCY),
+    )
 
 
 def env_truthy(name: str) -> bool:
@@ -728,12 +788,13 @@ def probe_url(source: str, url: str) -> dict[str, Any]:
 
 def probe_url_for_source(source: str, model_id_or_path: str, revision: str) -> str | None:
     probe_file = probe_file_for_model(model_id_or_path)
+    resolved_revision = source_revision(source, model_id_or_path, revision)
     if source == SOURCE_HUGGINGFACE:
-        return hf_resolve_url(model_id_or_path, revision, probe_file)
+        return hf_resolve_url(model_id_or_path, resolved_revision, probe_file)
     if source == SOURCE_MODELSCOPE:
-        return modelscope_resolve_url(model_id_or_path, probe_file, revision)
+        return modelscope_resolve_url(model_id_or_path, probe_file, resolved_revision)
     if source == SOURCE_CERUL_CDN:
-        entry = mirror_entry(model_id_or_path, revision)
+        entry = mirror_entry(model_id_or_path, resolved_revision)
         if entry is None:
             return None
         archive = entry.get("archive") or {}
@@ -748,6 +809,8 @@ def probe_url_for_source(source: str, model_id_or_path: str, revision: str) -> s
 def probe_file_for_model(model_id_or_path: str) -> str:
     if model_id_or_path in {DEFAULT_OCR_DET_MODEL, DEFAULT_OCR_REC_MODEL}:
         return "inference.onnx"
+    if model_id_or_path == DEFAULT_WHISPER_MODEL:
+        return "weights.safetensors"
     return "model.safetensors"
 
 
@@ -773,7 +836,7 @@ def select_download_source(model_id_or_path: str, revision: str) -> str:
         download_bps=None,
     )
     probe_inputs = []
-    for source in order:
+    for source in PRIMARY_DOWNLOAD_SOURCES:
         url = probe_url_for_source(source, model_id_or_path, revision)
         if url:
             probe_inputs.append((source, url))
@@ -787,8 +850,6 @@ def select_download_source(model_id_or_path: str, revision: str) -> str:
 
     ok_results = [result for result in results if result.get("ok")]
     if ok_results:
-        # Prefer real throughput. The region/env order only breaks ties, never
-        # overrides a measured winner.
         order_index = {source: index for index, source in enumerate(order)}
         ok_results.sort(
             key=lambda result: (
@@ -797,19 +858,20 @@ def select_download_source(model_id_or_path: str, revision: str) -> str:
             ),
             reverse=True,
         )
-        selected = str(ok_results[0]["source"])
+        selected_result = ok_results[0]
+        selected = str(selected_result["source"])
         write_prepare_status(
             phase="downloading",
             active_source=selected,
             source_label=source_label(selected),
             model_id=model_id_or_path,
-            download_bps=int(ok_results[0].get("bytes_per_second") or 0),
+            download_bps=int(selected_result.get("bytes_per_second") or 0),
             probes=results,
         )
         print(
             "prepare: selected "
             f"{source_label(selected)} for {model_id_or_path} "
-            f"({int(ok_results[0].get('bytes_per_second') or 0)} B/s)",
+            f"({int(selected_result.get('bytes_per_second') or 0)} B/s)",
             file=sys.stderr,
         )
         return selected
@@ -822,7 +884,7 @@ def select_download_source(model_id_or_path: str, revision: str) -> str:
         model_id=model_id_or_path,
         download_bps=None,
         probes=results,
-        last_source_error="all source probes failed; using default order",
+        last_source_error="primary source probes failed; using region fallback order",
     )
     return selected
 
@@ -892,14 +954,15 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
 
     last_error: Exception | None = None
     if pinned:
-        modelscope_cached = modelscope_snapshot_dir(model_id_or_path, pinned)
+        modelscope_revision = source_revision(SOURCE_MODELSCOPE, model_id_or_path, pinned)
+        modelscope_cached = modelscope_snapshot_dir(model_id_or_path, modelscope_revision)
         if modelscope_cached is not None:
             missing_reasons = pinned_snapshot_missing_reasons(modelscope_cached, model_id_or_path)
             if not missing_reasons:
                 return modelscope_cached
 
         selected_source = select_download_source(model_id_or_path, pinned)
-        source_order = [selected_source] + [source for source in default_source_order() if source != selected_source]
+        source_order = download_source_order(selected_source)
         for source in source_order:
             try:
                 if source == SOURCE_CERUL_CDN:
@@ -908,7 +971,11 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
                         return mirror_snapshot
                     raise RuntimeError("Cerul CDN manifest does not contain this model")
                 if source == SOURCE_MODELSCOPE:
-                    modelscope_snapshot = resolve_modelscope_snapshot(model_id_or_path, pinned, allow_patterns)
+                    modelscope_snapshot = resolve_modelscope_snapshot(
+                        model_id_or_path,
+                        source_revision(SOURCE_MODELSCOPE, model_id_or_path, pinned),
+                        allow_patterns,
+                    )
                     if modelscope_snapshot is not None:
                         return modelscope_snapshot
                     raise RuntimeError("ModelScope snapshot unavailable")
@@ -1957,6 +2024,30 @@ def heartbeat(request_id: Any, label: str, interval: float = 4.0):
         thread.join(timeout=1.0)
 
 
+def prepare_one_repo(repo: str, index: int, total_repos: int) -> None:
+    print(f"prepare: ({index}/{total_repos}) downloading {repo}", file=sys.stderr)
+    write_prepare_status(
+        phase="probing",
+        active_source=None,
+        source_label=None,
+        model_id=repo,
+        download_bps=None,
+        repo_index=index,
+        total_repos=total_repos,
+    )
+    resolve_snapshot(repo, allow_patterns_for_model(repo))
+    print(f"prepare: ({index}/{total_repos}) ready {repo}", file=sys.stderr)
+    write_prepare_status(
+        phase="downloading",
+        active_source=None,
+        source_label=None,
+        model_id=repo,
+        download_bps=None,
+        repo_index=index,
+        total_repos=total_repos,
+    )
+
+
 def main() -> int:
     global ORIGINAL_STDOUT
 
@@ -1984,28 +2075,22 @@ def main() -> int:
             total_repos=len(repos),
         )
         try:
-            for index, repo in enumerate(repos, start=1):
-                print(f"prepare: ({index}/{len(repos)}) downloading {repo}", file=sys.stderr)
-                write_prepare_status(
-                    phase="probing",
-                    active_source=None,
-                    source_label=None,
-                    model_id=repo,
-                    download_bps=None,
-                    repo_index=index,
-                    total_repos=len(repos),
+            concurrency = prepare_download_concurrency(len(repos))
+            if concurrency <= 1:
+                for index, repo in enumerate(repos, start=1):
+                    prepare_one_repo(repo, index, len(repos))
+            else:
+                print(
+                    f"prepare: downloading {len(repos)} repos with concurrency {concurrency}",
+                    file=sys.stderr,
                 )
-                resolve_snapshot(repo, allow_patterns_for_model(repo))
-                print(f"prepare: ({index}/{len(repos)}) ready {repo}", file=sys.stderr)
-                write_prepare_status(
-                    phase="downloading",
-                    active_source=None,
-                    source_label=None,
-                    model_id=repo,
-                    download_bps=None,
-                    repo_index=index,
-                    total_repos=len(repos),
-                )
+                with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+                    futures = [
+                        executor.submit(prepare_one_repo, repo, index, len(repos))
+                        for index, repo in enumerate(repos, start=1)
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result()
         except Exception as exc:  # noqa: BLE001 - record the source diagnostics, then re-raise.
             write_prepare_status(
                 phase="error",

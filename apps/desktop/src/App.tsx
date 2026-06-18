@@ -1052,6 +1052,24 @@ function AppWorkspace() {
     }
   }
 
+  function updateDownloadLabel(state: Extract<DesktopUpdaterState, { phase: "downloading" }>) {
+    const speed = formatSpeed(state.bytesPerSecond);
+    return speed ? `${state.percent}% · ${speed}` : `${state.percent}%`;
+  }
+
+  function updateDownloadTitle(state: Extract<DesktopUpdaterState, { phase: "downloading" }>) {
+    const speed = formatSpeed(state.bytesPerSecond);
+    const eta = state.etaSeconds != null ? formatDuration(state.etaSeconds, t) : null;
+    return [
+      t("shell.updateDownloadingTip"),
+      `${state.percent}%`,
+      speed,
+      eta ? t("home.continueRemaining", { remaining: eta }) : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const submittedQuery =
@@ -1184,7 +1202,7 @@ function AppWorkspace() {
               disabled={updaterState.phase === "downloading" || updaterState.phase === "installing"}
               title={
                 updaterState.phase === "downloading"
-                  ? t("shell.updateDownloadingTip")
+                  ? updateDownloadTitle(updaterState)
                   : updaterState.phase === "installing"
                     ? t("shell.updateInstallingTip")
                     : updaterState.phase === "downloaded"
@@ -1198,7 +1216,7 @@ function AppWorkspace() {
               {updaterState.phase === "downloading" ? (
                 <>
                   <Loader2 size={13} className="spin" />
-                  <span className="rail-update-label">{updaterState.percent}%</span>
+                  <span className="rail-update-label">{updateDownloadLabel(updaterState)}</span>
                 </>
               ) : updaterState.phase === "installing" ? (
                 <>
