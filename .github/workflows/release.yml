@@ -483,3 +483,53 @@ jobs:
             exit 1
           fi
           gh release upload "$tag" "${files[@]}" --clobber
+      - name: Upload DMG assets to Cloudflare R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CERUL_UPDATES_R2_BUCKET: ${{ secrets.CERUL_UPDATES_R2_BUCKET }}
+          CERUL_UPDATES_R2_PREFIX: ${{ vars.CERUL_UPDATES_R2_PREFIX }}
+        run: |
+          required=(
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+            CLOUDFLARE_R2_ACCOUNT_ID
+            CERUL_UPDATES_R2_BUCKET
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "R2 upload cannot continue: $name is not configured." >&2
+              exit 1
+            fi
+          done
+          if ! command -v aws >/dev/null 2>&1; then
+            python3 -m pip install --user awscli
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          endpoint="https://${CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="${CERUL_UPDATES_R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+          mapfile -d '' files < <(find release-assets -type f \( -name "*.dmg" -o -name "*.dmg.blockmap" \) -print0 | sort -z)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No DMG assets found to upload." >&2
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            name="$(basename "$file")"
+            key="$name"
+            if [ -n "$prefix" ]; then
+              key="$prefix/$name"
+            fi
+            content_type="application/octet-stream"
+            case "$name" in
+              *.dmg) content_type="application/x-apple-diskimage" ;;
+            esac
+            aws s3 cp "$file" "s3://${CERUL_UPDATES_R2_BUCKET}/${key}" \
+              --endpoint-url "$endpoint" \
+              --cache-control "public, max-age=31536000, immutable" \
+              --content-type "$content_type"
+          done
