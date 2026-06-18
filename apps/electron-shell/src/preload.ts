@@ -12,7 +12,8 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
   openDialog: (options: OpenDialogOptions) => ipcRenderer.invoke("cerul:open-dialog", options),
   appVersion: () => ipcRenderer.invoke("cerul:app-version"),
   checkForUpdate: () => ipcRenderer.invoke("cerul:check-update"),
-  updaterCheck: () => ipcRenderer.invoke("cerul:updater-check"),
+  updaterCheck: (options?: { installWhenDownloaded?: boolean }) =>
+    ipcRenderer.invoke("cerul:updater-check", options),
   updaterGetState: () => ipcRenderer.invoke("cerul:updater-get-state"),
   updaterDiagnostics: () => ipcRenderer.invoke("cerul:updater-diagnostics"),
   updaterDownload: () => ipcRenderer.invoke("cerul:updater-download"),

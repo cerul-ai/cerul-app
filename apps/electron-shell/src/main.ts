@@ -81,6 +81,7 @@ let oauthCallbackPort: number | null = null;
 let autoUpdaterInstance: AppUpdater | null = null;
 let autoUpdaterWired = false;
 let updateInstallRequested = false;
+let updaterCheckInstallRequested = false;
 let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
@@ -128,6 +129,10 @@ type UpdaterProgress = {
   bytesPerSecond?: number;
   transferred?: number;
   total?: number;
+};
+
+type UpdaterCheckOptions = {
+  installWhenDownloaded?: boolean;
 };
 
 type ApiOutputTail = {
@@ -1952,9 +1957,9 @@ function registerIpcHandlers() {
     assertTrustedIpcSender(event);
     return checkForGitHubReleaseUpdate();
   });
-  ipcMain.handle("cerul:updater-check", async (event) => {
+  ipcMain.handle("cerul:updater-check", async (event, options?: UpdaterCheckOptions) => {
     assertTrustedIpcSender(event);
-    await runDesktopUpdateCheck();
+    await runDesktopUpdateCheck(options);
     return latestUpdaterState;
   });
   ipcMain.handle("cerul:updater-get-state", async (event) => {
@@ -2245,7 +2250,15 @@ function wireAutoUpdater(updater: AppUpdater) {
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
   updater.on("update-available", (info) => {
+    if (updaterCheckInstallRequested) {
+      updateInstallRequested = true;
+      updaterCheckInstallRequested = false;
+    }
     setUpdaterState(updateDownloadState(normalizeVersion(info.version)));
+  });
+  updater.on("update-not-available", () => {
+    updaterCheckInstallRequested = false;
+    updateInstallRequested = false;
   });
   updater.on("download-progress", (progress) => {
     const version =
@@ -2258,6 +2271,7 @@ function wireAutoUpdater(updater: AppUpdater) {
     const version = normalizeVersion(info.version);
     const shouldAutoInstall = updateInstallRequested;
     updateInstallRequested = false;
+    updaterCheckInstallRequested = false;
     if (!shouldAutoInstall) {
       setUpdaterState({ phase: "downloaded", version });
       return;
@@ -2272,6 +2286,7 @@ function wireAutoUpdater(updater: AppUpdater) {
     console.error("electron-updater error", error);
     const fallbackUrl =
       latestUpdaterState.phase === "available" ? latestUpdaterState.releaseUrl : releasesPageUrl();
+    updaterCheckInstallRequested = false;
     if (updateInstallRequested) {
       updateInstallRequested = false;
     }
@@ -2315,7 +2330,9 @@ async function refreshManualUpdateState() {
   }
 }
 
-async function runDesktopUpdateCheck() {
+async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
+  const installWhenDownloaded = options.installWhenDownloaded === true;
+
   // Dev demo hook: CERUL_FAKE_UPDATE=<version> renders the pill without a real
   // release so the flow is reviewable before signed releases exist.
   const fake = process.env.CERUL_FAKE_UPDATE;
@@ -2334,6 +2351,13 @@ async function runDesktopUpdateCheck() {
     latestUpdaterState.phase === "downloaded" ||
     latestUpdaterState.phase === "installing"
   ) {
+    if (installWhenDownloaded) {
+      if (latestUpdaterState.phase === "downloading") {
+        updateInstallRequested = true;
+      } else if (latestUpdaterState.phase === "downloaded") {
+        await installDesktopUpdate(latestUpdaterState.version);
+      }
+    }
     return;
   }
 
@@ -2352,8 +2376,15 @@ async function runDesktopUpdateCheck() {
   }
   try {
     wireAutoUpdater(updater);
+    if (installWhenDownloaded) {
+      updaterCheckInstallRequested = true;
+    }
     await updater.checkForUpdates();
   } catch (error) {
+    if (installWhenDownloaded) {
+      updaterCheckInstallRequested = false;
+      updateInstallRequested = false;
+    }
     console.error("electron-updater check failed; release-page fallback active", error);
   }
 }

@@ -7379,7 +7379,7 @@ function AboutSettings() {
     try {
       const update = await checkForDesktopUpdate();
       if (hasDesktopHost()) {
-        const next = await runDesktopUpdaterCheck();
+        const next = await runDesktopUpdaterCheck({ installWhenDownloaded: true });
         setAboutUpdaterState(next);
       }
       setUpdateState({
@@ -7408,7 +7408,7 @@ function AboutSettings() {
       let next = await getDesktopUpdaterState();
       setAboutUpdaterState(next);
       if (next.phase === "idle" || next.phase === "error") {
-        next = await runDesktopUpdaterCheck();
+        next = await runDesktopUpdaterCheck({ installWhenDownloaded: true });
         setAboutUpdaterState(next);
       }
       if (next.phase === "downloaded") {
