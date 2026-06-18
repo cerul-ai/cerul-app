@@ -94,7 +94,9 @@ pub struct LocalModelBrief {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalModelCapability {
-    /// Apple Silicon + MLX runtime ready + enough RAM.
+    /// Apple Silicon + enough RAM. The MLX runtime may be downloaded lazily by
+    /// `/models/local/prepare`, so runtime readiness must not suppress the
+    /// first-run download prompt.
     pub can_run_local: bool,
     pub apple_silicon: bool,
     /// Human label for the chip family, e.g. "Apple Silicon" or the raw arch.
@@ -154,13 +156,13 @@ pub async fn local_capability(
     State(state): State<ApiState>,
 ) -> ApiResult<Json<LocalModelCapability>> {
     let cfg = runtime_config(&state.paths).map_err(ApiError::internal)?;
-    // Resilient: a missing Python/runtime must report "cannot run local", not 500.
+    // Resilient: missing Python/runtime metadata must not turn capability into
+    // a 500. The prepare endpoint can download the external runtime lazily.
     let status = runtime_status(&state.paths).ok();
     let apple_silicon = status
         .as_ref()
         .map(|s| s.apple_silicon)
         .unwrap_or_else(|| cfg!(target_arch = "aarch64") && cfg!(target_os = "macos"));
-    let runtime_ready = status.as_ref().map(|s| s.ok).unwrap_or(false);
     let arch = status
         .as_ref()
         .map(|s| s.platform.machine.clone())
@@ -174,7 +176,7 @@ pub async fn local_capability(
         .filter(|g| is_user_managed_model(g.id))
         .map(|g| g.size_mb)
         .sum();
-    let can_run_local = apple_silicon && runtime_ready && ram_gb >= MIN_LOCAL_RAM_GB;
+    let can_run_local = can_recommend_local(apple_silicon, ram_gb);
 
     Ok(Json(LocalModelCapability {
         can_run_local,
@@ -857,6 +859,10 @@ fn detect_ram_gb() -> u32 {
         .unwrap_or(0)
 }
 
+fn can_recommend_local(apple_silicon: bool, ram_gb: u32) -> bool {
+    apple_silicon && ram_gb >= MIN_LOCAL_RAM_GB
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,6 +881,14 @@ mod tests {
             cache_dir_name("PaddlePaddle/PP-OCRv6_small_rec_onnx"),
             "models--PaddlePaddle--PP-OCRv6_small_rec_onnx"
         );
+    }
+
+    #[test]
+    fn local_capability_recommendation_is_based_on_machine_not_runtime_install() {
+        assert!(can_recommend_local(true, MIN_LOCAL_RAM_GB));
+        assert!(can_recommend_local(true, MIN_LOCAL_RAM_GB + 8));
+        assert!(!can_recommend_local(true, MIN_LOCAL_RAM_GB - 1));
+        assert!(!can_recommend_local(false, MIN_LOCAL_RAM_GB + 8));
     }
 
     #[test]

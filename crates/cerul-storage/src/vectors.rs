@@ -1,9 +1,12 @@
 use std::{
     collections::HashMap,
+    fs::{self, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use reqwest::{Client, StatusCode};
@@ -29,8 +32,12 @@ const DEFAULT_DISTANCE_METRIC: &str = "cosine";
 const ACTIVE_EMBEDDING_PROFILE_SETTING: &str = "active_embedding_profile";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const VECTOR_BATCH_SIZE: usize = 256;
+const DEFAULT_QDRANT_READY_TIMEOUT: Duration = Duration::from_secs(45);
+const QDRANT_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const QDRANT_LOG_TAIL_BYTES: u64 = 16 * 1024;
 
 static QDRANT_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+static LOCAL_QDRANT_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingProfile {
@@ -113,6 +120,12 @@ pub struct VectorHit {
 struct QdrantConfig {
     url: String,
     api_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct QdrantLaunch {
+    log_path: PathBuf,
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,38 +467,59 @@ async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
         );
     }
 
-    maybe_spawn_qdrant(paths, &config)?;
+    let launch = maybe_spawn_qdrant(paths, &config)?;
+    let started = Instant::now();
+    let timeout = qdrant_ready_timeout();
 
-    for _ in 0..50 {
+    loop {
         if qdrant_health().await {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        if let Some(status) = qdrant_sidecar_exit_status() {
+            anyhow::bail!(
+                "Qdrant sidecar exited before becoming ready at {} (status: {}). Recent log from {}:\n{}",
+                launch.url,
+                status,
+                launch.log_path.display(),
+                qdrant_log_tail(&launch.log_path)
+            );
+        }
+        if started.elapsed() >= timeout {
+            anyhow::bail!(
+                "Qdrant did not become ready at {} within {}s. Recent log from {}:\n{}",
+                launch.url,
+                timeout.as_secs(),
+                launch.log_path.display(),
+                qdrant_log_tail(&launch.log_path)
+            );
+        }
+        tokio::time::sleep(QDRANT_READY_POLL_INTERVAL).await;
     }
-
-    anyhow::bail!("Qdrant did not become ready at {}", config.url)
 }
 
 async fn qdrant_health() -> bool {
     let config = qdrant_config();
-    let client = qdrant_client();
-    let root = config.url.trim_end_matches('/');
+    let client = qdrant_health_client();
 
-    for endpoint in ["/healthz", "/"] {
-        let mut request = client.get(format!("{root}{endpoint}"));
-        if let Some(api_key) = &config.api_key {
-            request = request.header("api-key", api_key);
-        }
-        if matches!(request.send().await, Ok(response) if response.status().is_success()) {
-            return true;
-        }
+    let mut request = client.get(qdrant_url(&config, "/collections", None));
+    if let Some(api_key) = &config.api_key {
+        request = request.header("api-key", api_key);
     }
-
-    false
+    let Ok(response) = request.send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    response
+        .json::<QdrantEnvelope<Value>>()
+        .await
+        .is_ok_and(|envelope| envelope.status == "ok")
 }
 
-fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result<()> {
+fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result<QdrantLaunch> {
     ensure_data_dirs(paths)?;
+    let log_path = qdrant_log_path(paths)?;
 
     let mutex = QDRANT_PROCESS.get_or_init(|| Mutex::new(None));
     let mut guard = mutex.lock().expect("Qdrant process mutex poisoned");
@@ -493,7 +527,10 @@ fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result
         .as_mut()
         .is_some_and(|child| child.try_wait().ok().flatten().is_none())
     {
-        return Ok(());
+        return Ok(QdrantLaunch {
+            log_path,
+            url: config.url.clone(),
+        });
     }
 
     let binary = find_qdrant_binary().ok_or_else(|| {
@@ -502,11 +539,26 @@ fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result
             config.url
         )
     })?;
-    let parsed = reqwest::Url::parse(&config.url)?;
+    let launch_url = choose_qdrant_launch_url(&config.url)?;
+    let parsed = reqwest::Url::parse(&launch_url)?;
     let port = parsed
         .port_or_known_default()
-        .ok_or_else(|| anyhow::anyhow!("Qdrant URL has no port: {}", config.url))?;
+        .ok_or_else(|| anyhow::anyhow!("Qdrant URL has no port: {}", launch_url))?;
     let grpc_port = port.saturating_add(1);
+
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    writeln!(
+        log,
+        "\n--- starting qdrant sidecar url={} storage={} ---",
+        launch_url,
+        paths.qdrant.display()
+    )
+    .ok();
+    let stdout = log.try_clone()?;
+    let stderr = log.try_clone()?;
 
     let mut command = Command::new(binary);
     command
@@ -528,13 +580,37 @@ fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result
         .env("QDRANT__LOG_LEVEL", "WARN")
         .env("QDRANT__TELEMETRY_DISABLED", "true")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
 
     tracing::info!(%port, storage = %paths.qdrant.display(), "starting local Qdrant sidecar");
     let child = command.spawn()?;
     *guard = Some(child);
-    Ok(())
+    if launch_url != config.url {
+        set_local_qdrant_url(Some(launch_url.clone()));
+        tracing::warn!(
+            configured_url = %config.url,
+            launch_url = %launch_url,
+            "default Qdrant port was unavailable; using a fallback local port"
+        );
+    }
+    Ok(QdrantLaunch {
+        log_path,
+        url: launch_url,
+    })
+}
+
+fn qdrant_sidecar_exit_status() -> Option<ExitStatus> {
+    let mutex = QDRANT_PROCESS.get()?;
+    let mut guard = mutex.lock().ok()?;
+    let child = guard.as_mut()?;
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            *guard = None;
+            Some(status)
+        }
+        _ => None,
+    }
 }
 
 fn find_qdrant_binary() -> Option<PathBuf> {
@@ -618,17 +694,108 @@ fn host_target() -> &'static str {
 fn qdrant_autostart_enabled(config: &QdrantConfig) -> bool {
     match std::env::var("CERUL_QDRANT_AUTOSTART") {
         Ok(value) => !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO"),
-        Err(_) => config.url == DEFAULT_QDRANT_URL,
+        Err(_) => {
+            std::env::var_os("CERUL_QDRANT_URL").is_none() && qdrant_url_is_loopback(&config.url)
+        }
     }
 }
 
 fn qdrant_config() -> QdrantConfig {
     QdrantConfig {
-        url: std::env::var("CERUL_QDRANT_URL").unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
+        url: std::env::var("CERUL_QDRANT_URL")
+            .ok()
+            .or_else(local_qdrant_url)
+            .unwrap_or_else(|| DEFAULT_QDRANT_URL.to_string()),
         api_key: std::env::var("CERUL_QDRANT_API_KEY")
             .ok()
             .filter(|value| !value.trim().is_empty()),
     }
+}
+
+fn local_qdrant_url() -> Option<String> {
+    let mutex = LOCAL_QDRANT_URL.get()?;
+    mutex.lock().ok()?.clone()
+}
+
+fn set_local_qdrant_url(url: Option<String>) {
+    let mutex = LOCAL_QDRANT_URL.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = mutex.lock() {
+        *guard = url;
+    }
+}
+
+fn choose_qdrant_launch_url(configured_url: &str) -> anyhow::Result<String> {
+    if std::env::var_os("CERUL_QDRANT_URL").is_some() {
+        return Ok(configured_url.to_string());
+    }
+
+    let parsed = reqwest::Url::parse(configured_url)?;
+    if !url_host_is_loopback(&parsed) {
+        return Ok(configured_url.to_string());
+    }
+
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("Qdrant URL has no port: {configured_url}"))?;
+    if tcp_port_pair_available(port, port.saturating_add(1)) {
+        set_local_qdrant_url(None);
+        return Ok(configured_url.to_string());
+    }
+
+    let fallback_port = find_available_qdrant_port(port.saturating_add(2))
+        .ok_or_else(|| anyhow::anyhow!("no free local ports available for Qdrant sidecar"))?;
+    qdrant_url_with_port(configured_url, fallback_port)
+}
+
+fn qdrant_url_with_port(url: &str, port: u16) -> anyhow::Result<String> {
+    let mut parsed = reqwest::Url::parse(url)?;
+    parsed
+        .set_port(Some(port))
+        .map_err(|_| anyhow::anyhow!("failed to set Qdrant URL port for {url}"))?;
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
+fn find_available_qdrant_port(start: u16) -> Option<u16> {
+    (start..=u16::MAX.saturating_sub(1))
+        .find(|port| tcp_port_pair_available(*port, port.saturating_add(1)))
+}
+
+fn tcp_port_pair_available(http_port: u16, grpc_port: u16) -> bool {
+    if http_port == 0 || grpc_port == 0 || http_port == grpc_port {
+        return false;
+    }
+    let Ok(http) = TcpListener::bind(("127.0.0.1", http_port)) else {
+        return false;
+    };
+    let Ok(grpc) = TcpListener::bind(("127.0.0.1", grpc_port)) else {
+        drop(http);
+        return false;
+    };
+    drop(grpc);
+    drop(http);
+    true
+}
+
+fn qdrant_url_is_loopback(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .map(|url| url_host_is_loopback(&url))
+        .unwrap_or(false)
+}
+
+fn url_host_is_loopback(url: &reqwest::Url) -> bool {
+    matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    )
+}
+
+fn qdrant_ready_timeout() -> Duration {
+    std::env::var("CERUL_QDRANT_READY_TIMEOUT_SEC")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_QDRANT_READY_TIMEOUT)
 }
 
 fn qdrant_client() -> Client {
@@ -636,6 +803,13 @@ fn qdrant_client() -> Client {
         .timeout(Duration::from_secs(30))
         .build()
         .expect("Qdrant reqwest client should build")
+}
+
+fn qdrant_health_client() -> Client {
+    Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("Qdrant health reqwest client should build")
 }
 
 async fn qdrant_get<T: for<'de> Deserialize<'de>>(
@@ -720,8 +894,31 @@ fn qdrant_url(config: &QdrantConfig, path: &str, query: Option<&[(&str, &str)]>)
 }
 
 fn ensure_data_dirs(paths: &AppPaths) -> anyhow::Result<()> {
-    std::fs::create_dir_all(&paths.qdrant)?;
+    fs::create_dir_all(&paths.qdrant)?;
     Ok(())
+}
+
+fn qdrant_log_path(paths: &AppPaths) -> anyhow::Result<PathBuf> {
+    let dir = paths.qdrant.join("logs");
+    fs::create_dir_all(&dir)?;
+    Ok(dir.join("qdrant-sidecar.log"))
+}
+
+fn qdrant_log_tail(path: &Path) -> String {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => return format!("(unable to read Qdrant log: {error})"),
+    };
+    let len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let start = len.saturating_sub(QDRANT_LOG_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return "(unable to seek Qdrant log)".to_string();
+    }
+    let mut bytes = Vec::new();
+    if let Err(error) = file.read_to_end(&mut bytes) {
+        return format!("(unable to read Qdrant log: {error})");
+    }
+    String::from_utf8_lossy(&bytes).trim().to_string()
 }
 
 fn qdrant_error_is_not_found(error: &anyhow::Error) -> bool {
