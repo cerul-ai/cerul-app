@@ -100,11 +100,22 @@ pub fn mark_indexed(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
             indexed_at = strftime('%s','now'),
             error = NULL
         WHERE id = ?1
+          AND status != 'deleting'
         "#,
         [item_id],
     )?;
 
-    anyhow::ensure!(updated == 1, "item not found: {item_id}");
+    if updated == 0 {
+        let status = conn
+            .query_row("SELECT status FROM items WHERE id = ?1", [item_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .ok();
+        anyhow::ensure!(
+            status.as_deref() == Some("deleting"),
+            "item not found: {item_id}"
+        );
+    }
     Ok(())
 }
 

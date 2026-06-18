@@ -1606,7 +1606,7 @@ function AppWorkspace() {
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
-            onDeleteItems={async (itemIds) => {
+            onDeleteItems={async (itemIds, onProgress) => {
               const deletingIds = new Set(itemIds);
               setData((current) => ({
                 ...current,
@@ -1616,13 +1616,32 @@ function AppWorkspace() {
               setLiveResults((current) =>
                 current.filter((result) => !deletingIds.has(result.itemId)),
               );
-              const results = await Promise.allSettled(
-                itemIds.map((itemId) => api.deleteItem(itemId)),
-              );
-              await refreshCoreData();
-              const failed = results.find((result) => result.status === "rejected");
-              if (failed?.status === "rejected") {
-                throw failed.reason;
+              const total = itemIds.length;
+              let completed = 0;
+              const failures: unknown[] = [];
+              onProgress?.(completed, total);
+              for (const itemId of itemIds) {
+                try {
+                  await api.deleteItem(itemId);
+                } catch (error) {
+                  failures.push(error);
+                } finally {
+                  completed += 1;
+                  onProgress?.(completed, total);
+                }
+              }
+              try {
+                if (failures.length > 0) {
+                  throw new Error(
+                    t("library.batch.deletePartialFailure", {
+                      failed: failures.length,
+                      total,
+                      reason: errorMessage(failures[0]),
+                    }),
+                  );
+                }
+              } finally {
+                await refreshCoreData();
               }
             }}
             onReindexItems={async (itemIds) => {
@@ -4001,7 +4020,10 @@ function LibraryScreen({
   stepStarts: Record<string, number>;
   actionsEnabled: boolean;
   onAddSource: () => void;
-  onDeleteItems: (itemIds: string[]) => Promise<void>;
+  onDeleteItems: (
+    itemIds: string[],
+    onProgress?: (completed: number, total: number) => void,
+  ) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
   onOpenEntity: (entity: api.EntitySummary) => void;
@@ -4134,10 +4156,21 @@ function LibraryScreen({
       }
     }
 
-    setBatchState({ status: action === "delete" ? "deleting" : "reindexing", message: null });
+    setBatchState({
+      status: action === "delete" ? "deleting" : "reindexing",
+      message:
+        action === "delete"
+          ? t("library.batch.deletingProgress", { completed: 0, total: itemIds.length })
+          : null,
+    });
     try {
       if (action === "delete") {
-        await onDeleteItems(itemIds);
+        await onDeleteItems(itemIds, (completed, total) => {
+          setBatchState({
+            status: "deleting",
+            message: t("library.batch.deletingProgress", { completed, total }),
+          });
+        });
       } else {
         await onReindexItems(itemIds);
       }
@@ -4274,8 +4307,11 @@ function LibraryScreen({
           ))}
         </div>
       ) : null}
-      {batchState.status === "error" && batchState.message ? (
-        <InlineNotice tone="error" message={batchState.message} />
+      {batchState.message ? (
+        <InlineNotice
+          tone={batchState.status === "error" ? "error" : "muted"}
+          message={batchState.message}
+        />
       ) : null}
       {selectedCount > 0 ? (
         <div

@@ -466,6 +466,9 @@ pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Resu
     if let Err(error) = providers::bootstrap_env_providers(&paths) {
         tracing::warn!(%error, "failed to bootstrap env providers");
     }
+    if let Err(error) = jobs::cleanup_deleting_items(&paths).await {
+        tracing::warn!(%error, "failed to clean interrupted Cerul deletes");
+    }
     if let Err(error) = jobs::requeue_interrupted_jobs(&paths) {
         tracing::warn!(%error, "failed to requeue interrupted Cerul jobs");
     }
@@ -1713,7 +1716,7 @@ async fn list_items(
                    LIMIT 1
                ) AS thumbnail_chunk_id
         FROM items i
-        WHERE 1 = 1
+        WHERE i.status != 'deleting'
         "#
     );
     if !statuses.is_empty() {
@@ -2008,15 +2011,21 @@ fn remember_removed_item(
     let Some(external_id) = item.external_id.as_deref() else {
         return Ok(());
     };
+    let raw_path = item.raw_path.as_deref().or_else(|| {
+        item.metadata
+            .get("raw_path")
+            .and_then(serde_json::Value::as_str)
+    });
     tx.execute(
         r#"
-        INSERT INTO ignored_items (source_id, external_id, reason, ignored_at)
-        VALUES (?1, ?2, 'removed_from_library', strftime('%s','now'))
+        INSERT INTO ignored_items (source_id, external_id, raw_path, reason, ignored_at)
+        VALUES (?1, ?2, ?3, 'removed_from_library', strftime('%s','now'))
         ON CONFLICT(source_id, external_id) DO UPDATE SET
             ignored_at = excluded.ignored_at,
+            raw_path = COALESCE(excluded.raw_path, ignored_items.raw_path),
             reason = excluded.reason
         "#,
-        (item.source_id.as_str(), external_id),
+        (item.source_id.as_str(), external_id, raw_path),
     )?;
     Ok(())
 }
@@ -3252,14 +3261,59 @@ fn upsert_discovered_item(
     content_type: ContentType,
     item: &DiscoveredItem,
 ) -> anyhow::Result<Option<String>> {
-    if is_discovered_item_ignored(tx, source_id, &item.external_id)? {
+    if is_discovered_item_ignored(tx, source_id, item)? {
         return Ok(None);
     }
 
-    let item_id = new_id("item");
     let content_type = content_type_value(content_type);
     let raw_path = item.metadata.get("raw_path").and_then(Value::as_str);
     let metadata = item.metadata.to_string();
+    if let Some(existing) = existing_item_for_raw_path(tx, raw_path)? {
+        let external_id_changed =
+            existing.external_id.as_deref() != Some(item.external_id.as_str());
+        if external_id_changed {
+            tx.execute(
+                "DELETE FROM chunks WHERE item_id = ?1",
+                [existing.id.as_str()],
+            )?;
+        }
+        tx.execute(
+            r#"
+            UPDATE items
+            SET content_type = ?2,
+                external_id = ?3,
+                title = ?4,
+                duration_sec = ?5,
+                raw_path = ?6,
+                metadata = ?7,
+                error = NULL,
+                indexed_at = CASE
+                    WHEN status = 'indexed' AND external_id = ?3 THEN indexed_at
+                    WHEN status IN ('fetching', 'processing') THEN indexed_at
+                    ELSE NULL
+                END,
+                status = CASE
+                    WHEN status = 'indexed' AND external_id = ?3 THEN status
+                    WHEN status IN ('fetching', 'processing') THEN status
+                    ELSE 'discovered'
+                END
+            WHERE id = ?1
+              AND status != 'deleting'
+            "#,
+            (
+                existing.id.as_str(),
+                content_type,
+                item.external_id.as_str(),
+                item.title.as_deref(),
+                item.duration_sec,
+                raw_path,
+                metadata.as_str(),
+            ),
+        )?;
+        return Ok(Some(existing.id));
+    }
+
+    let item_id = new_id("item");
 
     tx.execute(
         r#"
@@ -3307,19 +3361,72 @@ fn upsert_discovered_item(
     )?))
 }
 
+#[derive(Debug)]
+struct ExistingItemForRawPath {
+    id: String,
+    external_id: Option<String>,
+}
+
+fn existing_item_for_raw_path(
+    tx: &Transaction<'_>,
+    raw_path: Option<&str>,
+) -> anyhow::Result<Option<ExistingItemForRawPath>> {
+    let Some(raw_path) = raw_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(tx
+        .query_row(
+            r#"
+            SELECT id, external_id
+            FROM items
+            WHERE raw_path = ?1
+              AND status != 'deleting'
+            ORDER BY
+                CASE status
+                    WHEN 'indexed' THEN 0
+                    WHEN 'processing' THEN 1
+                    WHEN 'fetching' THEN 2
+                    ELSE 3
+                END,
+                id ASC
+            LIMIT 1
+            "#,
+            [raw_path],
+            |row| {
+                Ok(ExistingItemForRawPath {
+                    id: row.get(0)?,
+                    external_id: row.get(1)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 fn is_discovered_item_ignored(
     tx: &Transaction<'_>,
     source_id: &str,
-    external_id: &str,
+    item: &DiscoveredItem,
 ) -> anyhow::Result<bool> {
+    let raw_path = item
+        .metadata
+        .get("raw_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
     let ignored: i64 = tx.query_row(
         r#"
         SELECT COUNT(*)
         FROM ignored_items
         WHERE source_id = ?1
-          AND external_id = ?2
+          AND (
+              external_id = ?2
+              OR (
+                  ?3 IS NOT NULL
+                  AND raw_path = ?3
+              )
+          )
         "#,
-        (source_id, external_id),
+        (source_id, item.external_id.as_str(), raw_path),
         |row| row.get(0),
     )?;
     Ok(ignored > 0)
@@ -4967,6 +5074,7 @@ mod tests {
     async fn item_delete_and_reindex_update_storage() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("clip.mp4").to_string_lossy().into_owned();
         {
             let conn = cerul_storage::sqlite::open(&paths).unwrap();
             conn.execute(
@@ -4977,11 +5085,11 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO items (
-                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                    id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
                 )
-                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', ?1, 10, 'indexed', '{}')
                 "#,
-                [],
+                [raw_path.as_str()],
             )
             .unwrap();
             conn.execute(
@@ -5072,11 +5180,27 @@ mod tests {
                 external_id: "clip.mp4".to_string(),
                 title: Some("Clip".to_string()),
                 duration_sec: Some(10.0),
-                metadata: json!({ "raw_path": "/tmp/clip.mp4" }),
+                metadata: json!({ "raw_path": raw_path.as_str() }),
             },
         )
         .unwrap();
         assert_eq!(rediscovered, None);
+        let rediscovered_with_changed_external_id = upsert_discovered_item(
+            &tx,
+            "source-1",
+            ContentType::Video,
+            &DiscoveredItem {
+                external_id: "changed-metadata-id".to_string(),
+                title: Some("Clip".to_string()),
+                duration_sec: Some(10.0),
+                metadata: json!({ "raw_path": raw_path.as_str() }),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rediscovered_with_changed_external_id, None,
+            "raw_path tombstone should block rediscovery even if external_id changes"
+        );
         tx.commit().unwrap();
 
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
@@ -5084,6 +5208,130 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
             .unwrap();
         assert_eq!(items, 0, "ignored item should not be rediscovered");
+    }
+
+    #[tokio::test]
+    async fn rediscovering_changed_raw_path_reuses_item_and_requires_reindex() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("clip.mp4").to_string_lossy().into_owned();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'file_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
+                )
+                VALUES ('item-existing', 'source-1', 'video', 'old-signature', 'Old', ?1, 10, 'indexed', '{}')
+                "#,
+                [raw_path.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+                VALUES ('chunk-old', 'item-existing', 'transcript', 0, 5, 'old searchable text', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let mut conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let tx = conn.transaction().unwrap();
+        let item_id = upsert_discovered_item(
+            &tx,
+            "source-1",
+            ContentType::Video,
+            &DiscoveredItem {
+                external_id: "new-signature".to_string(),
+                title: Some("New".to_string()),
+                duration_sec: Some(12.0),
+                metadata: json!({ "raw_path": raw_path.as_str() }),
+            },
+        )
+        .unwrap();
+        assert_eq!(item_id.as_deref(), Some("item-existing"));
+        let queued =
+            enqueue_index_job(&tx, item_id.as_deref().unwrap(), ContentType::Video).unwrap();
+        tx.commit().unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let row: (String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT external_id, status, indexed_at FROM items WHERE id = 'item-existing'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let chunks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("new-signature".to_string(), "discovered".to_string(), None)
+        );
+        assert_eq!(chunks, 0, "old chunks should not remain searchable");
+        assert!(
+            queued,
+            "changed raw_path signature should queue a fresh index job"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_items_hides_items_pending_delete() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, status, metadata
+                )
+                VALUES
+                    ('item-visible', 'source-1', 'video', 'visible.mp4', 'Visible', 'indexed', '{}'),
+                    ('item-deleting', 'source-1', 'video', 'deleting.mp4', 'Deleting', 'deleting', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let response = router_with_paths(paths)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/items")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let items = response_json(response).await;
+        let ids = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["item-visible"]);
     }
 
     #[tokio::test]
