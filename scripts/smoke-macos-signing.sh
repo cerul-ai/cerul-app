@@ -192,12 +192,38 @@ require_release_entitlements() {
 }
 
 prepare_runtime_python_for_entitlement_check() {
+  local bundled_runtime_dir="$APP/Contents/Resources/mlx-runtime"
   local bundled_runtime_python="$APP/Contents/Resources/mlx-runtime/bin/python3.12"
   local runtime_archive="$APP/Contents/Resources/mlx-runtime.tar.gz"
+  local runtime_manifest="$APP/Contents/Resources/mlx-runtime-manifest.json"
+  local external_runtime_archive="${CERUL_MLX_RUNTIME_ARCHIVE:-$ROOT/apps/electron-shell/mlx-runtime.tar.gz}"
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    RUNTIME_PYTHON="$runtime_archive#bin/python3.12"
-    echo "+ extract $runtime_archive and verify bundled MLX Python entitlements"
+    RUNTIME_PYTHON="$external_runtime_archive#bin/python3.12"
+    echo "+ extract bundled or external MLX runtime archive and verify Python entitlements"
+    return
+  fi
+
+  if [ -f "$runtime_manifest" ]; then
+    if [ -e "$bundled_runtime_dir" ] || [ -f "$runtime_archive" ]; then
+      echo "App contains both external MLX runtime manifest and bundled runtime files." >&2
+      echo "Manifest: $runtime_manifest" >&2
+      echo "Bundled runtime directory: $bundled_runtime_dir" >&2
+      echo "Bundled runtime archive: $runtime_archive" >&2
+      exit 1
+    fi
+    if [ ! -f "$external_runtime_archive" ]; then
+      echo "External MLX runtime archive not found: $external_runtime_archive" >&2
+      echo "Set CERUL_MLX_RUNTIME_ARCHIVE to the separately built runtime archive." >&2
+      exit 1
+    fi
+    RUNTIME_EXTRACT_DIR="$(mktemp -d)"
+    tar -xzf "$external_runtime_archive" -C "$RUNTIME_EXTRACT_DIR"
+    RUNTIME_PYTHON="$RUNTIME_EXTRACT_DIR/bin/python3.12"
+    if [ ! -x "$RUNTIME_PYTHON" ]; then
+      echo "External MLX Python interpreter not found in archive: $RUNTIME_PYTHON" >&2
+      exit 1
+    fi
     return
   fi
 
