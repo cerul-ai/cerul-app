@@ -165,7 +165,15 @@ export function useLocalModelConsent(args: { trigger: boolean; apiOnline: boolea
     setS((p) => ({ ...p, show: false, minimized: false, paused: false, download: null }));
   }, []);
   const background = useCallback(() => setS((p) => ({ ...p, minimized: true })), []);
-  const reopen = useCallback(() => setS((p) => ({ ...p, minimized: false })), []);
+  const reopen = useCallback(() => {
+    setS((p) => ({
+      ...p,
+      // Relaunch-resumed downloads start as a minimized rail state without an
+      // original dialog instance. Re-opening must make the dialog visible too.
+      show: p.show || !!p.download,
+      minimized: false,
+    }));
+  }, []);
   const dismissReady = useCallback(() => setS((p) => ({ ...p, ready: false })), []);
 
   useEffect(() => () => clear(), []);

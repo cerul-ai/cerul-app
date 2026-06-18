@@ -4125,6 +4125,13 @@ body.overlay-body {
   border-color: var(--accent-line-soft);
   background: var(--accent-tint);
 }
+.lm-dl-status.is-clickable {
+  cursor: pointer;
+}
+.lm-dl-status.is-clickable:hover {
+  border-color: var(--accent-line);
+  box-shadow: 0 10px 28px rgba(62, 107, 157, 0.14);
+}
 .lm-dl-status__row {
   display: flex;
   align-items: center;
@@ -4168,6 +4175,12 @@ body.overlay-body {
   justify-content: space-between;
   gap: 12px;
   margin-top: 9px;
+}
+.lm-dl-status__links {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .lm-dl-status__link {
   background: none;

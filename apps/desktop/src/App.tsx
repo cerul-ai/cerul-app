@@ -1310,15 +1310,7 @@ function AppWorkspace() {
             <button
               type="button"
               className="rail-dl-pill"
-              onClick={() => {
-                // First-run minimized → reopen the dialog; a relaunch-resumed
-                // download (no dialog) → jump to the persistent Models panel.
-                if (lm.show) {
-                  lm.reopen();
-                } else {
-                  navigate("settings", { settingsSection: "Models" });
-                }
-              }}
+              onClick={lm.reopen}
               title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
             >
               <span className="ring" aria-hidden="true" />
@@ -5844,6 +5836,7 @@ function LocalDownloadStatus({
   const t = useT();
   const [showProbes, setShowProbes] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   if (!localPrep) {
     return null;
@@ -5894,123 +5887,178 @@ function LocalDownloadStatus({
     window.setTimeout(() => setCopied(false), 1500);
   }
 
+  function openDetails() {
+    if (downloading) {
+      setShowDetails(true);
+    }
+  }
+
+  function pauseAndCloseDetails() {
+    onPauseLocal();
+    setShowDetails(false);
+  }
+
   return (
-    <div className={downloading ? "lm-dl-status is-active" : "lm-dl-status"}>
-      <div className="lm-dl-status__row">
-        <div className="lm-dl-status__main">
-          {downloading ? (
-            <>
+    <>
+      <div
+        className={downloading ? "lm-dl-status is-active is-clickable" : "lm-dl-status"}
+        title={downloading ? t("settings.models.localDownload.openDetails") : undefined}
+        onClick={downloading ? openDetails : undefined}
+      >
+        <div className="lm-dl-status__row">
+          <div className="lm-dl-status__main">
+            {downloading ? (
+              <>
+                <span className="lm-dl-status__title">
+                  {t("settings.models.localDownload.downloading")}
+                </span>
+                <span className="lm-dl-status__meta mono">
+                  {[
+                    status.source_label
+                      ? t("localModel.downloading.source", { source: status.source_label })
+                      : null,
+                    speed,
+                    eta ? t("home.continueRemaining", { remaining: eta }) : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+              </>
+            ) : showMissingCta ? (
               <span className="lm-dl-status__title">
-                {t("settings.models.localDownload.downloading")}
+                {t("settings.models.localDownload.missing", { count: missingCount })}
               </span>
-              <span className="lm-dl-status__meta mono">
-                {[
-                  status.source_label
-                    ? t("localModel.downloading.source", { source: status.source_label })
-                    : null,
-                  speed,
-                  eta ? t("home.continueRemaining", { remaining: eta }) : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
+            ) : (
+              <span className="lm-dl-status__note">
+                {lastSpeed
+                  ? t("settings.models.localDownload.lastUsed", {
+                      source: status.last_source_label ?? "",
+                      speed: lastSpeed,
+                    })
+                  : t("settings.models.localDownload.lastUsedNoSpeed", {
+                      source: status.last_source_label ?? "",
+                    })}
               </span>
-            </>
-          ) : showMissingCta ? (
-            <span className="lm-dl-status__title">
-              {t("settings.models.localDownload.missing", { count: missingCount })}
-            </span>
-          ) : (
-            <span className="lm-dl-status__note">
-              {lastSpeed
-                ? t("settings.models.localDownload.lastUsed", {
-                    source: status.last_source_label ?? "",
-                    speed: lastSpeed,
-                  })
-                : t("settings.models.localDownload.lastUsedNoSpeed", {
-                    source: status.last_source_label ?? "",
-                  })}
-            </span>
-          )}
-        </div>
-        <div className="lm-dl-status__actions">
-          {downloading ? (
-            <button
-              type="button"
-              className="btn btn-ghost sm"
-              disabled={disabled || !status.can_pause}
-              onClick={onPauseLocal}
-            >
-              {t("settings.models.localDownload.pause")}
-            </button>
-          ) : showMissingCta ? (
-            <>
+            )}
+          </div>
+          <div className="lm-dl-status__actions">
+            {downloading ? (
               <button
                 type="button"
                 className="btn btn-ghost sm"
-                disabled={disabled}
-                onClick={() => onRepairLocal()}
+                disabled={disabled || !status.can_pause}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onPauseLocal();
+                }}
               >
-                {t("settings.models.localDownload.repair")}
+                {t("settings.models.localDownload.pause")}
               </button>
+            ) : showMissingCta ? (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-ghost sm"
+                  disabled={disabled}
+                  onClick={() => onRepairLocal()}
+                >
+                  {t("settings.models.localDownload.repair")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary sm"
+                  disabled={disabled}
+                  onClick={() => onDownloadLocal()}
+                >
+                  {t("settings.models.localDownload.prepareMissing")}
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+        {downloading ? (
+          <span className="lm-track lm-dl-status__track">
+            <span className="lm-fill" style={{ width: `${status.overall_progress}%` }} />
+          </span>
+        ) : null}
+        {status.last_source_error && !downloading ? (
+          <p className="lm-dl-status__error">{status.last_source_error}</p>
+        ) : null}
+        <div className="lm-dl-status__foot">
+          <div className="lm-dl-status__links">
+            {downloading ? (
               <button
                 type="button"
-                className="btn btn-secondary sm"
-                disabled={disabled}
-                onClick={() => onDownloadLocal()}
+                className="lm-dl-status__link"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openDetails();
+                }}
               >
-                {t("settings.models.localDownload.prepareMissing")}
+                {t("settings.models.localDownload.openDetails")}
               </button>
-            </>
-          ) : null}
-        </div>
-      </div>
-      {downloading ? (
-        <span className="lm-track lm-dl-status__track">
-          <span className="lm-fill" style={{ width: `${status.overall_progress}%` }} />
-        </span>
-      ) : null}
-      {status.last_source_error && !downloading ? (
-        <p className="lm-dl-status__error">{status.last_source_error}</p>
-      ) : null}
-      <div className="lm-dl-status__foot">
-        {probes.length > 0 ? (
+            ) : null}
+            {probes.length > 0 ? (
+              <button
+                type="button"
+                className="lm-dl-status__link"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setShowProbes((v) => !v);
+                }}
+              >
+                {t("settings.models.localDownload.whyToggle")}
+              </button>
+            ) : null}
+          </div>
           <button
             type="button"
             className="lm-dl-status__link"
-            onClick={() => setShowProbes((v) => !v)}
+            onClick={(event) => {
+              event.stopPropagation();
+              copyDiagnostics();
+            }}
           >
-            {t("settings.models.localDownload.whyToggle")}
+            {copied
+              ? t("settings.models.localDownload.copied")
+              : t("settings.models.localDownload.copyDiagnostics")}
           </button>
-        ) : (
-          <span />
-        )}
-        <button type="button" className="lm-dl-status__link" onClick={copyDiagnostics}>
-          {copied
-            ? t("settings.models.localDownload.copied")
-            : t("settings.models.localDownload.copyDiagnostics")}
-        </button>
-      </div>
-      {showProbes && probes.length > 0 ? (
-        <div className="lm-dl-status__probes">
-          {probes.map((p) => {
-            const selected = p.source === (status.active_source ?? status.last_source);
-            return (
-              <div className="lm-dl-status__probe" key={p.source}>
-                <span>
-                  {p.source}
-                  {selected ? ` · ${t("settings.models.localDownload.probeSelected")}` : ""}
-                </span>
-                <span className={p.ok ? "mono" : "mono faint"}>
-                  {p.ok
-                    ? formatSpeed(p.bytes_per_second) ?? `${p.bytes_per_second} B/s`
-                    : t("settings.models.localDownload.probeFailed")}
-                </span>
-              </div>
-            );
-          })}
         </div>
+        {showProbes && probes.length > 0 ? (
+          <div className="lm-dl-status__probes">
+            {probes.map((p) => {
+              const selected = p.source === (status.active_source ?? status.last_source);
+              return (
+                <div className="lm-dl-status__probe" key={p.source}>
+                  <span>
+                    {p.source}
+                    {selected ? ` · ${t("settings.models.localDownload.probeSelected")}` : ""}
+                  </span>
+                  <span className={p.ok ? "mono" : "mono faint"}>
+                    {p.ok
+                      ? formatSpeed(p.bytes_per_second) ?? `${p.bytes_per_second} B/s`
+                      : t("settings.models.localDownload.probeFailed")}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+      {showDetails && downloading ? (
+        <LocalModelConsent
+          capability={null}
+          download={status}
+          paused={false}
+          onAgree={() => undefined}
+          onDecline={() => setShowDetails(false)}
+          onPause={pauseAndCloseDetails}
+          onResume={() => onDownloadLocal()}
+          onCancelDownload={pauseAndCloseDetails}
+          onBackground={() => setShowDetails(false)}
+        />
       ) : null}
-    </div>
+    </>
   );
 }
 
