@@ -188,6 +188,9 @@ jobs:
             target/electron/*.zip.blockmap
             target/electron/latest-mac.yml
             target/electron/Cerul.app.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz.sha256
+            apps/electron-shell/mlx-runtime-manifest.json
           if-no-files-found: error
 
   publish-update-assets:
@@ -271,6 +274,30 @@ jobs:
               --cache-control "$cache_control" \
               --content-type "$content_type"
           done
+          manifest="$(find release-assets -type f -name "mlx-runtime-manifest.json" -print -quit)"
+          archive="$(find release-assets -type f -name "mlx-runtime.tar.gz" -print -quit)"
+          checksum="$(find release-assets -type f -name "mlx-runtime.tar.gz.sha256" -print -quit)"
+          if [ -z "$manifest" ] || [ -z "$archive" ] || [ -z "$checksum" ]; then
+            echo "No MLX runtime archive, checksum, or manifest found to upload." >&2
+            exit 1
+          fi
+          archive_name="$(node -e 'const fs=require("fs"); const path=process.argv[1]; const manifest=JSON.parse(fs.readFileSync(path, "utf8")); if (!manifest.archive) process.exit(2); process.stdout.write(manifest.archive)' "$manifest")"
+          runtime_prefix="runtime"
+          if [ -n "$prefix" ]; then
+            runtime_prefix="$prefix/$runtime_prefix"
+          fi
+          aws s3 cp "$archive" "s3://${CERUL_UPDATES_R2_BUCKET}/${runtime_prefix}/${archive_name}" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --content-type "application/gzip"
+          aws s3 cp "$checksum" "s3://${CERUL_UPDATES_R2_BUCKET}/${runtime_prefix}/${archive_name}.sha256" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --content-type "text/plain"
+          aws s3 cp "$manifest" "s3://${CERUL_UPDATES_R2_BUCKET}/${runtime_prefix}/mlx-runtime-manifest.json" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=300" \
+            --content-type "application/json"
 
   macos-dmg-assets:
     name: Build macOS DMG assets

@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
@@ -34,6 +34,21 @@ pub const DEFAULT_WHISPER_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
 /// In-memory quantization for the official Qwen3-ASR + ForcedAligner weights.
 /// "4bit" minimises RAM (~-70%); "8bit" is near-lossless; "none" keeps fp16.
 pub const DEFAULT_ASR_QUANTIZATION: &str = "4bit";
+const EXTERNAL_RUNTIME_READY_MARKER: &str = ".cerul-mlx-runtime-ready.json";
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalMlxRuntimeManifest {
+    pub archive: String,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    pub platform: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalRuntimeReadyMarker {
+    archive_sha256: String,
+}
 
 /// Restart the sidecar if it emits no output at all for this long. The Python
 /// side sends heartbeats every few seconds while it is genuinely working, so
@@ -104,6 +119,7 @@ impl MlxSidecarConfig {
         let repo_root = repo_root();
         let python = env::var_os("CERUL_MLX_PYTHON")
             .map(PathBuf::from)
+            .or_else(|| prepared_external_runtime_python(paths))
             .unwrap_or_else(|| default_python_path(&repo_root));
         let script = env::var_os("CERUL_MLX_SIDECAR")
             .map(PathBuf::from)
@@ -142,6 +158,72 @@ impl MlxSidecarConfig {
 
 pub fn runtime_config(paths: &AppPaths) -> anyhow::Result<MlxSidecarConfig> {
     MlxSidecarConfig::for_paths(paths)
+}
+
+pub fn external_runtime_manifest_from_env(
+) -> anyhow::Result<Option<(PathBuf, ExternalMlxRuntimeManifest)>> {
+    let Some(path) = env::var_os("CERUL_MLX_RUNTIME_MANIFEST").map(PathBuf::from) else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let manifest: ExternalMlxRuntimeManifest = serde_json::from_slice(&fs::read(&path)?)?;
+    Ok(Some((path, manifest)))
+}
+
+pub fn prepared_external_runtime_python(paths: &AppPaths) -> Option<PathBuf> {
+    let (_, manifest) = external_runtime_manifest_from_env().ok()??;
+    prepared_external_runtime_python_for_manifest(paths, &manifest)
+}
+
+pub fn prepared_external_runtime_python_for_manifest(
+    paths: &AppPaths,
+    manifest: &ExternalMlxRuntimeManifest,
+) -> Option<PathBuf> {
+    let digest = normalize_runtime_sha256(&manifest.sha256)?;
+    let runtime_dir = external_runtime_dir(paths, &digest);
+    let python = runtime_dir.join("bin").join("python3");
+    let marker = runtime_dir.join(EXTERNAL_RUNTIME_READY_MARKER);
+    if external_runtime_ready(&marker, &digest, &python) {
+        Some(python)
+    } else {
+        None
+    }
+}
+
+pub fn external_runtime_dir(paths: &AppPaths, digest: &str) -> PathBuf {
+    paths
+        .data
+        .join("runtimes")
+        .join("mlx")
+        .join(digest.chars().take(16).collect::<String>())
+}
+
+pub fn external_runtime_ready_marker() -> &'static str {
+    EXTERNAL_RUNTIME_READY_MARKER
+}
+
+pub fn normalize_runtime_sha256(value: &str) -> Option<String> {
+    let digest = value.trim().to_ascii_lowercase();
+    if digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(digest)
+    } else {
+        None
+    }
+}
+
+fn external_runtime_ready(marker: &Path, digest: &str, python: &Path) -> bool {
+    if !python.is_file() {
+        return false;
+    }
+    let Ok(bytes) = fs::read(marker) else {
+        return false;
+    };
+    let Ok(state) = serde_json::from_slice::<ExternalRuntimeReadyMarker>(&bytes) else {
+        return false;
+    };
+    state.archive_sha256 == digest
 }
 
 pub fn runtime_status(paths: &AppPaths) -> anyhow::Result<MlxRuntimeStatus> {

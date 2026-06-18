@@ -67,6 +67,7 @@ third-party/*
 
 # Bundled, self-contained MLX Python runtime (built by scripts/build-mlx-runtime.sh)
 apps/electron-shell/mlx-runtime/
+apps/electron-shell/mlx-runtime-manifest.json
 
 # Internal design/spec docs (kept local, not published)
 docs/*

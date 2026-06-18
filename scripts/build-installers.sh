@@ -149,6 +149,50 @@ PY
   fi
 }
 
+create_mlx_runtime_manifest() {
+  local digest
+  local size
+  local archive_name
+  local base_url
+  digest="$(tr -d '[:space:]' < "$MLX_RUNTIME_ARCHIVE.sha256")"
+  if [ -z "$digest" ]; then
+    echo "MLX runtime sha256 is empty." >&2
+    exit 1
+  fi
+  if [ "$(uname -s)" = "Darwin" ]; then
+    size="$(stat -f%z "$MLX_RUNTIME_ARCHIVE")"
+  else
+    size="$(stat -c%s "$MLX_RUNTIME_ARCHIVE")"
+  fi
+  archive_name="mlx-runtime-darwin-arm64-$digest.tar.gz"
+  base_url="${CERUL_MLX_RUNTIME_BASE_URL:-https://updates.cerul.ai/runtime}"
+  base_url="${base_url%/}"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '+ write %q for %q\n' "$MLX_RUNTIME_MANIFEST" "$archive_name"
+    return
+  fi
+  python3 - "$MLX_RUNTIME_MANIFEST" "$archive_name" "$base_url/$archive_name" "$digest" "$size" <<'PY'
+import json
+import sys
+
+destination, archive, url, sha256, size = sys.argv[1:]
+with open(destination, "w", encoding="utf-8") as file:
+    json.dump(
+        {
+            "platform": "darwin-arm64",
+            "archive": archive,
+            "url": url,
+            "sha256": sha256,
+            "size": int(size),
+        },
+        file,
+        indent=2,
+        sort_keys=True,
+    )
+    file.write("\n")
+PY
+}
+
 timer_now() {
   date +%s
 }
@@ -339,6 +383,7 @@ fi
 # electron-builder's extraResources archive never fails on other platforms.
 MLX_RUNTIME_DIR="$ROOT/apps/electron-shell/mlx-runtime"
 MLX_RUNTIME_ARCHIVE="$ROOT/apps/electron-shell/mlx-runtime.tar.gz"
+MLX_RUNTIME_MANIFEST="$ROOT/apps/electron-shell/mlx-runtime-manifest.json"
 mkdir -p "$MLX_RUNTIME_DIR"
 if target_is_macos; then
   if [ -z "$PREPACKAGED_APP" ]; then
@@ -358,6 +403,7 @@ if target_is_macos; then
 fi
 if [ -z "$PREPACKAGED_APP" ]; then
   time_step mlx_runtime_archive create_mlx_runtime_archive
+  time_step mlx_runtime_manifest create_mlx_runtime_manifest
 fi
 
 builder_args=(--publish never)

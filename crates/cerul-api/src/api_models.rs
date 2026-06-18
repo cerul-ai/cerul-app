@@ -280,7 +280,8 @@ fn query_inference_mode(
 fn local_query_sidecar(
     paths: &AppPaths,
 ) -> anyhow::Result<Arc<cerul_pipeline::mlx_sidecar::MlxSidecar>> {
-    let config = cerul_pipeline::mlx_sidecar::runtime_config(paths)?;
+    let mut config = cerul_pipeline::mlx_sidecar::runtime_config(paths)?;
+    crate::local_runtime::ensure_external_mlx_runtime(paths, &mut config)?;
     let mut cached = LOCAL_QUERY_SIDECAR
         .lock()
         .map_err(|_| anyhow::anyhow!("local query sidecar cache lock poisoned"))?;

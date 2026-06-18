@@ -465,7 +465,9 @@ fn build_pipeline_processor(
     let pipeline = if inference_mode == "local" {
         let profile =
             cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(&paths, "local")?;
-        let sidecar = Arc::new(cerul_pipeline::mlx_sidecar::MlxSidecar::for_paths(&paths)?);
+        let mut sidecar_config = cerul_pipeline::mlx_sidecar::runtime_config(&paths)?;
+        crate::local_runtime::ensure_external_mlx_runtime(&paths, &mut sidecar_config)?;
+        let sidecar = Arc::new(cerul_pipeline::mlx_sidecar::MlxSidecar::new(sidecar_config));
         let transcriber: Arc<dyn Transcriber> = sidecar.clone();
         let embedder: Arc<dyn Embedder> = sidecar.clone();
         let ocr: Arc<dyn OcrEngine> = sidecar.clone();
