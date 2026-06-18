@@ -229,6 +229,9 @@ impl JobWorker {
     }
 
     pub async fn run_forever(self, idle_sleep: Duration) {
+        if let Err(error) = cleanup_deleting_items(&self.paths).await {
+            tracing::warn!(%error, "failed to clean interrupted Cerul deletes");
+        }
         if let Err(error) = requeue_interrupted_jobs(&self.paths) {
             tracing::warn!(%error, "failed to requeue interrupted Cerul jobs");
         }
@@ -462,6 +465,63 @@ pub fn requeue_interrupted_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
     }
 
     Ok(updated)
+}
+
+pub async fn cleanup_deleting_items(paths: &AppPaths) -> anyhow::Result<usize> {
+    let item_ids = deleting_item_ids(paths)?;
+    if item_ids.is_empty() {
+        return Ok(0);
+    }
+
+    for item_id in &item_ids {
+        match cerul_storage::get_item(paths, item_id) {
+            Ok(item) => {
+                if let Err(error) = crate::cleanup_item_artifacts(paths, &item).await {
+                    tracing::warn!(
+                        %error,
+                        item_id = %item.id,
+                        "failed to clean interrupted delete artifacts; removing database row"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    item_id,
+                    "failed to load interrupted delete item; removing database row"
+                );
+            }
+        }
+    }
+
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut removed = 0;
+    for item_id in item_ids {
+        removed += tx.execute(
+            "DELETE FROM items WHERE id = ?1 AND status = 'deleting'",
+            [item_id.as_str()],
+        )?;
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
+fn deleting_item_ids(paths: &AppPaths) -> anyhow::Result<Vec<String>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id
+        FROM items
+        WHERE status = 'deleting'
+        ORDER BY id
+        "#,
+    )?;
+    let item_ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(anyhow::Error::from)?;
+    Ok(item_ids)
 }
 
 fn build_pipeline_processor(
@@ -889,6 +949,7 @@ fn is_job_cancelled(paths: &AppPaths, job_id: &str) -> anyhow::Result<bool> {
 
 fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
+    let should_delete_item = item_has_delete_intent(&conn, &job.item_id)?;
     conn.execute(
         r#"
         UPDATE jobs
@@ -902,17 +963,49 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
         "#,
         [job.id.as_str()],
     )?;
-    conn.execute(
-        r#"
-        UPDATE items
-        SET status = 'discovered',
-            error = NULL,
-            indexed_at = NULL
-        WHERE id = ?1
-        "#,
-        [job.item_id.as_str()],
-    )?;
+    if should_delete_item {
+        conn.execute("DELETE FROM items WHERE id = ?1", [job.item_id.as_str()])?;
+    } else {
+        conn.execute(
+            r#"
+            UPDATE items
+            SET status = 'discovered',
+                error = NULL,
+                indexed_at = NULL
+            WHERE id = ?1
+            "#,
+            [job.item_id.as_str()],
+        )?;
+    }
     Ok(())
+}
+
+fn item_has_delete_intent(conn: &rusqlite::Connection, item_id: &str) -> anyhow::Result<bool> {
+    let count: i64 = conn.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM items i
+        WHERE i.id = ?1
+          AND (
+              i.status = 'deleting'
+              OR EXISTS (
+                  SELECT 1
+                  FROM ignored_items ignored
+                  WHERE ignored.source_id = i.source_id
+                    AND (
+                        ignored.external_id = i.external_id
+                        OR (
+                            ignored.raw_path IS NOT NULL
+                            AND ignored.raw_path = i.raw_path
+                        )
+                    )
+              )
+          )
+        "#,
+        [item_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn update_job_stage(
@@ -1370,6 +1463,68 @@ mod tests {
     }
 
     #[test]
+    fn mark_indexed_preserves_deleting_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "cancelled",
+            "deleting",
+        );
+
+        cerul_storage::mark_indexed(&paths, "item-1").unwrap();
+
+        assert_item_status(&paths, "item-1", "deleting", None);
+    }
+
+    #[test]
+    fn cancelled_deleting_item_is_removed_after_processor_returns() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "cancelled",
+            "deleting",
+        );
+        let job = ClaimedJob {
+            id: "job-1".to_string(),
+            item_id: "item-1".to_string(),
+            job_type: "index_video".to_string(),
+        };
+
+        mark_job_cancelled_after_processing(&paths, &job).unwrap();
+
+        assert_eq!(item_count(&paths, "item-1"), 0);
+        assert_eq!(job_count_for_item(&paths, "item-1"), 0);
+    }
+
+    #[tokio::test]
+    async fn cleanup_deleting_items_removes_orphans_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "cancelled",
+            "deleting",
+        );
+
+        let removed = cleanup_deleting_items(&paths).await.unwrap();
+
+        assert_eq!(removed, 1);
+        assert_eq!(item_count(&paths, "item-1"), 0);
+        assert_eq!(job_count_for_item(&paths, "item-1"), 0);
+    }
+
+    #[test]
     fn cancel_job_marks_job_cancelled_and_keeps_item_retryable() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -1766,6 +1921,16 @@ mod tests {
         let conn = sqlite::open(paths).unwrap();
         conn.query_row(
             "SELECT COUNT(*) FROM jobs WHERE item_id = ?1",
+            [item_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn item_count(paths: &AppPaths, item_id: &str) -> i64 {
+        let conn = sqlite::open(paths).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE id = ?1",
             [item_id],
             |row| row.get(0),
         )

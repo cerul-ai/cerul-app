@@ -435,7 +435,9 @@ async fn sqlite_fts_search(
         SELECT c.id, bm25(chunks_fts) AS rank_score
         FROM chunks_fts
         JOIN chunks c ON c.rowid = chunks_fts.rowid
+        JOIN items i ON i.id = c.item_id
         WHERE chunks_fts MATCH ?1
+          AND i.status != 'deleting'
         ORDER BY rank_score
         LIMIT ?2
         "#,
@@ -466,7 +468,9 @@ async fn sqlite_literal_search(
         r#"
         SELECT c.id
         FROM chunks c
+        JOIN items i ON i.id = c.item_id
         WHERE c.text IS NOT NULL
+          AND i.status != 'deleting'
           AND c.chunk_type IN ('transcript', 'transcript_line', 'audio', 'ocr', 'understanding')
           AND c.text LIKE ?1 ESCAPE '\'
         ORDER BY
@@ -609,8 +613,9 @@ fn load_chunks_for_hits(
             c.frame_path,
             i.title
         FROM chunks c
-        LEFT JOIN items i ON i.id = c.item_id
+        JOIN items i ON i.id = c.item_id
         WHERE c.id IN ({placeholders})
+          AND i.status != 'deleting'
         "#,
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -691,12 +696,14 @@ fn load_frame_chunks_by_item(
         .join(", ");
     let sql = format!(
         r#"
-        SELECT item_id, start_sec, id
-        FROM chunks
-        WHERE item_id IN ({placeholders})
-          AND chunk_type IN ('keyframe', 'image')
-          AND frame_path IS NOT NULL
-          AND start_sec IS NOT NULL
+        SELECT c.item_id, c.start_sec, c.id
+        FROM chunks c
+        JOIN items i ON i.id = c.item_id
+        WHERE c.item_id IN ({placeholders})
+          AND i.status != 'deleting'
+          AND c.chunk_type IN ('keyframe', 'image')
+          AND c.frame_path IS NOT NULL
+          AND c.start_sec IS NOT NULL
         "#,
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -916,6 +923,39 @@ mod tests {
         );
         assert_eq!(results.first().unwrap().start_sec, Some(12.0));
         assert!(results.first().unwrap().snippet.contains("needle phrase"));
+    }
+
+    #[test]
+    fn search_hydration_excludes_deleting_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES ('item-1:transcript:000000', 'item-1', 'transcript', 4, 9, 'deleted item should not appear in search', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE items SET status = 'deleting' WHERE id = 'item-1'",
+            [],
+        )
+        .unwrap();
+
+        let results = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:transcript:000000".to_string(),
+                score: 1.0,
+                similarity_score: Some(1.0),
+            }],
+        )
+        .unwrap();
+
+        assert!(results.is_empty());
     }
 
     #[tokio::test]
