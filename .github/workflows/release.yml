@@ -423,7 +423,6 @@ jobs:
           path: |
             target/electron/*.dmg
             target/electron/*.dmg.blockmap
-            target/electron/latest-mac.yml
           if-no-files-found: error
 
   publish-dmg-assets:
@@ -445,7 +444,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           tag="${GITHUB_REF_NAME}"
-          mapfile -d '' files < <(find release-assets -type f \( -name "*.dmg" -o -name "*.dmg.blockmap" -o -name "latest-mac.yml" \) -print0 | sort -z)
+          mapfile -d '' files < <(find release-assets -type f \( -name "*.dmg" -o -name "*.dmg.blockmap" \) -print0 | sort -z)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No DMG assets found to upload." >&2
             exit 1
