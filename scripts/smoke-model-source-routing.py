@@ -103,7 +103,6 @@ def main() -> None:
         name="modelscope fastest wins",
         region=None,
         probes={
-            sidecar.SOURCE_CERUL_CDN: {**success, "bytes_per_second": 8_000_000},
             sidecar.SOURCE_HUGGINGFACE: {**success, "bytes_per_second": 5_000_000},
             sidecar.SOURCE_MODELSCOPE: {**success, "bytes_per_second": 18_000_000},
         },
@@ -114,7 +113,6 @@ def main() -> None:
         name="region order does not override measured throughput",
         region="cn",
         probes={
-            sidecar.SOURCE_CERUL_CDN: {**success, "bytes_per_second": 8_000_000},
             sidecar.SOURCE_HUGGINGFACE: {**success, "bytes_per_second": 20_000_000},
             sidecar.SOURCE_MODELSCOPE: {**success, "bytes_per_second": 6_000_000},
         },
@@ -125,11 +123,20 @@ def main() -> None:
         name="failed ModelScope probe remains diagnosable",
         region=None,
         probes={
-            sidecar.SOURCE_CERUL_CDN: {**success, "bytes_per_second": 4_000_000},
             sidecar.SOURCE_HUGGINGFACE: {**success, "bytes_per_second": 9_000_000},
             sidecar.SOURCE_MODELSCOPE: failed,
         },
         expected_source=sidecar.SOURCE_HUGGINGFACE,
+    )
+    run_case(
+        sidecar,
+        name="primary probe failures use region fallback",
+        region="cn",
+        probes={
+            sidecar.SOURCE_HUGGINGFACE: failed,
+            sidecar.SOURCE_MODELSCOPE: failed,
+        },
+        expected_source=sidecar.SOURCE_MODELSCOPE,
     )
     print("model source routing smoke passed")
 

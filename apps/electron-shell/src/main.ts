@@ -38,6 +38,7 @@ const macBundleIdentifier = "ai.cerul.desktop";
 const packagedCoreBinaryName = "cerul-core";
 const devCoreBinaryName = "cerul-api";
 const packagedMlxRuntimeArchiveName = "mlx-runtime.tar.gz";
+const packagedMlxRuntimeManifestName = "mlx-runtime-manifest.json";
 const packagedMlxRuntimeReadyMarker = ".cerul-mlx-runtime-ready.json";
 const apiStartupTimeoutMs = positiveIntegerEnv("CERUL_API_STARTUP_TIMEOUT_MS", 90_000);
 const apiOutputTailBytes = 32 * 1024;
@@ -1505,6 +1506,10 @@ function runtimeEnv() {
   // extract it into user data on first launch so Gatekeeper does not recursively
   // scan hundreds of nested mach-O files inside the .app bundle.
   if (app.isPackaged) {
+    const mlxRuntimeManifest = path.join(process.resourcesPath, packagedMlxRuntimeManifestName);
+    if (fs.existsSync(mlxRuntimeManifest)) {
+      env.CERUL_MLX_RUNTIME_MANIFEST = mlxRuntimeManifest;
+    }
     const mlxPython = preparePackagedMlxRuntime();
     if (mlxPython) env.CERUL_MLX_PYTHON = mlxPython;
   }
@@ -1518,7 +1523,7 @@ function preparePackagedMlxRuntime() {
 
   const archive = path.join(process.resourcesPath, packagedMlxRuntimeArchiveName);
   if (!fs.existsSync(archive)) {
-    return null;
+    return preparedExternalMlxRuntime();
   }
 
   const digest = packagedMlxRuntimeDigest(archive);
@@ -1559,6 +1564,36 @@ function preparePackagedMlxRuntime() {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     throw error;
   }
+}
+
+function preparedExternalMlxRuntime() {
+  const manifestPath = path.join(process.resourcesPath, packagedMlxRuntimeManifestName);
+  if (!fs.existsSync(manifestPath)) {
+    return null;
+  }
+
+  let digest: string | null = null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { sha256?: unknown };
+    if (typeof manifest.sha256 === "string" && /^[a-fA-F0-9]{64}$/.test(manifest.sha256)) {
+      digest = manifest.sha256.toLowerCase();
+    }
+  } catch (error) {
+    console.warn(`Unable to read external MLX runtime manifest: ${(error as Error).message}`);
+  }
+  if (!digest) {
+    return null;
+  }
+
+  const runtimeDir = mlxRuntimeDirForDigest(digest);
+  const python = path.join(runtimeDir, "bin", "python3");
+  const marker = path.join(runtimeDir, packagedMlxRuntimeReadyMarker);
+  return packagedMlxRuntimeReady(marker, digest, python) ? python : null;
+}
+
+function mlxRuntimeDirForDigest(digest: string) {
+  const runtimesRoot = path.join(appPaths().data_dir, "runtimes", "mlx");
+  return path.join(runtimesRoot, digest.slice(0, 16));
 }
 
 function packagedMlxRuntimeReady(marker: string, digest: string, python: string) {

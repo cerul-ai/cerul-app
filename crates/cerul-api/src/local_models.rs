@@ -236,22 +236,25 @@ pub async fn prepare_local_models(
         if let Ok(mut guard) = PREPARE_ACTIVE_IDS.lock() {
             *guard = active_ids.clone();
         }
-        let python = cfg.python.clone();
-        let script = cfg.script.clone();
-        let cache = cfg.models_cache.clone();
+        let mut cfg = cfg.clone();
+        let paths = state.paths.clone();
         let download_source =
             model_download_source_setting(&state.paths).unwrap_or_else(|_| "auto".to_string());
         tokio::task::spawn_blocking(move || {
-            let result = Command::new(&python)
-                .arg(&script)
-                .arg("--models-cache")
-                .arg(&cache)
-                .arg("--prepare")
-                .args(&repos)
-                .env("PYTHONUNBUFFERED", "1")
-                .env("HF_HUB_DISABLE_XET", "1")
-                .env("CERUL_MODEL_DOWNLOAD_SOURCE", &download_source)
-                .spawn();
+            let result = crate::local_runtime::ensure_external_mlx_runtime(&paths, &mut cfg)
+                .and_then(|_| {
+                    Command::new(&cfg.python)
+                        .arg(&cfg.script)
+                        .arg("--models-cache")
+                        .arg(&cfg.models_cache)
+                        .arg("--prepare")
+                        .args(&repos)
+                        .env("PYTHONUNBUFFERED", "1")
+                        .env("HF_HUB_DISABLE_XET", "1")
+                        .env("CERUL_MODEL_DOWNLOAD_SOURCE", &download_source)
+                        .spawn()
+                        .map_err(Into::into)
+                });
             match result {
                 Ok(child) => {
                     if let Ok(mut guard) = PREPARE_PID.lock() {

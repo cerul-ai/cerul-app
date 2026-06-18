@@ -29,6 +29,7 @@ use tower_http::{
 mod api_models;
 pub mod jobs;
 pub mod local_models;
+pub mod local_runtime;
 pub mod models;
 pub mod providers;
 pub mod video_understanding;

@@ -90,12 +90,8 @@
         "to": "bundled-models"
       },
       {
-        "from": "mlx-runtime.tar.gz",
-        "to": "mlx-runtime.tar.gz"
-      },
-      {
-        "from": "mlx-runtime.tar.gz.sha256",
-        "to": "mlx-runtime.tar.gz.sha256"
+        "from": "mlx-runtime-manifest.json",
+        "to": "mlx-runtime-manifest.json"
       }
     ],
     "mac": {
