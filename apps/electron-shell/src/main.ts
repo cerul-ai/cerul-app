@@ -84,6 +84,7 @@ let updateInstallRequested = false;
 let updaterCheckInstallRequested = false;
 let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
+let updateInstallFallbackRunId = 0;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
@@ -1498,15 +1499,9 @@ function readBundleProcessHolders(bundlePath: string) {
 function readBundleArgumentProcessHolders(bundlePath: string) {
   const result = spawnSync("ps", ["-axo", "pid=,command="], {
     encoding: "utf8",
-    maxBuffer: 256 * 1024,
+    maxBuffer: 8 * 1024 * 1024,
     timeout: 3_000,
   });
-  if (result.error) {
-    return {
-      holders: [] as BundleProcessHolder[],
-      error: result.error.message,
-    };
-  }
 
   const holders: BundleProcessHolder[] = [];
   const stdout = typeof result.stdout === "string" ? result.stdout : "";
@@ -1524,7 +1519,7 @@ function readBundleArgumentProcessHolders(bundlePath: string) {
   }
   return {
     holders: holders.sort((left, right) => left.pid - right.pid),
-    error: null,
+    error: result.error ? result.error.message : null,
   };
 }
 
@@ -2208,6 +2203,32 @@ function updaterShipItRescueLogPath() {
   return path.join(app.getPath("userData"), "updater-shipit-rescue.log");
 }
 
+function macShipItStatePath() {
+  return path.join(
+    os.homedir(),
+    "Library",
+    "Caches",
+    `${macBundleIdentifier}.ShipIt`,
+    "ShipItState.plist",
+  );
+}
+
+function shipItStateExists(filePath: string) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function appendUpdaterShipItRescueLog(line: string) {
+  try {
+    fs.appendFileSync(updaterShipItRescueLogPath(), `${line}\n`, "utf8");
+  } catch (error) {
+    console.warn("failed to append updater ShipIt rescue log", error);
+  }
+}
+
 function writeUpdaterInstallCleanupLog(lines: string[]) {
   try {
     fs.writeFileSync(updaterInstallCleanupLogPath(), `${lines.join("\n")}\n`, "utf8");
@@ -2574,6 +2595,7 @@ async function startDesktopUpdateDownload() {
 }
 
 function clearUpdateInstallFallbackTimers() {
+  updateInstallFallbackRunId += 1;
   if (updateInstallFallbackTimer) {
     clearTimeout(updateInstallFallbackTimer);
     updateInstallFallbackTimer = null;
@@ -2586,17 +2608,74 @@ function clearUpdateInstallFallbackTimers() {
 
 function scheduleUpdateInstallExitFallback() {
   clearUpdateInstallFallbackTimers();
-  const quitDelayMs = process.platform === "darwin" ? 15_000 : 1_500;
-  const forceExitDelayMs = process.platform === "darwin" ? 45_000 : 9_000;
+  const runId = updateInstallFallbackRunId + 1;
+  updateInstallFallbackRunId = runId;
+  if (process.platform === "darwin") {
+    void scheduleMacUpdateInstallExitFallback(runId);
+    return;
+  }
+  const quitDelayMs = 1_500;
+  const forceExitDelayMs = 9_000;
   updateInstallFallbackTimer = setTimeout(() => {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
     if (!isQuitting) {
       isQuitting = true;
     }
     app.quit();
   }, quitDelayMs);
   updateInstallForceExitTimer = setTimeout(() => {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
     app.exit(0);
   }, forceExitDelayMs);
+}
+
+async function scheduleMacUpdateInstallExitFallback(runId: number) {
+  const shipItStatePath = macShipItStatePath();
+  const deadline = Date.now() + 120_000;
+  let stateLogged = false;
+  while (!shipItStateExists(shipItStatePath) && Date.now() < deadline) {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
+    if (!stateLogged) {
+      appendUpdaterShipItRescueLog(
+        `waiting_for_shipit_state createdAt=${new Date().toISOString()} state=${shipItStatePath}`,
+      );
+      stateLogged = true;
+    }
+    await delay(500);
+  }
+  if (runId !== updateInstallFallbackRunId) {
+    return;
+  }
+  if (!shipItStateExists(shipItStatePath)) {
+    const message = "macOS updater did not stage ShipItState.plist before fallback quit";
+    appendUpdaterShipItRescueLog(`${message} state=${shipItStatePath}`);
+    const version = latestUpdaterState.phase === "installing" ? latestUpdaterState.version : undefined;
+    isQuitting = false;
+    setUpdaterError(new Error(message), version);
+    return;
+  }
+
+  updateInstallFallbackTimer = setTimeout(() => {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
+    if (!isQuitting) {
+      isQuitting = true;
+    }
+    app.quit();
+    updateInstallForceExitTimer = setTimeout(() => {
+      if (runId !== updateInstallFallbackRunId) {
+        return;
+      }
+      app.exit(0);
+    }, 30_000);
+  }, 15_000);
 }
 
 function scheduleMacShipItRescue(version: string) {
@@ -2609,13 +2688,7 @@ function scheduleMacShipItRescue(version: string) {
   }
 
   const shipItPath = path.join(bundlePath, "Contents", "Frameworks", "Squirrel.framework", "Resources", "ShipIt");
-  const shipItStatePath = path.join(
-    os.homedir(),
-    "Library",
-    "Caches",
-    `${macBundleIdentifier}.ShipIt`,
-    "ShipItState.plist",
-  );
+  const shipItStatePath = macShipItStatePath();
   const logPath = updaterShipItRescueLogPath();
   const scriptPath = path.join(os.tmpdir(), `cerul-shipit-rescue-${process.pid}-${Date.now()}.sh`);
   const shipItIdentifier = `${macBundleIdentifier}.ShipIt`;
@@ -2648,6 +2721,11 @@ function scheduleMacShipItRescue(version: string) {
     "    break",
     "  fi",
     "done",
+    'if pgrep -f "$SHIPIT_PATTERN" >/dev/null 2>&1; then',
+    '  echo "shipit_rescue_skipped_existing_shipit_still_running" >> "$LOG"',
+    '  rm -f "$SCRIPT"',
+    "  exit 0",
+    "fi",
     'CURRENT="$(current_version)"',
     'echo "after_existing_shipit_wait current=$CURRENT" >> "$LOG"',
     '[ "$CURRENT" = "$TARGET_VERSION" ] && { rm -f "$SCRIPT"; exit 0; }',
