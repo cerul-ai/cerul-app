@@ -329,6 +329,9 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
     if let Err(error) = providers::bootstrap_env_providers(&paths) {
         tracing::warn!(%error, "failed to bootstrap env providers");
     }
+    if let Err(error) = repair_indexed_item_status_from_artifacts(&paths) {
+        tracing::warn!(%error, "failed to repair indexed item status from artifacts");
+    }
     if let Err(error) = sync_indexing_schema_side_effects(&paths) {
         tracing::warn!(%error, "failed to sync indexing schema side effects");
     }
@@ -1667,6 +1670,7 @@ struct ListJobsQuery {
     status: Option<String>,
     source_id: Option<String>,
     item_id: Option<String>,
+    scope: Option<String>,
     light: Option<bool>,
     include_usage: Option<bool>,
 }
@@ -2008,14 +2012,20 @@ fn remember_removed_item(
     tx: &Transaction<'_>,
     item: &cerul_storage::StoredItem,
 ) -> anyhow::Result<()> {
-    let Some(external_id) = item.external_id.as_deref() else {
-        return Ok(());
-    };
     let raw_path = item.raw_path.as_deref().or_else(|| {
         item.metadata
             .get("raw_path")
             .and_then(serde_json::Value::as_str)
     });
+    let Some(external_id) = item
+        .external_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(raw_path)
+    else {
+        return Ok(());
+    };
     tx.execute(
         r#"
         INSERT INTO ignored_items (source_id, external_id, raw_path, reason, ignored_at)
@@ -2121,8 +2131,14 @@ async fn reindex_item(
     tx.execute(
         r#"
         UPDATE items
-        SET status = 'discovered',
-            indexed_at = NULL,
+        SET status = CASE
+                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
+                ELSE 'discovered'
+            END,
+            indexed_at = CASE
+                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN indexed_at
+                ELSE NULL
+            END,
             error = NULL
         WHERE id = ?1
         "#,
@@ -2132,7 +2148,7 @@ async fn reindex_item(
         "DELETE FROM item_understandings WHERE item_id = ?1",
         [id.as_str()],
     )?;
-    let queued_job = enqueue_index_job(&tx, &id, content_type)?;
+    let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type)?;
     tx.commit()?;
 
     Ok(Json(json!({
@@ -2245,6 +2261,10 @@ async fn list_jobs(
     let light = query.light.unwrap_or(false);
     let include_usage = query.include_usage.unwrap_or(!light);
     let statuses = split_filter_values(query.status.as_deref());
+    let drawer_scope = statuses.is_empty()
+        && query.scope.as_deref().map(str::trim).is_some_and(|scope| {
+            scope.eq_ignore_ascii_case("drawer") || scope.eq_ignore_ascii_case("active")
+        });
     let error_expr = if light { "NULL" } else { "j.error" };
     let stage_message_expr = if light { "NULL" } else { "j.stage_message" };
     let conn = cerul_storage::sqlite::open(&state.paths)?;
@@ -2266,6 +2286,18 @@ async fn list_jobs(
         );
         sql.push(')');
         params.extend(statuses.into_iter().map(SqlValue::from));
+    } else if drawer_scope {
+        sql.push_str(
+            r#"
+            AND (
+                j.status IN ('queued', 'running')
+                OR (
+                    j.status = 'failed'
+                    AND COALESCE(j.finished_at, j.started_at, 0) >= strftime('%s','now') - 604800
+                )
+            )
+            "#,
+        );
     }
     if let Some(item_id) = query.item_id.filter(|value| !value.trim().is_empty()) {
         sql.push_str(" AND j.item_id = ?");
@@ -3138,6 +3170,74 @@ fn sync_indexing_schema_side_effects(paths: &AppPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn repair_indexed_item_status_from_artifacts(paths: &AppPaths) -> anyhow::Result<usize> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let item_ids = {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, metadata
+            FROM items
+            WHERE status IN ('discovered', 'fetching', 'processing')
+              AND indexed_at IS NULL
+              AND metadata IS NOT NULL
+            ORDER BY id ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|(id, metadata)| {
+                metadata
+                    .as_deref()
+                    .filter(|value| metadata_has_indexed_artifacts(value))
+                    .map(|_| id)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for item_id in &item_ids {
+        conn.execute(
+            r#"
+            UPDATE items
+            SET status = 'indexed',
+                indexed_at = COALESCE(
+                    (
+                        SELECT MAX(finished_at)
+                        FROM jobs
+                        WHERE item_id = ?1
+                          AND status = 'completed'
+                          AND finished_at IS NOT NULL
+                    ),
+                    strftime('%s','now')
+                ),
+                error = NULL
+            WHERE id = ?1
+              AND status IN ('discovered', 'fetching', 'processing')
+              AND indexed_at IS NULL
+            "#,
+            [item_id.as_str()],
+        )?;
+    }
+
+    Ok(item_ids.len())
+}
+
+fn metadata_has_indexed_artifacts(metadata: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(metadata) else {
+        return false;
+    };
+    [
+        "embedding_index_status",
+        "transcript_index_status",
+        "visual_index_status",
+        "ocr_index_status",
+    ]
+    .into_iter()
+    .any(|key| value.get(key).and_then(Value::as_str) == Some("indexed"))
+}
+
 fn queue_items_for_embedding_mode_rebuild(paths: &AppPaths) -> anyhow::Result<(usize, usize)> {
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction()?;
@@ -3166,13 +3266,7 @@ fn queue_items_for_embedding_mode_rebuild(paths: &AppPaths) -> anyhow::Result<(u
         let content_type = parse_content_type(content_type)?;
         if status == "indexed" {
             tx.execute(
-                r#"
-                UPDATE items
-                SET status = 'discovered',
-                    indexed_at = NULL,
-                    error = NULL
-                WHERE id = ?1
-                "#,
+                "UPDATE items SET error = NULL WHERE id = ?1",
                 [item_id.as_str()],
             )?;
         }
@@ -4477,7 +4571,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mode_switch_resets_profile_and_requeues_indexed_items() {
+    async fn mode_switch_preserves_indexed_items_while_requeueing_rebuild() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         {
@@ -4543,8 +4637,63 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(item_status, "discovered");
+        assert_eq!(item_status, "indexed");
         assert_eq!(queued_jobs, 1);
+    }
+
+    #[test]
+    fn repairs_discovered_items_with_indexed_artifact_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1',
+                    'source-1',
+                    'video',
+                    'video.mp4',
+                    'Video',
+                    NULL,
+                    'discovered',
+                    '{"embedding_index_status":"indexed","transcript_index_status":"indexed"}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, started_at, finished_at, progress)
+                VALUES ('job-done', 'item-1', 'index_video', 'completed', 1000, 1234, 1)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let repaired = repair_indexed_item_status_from_artifacts(&paths).unwrap();
+
+        assert_eq!(repaired, 1);
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let item: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT status, indexed_at FROM items WHERE id = 'item-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(item.0, "indexed");
+        assert_eq!(item.1, Some(1234));
     }
 
     #[tokio::test]
@@ -4695,7 +4844,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(item_status, "discovered");
+        assert_eq!(item_status, "indexed");
         assert_eq!(queued_jobs, 1);
         assert!(
             setting_string(&paths, DEFERRED_EMBEDDING_REBUILD_MODE_SETTING)
@@ -5130,7 +5279,7 @@ mod tests {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .unwrap();
-            assert_eq!(item, ("discovered".to_string(), None));
+            assert_eq!(item, ("indexed".to_string(), Some(10)));
             let jobs: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
@@ -5208,6 +5357,77 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
             .unwrap();
         assert_eq!(items, 0, "ignored item should not be rediscovered");
+    }
+
+    #[tokio::test]
+    async fn item_delete_records_raw_path_tombstone_without_external_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("clip.mp4").to_string_lossy().into_owned();
+        seed_indexing_schema_version(&paths);
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', NULL, 'Clip', ?1, 10, 'indexed', ?2)
+                "#,
+                (
+                    raw_path.as_str(),
+                    json!({ "raw_path": raw_path.as_str() }).to_string(),
+                ),
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/items/item-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::OK);
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let ignored: (String, Option<String>) = conn
+            .query_row(
+                "SELECT external_id, raw_path FROM ignored_items WHERE source_id = 'source-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ignored.0, raw_path);
+        assert_eq!(ignored.1.as_deref(), Some(ignored.0.as_str()));
+        drop(conn);
+
+        let mut conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let tx = conn.transaction().unwrap();
+        let rediscovered = upsert_discovered_item(
+            &tx,
+            "source-1",
+            ContentType::Video,
+            &DiscoveredItem {
+                external_id: "fresh-signature".to_string(),
+                title: Some("Clip".to_string()),
+                duration_sec: Some(10.0),
+                metadata: json!({ "raw_path": ignored.0.as_str() }),
+            },
+        )
+        .unwrap();
+        assert_eq!(rediscovered, None);
+        tx.commit().unwrap();
     }
 
     #[tokio::test]
@@ -6468,6 +6688,71 @@ mod tests {
         assert_eq!(jobs[0]["error"], Value::Null);
         assert_eq!(jobs[0]["stage_message"], Value::Null);
         assert_eq!(jobs[0]["usage"]["event_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn list_jobs_drawer_scope_returns_active_and_recent_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, title, status, metadata)
+                VALUES
+                    ('item-a', 'source-a', 'video', 'a.mp4', 'A', 'discovered', '{}'),
+                    ('item-b', 'source-a', 'video', 'b.mp4', 'B', 'discovered', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
+                )
+                VALUES
+                    ('job-completed', 'item-a', 'index_video', 'completed', 10, 20, NULL, 1, 'completed', NULL),
+                    ('job-old-failed', 'item-a', 'index_video', 'failed', 30, 40, 'old fail', 1, 'failed', NULL),
+                    ('job-running', 'item-a', 'index_video', 'running', 50, NULL, NULL, 0.5, 'asr', NULL),
+                    ('job-queued', 'item-b', 'index_video', 'queued', NULL, NULL, NULL, 0, 'queued', NULL),
+                    ('job-recent-failed', 'item-b', 'index_video', 'failed', strftime('%s','now') - 10, strftime('%s','now') - 5, 'recent fail', 1, 'failed', NULL)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/jobs?scope=drawer&light=true&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let jobs = response_json(response).await;
+        let ids = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"job-running".to_string()));
+        assert!(ids.contains(&"job-queued".to_string()));
+        assert!(ids.contains(&"job-recent-failed".to_string()));
+        assert!(!ids.contains(&"job-completed".to_string()));
+        assert!(!ids.contains(&"job-old-failed".to_string()));
     }
 
     #[tokio::test]

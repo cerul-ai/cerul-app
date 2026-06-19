@@ -454,8 +454,14 @@ pub fn requeue_interrupted_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
         conn.execute(
             r#"
             UPDATE items
-            SET status = 'discovered',
-                indexed_at = NULL,
+            SET status = CASE
+                    WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
+                    ELSE 'discovered'
+                END,
+                indexed_at = CASE
+                    WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN indexed_at
+                    ELSE NULL
+                END,
                 error = NULL
             WHERE id = ?1
               AND status IN ('fetching', 'processing', 'indexed')
@@ -822,6 +828,7 @@ fn mark_item_processing(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()
         SET status = 'processing',
             error = NULL
         WHERE id = ?1
+          AND status != 'indexed'
         "#,
         [job.item_id.as_str()],
     )?;
@@ -875,8 +882,14 @@ fn fail_job(paths: &AppPaths, job: &ClaimedJob, error: &str) -> anyhow::Result<(
     conn.execute(
         r#"
         UPDATE items
-        SET status = 'failed',
-            error = ?2
+        SET status = CASE
+                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
+                ELSE 'failed'
+            END,
+            error = CASE
+                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN NULL
+                ELSE ?2
+            END
         WHERE id = ?1
         "#,
         params![job.item_id.as_str(), error],
@@ -1125,7 +1138,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_marks_indexed_rebuild_job_failed_on_error() {
+    async fn worker_preserves_indexed_item_when_rebuild_job_fails() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_job(
@@ -1155,7 +1168,7 @@ mod tests {
             1.0,
             Some("fake indexing failure"),
         );
-        assert_item_status(&paths, "item-1", "failed", Some("fake indexing failure"));
+        assert_item_status(&paths, "item-1", "indexed", None);
     }
 
     #[tokio::test]
@@ -1441,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn requeue_interrupted_jobs_restores_running_items() {
+    fn requeue_interrupted_jobs_preserves_indexed_items() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_job(
@@ -1458,8 +1471,16 @@ mod tests {
 
         assert_eq!(updated, 1);
         assert_job(&paths, "job-1", "queued", 0.0, None);
-        assert_item_status(&paths, "item-1", "discovered", None);
-        assert_item_indexed_at(&paths, "item-1", None);
+        assert_item_status(&paths, "item-1", "indexed", None);
+        let conn = sqlite::open(&paths).unwrap();
+        let indexed_at: Option<i64> = conn
+            .query_row(
+                "SELECT indexed_at FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(indexed_at.is_some());
     }
 
     #[test]
@@ -1902,19 +1923,6 @@ mod tests {
 
         assert_eq!(row.0, status);
         assert_eq!(row.1.as_deref(), error);
-    }
-
-    fn assert_item_indexed_at(paths: &AppPaths, item_id: &str, indexed_at: Option<i64>) {
-        let conn = sqlite::open(paths).unwrap();
-        let value = conn
-            .query_row(
-                "SELECT indexed_at FROM items WHERE id = ?1",
-                [item_id],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .unwrap();
-
-        assert_eq!(value, indexed_at);
     }
 
     fn job_count_for_item(paths: &AppPaths, item_id: &str) -> i64 {

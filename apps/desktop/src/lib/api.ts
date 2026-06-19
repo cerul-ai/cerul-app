@@ -476,7 +476,7 @@ export async function listItems() {
 }
 
 export async function listJobs() {
-  return fetchJson<JobRecord[]>("/jobs");
+  return fetchJson<JobRecord[]>("/jobs?scope=drawer");
 }
 
 export async function cancelJob(id: string) {

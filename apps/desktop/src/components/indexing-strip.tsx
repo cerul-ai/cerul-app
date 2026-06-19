@@ -6,7 +6,7 @@
 // wedged job is visible instead of looking like slow-but-fine progress.
 
 import { useEffect, useRef } from "react";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRight, Loader2, Pause } from "lucide-react";
 import * as api from "../lib/api";
 import { formatUsd } from "../lib/formatters";
 import { useT } from "../lib/i18n";
@@ -30,11 +30,13 @@ export function IndexingStrip({
   jobs,
   items,
   stepStarts,
+  paused = false,
   onOpen,
 }: {
   jobs: api.JobRecord[];
   items: Item[];
   stepStarts: Record<string, number>;
+  paused?: boolean;
   onOpen: () => void;
 }) {
   const t = useT();
@@ -43,6 +45,8 @@ export function IndexingStrip({
 
   // Representative job = the running job furthest along (the "current" work).
   const running = active.filter((job) => job.status === "running");
+  const queued = active.length - running.length;
+  const onlyPausedQueuedJobs = paused && running.length === 0 && queued > 0;
   const rep = running.slice().sort((a, b) => b.progress - a.progress)[0] ?? null;
   const repPct = rep ? Math.round(rep.progress * 100) : -1;
 
@@ -58,7 +62,6 @@ export function IndexingStrip({
     return null;
   }
 
-  const queued = active.length - running.length;
   // Incurred remote spend across the active batch — $0.00 while everything is
   // on-device (handoff: the cost reads green right in the banner, not only in
   // the Tasks drawer).
@@ -86,9 +89,13 @@ export function IndexingStrip({
   const stalledFor = rep ? now - changeRef.current.at : 0;
   const stalled = rep !== null && rep.job_type !== "index_audio" && stalledFor > STALL_THRESHOLD_SEC;
 
-  const title = t(active.length === 1 ? "indexing.strip.one" : "indexing.strip.other", {
-    count: active.length,
-  });
+  const title = onlyPausedQueuedJobs
+    ? t(active.length === 1 ? "indexing.strip.pausedOne" : "indexing.strip.pausedOther", {
+        count: active.length,
+      })
+    : t(active.length === 1 ? "indexing.strip.one" : "indexing.strip.other", {
+        count: active.length,
+      });
 
   return (
     <button
@@ -97,7 +104,11 @@ export function IndexingStrip({
       onClick={onOpen}
       aria-label={t("indexing.strip.openAria")}
     >
-      <Loader2 size={16} className="indexing-strip__spin" aria-hidden="true" />
+      {onlyPausedQueuedJobs ? (
+        <Pause size={16} className="indexing-strip__spin" aria-hidden="true" />
+      ) : (
+        <Loader2 size={16} className="indexing-strip__spin" aria-hidden="true" />
+      )}
       <span className="indexing-strip__body">
         <span className="indexing-strip__line">
           <strong>{title}</strong>

@@ -1553,6 +1553,7 @@ function AppWorkspace() {
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}
+            indexingPaused={indexingPaused}
             apiStatus={apiStatus}
             onOpenModelSettings={() => navigate("settings", { settingsSection: "Models" })}
             globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
@@ -1620,6 +1621,7 @@ function AppWorkspace() {
             items={visibleItems}
             jobs={visibleJobs}
             stepStarts={stepStarts}
+            indexingPaused={indexingPaused}
             actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
@@ -1949,6 +1951,7 @@ function HomeScreen({
   items,
   sources,
   jobs,
+  indexingPaused,
   apiStatus,
   onOpenModelSettings,
   globalHotkey,
@@ -1962,6 +1965,7 @@ function HomeScreen({
   items: Item[];
   sources: Source[];
   jobs: api.JobRecord[];
+  indexingPaused: boolean;
   apiStatus: ApiStatus;
   onOpenModelSettings: () => void;
   globalHotkey: string;
@@ -1970,6 +1974,9 @@ function HomeScreen({
   const indexedCount = items.filter((item) => item.status === "indexed").length;
   const activeSources = sources.filter((source) => source.status === "active").length;
   const activeJobs = jobs.filter(isActiveJob);
+  const runningJobs = activeJobs.filter((job) => job.status === "running");
+  const queuedJobs = activeJobs.filter((job) => job.status === "queued");
+  const onlyPausedQueuedJobs = indexingPaused && runningJobs.length === 0 && queuedJobs.length > 0;
   const hasSources = sources.length > 0;
   const searchDisabled = hasSources && indexedCount === 0;
   const runtimeMinutes = Math.round(
@@ -1978,6 +1985,7 @@ function HomeScreen({
   const runtimeHours = Math.floor(runtimeMinutes / 60);
   const runtimeRemainder = runtimeMinutes % 60;
   const recentIndexed = [...items]
+    .filter((item) => item.status === "indexed")
     .sort((left, right) => (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0))
     .slice(0, 4);
   const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(null);
@@ -2015,7 +2023,9 @@ function HomeScreen({
       : null);
 
   const statusLabel =
-    activeJobs.length > 0
+    onlyPausedQueuedJobs
+      ? t("home.status.pausedQueuedJobs", { count: queuedJobs.length })
+      : activeJobs.length > 0
       ? t("home.status.indexingJobs", { count: activeJobs.length })
       : apiStatus === "online"
         ? searchDisabled
@@ -2096,7 +2106,7 @@ function HomeScreen({
         ) : null}
 
         <div className="row gap-3 home-status-line">
-          {activeJobs.length > 0 ? (
+          {activeJobs.length > 0 && !onlyPausedQueuedJobs ? (
             <span className="chip indexing">
               <Loader2 size={13} className="spin" />
               {statusLabel}
@@ -4025,6 +4035,7 @@ function LibraryScreen({
   items,
   jobs,
   stepStarts,
+  indexingPaused,
   actionsEnabled,
   onAddSource,
   onDeleteItems,
@@ -4037,6 +4048,7 @@ function LibraryScreen({
   items: Item[];
   jobs: api.JobRecord[];
   stepStarts: Record<string, number>;
+  indexingPaused: boolean;
   actionsEnabled: boolean;
   onAddSource: () => void;
   onDeleteItems: (
@@ -4236,7 +4248,13 @@ function LibraryScreen({
           </button>
         </div>
       </div>
-      <IndexingStrip jobs={jobs} items={items} stepStarts={stepStarts} onOpen={onOpenJobs} />
+      <IndexingStrip
+        jobs={jobs}
+        items={items}
+        stepStarts={stepStarts}
+        paused={indexingPaused}
+        onOpen={onOpenJobs}
+      />
       <div className="row gap-2 library-filter-row" style={{ flexWrap: "wrap", alignItems: "center" }}>
         <div className="search-wrap" style={{ flex: "1 1 240px" }}>
           <Search size={17} />

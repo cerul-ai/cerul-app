@@ -73,13 +73,16 @@ export function JobsSheet({
     return (b.started_at ?? b.finished_at ?? 0) - (a.started_at ?? a.finished_at ?? 0);
   });
   const activeJobs = sortedJobs.filter(isActiveJob);
+  const queuedJobs = activeJobs.filter((job) => job.status === "queued");
+  const runningJobs = activeJobs.filter((job) => job.status === "running");
+  const onlyPausedQueuedJobs = paused && runningJobs.length === 0 && queuedJobs.length > 0;
   const failedJobs = sortedJobs.filter((job) => jobGroup(job) === "failed");
   const doneJobs = sortedJobs.filter((job) => jobGroup(job) === "done");
   const now = useNowSeconds(activeJobs.length > 0);
 
   const filters: { id: "all" | JobGroup; label: string; n: number }[] = [
     { id: "all", label: t("jobs.filter.all"), n: sortedJobs.length },
-    { id: "running", label: t("jobs.groupRunning"), n: activeJobs.length },
+    { id: "running", label: t(paused ? "jobs.groupQueued" : "jobs.groupRunning"), n: activeJobs.length },
     { id: "done", label: t("jobs.status.completed"), n: doneJobs.length },
     { id: "failed", label: t("jobs.status.failed"), n: failedJobs.length },
   ];
@@ -87,7 +90,11 @@ export function JobsSheet({
 
   // Header summary, with the failed count tinted red (prototype §H).
   const runningLabel =
-    activeJobs.length > 0
+    onlyPausedQueuedJobs
+      ? t(queuedJobs.length === 1 ? "jobs.queuedCountOne" : "jobs.queuedCountOther", {
+          count: queuedJobs.length,
+        })
+      : activeJobs.length > 0
       ? t(activeJobs.length === 1 ? "jobs.activeCountOne" : "jobs.activeCountOther", {
           count: activeJobs.length,
         })
