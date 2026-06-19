@@ -31,6 +31,7 @@ import {
   CircleDot,
   Clock,
   Copy,
+  Cloud,
   Cpu,
   Database,
   Download,
@@ -5700,11 +5701,15 @@ function ModelsSettings({
         <span className="imode-posture-lbl">{t("settings.models.posture")}</span>
         {capabilities.map((cap) => (
           <span key={cap.key} className={cap.isLocal ? "imode-pchip local" : "imode-pchip cloud"}>
+            {cap.isLocal ? <Cpu size={12} /> : <Cloud size={12} />}
             {cap.name} → {cap.isLocal ? t("settings.models.loc.local") : t("settings.models.loc.cloud")}
           </span>
         ))}
       </div>
-      <p className="imode-videonote">{t("settings.models.videoNote")}</p>
+      <p className="imode-videonote">
+        <AlertTriangle size={13} />
+        <span>{t("settings.models.videoNote")}</span>
+      </p>
 
       <section className="model-connections-shell">
         <div className="model-advanced-head">
@@ -7387,8 +7392,7 @@ function AdvancedSettings({
             </select>
           }
         />
-      </SettingsGroup>
-      <div className="settings-actions">
+        <div className="settings-actions settings-actions--incard">
         <button
           className="btn btn-secondary sm"
           type="button"
@@ -7423,7 +7427,8 @@ function AdvancedSettings({
           <RefreshCcw size={16} />
           <span>{t("settings.advanced.rerunOnboarding")}</span>
         </button>
-      </div>
+        </div>
+      </SettingsGroup>
       {logAction.message ? (
         <InlineNotice
           tone={logAction.status === "error" ? "error" : "muted"}
@@ -7479,34 +7484,33 @@ function UsageSettings() {
     <section className="usage-settings">
       <p className="settings-help">{t("settings.usage.desc")}</p>
       {error ? <InlineNotice tone="error" message={error} /> : null}
-      <div className="usage-cards">
-        <div className="usage-card">
+      <div className="usage-account">
+        <div className="usage-account__text">
           <span className="usage-card__label">{t("settings.usage.account.label")}</span>
           {signedIn && user ? (
-            <>
-              <strong className="usage-card__value">{user.email}</strong>
-              <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
-            </>
+            <strong className="usage-account__id">{user.email}</strong>
           ) : (
-            <>
-              <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
-              <button
-                type="button"
-                className="btn btn-primary sm"
-                onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
-              >
-                {t("settings.account.signIn")}
-              </button>
-            </>
+            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
           )}
         </div>
-        <div className="usage-card">
+        {signedIn && user ? (
+          <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary sm"
+            onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
+          >
+            {t("settings.account.signIn")}
+          </button>
+        )}
+      </div>
+      <div className="usage-split">
+        <div className="usage-spend">
           <span className="usage-card__label">{t("settings.usage.spend.label")}</span>
           <strong className="usage-card__value mono">{formatUsd(total)}</strong>
           <span className="usage-card__note">{t("settings.usage.spend.events", { count: events })}</span>
         </div>
-      </div>
-      <div className="usage-split">
         <div className="usage-split__head">
           <span className="usage-card__label">{t("settings.usage.split.label")}</span>
           <span className="mono">{t("settings.usage.split.value", { pct: localShare })}</span>

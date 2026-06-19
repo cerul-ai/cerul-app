@@ -121,7 +121,9 @@
 .settings-page .imode-pchip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 4px 9px; border-radius: var(--r-pill); }
 .settings-page .imode-pchip.local { color: var(--success); background: var(--success-tint); box-shadow: inset 0 0 0 1px var(--success-line); }
 .settings-page .imode-pchip.cloud { color: var(--accent); background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent-line-soft); }
-.settings-page .imode-videonote { margin: var(--sp-3) 0 0; padding: 13px 15px; font-size: 12.5px; line-height: 1.7; color: var(--text-muted); border-radius: var(--r-md); background: var(--warn-tint); border: 1px solid var(--warn-line); }
+.settings-page .imode-videonote { display: flex; gap: 8px; align-items: flex-start; margin: var(--sp-3) 0 0; padding: 13px 15px; font-size: 12.5px; line-height: 1.7; color: var(--text-muted); border-radius: var(--r-md); background: var(--warn-tint); border: 1px solid var(--warn-line); }
+.settings-page .imode-videonote svg { color: var(--warn); flex: none; margin-top: 2px; }
+.settings-page .imode-pchip svg { flex: none; }
 
 /* ---- models: section spacing + connections shell ---- */
 .settings-page .models-settings-panel { display: flex; flex-direction: column; gap: 30px; }
@@ -158,6 +160,24 @@
 .settings-page .settings-danger-main strong { display: block; color: var(--danger); font-size: 14px; font-weight: var(--fw-semibold); }
 .settings-page .settings-danger-main p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.5; }
 .settings-page .settings-danger-card .btn-danger { flex: none; }
+
+/* Advanced: diagnostic actions live inside the card as a footer row */
+.settings-page .settings-actions--incard { margin: 0; padding: 14px 18px; gap: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+
+/* Usage: account sign-in is a full-width banner, separate from the spend stat */
+.settings-page .usage-account { display: flex; align-items: center; gap: 16px; padding: 16px 20px; margin-bottom: 16px; border-radius: var(--r-xl); -webkit-backdrop-filter: blur(22px) saturate(1.3); backdrop-filter: blur(22px) saturate(1.3); }
+.settings-page .usage-account__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.settings-page .usage-account__id { font-size: 15px; font-weight: var(--fw-semibold); }
+.settings-page .usage-account .btn, .settings-page .usage-account .chip { flex: none; }
+.settings-page .usage-spend { display: flex; flex-direction: column; gap: 4px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.settings-page .usage-spend .usage-card__value { font-size: 26px; }
+.settings-page .usage-split, .settings-page .usage-breakdown { border-radius: var(--r-xl); }
+[data-theme="light"] .settings-page .usage-account,
+[data-theme="light"] .settings-page .usage-split,
+[data-theme="light"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22); }
+[data-theme="dark"] .settings-page .usage-account,
+[data-theme="dark"] .settings-page .usage-split,
+[data-theme="dark"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5)); border: 1px solid rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 22px 54px -26px rgba(0,0,0,0.72); }
 
 /* narrow window: nav already collapses to a horizontal scroller (app.css ≤720);
    keep the glass cards readable there too */
