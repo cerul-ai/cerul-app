@@ -1,0 +1,44 @@
+/* ============================================================
+   ⌥Space OVERLAY — Aurora Glass refinement.
+   The panel is already frosted glass; this softens the heavy solid-steel
+   accents (the 2px underline + solid "search" pill) into the same quiet
+   steel/glass language as the rest of the redesigned app. Loaded after
+   extensions.css so these win by source order.
+   ============================================================ */
+
+/* search row: a quiet hairline instead of a heavy 2px steel underline */
+.overlay-root .overlay-search { box-shadow: inset 0 -1px 0 var(--line); }
+.overlay-root .overlay-mark { color: var(--text); opacity: 0.92; }
+
+/* tabs: the active tab is a soft glass tint (accent text), not a solid blue pill */
+.overlay-root .overlay-tabs { border-bottom-color: var(--line); }
+.overlay-root .overlay-tabs button {
+  background: var(--ov-chip); border-color: var(--line);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.overlay-root .overlay-tabs button:hover { color: var(--text); border-color: var(--line-strong); }
+.overlay-root .overlay-tabs button.active {
+  color: var(--accent); background: var(--accent-tint); border-color: var(--accent-line-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line-soft);
+}
+
+/* recent-search chips: glass pills with a soft steel hover */
+.overlay-root .overlay-recents button {
+  background: var(--ov-chip); border-color: var(--line);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.overlay-root .overlay-recents button:hover { background: var(--accent-tint); border-color: var(--accent-line-soft); color: var(--text); }
+
+/* result rows: a soft steel tint + thin hairline marker instead of a chunky bar */
+.overlay-root .overlay-result.active,
+.overlay-root .overlay-result[aria-selected="true"] {
+  background: var(--accent-tint); box-shadow: inset 2px 0 0 var(--accent-line);
+}
+
+/* paste-to-index row + button: keep the steel but soft, not a vivid block */
+.overlay-root .overlay-urlrow__btn { background: var(--accent); }
+.overlay-root .overlay-urlrow__btn:hover:not(:disabled) { background: var(--accent-hover); }
+.overlay-root .overlay-urlrow { border-color: var(--accent-line-soft); background: var(--accent-tint); }
+
+/* answer citations: soft steel hover, consistent with the rest */
+.overlay-root .overlay-answer-cites button:hover { border-color: var(--accent-line-soft); background: var(--accent-tint); }
