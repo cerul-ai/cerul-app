@@ -2148,7 +2148,7 @@ async fn reindex_item(
         "DELETE FROM item_understandings WHERE item_id = ?1",
         [id.as_str()],
     )?;
-    let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type)?;
+    let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type, true)?;
     tx.commit()?;
 
     Ok(Json(json!({
@@ -2309,12 +2309,28 @@ async fn list_jobs(
         );
         params.push(SqlValue::from(source_id));
     }
-    sql.push_str(
-        r#"
-        ORDER BY COALESCE(j.started_at, 0) DESC, j.id ASC
-        LIMIT ? OFFSET ?
-        "#,
-    );
+    if drawer_scope {
+        sql.push_str(
+            r#"
+            ORDER BY
+                CASE
+                    WHEN j.status = 'running' THEN 0
+                    WHEN j.status = 'queued' THEN 1
+                    ELSE 2
+                END,
+                COALESCE(j.started_at, j.finished_at, 0) DESC,
+                j.id ASC
+            LIMIT ? OFFSET ?
+            "#,
+        );
+    } else {
+        sql.push_str(
+            r#"
+            ORDER BY COALESCE(j.started_at, 0) DESC, j.id ASC
+            LIMIT ? OFFSET ?
+            "#,
+        );
+    }
     params.push(SqlValue::from(limit as i64));
     params.push(SqlValue::from(offset as i64));
 
@@ -2361,6 +2377,13 @@ async fn cancel_job(
         .ok_or_else(|| ApiError::not_found(format!("job not found: {id}")))?;
     if !cancelled.was_running {
         match cerul_storage::get_item(&state.paths, &cancelled.item_id) {
+            Ok(item) if item.status == "indexed" => {
+                tracing::info!(
+                    item_id = %cancelled.item_id,
+                    job_id = %id,
+                    "skipped artifact cleanup for cancelled indexed-item rebuild"
+                );
+            }
             Ok(item) => cleanup_item_artifacts(&state.paths, &item).await?,
             Err(error) => tracing::warn!(
                 %error,
@@ -3270,7 +3293,7 @@ fn queue_items_for_embedding_mode_rebuild(paths: &AppPaths) -> anyhow::Result<(u
                 [item_id.as_str()],
             )?;
         }
-        if enqueue_embedding_rebuild_job(&tx, item_id, content_type)? {
+        if enqueue_embedding_rebuild_job(&tx, item_id, content_type, false)? {
             queued_jobs += 1;
         }
     }
@@ -3283,20 +3306,40 @@ fn enqueue_embedding_rebuild_job(
     tx: &Transaction<'_>,
     item_id: &str,
     content_type: ContentType,
+    dedupe_running: bool,
 ) -> anyhow::Result<bool> {
     let job_type = index_job_type(content_type);
-    let existing_queued: i64 = tx.query_row(
+    let active_statuses = if dedupe_running {
+        &["queued", "running"][..]
+    } else {
+        &["queued"][..]
+    };
+    let mut params = vec![
+        SqlValue::from(item_id.to_string()),
+        SqlValue::from(job_type.to_string()),
+    ];
+    params.extend(
+        active_statuses
+            .iter()
+            .map(|status| SqlValue::from((*status).to_string())),
+    );
+    let status_placeholders = std::iter::repeat_n("?", active_statuses.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
         SELECT COUNT(*)
         FROM jobs
-        WHERE item_id = ?1
-          AND job_type = ?2
-          AND status = 'queued'
-        "#,
-        (item_id, job_type),
-        |row| row.get(0),
-    )?;
-    if existing_queued > 0 {
+        WHERE item_id = ?
+          AND job_type = ?
+          AND status IN ({status_placeholders})
+        "#
+    );
+    let existing_active: i64 =
+        tx.query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
+            row.get(0)
+        })?;
+    if existing_active > 0 {
         return Ok(false);
     }
 
@@ -5360,6 +5403,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reindex_item_does_not_duplicate_running_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, started_at, progress, stage)
+                VALUES ('job-running', 'item-1', 'index_video', 'running', 100, 0.5, 'asr')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(&paths);
+        let app = router_with_paths(paths.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/items/item-1/reindex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["queued_job"], false);
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let running_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND status = 'running'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 0);
+        assert_eq!(running_jobs, 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_queued_rebuild_preserves_indexed_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(&paths);
+        let item = cerul_storage::get_item(&paths, "item-1").unwrap();
+        let cache_key = item_pipeline_cache_keys(&item).into_iter().next().unwrap();
+        let audio_cache = paths
+            .cache
+            .join("pipeline")
+            .join("audio")
+            .join(format!("{cache_key}.wav"));
+        std::fs::create_dir_all(audio_cache.parent().unwrap()).unwrap();
+        std::fs::write(&audio_cache, b"cached audio").unwrap();
+        let app = router_with_paths(paths.clone());
+
+        let reindex = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/items/item-1/reindex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reindex.status(), StatusCode::OK);
+        let job_id: String = {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.query_row(
+                "SELECT id FROM jobs WHERE item_id = 'item-1' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        let cancel = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/jobs/{job_id}/cancel"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cancel.status(), StatusCode::OK);
+        assert!(
+            audio_cache.exists(),
+            "indexed rebuild cancellation should not clear existing cache"
+        );
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let item: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT status, indexed_at FROM items WHERE id = 'item-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(item, ("indexed".to_string(), Some(10)));
+    }
+
+    #[tokio::test]
     async fn item_delete_records_raw_path_tombstone_without_external_id() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -6720,12 +6912,34 @@ mod tests {
                     ('job-completed', 'item-a', 'index_video', 'completed', 10, 20, NULL, 1, 'completed', NULL),
                     ('job-old-failed', 'item-a', 'index_video', 'failed', 30, 40, 'old fail', 1, 'failed', NULL),
                     ('job-running', 'item-a', 'index_video', 'running', 50, NULL, NULL, 0.5, 'asr', NULL),
-                    ('job-queued', 'item-b', 'index_video', 'queued', NULL, NULL, NULL, 0, 'queued', NULL),
-                    ('job-recent-failed', 'item-b', 'index_video', 'failed', strftime('%s','now') - 10, strftime('%s','now') - 5, 'recent fail', 1, 'failed', NULL)
+                    ('job-queued', 'item-b', 'index_video', 'queued', NULL, NULL, NULL, 0, 'queued', NULL)
                 "#,
                 [],
             )
             .unwrap();
+            for index in 0..5 {
+                conn.execute(
+                    r#"
+                    INSERT INTO jobs (
+                        id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
+                    )
+                    VALUES (
+                        ?1,
+                        'item-b',
+                        'index_video',
+                        'failed',
+                        strftime('%s','now') - ?2,
+                        strftime('%s','now') - ?2,
+                        'recent fail',
+                        1,
+                        'failed',
+                        NULL
+                    )
+                    "#,
+                    (format!("job-recent-failed-{index}"), 10 + index),
+                )
+                .unwrap();
+            }
         }
         let app = router_with_paths(paths);
 
@@ -6733,7 +6947,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs?scope=drawer&light=true&limit=10")
+                    .uri("/jobs?scope=drawer&light=true&limit=2")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6748,11 +6962,13 @@ mod tests {
             .iter()
             .map(|job| job["id"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert!(ids.contains(&"job-running".to_string()));
-        assert!(ids.contains(&"job-queued".to_string()));
-        assert!(ids.contains(&"job-recent-failed".to_string()));
+        assert_eq!(
+            ids,
+            vec!["job-running".to_string(), "job-queued".to_string()]
+        );
         assert!(!ids.contains(&"job-completed".to_string()));
         assert!(!ids.contains(&"job-old-failed".to_string()));
+        assert!(!ids.iter().any(|id| id.starts_with("job-recent-failed-")));
     }
 
     #[tokio::test]
