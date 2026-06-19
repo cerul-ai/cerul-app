@@ -87,6 +87,7 @@ let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
 let updateInstallFallbackRunId = 0;
 let macUpdatePreparationRunId = 0;
+let updateInstallWhenPrepared = false;
 let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
@@ -186,6 +187,7 @@ type BundleProcessHolder = {
   pid: number;
   command: string;
   paths: string[];
+  knownBundleSidecar?: boolean;
 };
 
 protocol.registerSchemesAsPrivileged([
@@ -1517,6 +1519,7 @@ function readBundleProcessHolders(bundlePath: string) {
 }
 
 function readBundleArgumentProcessHolders(bundlePath: string) {
+  const knownSidecarPaths = bundleArgumentSidecarPaths(bundlePath);
   const result = spawnSync("ps", ["-axo", "pid=,command="], {
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
@@ -1532,15 +1535,36 @@ function readBundleArgumentProcessHolders(bundlePath: string) {
     }
     const pid = Number(match[1]);
     const commandLine = match[2];
-    if (!Number.isFinite(pid) || pid === process.pid || !commandLine.includes(bundlePath)) {
+    const knownBundleSidecar = commandLineReferencesKnownBundleSidecar(commandLine, knownSidecarPaths);
+    if (!Number.isFinite(pid) || pid === process.pid || !knownBundleSidecar) {
       continue;
     }
-    holders.push({ pid, command: commandLine, paths: [commandLine] });
+    holders.push({ pid, command: commandLine, paths: [commandLine], knownBundleSidecar });
   }
   return {
     holders: holders.sort((left, right) => left.pid - right.pid),
     error: result.error ? result.error.message : null,
   };
+}
+
+function bundleArgumentSidecarPaths(bundlePath: string) {
+  const resourcesPath = path.join(bundlePath, "Contents", "Resources");
+  const thirdPartyPath = path.join(resourcesPath, "third-party", targetTriple());
+  return [
+    path.join(resourcesPath, "bin", executableName(packagedCoreBinaryName)),
+    path.join(resourcesPath, "bin", executableName(devCoreBinaryName)),
+    path.join(thirdPartyPath, executableName("qdrant")),
+    path.join(resourcesPath, "mlx-sidecar", "cerul_mlx_sidecar.py"),
+  ].map(normalizeProcessPathForMatch);
+}
+
+function normalizeProcessPathForMatch(value: string) {
+  return value.replace(/\\/g, "/").toLowerCase();
+}
+
+function commandLineReferencesKnownBundleSidecar(commandLine: string, knownSidecarPaths: string[]) {
+  const normalizedCommand = normalizeProcessPathForMatch(commandLine);
+  return knownSidecarPaths.some((sidecarPath) => normalizedCommand.includes(sidecarPath));
 }
 
 function mergeBundleProcessHolders(...holderGroups: BundleProcessHolder[][]) {
@@ -1551,6 +1575,9 @@ function mergeBundleProcessHolders(...holderGroups: BundleProcessHolder[][]) {
       if (!existing) {
         merged.set(holder.pid, { ...holder, paths: [...holder.paths] });
         continue;
+      }
+      if (holder.knownBundleSidecar) {
+        existing.knownBundleSidecar = true;
       }
       if (!existing.command && holder.command) {
         existing.command = holder.command;
@@ -1569,21 +1596,25 @@ function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
   if (holder.pid === process.pid) {
     return false;
   }
-  const command = path.basename(holder.command).toLowerCase();
-  const rawCommand = holder.command.toLowerCase();
+  if (holder.knownBundleSidecar) {
+    return true;
+  }
+  const command = processCommandExecutableName(holder.command);
   return (
     command === packagedCoreBinaryName ||
     command === devCoreBinaryName ||
     command === "qdrant" ||
     command === "python" ||
     command === "python3" ||
-    command.startsWith("python3.") ||
-    rawCommand.includes(`/${packagedCoreBinaryName}`) ||
-    rawCommand.includes(`/${devCoreBinaryName}`) ||
-    rawCommand.includes("/qdrant") ||
-    rawCommand.includes("/python3") ||
-    rawCommand.includes("/python ")
+    command.startsWith("python3.")
   );
+}
+
+function processCommandExecutableName(command: string) {
+  const trimmed = command.trim();
+  const match = trimmed.match(/^"([^"]+)"|'([^']+)'|(\S+)/);
+  const executable = match?.[1] ?? match?.[2] ?? match?.[3] ?? trimmed;
+  return path.basename(executable).toLowerCase();
 }
 
 function formatBundleProcessHolders(holders: BundleProcessHolder[]) {
@@ -2335,17 +2366,21 @@ async function waitForFreshMacShipItState(stateBaseline: MacShipItStateBaseline,
 }
 
 function clearPreparedMacUpdateHandoff(version?: string) {
-  if (!preparedMacUpdateHandoff) {
-    return;
-  }
-  if (!version || preparedMacUpdateHandoff.version === version) {
+  if (!preparedMacUpdateHandoff || !version || preparedMacUpdateHandoff.version === version) {
     preparedMacUpdateHandoff = null;
+    updateInstallWhenPrepared = false;
   }
 }
 
-function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater) {
+function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater, installWhenReady = false) {
+  updateInstallWhenPrepared = installWhenReady;
   if (process.platform !== "darwin") {
-    setUpdaterState({ phase: "downloaded", version });
+    if (installWhenReady) {
+      setUpdaterState({ phase: "installing", version });
+      setTimeout(() => void installDesktopUpdate(version), 500);
+    } else {
+      setUpdaterState({ phase: "downloaded", version });
+    }
     return;
   }
 
@@ -2396,10 +2431,15 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater)
       }
       closeMacUpdaterProxyServer(updater);
       preparedMacUpdateHandoff = macHandoff;
+      const shouldInstallWhenReady = updateInstallWhenPrepared;
+      updateInstallWhenPrepared = false;
       appendUpdaterShipItRescueLog(
         `mac_update_ready_to_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
       );
       setUpdaterState({ phase: "downloaded", version });
+      if (shouldInstallWhenReady) {
+        setTimeout(() => void installDesktopUpdate(version), 500);
+      }
     })();
   };
 
@@ -2645,9 +2685,10 @@ function wireAutoUpdater(updater: AppUpdater) {
   });
   updater.on("update-downloaded", (info) => {
     const version = normalizeVersion(info.version);
+    const installWhenReady = updateInstallRequested || updaterCheckInstallRequested;
     updateInstallRequested = false;
     updaterCheckInstallRequested = false;
-    prepareDownloadedUpdateForRestart(version, updater);
+    prepareDownloadedUpdateForRestart(version, updater, installWhenReady);
   });
   updater.on("error", (error) => {
     // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
@@ -2727,6 +2768,8 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
     if (installWhenDownloaded) {
       if (latestUpdaterState.phase === "downloading") {
         updateInstallRequested = true;
+      } else if (latestUpdaterState.phase === "preparing") {
+        updateInstallWhenPrepared = true;
       }
     }
     return;
