@@ -86,6 +86,8 @@ let updaterCheckInstallRequested = false;
 let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
 let updateInstallFallbackRunId = 0;
+let macUpdatePreparationRunId = 0;
+let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
@@ -122,6 +124,7 @@ type UpdaterState =
       transferredBytes?: number;
       totalBytes?: number;
     }
+  | { phase: "preparing"; version: string }
   | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string }
   | { phase: "error"; version?: string; message: string; releaseUrl: string };
@@ -146,6 +149,7 @@ type MacShipItStateBaseline = {
 type NativeUpdateDownloadedListener = (...args: unknown[]) => void;
 
 type MacUpdateInstallHandoff = {
+  version: string;
   stateBaseline: MacShipItStateBaseline;
   updater: AppUpdater;
   nativeUpdateDownloadedListeners: NativeUpdateDownloadedListener[];
@@ -2291,15 +2295,7 @@ function cancelMacUpdateInstallHandoff(handoff: MacUpdateInstallHandoff) {
     }
   }
 
-  const closeProxyServer = (handoff.updater as AppUpdater & { closeServerIfExists?: () => void })
-    .closeServerIfExists;
-  if (typeof closeProxyServer === "function") {
-    try {
-      closeProxyServer.call(handoff.updater);
-    } catch (error) {
-      console.warn("failed to close macOS updater proxy server after handoff abort", error);
-    }
-  }
+  closeMacUpdaterProxyServer(handoff.updater);
 
   if (handoff.rescueCancelPath) {
     try {
@@ -2316,6 +2312,112 @@ function cancelMacUpdateInstallHandoff(handoff: MacUpdateInstallHandoff) {
   appendUpdaterShipItRescueLog(
     `cancelled_pending_mac_handoff ${describeMacShipItState(handoff.stateBaseline)}`,
   );
+}
+
+function closeMacUpdaterProxyServer(updater: AppUpdater) {
+  const closeProxyServer = (updater as AppUpdater & { closeServerIfExists?: () => void })
+    .closeServerIfExists;
+  if (typeof closeProxyServer === "function") {
+    try {
+      closeProxyServer.call(updater);
+    } catch (error) {
+      console.warn("failed to close macOS updater proxy server", error);
+    }
+  }
+}
+
+async function waitForFreshMacShipItState(stateBaseline: MacShipItStateBaseline, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (!isFreshMacShipItState(stateBaseline) && Date.now() < deadline) {
+    await delay(250);
+  }
+  return isFreshMacShipItState(stateBaseline);
+}
+
+function clearPreparedMacUpdateHandoff(version?: string) {
+  if (!preparedMacUpdateHandoff) {
+    return;
+  }
+  if (!version || preparedMacUpdateHandoff.version === version) {
+    preparedMacUpdateHandoff = null;
+  }
+}
+
+function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater) {
+  if (process.platform !== "darwin") {
+    setUpdaterState({ phase: "downloaded", version });
+    return;
+  }
+
+  const runId = macUpdatePreparationRunId + 1;
+  macUpdatePreparationRunId = runId;
+  const macHandoff: MacUpdateInstallHandoff = {
+    version,
+    stateBaseline: captureMacShipItStateBaseline(),
+    updater,
+    nativeUpdateDownloadedListeners: captureMacNativeUpdateDownloadedListeners(),
+    rescueCancelPath: null,
+  };
+  preparedMacUpdateHandoff = macHandoff;
+  setUpdaterState({ phase: "preparing", version });
+  appendUpdaterShipItRescueLog(
+    `preparing_mac_update_for_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
+  );
+
+  const cleanup = () => {
+    nativeAutoUpdater.removeListener("update-downloaded", onDownloaded);
+    nativeAutoUpdater.removeListener("error", onError);
+  };
+  const fail = (error: unknown) => {
+    cleanup();
+    if (runId !== macUpdatePreparationRunId) {
+      return;
+    }
+    cancelMacUpdateInstallHandoff(macHandoff);
+    clearPreparedMacUpdateHandoff(version);
+    setUpdaterError(error, version);
+  };
+  const onError = (error: unknown) => {
+    fail(error);
+  };
+  const onDownloaded = () => {
+    void (async () => {
+      cleanup();
+      if (runId !== macUpdatePreparationRunId) {
+        return;
+      }
+      const stateReady = await waitForFreshMacShipItState(macHandoff.stateBaseline, 10_000);
+      if (runId !== macUpdatePreparationRunId) {
+        return;
+      }
+      if (!stateReady) {
+        fail(new Error("macOS updater prepared update but did not write a fresh ShipItState.plist"));
+        return;
+      }
+      closeMacUpdaterProxyServer(updater);
+      preparedMacUpdateHandoff = macHandoff;
+      appendUpdaterShipItRescueLog(
+        `mac_update_ready_to_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
+      );
+      setUpdaterState({ phase: "downloaded", version });
+    })();
+  };
+
+  nativeAutoUpdater.once("update-downloaded", onDownloaded);
+  nativeAutoUpdater.once("error", onError);
+  try {
+    nativeAutoUpdater.checkForUpdates();
+  } catch (error) {
+    fail(error);
+    return;
+  }
+
+  setTimeout(() => {
+    if (runId !== macUpdatePreparationRunId || latestUpdaterState.phase !== "preparing") {
+      return;
+    }
+    fail(new Error("macOS updater did not finish preparing the update before timeout"));
+  }, 5 * 60_000);
 }
 
 function quitViaNativeMacUpdater() {
@@ -2522,6 +2624,7 @@ function wireAutoUpdater(updater: AppUpdater) {
   // strand a staged update.
   updater.autoInstallOnAppQuit = process.platform !== "darwin";
   updater.on("update-available", (info) => {
+    clearPreparedMacUpdateHandoff();
     if (updaterCheckInstallRequested) {
       updateInstallRequested = true;
       updaterCheckInstallRequested = false;
@@ -2531,6 +2634,7 @@ function wireAutoUpdater(updater: AppUpdater) {
   updater.on("update-not-available", () => {
     updaterCheckInstallRequested = false;
     updateInstallRequested = false;
+    clearPreparedMacUpdateHandoff();
   });
   updater.on("download-progress", (progress) => {
     const version =
@@ -2541,15 +2645,9 @@ function wireAutoUpdater(updater: AppUpdater) {
   });
   updater.on("update-downloaded", (info) => {
     const version = normalizeVersion(info.version);
-    const shouldAutoInstall = updateInstallRequested;
     updateInstallRequested = false;
     updaterCheckInstallRequested = false;
-    if (!shouldAutoInstall) {
-      setUpdaterState({ phase: "downloaded", version });
-      return;
-    }
-    setUpdaterState({ phase: "installing", version });
-    setTimeout(() => void installDesktopUpdate(version), 500);
+    prepareDownloadedUpdateForRestart(version, updater);
   });
   updater.on("error", (error) => {
     // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
@@ -2562,11 +2660,13 @@ function wireAutoUpdater(updater: AppUpdater) {
     if (updateInstallRequested) {
       updateInstallRequested = false;
     }
+    clearPreparedMacUpdateHandoff();
     setUpdaterState({
       phase: "error",
       version:
         latestUpdaterState.phase === "available" ||
         latestUpdaterState.phase === "downloading" ||
+        latestUpdaterState.phase === "preparing" ||
         latestUpdaterState.phase === "installing" ||
         latestUpdaterState.phase === "downloaded"
           ? latestUpdaterState.version
@@ -2620,14 +2720,13 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
 
   if (
     latestUpdaterState.phase === "downloading" ||
+    latestUpdaterState.phase === "preparing" ||
     latestUpdaterState.phase === "downloaded" ||
     latestUpdaterState.phase === "installing"
   ) {
     if (installWhenDownloaded) {
       if (latestUpdaterState.phase === "downloading") {
         updateInstallRequested = true;
-      } else if (latestUpdaterState.phase === "downloaded") {
-        await installDesktopUpdate(latestUpdaterState.version);
       }
     }
     return;
@@ -2713,6 +2812,7 @@ async function abortDesktopUpdateInstallHandoff(
   if (macHandoff) {
     cancelMacUpdateInstallHandoff(macHandoff);
   }
+  clearPreparedMacUpdateHandoff(version);
   updateInstallRequested = false;
   updaterCheckInstallRequested = false;
   isQuitting = false;
@@ -2949,22 +3049,31 @@ async function installDesktopUpdate(version?: string) {
     setUpdaterError(new Error("electron-updater is unavailable"), version);
     return;
   }
-  const installingVersion =
-    version ??
-    (latestUpdaterState.phase === "downloaded" || latestUpdaterState.phase === "installing"
-      ? latestUpdaterState.version
-      : app.getVersion());
+  let installingVersion = version;
+  if (!installingVersion) {
+    installingVersion =
+      latestUpdaterState.phase === "preparing" ||
+      latestUpdaterState.phase === "downloaded" ||
+      latestUpdaterState.phase === "installing"
+        ? latestUpdaterState.version
+        : app.getVersion();
+  }
   setUpdaterState({ phase: "installing", version: installingVersion });
   let macHandoff: MacUpdateInstallHandoff | undefined;
   try {
     await prepareDesktopUpdateInstall(installingVersion);
     if (process.platform === "darwin") {
-      macHandoff = {
-        stateBaseline: captureMacShipItStateBaseline(),
-        updater,
-        nativeUpdateDownloadedListeners: captureMacNativeUpdateDownloadedListeners(),
-        rescueCancelPath: null,
-      };
+      macHandoff =
+        preparedMacUpdateHandoff?.version === installingVersion &&
+        isFreshMacShipItState(preparedMacUpdateHandoff.stateBaseline)
+          ? preparedMacUpdateHandoff
+          : {
+              version: installingVersion,
+              stateBaseline: captureMacShipItStateBaseline(),
+              updater,
+              nativeUpdateDownloadedListeners: captureMacNativeUpdateDownloadedListeners(),
+              rescueCancelPath: null,
+            };
     }
     // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
     // app as quitting up front so our close-to-tray handler does not hide the

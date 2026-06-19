@@ -27,6 +27,7 @@ export type DesktopUpdaterState =
       transferredBytes?: number;
       totalBytes?: number;
     }
+  | { phase: "preparing"; version: string }
   | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string }
   | { phase: "error"; version?: string; message: string; releaseUrl: string };

@@ -1347,11 +1347,17 @@ function AppWorkspace() {
             <button
               className={`rail-update is-${updaterState.phase}`}
               type="button"
-              disabled={updaterState.phase === "downloading" || updaterState.phase === "installing"}
+              disabled={
+                updaterState.phase === "downloading" ||
+                updaterState.phase === "preparing" ||
+                updaterState.phase === "installing"
+              }
               title={
                 updaterState.phase === "downloading"
                   ? updateDownloadTitle(updaterState)
-                  : updaterState.phase === "installing"
+                  : updaterState.phase === "preparing"
+                    ? t("shell.updatePreparingTip")
+                    : updaterState.phase === "installing"
                     ? t("shell.updateInstallingTip")
                     : updaterState.phase === "downloaded"
                     ? t("shell.updateReadyTip", { version: updaterState.version })
@@ -1365,6 +1371,11 @@ function AppWorkspace() {
                 <>
                   <Loader2 size={13} className="spin" />
                   <span className="rail-update-label">{updateDownloadLabel(updaterState)}</span>
+                </>
+              ) : updaterState.phase === "preparing" ? (
+                <>
+                  <Loader2 size={13} className="spin" />
+                  <span className="rail-update-label">{t("shell.updatePreparing")}</span>
                 </>
               ) : updaterState.phase === "installing" ? (
                 <>
@@ -7643,7 +7654,7 @@ function AboutSettings() {
         }
         return;
       }
-      if (next.phase === "downloading" || next.phase === "installing") {
+      if (next.phase === "downloading" || next.phase === "preparing" || next.phase === "installing") {
         return;
       }
       window.open(update.url, "_blank", "noopener,noreferrer");
@@ -7665,6 +7676,9 @@ function AboutSettings() {
     if (aboutUpdaterState.phase === "downloading") {
       return t("settings.about.update.downloading");
     }
+    if (aboutUpdaterState.phase === "preparing") {
+      return t("settings.about.update.preparing");
+    }
     if (aboutUpdaterState.phase === "downloaded") {
       return t("settings.about.update.restart");
     }
@@ -7678,6 +7692,7 @@ function AboutSettings() {
     if (
       updateActionStatus === "running" ||
       aboutUpdaterState.phase === "downloading" ||
+      aboutUpdaterState.phase === "preparing" ||
       aboutUpdaterState.phase === "installing"
     ) {
       return <Loader2 size={16} />;
@@ -7776,6 +7791,7 @@ function AboutSettings() {
             disabled={
               updateActionStatus === "running" ||
               aboutUpdaterState.phase === "downloading" ||
+              aboutUpdaterState.phase === "preparing" ||
               aboutUpdaterState.phase === "installing"
             }
             onClick={() => void activateCheckedUpdate()}
