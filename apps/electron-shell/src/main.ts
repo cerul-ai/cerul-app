@@ -4,6 +4,7 @@ import {
   Notification,
   Tray,
   app,
+  autoUpdater as nativeAutoUpdater,
   dialog,
   globalShortcut,
   ipcMain,
@@ -140,6 +141,15 @@ type MacShipItStateBaseline = {
   path: string;
   startedAtMs: number;
   previousMtimeMs: number | null;
+};
+
+type NativeUpdateDownloadedListener = (...args: unknown[]) => void;
+
+type MacUpdateInstallHandoff = {
+  stateBaseline: MacShipItStateBaseline;
+  updater: AppUpdater;
+  nativeUpdateDownloadedListeners: NativeUpdateDownloadedListener[];
+  rescueCancelPath: string | null;
 };
 
 type ApiOutputTail = {
@@ -2266,6 +2276,57 @@ function appendUpdaterShipItRescueLog(line: string) {
   }
 }
 
+function captureMacNativeUpdateDownloadedListeners() {
+  if (process.platform !== "darwin") {
+    return [];
+  }
+  return nativeAutoUpdater.listeners("update-downloaded") as NativeUpdateDownloadedListener[];
+}
+
+function cancelMacUpdateInstallHandoff(handoff: MacUpdateInstallHandoff) {
+  const preservedListeners = new Set(handoff.nativeUpdateDownloadedListeners);
+  for (const listener of nativeAutoUpdater.listeners("update-downloaded") as NativeUpdateDownloadedListener[]) {
+    if (!preservedListeners.has(listener)) {
+      nativeAutoUpdater.removeListener("update-downloaded", listener);
+    }
+  }
+
+  const closeProxyServer = (handoff.updater as AppUpdater & { closeServerIfExists?: () => void })
+    .closeServerIfExists;
+  if (typeof closeProxyServer === "function") {
+    try {
+      closeProxyServer.call(handoff.updater);
+    } catch (error) {
+      console.warn("failed to close macOS updater proxy server after handoff abort", error);
+    }
+  }
+
+  if (handoff.rescueCancelPath) {
+    try {
+      fs.writeFileSync(
+        handoff.rescueCancelPath,
+        `cancelledAt=${new Date().toISOString()}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      console.warn("failed to cancel ShipIt rescue script", error);
+    }
+  }
+
+  appendUpdaterShipItRescueLog(
+    `cancelled_pending_mac_handoff ${describeMacShipItState(handoff.stateBaseline)}`,
+  );
+}
+
+function quitViaNativeMacUpdater() {
+  try {
+    nativeAutoUpdater.quitAndInstall();
+  } catch (error) {
+    console.warn("native macOS updater quitAndInstall fallback failed", error);
+    app.quit();
+  }
+}
+
 function writeUpdaterInstallCleanupLog(lines: string[]) {
   try {
     fs.writeFileSync(updaterInstallCleanupLogPath(), `${lines.join("\n")}\n`, "utf8");
@@ -2643,8 +2704,15 @@ function clearUpdateInstallFallbackTimers() {
   }
 }
 
-async function abortDesktopUpdateInstallHandoff(error: unknown, version?: string) {
+async function abortDesktopUpdateInstallHandoff(
+  error: unknown,
+  version?: string,
+  macHandoff?: MacUpdateInstallHandoff,
+) {
   clearUpdateInstallFallbackTimers();
+  if (macHandoff) {
+    cancelMacUpdateInstallHandoff(macHandoff);
+  }
   updateInstallRequested = false;
   updaterCheckInstallRequested = false;
   isQuitting = false;
@@ -2657,15 +2725,16 @@ async function abortDesktopUpdateInstallHandoff(error: unknown, version?: string
   startStatusMonitor();
 }
 
-function scheduleUpdateInstallExitFallback(macShipItStateBaseline?: MacShipItStateBaseline) {
+function scheduleUpdateInstallExitFallback(macHandoff?: MacUpdateInstallHandoff) {
   clearUpdateInstallFallbackTimers();
   const runId = updateInstallFallbackRunId + 1;
   updateInstallFallbackRunId = runId;
   if (process.platform === "darwin") {
-    void scheduleMacUpdateInstallExitFallback(
-      runId,
-      macShipItStateBaseline ?? captureMacShipItStateBaseline(),
-    );
+    if (!macHandoff) {
+      console.warn("macOS update install fallback skipped without handoff state");
+      return;
+    }
+    void scheduleMacUpdateInstallExitFallback(runId, macHandoff);
     return;
   }
   const quitDelayMs = 1_500;
@@ -2689,8 +2758,9 @@ function scheduleUpdateInstallExitFallback(macShipItStateBaseline?: MacShipItSta
 
 async function scheduleMacUpdateInstallExitFallback(
   runId: number,
-  stateBaseline: MacShipItStateBaseline,
+  macHandoff: MacUpdateInstallHandoff,
 ) {
+  const stateBaseline = macHandoff.stateBaseline;
   const deadline = Date.now() + 120_000;
   let stateLogged = false;
   while (!isFreshMacShipItState(stateBaseline) && Date.now() < deadline) {
@@ -2712,7 +2782,7 @@ async function scheduleMacUpdateInstallExitFallback(
     const message = "macOS updater did not stage a fresh ShipItState.plist before fallback quit";
     appendUpdaterShipItRescueLog(`${message} ${describeMacShipItState(stateBaseline)}`);
     const version = latestUpdaterState.phase === "installing" ? latestUpdaterState.version : undefined;
-    await abortDesktopUpdateInstallHandoff(new Error(message), version);
+    await abortDesktopUpdateInstallHandoff(new Error(message), version, macHandoff);
     return;
   }
 
@@ -2723,7 +2793,7 @@ async function scheduleMacUpdateInstallExitFallback(
     if (!isQuitting) {
       isQuitting = true;
     }
-    app.quit();
+    quitViaNativeMacUpdater();
     updateInstallForceExitTimer = setTimeout(() => {
       if (runId !== updateInstallFallbackRunId) {
         return;
@@ -2735,17 +2805,19 @@ async function scheduleMacUpdateInstallExitFallback(
 
 function scheduleMacShipItRescue(version: string, stateBaseline: MacShipItStateBaseline) {
   if (process.platform !== "darwin") {
-    return;
+    return null;
   }
   const bundlePath = macAppBundlePath();
   if (!bundlePath) {
-    return;
+    return null;
   }
 
   const shipItPath = path.join(bundlePath, "Contents", "Frameworks", "Squirrel.framework", "Resources", "ShipIt");
   const shipItStatePath = macShipItStatePath();
   const logPath = updaterShipItRescueLogPath();
-  const scriptPath = path.join(os.tmpdir(), `cerul-shipit-rescue-${process.pid}-${Date.now()}.sh`);
+  const scriptId = `${process.pid}-${Date.now()}`;
+  const scriptPath = path.join(os.tmpdir(), `cerul-shipit-rescue-${scriptId}.sh`);
+  const cancelPath = path.join(os.tmpdir(), `cerul-shipit-rescue-${scriptId}.cancel`);
   const shipItIdentifier = `${macBundleIdentifier}.ShipIt`;
   const shipItProcessPattern = `ShipIt ${shipItIdentifier}`;
   const previousStateMtimeSeconds = Math.floor((stateBaseline.previousMtimeMs ?? 0) / 1000);
@@ -2760,6 +2832,7 @@ function scheduleMacShipItRescue(version: string, stateBaseline: MacShipItStateB
     `STATE=${shellQuote(shipItStatePath)}`,
     `LOG=${shellQuote(logPath)}`,
     `SCRIPT=${shellQuote(scriptPath)}`,
+    `CANCELLED=${shellQuote(cancelPath)}`,
     `SHIPIT_IDENTIFIER=${shellQuote(shipItIdentifier)}`,
     `SHIPIT_PATTERN=${shellQuote(shipItProcessPattern)}`,
     `STATE_MTIME_BEFORE=${previousStateMtimeSeconds}`,
@@ -2778,8 +2851,19 @@ function scheduleMacShipItRescue(version: string, stateBaseline: MacShipItStateB
     '    [ "$MTIME" -ge "$STATE_READY_AFTER" ]',
     "  fi",
     "}",
+    'bundle_is_writable() { [ -w "$BUNDLE" ] && [ -w "$BUNDLE/Contents" ]; }',
     'while kill -0 "$PARENT_PID" 2>/dev/null; do sleep 0.5; done',
+    'if [ -f "$CANCELLED" ]; then',
+    '  echo "shipit_rescue_cancelled_before_delay" >> "$LOG"',
+    '  rm -f "$SCRIPT" "$CANCELLED"',
+    "  exit 0",
+    "fi",
     'sleep 8',
+    'if [ -f "$CANCELLED" ]; then',
+    '  echo "shipit_rescue_cancelled_after_parent_exit" >> "$LOG"',
+    '  rm -f "$SCRIPT" "$CANCELLED"',
+    "  exit 0",
+    "fi",
     'CURRENT="$(current_version)"',
     'echo "after_parent_exit current=$CURRENT" >> "$LOG"',
     '[ "$CURRENT" = "$TARGET_VERSION" ] && { rm -f "$SCRIPT"; exit 0; }',
@@ -2799,12 +2883,12 @@ function scheduleMacShipItRescue(version: string, stateBaseline: MacShipItStateB
     'CURRENT="$(current_version)"',
     'echo "after_existing_shipit_wait current=$CURRENT" >> "$LOG"',
     '[ "$CURRENT" = "$TARGET_VERSION" ] && { rm -f "$SCRIPT"; exit 0; }',
-    'if [ -x "$SHIPIT" ] && state_is_fresh; then',
+    'if [ -x "$SHIPIT" ] && state_is_fresh && bundle_is_writable; then',
     '  echo "running_shipit_rescue shipit=$SHIPIT state=$STATE state_mtime=$(state_mtime)" >> "$LOG"',
     '  "$SHIPIT" "$SHIPIT_IDENTIFIER" "$STATE" >> "$LOG" 2>&1',
     '  echo "shipit_rescue_status=$?" >> "$LOG"',
     "else",
-    '  echo "shipit_rescue_skipped shipit_exists=$(test -x "$SHIPIT" && echo 1 || echo 0) state_exists=$(test -f "$STATE" && echo 1 || echo 0) state_fresh=$(state_is_fresh && echo 1 || echo 0) state_mtime=$(state_mtime)" >> "$LOG"',
+    '  echo "shipit_rescue_skipped shipit_exists=$(test -x "$SHIPIT" && echo 1 || echo 0) state_exists=$(test -f "$STATE" && echo 1 || echo 0) state_fresh=$(state_is_fresh && echo 1 || echo 0) bundle_writable=$(bundle_is_writable && echo 1 || echo 0) state_mtime=$(state_mtime)" >> "$LOG"',
     "fi",
     'CURRENT="$(current_version)"',
     'echo "final current=$CURRENT" >> "$LOG"',
@@ -2819,8 +2903,10 @@ function scheduleMacShipItRescue(version: string, stateBaseline: MacShipItStateB
       stdio: "ignore",
     });
     child.unref();
+    return cancelPath;
   } catch (error) {
     console.warn("failed to schedule ShipIt rescue", error);
+    return null;
   }
 }
 
@@ -2863,10 +2949,17 @@ async function installDesktopUpdate(version?: string) {
       ? latestUpdaterState.version
       : app.getVersion());
   setUpdaterState({ phase: "installing", version: installingVersion });
+  let macHandoff: MacUpdateInstallHandoff | undefined;
   try {
     await prepareDesktopUpdateInstall(installingVersion);
-    const macShipItStateBaseline =
-      process.platform === "darwin" ? captureMacShipItStateBaseline() : undefined;
+    if (process.platform === "darwin") {
+      macHandoff = {
+        stateBaseline: captureMacShipItStateBaseline(),
+        updater,
+        nativeUpdateDownloadedListeners: captureMacNativeUpdateDownloadedListeners(),
+        rescueCancelPath: null,
+      };
+    }
     // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
     // app as quitting up front so our close-to-tray handler does not hide the
     // main window and leave ShipIt blocked on a still-running app instance.
@@ -2875,12 +2968,15 @@ async function installDesktopUpdate(version?: string) {
     // Only arm the rescue after quitAndInstall returns successfully. If the
     // updater throws synchronously, we do not want a detached post-exit ShipIt
     // script to run later against a staged update the user did not install.
-    if (macShipItStateBaseline) {
-      scheduleMacShipItRescue(installingVersion, macShipItStateBaseline);
+    if (macHandoff) {
+      macHandoff.rescueCancelPath = scheduleMacShipItRescue(
+        installingVersion,
+        macHandoff.stateBaseline,
+      );
     }
-    scheduleUpdateInstallExitFallback(macShipItStateBaseline);
+    scheduleUpdateInstallExitFallback(macHandoff);
   } catch (error) {
-    await abortDesktopUpdateInstallHandoff(error, installingVersion);
+    await abortDesktopUpdateInstallHandoff(error, installingVersion, macHandoff);
   }
 }
 
