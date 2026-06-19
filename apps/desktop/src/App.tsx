@@ -7204,16 +7204,28 @@ function StorageSettings({
           {busy ? <Loader2 size={16} /> : <HardDrive size={16} />}
           <span>{t("settings.storage.clearCache")}</span>
         </button>
-        <button
-          className="btn btn-danger sm"
-          type="button"
-          disabled={busy || !hasDesktopHost()}
-          onClick={() => void resetAllLocalData()}
-        >
-          {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
-          <span>{t("settings.storage.resetLocalData")}</span>
-        </button>
       </div>
+      <section className="settings-group settings-danger-group">
+        <p className="settings-group-title settings-danger-title">{t("settings.storage.dangerZone")}</p>
+        <div className="settings-danger-card">
+          <span className="settings-danger-ic" aria-hidden="true">
+            <AlertTriangle size={18} />
+          </span>
+          <div className="settings-danger-main">
+            <strong>{t("settings.storage.resetLocalData")}</strong>
+            <p>{t("settings.storage.resetLocalData.desc")}</p>
+          </div>
+          <button
+            className="btn btn-danger sm"
+            type="button"
+            disabled={busy || !hasDesktopHost()}
+            onClick={() => void resetAllLocalData()}
+          >
+            {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+            <span>{t("settings.storage.resetLocalData")}</span>
+          </button>
+        </div>
+      </section>
       {action.message ? (
         <InlineNotice tone={action.status === "error" ? "error" : "muted"} message={action.message} />
       ) : null}

@@ -577,6 +577,8 @@ export const zh: Record<string, string> = {
   "settings.storage.cacheSize.label": "磁盘占用",
   "settings.storage.clearCache": "清除缓存",
   "settings.storage.resetLocalData": "清空本机数据",
+  "settings.storage.dangerZone": "危险区",
+  "settings.storage.resetLocalData.desc": "删除索引、设置与已下载的模型权重，且不可恢复。",
   "settings.storage.message.dataOpened": "已打开数据目录",
   "settings.storage.message.cacheCleared": "已从缓存中清除 {size}",
   "settings.storage.message.resetStarting": "正在退出 Cerul，清空本机数据并重新启动…",
@@ -1133,6 +1135,11 @@ export const zh: Record<string, string> = {
   "usage.capability.embedding": "向量嵌入",
   "usage.capability.video_understanding": "视频理解",
   "usage.capability.query_embedding": "搜索查询",
+  "usage.capability.transcription": "转录",
+  "usage.capability.embedding_image": "图像嵌入",
+  "usage.capability.embedding_text": "文本嵌入",
+  "usage.capability.search_query": "搜索查询",
+  "usage.capability.video": "视频理解",
   "usage.unpriced": "未计费",
 };
 
@@ -1708,6 +1715,8 @@ export const en: Record<string, string> = {
   "settings.storage.cacheSize.label": "Disk usage",
   "settings.storage.clearCache": "Clear cache",
   "settings.storage.resetLocalData": "Reset local data",
+  "settings.storage.dangerZone": "Danger zone",
+  "settings.storage.resetLocalData.desc": "Deletes the index, settings and downloaded model weights — this can't be undone.",
   "settings.storage.message.dataOpened": "Data directory opened",
   "settings.storage.message.cacheCleared": "Cleared {size} from cache",
   "settings.storage.message.resetStarting": "Quitting Cerul, clearing local data, and restarting…",
@@ -2264,6 +2273,11 @@ export const en: Record<string, string> = {
   "usage.capability.embedding": "Embeddings",
   "usage.capability.video_understanding": "Video understanding",
   "usage.capability.query_embedding": "Search queries",
+  "usage.capability.transcription": "Transcription",
+  "usage.capability.embedding_image": "Image embeddings",
+  "usage.capability.embedding_text": "Text embeddings",
+  "usage.capability.search_query": "Search queries",
+  "usage.capability.video": "Video understanding",
   "usage.unpriced": "unpriced",
 };
 
