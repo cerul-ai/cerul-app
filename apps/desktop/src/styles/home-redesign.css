@@ -30,7 +30,15 @@
 .home-page .search-input:focus-visible, .home-page .search-input:focus {
   border-color: var(--accent-line); box-shadow: var(--focus-ring), 0 22px 50px -24px rgba(28,40,60,0.26);
 }
-.home-page .search-wrap.disabled .search-input { box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.home-page .search-wrap.disabled .search-input {
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-color: var(--line);
+  cursor: not-allowed;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 
 /* ---- recent-indexed cards → glass with a hover lift ---- */
 .home-page .recent-indexed-card {
@@ -56,3 +64,14 @@
 /* ---- section labels: softer, consistent with the redesign ---- */
 .home-page .section-label { font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12.5px; color: var(--text-faint); }
 .home-page .home-recent-block { margin-top: 44px; }
+
+@media (max-width: 720px) {
+  .home-page .home-search-stage { padding-top: 34px; }
+  .home-page .home-search-stage h1 { font-size: 23px; }
+  .home-page .home-search-stage p,
+  .home-page .home-summary {
+    max-width: 320px;
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+}
