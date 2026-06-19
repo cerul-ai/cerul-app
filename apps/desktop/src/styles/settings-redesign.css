@@ -1,0 +1,273 @@
+/* ============================================================
+   CERUL · SETTINGS REDESIGN  (Aurora Glass + editorial, paged)
+   A purely-visual reskin, scoped under .settings-page so nothing else
+   in the app is affected. No DOM / logic / i18n changes — it restyles
+   the existing settings classes only. Dual-theme.
+   Approved direction: Layout-1 classic paged sidebar.
+   ============================================================ */
+
+/* ---- editorial page header ---- */
+.settings-page .page-head { padding: 32px 0 22px; }
+.settings-page .page-eyebrow { color: var(--accent); font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12px; font-weight: 500; }
+.settings-page .page-h1 { font-size: 30px; letter-spacing: -0.025em; }
+[data-theme="dark"] .settings-page .page-h1 { text-shadow: 0 2px 26px rgba(143, 176, 216, 0.14); }
+/* editorial section number beside the title (matches the design mockup) */
+.settings-head-lead { display: flex; align-items: flex-start; gap: 16px; }
+.settings-num { flex: none; padding-top: 2px; font-family: var(--font-mono); font-weight: 300; font-size: 30px; line-height: 1; letter-spacing: -0.03em; color: var(--text-faint); opacity: 0.5; }
+
+/* ---- full-window settings shell (Codex-style takeover; replaces the
+   in-app content page so the main rail is no longer beside settings) ---- */
+.settings-page.settings-shell {
+  position: fixed; top: var(--titlebar-h, 40px); left: 0; right: 0; bottom: 0;
+  z-index: 30; max-width: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: 264px minmax(0, 1fr);
+  background:
+    radial-gradient(680px 360px at 50% 4%, #ffffff, rgba(255, 255, 255, 0) 66%),
+    linear-gradient(180deg, #fafbfc, #eef1f4);
+}
+[data-theme="dark"] .settings-page.settings-shell {
+  background:
+    radial-gradient(700px 380px at 50% -10%, #222933, transparent 62%),
+    radial-gradient(440px 240px at 82% 4%, rgba(90, 134, 184, 0.22), transparent 58%),
+    linear-gradient(180deg, #14181d, #0d1014);
+}
+.settings-shell-side {
+  display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
+  padding: 18px 14px 16px; border-right: 1px solid var(--line);
+}
+[data-theme="dark"] .settings-shell-side { border-right-color: rgba(255, 255, 255, 0.07); }
+.settings-back {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  font: inherit; font-size: var(--fs-meta); font-weight: 500; color: var(--text-muted);
+  background: transparent; border: 0; cursor: pointer; padding: 7px 10px;
+  border-radius: var(--r-md); margin-bottom: 12px;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.settings-back:hover { background: var(--surface-3); color: var(--text); }
+.settings-back:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.settings-shell .settings-nav { position: static; top: auto; }
+.settings-shell-main { display: flex; flex-direction: column; min-height: 0; }
+.settings-shell-main .page-head { margin: 0; padding: 26px 40px 18px; border-bottom: 1px solid var(--line); }
+.settings-shell-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.settings-shell-scroll .settings-panel { max-width: 760px; margin: 0 auto; padding: 28px 40px 84px; }
+
+/* ---- paged nav: numbered + glow active ---- */
+.settings-page .settings-nav { counter-reset: snav; gap: 3px; }
+.settings-page .settings-nav button { position: relative; height: 38px; padding: 0 12px; gap: 11px; }
+.settings-page .settings-nav button::before {
+  counter-increment: snav;
+  content: counter(snav, decimal-leading-zero);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+  flex: none; width: 17px;
+}
+.settings-page .settings-nav button:hover { background: var(--surface-3); }
+.settings-page .settings-nav button.active {
+  color: var(--text);
+  background: linear-gradient(100deg, var(--accent-soft-2), transparent);
+  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--accent-line-soft), 0 8px 22px -14px var(--accent);
+}
+.settings-page .settings-nav button.active::before { color: var(--accent); }
+.settings-page .settings-nav button.active svg { color: var(--accent); filter: drop-shadow(0 0 6px var(--accent-soft-2)); }
+
+/* ---- group → label above a floating glass card of inset rows ---- */
+.settings-page .settings-group { margin-bottom: 20px; }
+.settings-page .settings-group-title { margin: 0 0 9px 4px; }
+.settings-page .settings-group-rows {
+  border-radius: var(--r-xl);
+  padding: 2px 18px;
+  -webkit-backdrop-filter: blur(22px) saturate(1.3); backdrop-filter: blur(22px) saturate(1.3);
+}
+[data-theme="light"] .settings-page .settings-group-rows {
+  background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74));
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22);
+}
+[data-theme="dark"] .settings-page .settings-group-rows {
+  background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5));
+  border: 1px solid rgba(255,255,255,0.09);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 22px 54px -26px rgba(0,0,0,0.72);
+}
+[data-theme="dark"] .settings-page .setting-row { border-bottom-color: rgba(255,255,255,0.06); }
+
+/* ---- inference mode cards → premium glass · three-up (本地/自动/云端) ---- */
+.settings-page .imode-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.settings-page .imode-head h2 { font-size: 15px; }
+.settings-page .imode-card {
+  padding: var(--sp-4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3); backdrop-filter: blur(20px) saturate(1.3);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.settings-page .imode-card:hover { transform: translateY(-2px); }
+[data-theme="light"] .settings-page .imode-card { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22); }
+[data-theme="dark"] .settings-page .imode-card { background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5)); border-color: rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 22px 54px -26px rgba(0,0,0,0.72); }
+.settings-page .imode-card.selected { border-color: var(--accent-line); }
+[data-theme="light"] .settings-page .imode-card.selected { box-shadow: 0 0 0 3px var(--accent-soft), 0 20px 46px -22px rgba(28,40,60,0.26); }
+[data-theme="dark"] .settings-page .imode-card.selected { box-shadow: inset 0 1px 0 rgba(255,255,255,0.09), 0 0 0 1px var(--accent-soft-2), 0 18px 44px -20px var(--accent); }
+.settings-page .imode-card.selected .imode-card__radio { background: var(--accent); box-shadow: 0 0 14px -3px var(--accent); }
+.settings-page .imode-card.selected .imode-card__radio-dot { background: var(--text-on-accent); }
+.settings-page .imode-card__name { font-size: 15px; }
+.settings-page .imode-card__badge.accent { border: 1px solid var(--accent-line-soft); }
+.settings-page .imode-card__badge.success { border: 1px solid var(--success-line); }
+
+/* usage strip → glass */
+.settings-page .imode-usage-card { -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+[data-theme="light"] .settings-page .imode-usage-card { background: linear-gradient(165deg, rgba(255,255,255,0.9), rgba(255,255,255,0.7)); box-shadow: var(--card-sh); }
+[data-theme="dark"] .settings-page .imode-usage-card { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.09); }
+.settings-page .imode-usage-card__bar > div { box-shadow: 0 0 10px var(--accent); }
+
+/* "当前去向" posture line + video-stays-cloud note (matches the design mockup) */
+.settings-page .imode-posture { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: var(--sp-3); padding: 11px 14px; border-radius: var(--r-md); border: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+.settings-page .imode-posture-lbl { font-size: 11.5px; color: var(--text-faint); }
+.settings-page .imode-pchip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 4px 9px; border-radius: var(--r-pill); }
+.settings-page .imode-pchip.local { color: var(--success); background: var(--success-tint); box-shadow: inset 0 0 0 1px var(--success-line); }
+.settings-page .imode-pchip.cloud { color: var(--accent); background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent-line-soft); }
+.settings-page .imode-pchip svg { flex: none; }
+
+/* ---- models: section spacing + connections shell ---- */
+.settings-page .models-settings-panel { display: flex; flex-direction: column; gap: 30px; }
+.settings-page .model-advanced-title { font-size: 15px; }
+[data-theme="dark"] .settings-page .provider-conn-row,
+[data-theme="dark"] .settings-page .provider-add-card { border-color: rgba(255,255,255,0.09); }
+
+/* ---- destructive actions read as danger (storage reset / etc.) ---- */
+.settings-page .btn-danger,
+.settings-page .btn.danger { box-shadow: 0 0 0 1px var(--danger-line); }
+
+/* keyboard focus rings on the nav */
+.settings-page .settings-nav button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* ---- in-section controls aligned to the mockup ---- */
+/* group labels: soft sans, not mono-uppercase (matches the prototype) */
+.settings-page .settings-group-title { font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12.5px; }
+/* buttons: refined inset pill — subtle lift + accent icons on hover */
+.settings-page .btn-secondary {
+  background: var(--surface-2); border-color: var(--line); box-shadow: var(--shadow-1);
+  font-weight: var(--fw-medium);
+}
+.settings-page .btn-secondary:hover { background: var(--surface-3); border-color: var(--accent-line); box-shadow: var(--shadow-2); }
+.settings-page .btn-secondary:active { transform: translateY(0.5px); }
+.settings-page .btn-secondary svg { color: var(--text-faint); transition: color var(--dur-fast) var(--ease); }
+.settings-page .btn-secondary:hover svg { color: var(--accent); }
+.settings-page .btn-ghost.accent { border: 1px dashed var(--accent-line); }
+/* destructive (non-solid) reads as a tinted danger pill, not bare text */
+.settings-page .btn-danger:not(.solid) { color: var(--danger); background: var(--danger-tint); border-color: var(--danger-line); }
+.settings-page .btn-danger:not(.solid):hover { background: var(--danger-soft); border-color: var(--danger); }
+/* selects → cleaner inset pill with a soft chevron + hover/focus */
+.settings-page select.select {
+  background-color: var(--surface-2); border-color: var(--line); border-radius: var(--r-md);
+  height: 34px; font-weight: var(--fw-medium); cursor: pointer; box-shadow: var(--shadow-1);
+  background-position: right 11px center;
+}
+.settings-page select.select:hover { border-color: var(--accent-line); background-color: var(--surface-3); }
+.settings-page select.select:focus-visible { border-color: var(--accent); box-shadow: var(--focus-ring); }
+
+/* storage disk breakdown → clearer rows + chunkier rounded bars */
+.settings-page .storage-breakdown { gap: 14px; padding: 10px 0 4px; }
+.settings-page .storage-row { gap: 8px; font-size: var(--fs-meta); }
+.settings-page .storage-row > .row > span:first-child { color: var(--text); font-weight: var(--fw-medium); }
+.settings-page .storage-row > .row > .mono { color: var(--text-faint); }
+.settings-page .storage-row .progress { height: 7px; background: var(--surface-3); }
+.settings-page .storage-row .progress .bar { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 82%, transparent), var(--accent)); }
+
+/* Storage "危险区" — destructive action isolated in a red card (matches mockup) */
+.settings-page .settings-danger-group { margin-top: 24px; }
+.settings-page .settings-danger-title { color: var(--danger); }
+.settings-page .settings-danger-card { display: flex; align-items: center; gap: 14px; padding: 15px 18px; border-radius: var(--r-lg); border: 1px solid var(--danger-line); background: var(--danger-tint); }
+.settings-page .settings-danger-ic { flex: none; width: 38px; height: 38px; border-radius: var(--r-md); display: grid; place-items: center; background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.settings-page .settings-danger-main { flex: 1; min-width: 0; }
+.settings-page .settings-danger-main strong { display: block; color: var(--danger); font-size: 14px; font-weight: var(--fw-semibold); }
+.settings-page .settings-danger-main p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.5; }
+.settings-page .settings-danger-card .btn-danger { flex: none; }
+
+/* Advanced: diagnostic actions live inside the card as a footer row */
+.settings-page .settings-actions--incard { margin: 0; padding: 14px 18px; gap: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+
+/* Usage: account sign-in is a full-width banner, separate from the spend stat */
+.settings-page .usage-account { display: flex; align-items: center; gap: 16px; padding: 16px 20px; margin-bottom: 16px; border-radius: var(--r-xl); -webkit-backdrop-filter: blur(22px) saturate(1.3); backdrop-filter: blur(22px) saturate(1.3); }
+.settings-page .usage-account__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.settings-page .usage-account__id { font-size: 15px; font-weight: var(--fw-semibold); }
+.settings-page .usage-account .btn, .settings-page .usage-account .chip { flex: none; }
+.settings-page .usage-spend { display: flex; flex-direction: column; gap: 4px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.settings-page .usage-spend .usage-card__value { font-size: 26px; }
+.settings-page .usage-split, .settings-page .usage-breakdown { border-radius: var(--r-xl); }
+[data-theme="light"] .settings-page .usage-account,
+[data-theme="light"] .settings-page .usage-split,
+[data-theme="light"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22); }
+[data-theme="dark"] .settings-page .usage-account,
+[data-theme="dark"] .settings-page .usage-split,
+[data-theme="dark"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5)); border: 1px solid rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 22px 54px -26px rgba(0,0,0,0.72); }
+
+/* narrow window: nav already collapses to a horizontal scroller (app.css ≤720);
+   keep the glass cards readable there too */
+@media (max-width: 860px) {
+  .settings-page.settings-shell { grid-template-columns: 208px minmax(0, 1fr); }
+  .settings-shell-main .page-head { padding: 22px 22px 16px; }
+  .settings-shell-scroll .settings-panel { padding: 22px 22px 60px; }
+  .settings-page .settings-group-rows { padding: 2px 14px; }
+}
+
+@media (max-width: 720px) {
+  .settings-page.settings-shell {
+    top: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-shell-side {
+    min-height: auto;
+    overflow: visible;
+    padding: 12px 16px 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  [data-theme="dark"] .settings-shell-side {
+    border-bottom-color: rgba(255, 255, 255, 0.07);
+  }
+
+  .settings-back { margin-bottom: 10px; }
+
+  .settings-shell .settings-nav {
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    margin: 0 -16px;
+    padding: 0 16px 6px;
+  }
+
+  .settings-shell .settings-nav button {
+    flex: none;
+    height: 36px;
+    white-space: nowrap;
+  }
+
+  .settings-page .settings-nav button.active {
+    box-shadow: inset 0 -2px 0 var(--accent), inset 0 0 0 1px var(--accent-line-soft), 0 8px 22px -14px var(--accent);
+  }
+
+  .settings-shell-main .page-head {
+    align-items: flex-start !important;
+    padding: 18px 16px 14px;
+  }
+
+  .settings-head-lead { gap: 12px; }
+  .settings-num { font-size: 24px; }
+  .settings-shell-scroll .settings-panel {
+    max-width: none;
+    padding: 20px 16px 52px;
+  }
+
+  .settings-page .imode-grid { grid-template-columns: 1fr; }
+
+  .settings-page .settings-danger-card,
+  .settings-page .usage-account {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-page .settings-danger-card .btn-danger,
+  .settings-page .usage-account .btn,
+  .settings-page .usage-account .chip {
+    align-self: flex-start;
+  }
+}
