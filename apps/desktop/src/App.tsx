@@ -5706,10 +5706,6 @@ function ModelsSettings({
           </span>
         ))}
       </div>
-      <p className="imode-videonote">
-        <AlertTriangle size={13} />
-        <span>{t("settings.models.videoNote")}</span>
-      </p>
 
       <section className="model-connections-shell">
         <div className="model-advanced-head">

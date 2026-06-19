@@ -121,8 +121,6 @@
 .settings-page .imode-pchip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 4px 9px; border-radius: var(--r-pill); }
 .settings-page .imode-pchip.local { color: var(--success); background: var(--success-tint); box-shadow: inset 0 0 0 1px var(--success-line); }
 .settings-page .imode-pchip.cloud { color: var(--accent); background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent-line-soft); }
-.settings-page .imode-videonote { display: flex; gap: 8px; align-items: flex-start; margin: var(--sp-3) 0 0; padding: 13px 15px; font-size: 12.5px; line-height: 1.7; color: var(--text-muted); border-radius: var(--r-md); background: var(--warn-tint); border: 1px solid var(--warn-line); }
-.settings-page .imode-videonote svg { color: var(--warn); flex: none; margin-top: 2px; }
 .settings-page .imode-pchip svg { flex: none; }
 
 /* ---- models: section spacing + connections shell ---- */
@@ -148,8 +146,22 @@
 /* destructive (non-solid) reads as a tinted danger pill, not bare text */
 .settings-page .btn-danger:not(.solid) { color: var(--danger); background: var(--danger-tint); border-color: var(--danger-line); }
 .settings-page .btn-danger:not(.solid):hover { background: var(--danger-soft); border-color: var(--danger); }
-/* selects sit on the same inset surface as the prototype */
-.settings-page select.select, .settings-page .select { background-color: var(--surface-2); }
+/* selects → cleaner inset pill with a soft chevron + hover/focus */
+.settings-page select.select {
+  background-color: var(--surface-2); border-color: var(--line); border-radius: var(--r-md);
+  height: 34px; font-weight: var(--fw-medium); cursor: pointer; box-shadow: var(--shadow-1);
+  background-position: right 11px center;
+}
+.settings-page select.select:hover { border-color: var(--accent-line); background-color: var(--surface-3); }
+.settings-page select.select:focus-visible { border-color: var(--accent); box-shadow: var(--focus-ring); }
+
+/* storage disk breakdown → clearer rows + chunkier rounded bars */
+.settings-page .storage-breakdown { gap: 14px; padding: 10px 0 4px; }
+.settings-page .storage-row { gap: 8px; font-size: var(--fs-meta); }
+.settings-page .storage-row > .row > span:first-child { color: var(--text); font-weight: var(--fw-medium); }
+.settings-page .storage-row > .row > .mono { color: var(--text-faint); }
+.settings-page .storage-row .progress { height: 7px; background: var(--surface-3); }
+.settings-page .storage-row .progress .bar { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 82%, transparent), var(--accent)); }
 
 /* Storage "危险区" — destructive action isolated in a red card (matches mockup) */
 .settings-page .settings-danger-group { margin-top: 24px; }
