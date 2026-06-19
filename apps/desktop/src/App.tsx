@@ -1337,6 +1337,7 @@ function AppWorkspace() {
   ];
   const mobileTitleKey =
     mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
+  const settingsTakeoverActive = view === "settings";
 
   return (
     <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
@@ -1391,124 +1392,128 @@ function AppWorkspace() {
         </div>
         <div className="titlebar-drag" aria-hidden="true" />
       </div>
-      <aside className="rail">
-        <div className="rail-top">
-          <button
-            className="rail-brand"
-            type="button"
-            onClick={() => navigate("home")}
-            aria-label={t("shell.openHome")}
-          >
-            <BrandMark />
-            <span className="rail-wordmark rail-label">Cerul</span>
-          </button>
-        </div>
-
-        <nav className="rail-nav" aria-label={t("nav.home")}>
-          {railItems.map((item) => {
-            const Icon = item.icon;
-            return (
+      {!settingsTakeoverActive ? (
+        <>
+          <aside className="rail">
+            <div className="rail-top">
               <button
-                className={item.id === sidebarActiveView ? "rail-item active" : "rail-item"}
-                key={item.id}
+                className="rail-brand"
                 type="button"
-                onClick={() => navigate(item.id)}
-                title={t(item.labelKey)}
+                onClick={() => navigate("home")}
+                aria-label={t("shell.openHome")}
+              >
+                <BrandMark />
+                <span className="rail-wordmark rail-label">Cerul</span>
+              </button>
+            </div>
+
+            <nav className="rail-nav" aria-label={t("nav.home")}>
+              {railItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    className={item.id === sidebarActiveView ? "rail-item active" : "rail-item"}
+                    key={item.id}
+                    type="button"
+                    onClick={() => navigate(item.id)}
+                    title={t(item.labelKey)}
+                  >
+                    <span className="rail-ind" aria-hidden="true" />
+                    <Icon size={17} />
+                    <span className="rail-label">{t(item.labelKey)}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="rail-bottom">
+              <div className="rail-sep" aria-hidden="true" />
+              <button
+                className="rail-item"
+                type="button"
+                onClick={() => setShowJobsSheet(true)}
+                title={t("nav.jobs")}
               >
                 <span className="rail-ind" aria-hidden="true" />
-                <Icon size={17} />
-                <span className="rail-label">{t(item.labelKey)}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="rail-bottom">
-          <div className="rail-sep" aria-hidden="true" />
-          <button
-            className="rail-item"
-            type="button"
-            onClick={() => setShowJobsSheet(true)}
-            title={t("nav.jobs")}
-          >
-            <span className="rail-ind" aria-hidden="true" />
-            <span style={{ position: "relative", display: "inline-flex" }}>
-              <ListChecks size={17} />
-              {activeJobCount > 0 ? (
-                <span className="badge-count" aria-hidden="true">
-                  {activeJobCount > 9 ? "9+" : activeJobCount}
+                <span style={{ position: "relative", display: "inline-flex" }}>
+                  <ListChecks size={17} />
+                  {activeJobCount > 0 ? (
+                    <span className="badge-count" aria-hidden="true">
+                      {activeJobCount > 9 ? "9+" : activeJobCount}
+                    </span>
+                  ) : null}
                 </span>
+                <span className="rail-label">{t("nav.jobs")}</span>
+              </button>
+              <button
+                className={sidebarActiveView === "settings" ? "rail-item active" : "rail-item"}
+                type="button"
+                onClick={() => navigate("settings")}
+                title={t("nav.settings")}
+              >
+                <span className="rail-ind" aria-hidden="true" />
+                <Settings size={17} />
+                <span className="rail-label">{t("nav.settings")}</span>
+              </button>
+              <AccountRailButton />
+              {lm.minimized && lm.download && lm.download.phase !== "ready" ? (
+                <button
+                  type="button"
+                  className="rail-dl-pill"
+                  onClick={lm.reopen}
+                  title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+                >
+                  <span className="ring" aria-hidden="true" />
+                  <span className="rail-label clamp1">
+                    {t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+                  </span>
+                </button>
               ) : null}
-            </span>
-            <span className="rail-label">{t("nav.jobs")}</span>
-          </button>
-          <button
-            className={sidebarActiveView === "settings" ? "rail-item active" : "rail-item"}
-            type="button"
-            onClick={() => navigate("settings")}
-            title={t("nav.settings")}
-          >
-            <span className="rail-ind" aria-hidden="true" />
-            <Settings size={17} />
-            <span className="rail-label">{t("nav.settings")}</span>
-          </button>
-          <AccountRailButton />
-          {lm.minimized && lm.download && lm.download.phase !== "ready" ? (
+              <div className="rail-status mono">
+                <span
+                  className="rail-status-dot"
+                  data-level={coreLevel === "grace" ? "ok" : coreLevel}
+                  aria-hidden="true"
+                />
+                <span className="rail-label">
+                  {coreLevel === "ok" || coreLevel === "grace"
+                    ? t("shell.coreLocal")
+                    : coreLevel === "starting"
+                      ? t("shell.coreStarting")
+                      : t("shell.coreUnresponsive")}
+                </span>
+              </div>
+            </div>
+          </aside>
+
+          <div className="mobilebar">
             <button
+              className="rail-brand"
               type="button"
-              className="rail-dl-pill"
-              onClick={lm.reopen}
-              title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+              onClick={() => navigate("home")}
+              aria-label={t("shell.openHome")}
             >
-              <span className="ring" aria-hidden="true" />
-              <span className="rail-label clamp1">
-                {t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
+              <BrandMark />
+            </button>
+            <span className="tb-title clamp1">{t(mobileTitleKey)}</span>
+            <button
+              className="btn-icon sm"
+              type="button"
+              onClick={() => setShowJobsSheet(true)}
+              aria-label={t("nav.jobs")}
+            >
+              <span style={{ position: "relative", display: "inline-flex" }}>
+                <ListChecks size={17} />
+                {activeJobCount > 0 ? (
+                  <span className="badge-count" aria-hidden="true">
+                    {activeJobCount > 9 ? "9+" : activeJobCount}
+                  </span>
+                ) : null}
               </span>
             </button>
-          ) : null}
-          <div className="rail-status mono">
-            <span
-              className="rail-status-dot"
-              data-level={coreLevel === "grace" ? "ok" : coreLevel}
-              aria-hidden="true"
-            />
-            <span className="rail-label">
-              {coreLevel === "ok" || coreLevel === "grace"
-                ? t("shell.coreLocal")
-                : coreLevel === "starting"
-                  ? t("shell.coreStarting")
-                  : t("shell.coreUnresponsive")}
-            </span>
           </div>
-        </div>
-      </aside>
-
-      <div className="mobilebar">
-        <button
-          className="rail-brand"
-          type="button"
-          onClick={() => navigate("home")}
-          aria-label={t("shell.openHome")}
-        >
-          <BrandMark />
-        </button>
-        <span className="tb-title clamp1">{t(mobileTitleKey)}</span>
-        <button
-          className="btn-icon sm"
-          type="button"
-          onClick={() => setShowJobsSheet(true)}
-          aria-label={t("nav.jobs")}
-        >
-          <span style={{ position: "relative", display: "inline-flex" }}>
-            <ListChecks size={17} />
-            {activeJobCount > 0 ? (
-              <span className="badge-count" aria-hidden="true">
-                {activeJobCount > 9 ? "9+" : activeJobCount}
-              </span>
-            ) : null}
-          </span>
-        </button>
-      </div>
+        </>
+      ) : null}
 
       <main className="content">
         {view === "onboarding" ? (
@@ -5080,7 +5085,7 @@ function SettingsScreen({
           })}
         </nav>
       </aside>
-      <main className="settings-shell-main">
+      <section className="settings-shell-main" aria-labelledby="settings-shell-title">
         <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
           <div className="settings-head-lead">
             <span className="settings-num" aria-hidden="true">
@@ -5088,7 +5093,9 @@ function SettingsScreen({
             </span>
             <div>
               <p className="page-eyebrow">{sectionEyebrows[activeSection] ?? t("settings.eyebrow")}</p>
-              <h1 className="page-h1">{sectionLabels[activeSection] ?? activeSection}</h1>
+              <h1 id="settings-shell-title" className="page-h1">
+                {sectionLabels[activeSection] ?? activeSection}
+              </h1>
             </div>
           </div>
           <span className={saveChipClass} role="status" aria-live="polite">
@@ -5140,7 +5147,7 @@ function SettingsScreen({
           {activeSection === "About" ? <AboutSettings /> : null}
         </div>
         </div>
-      </main>
+      </section>
     </div>
   );
 }
@@ -5917,13 +5924,15 @@ function isGeminiAsrModelId(modelId: string) {
 const PROCESSING_TO_INFERENCE: Record<string, string> = {
   cloud: "remote",
   local: "local",
+  auto: "auto",
 };
 function inferenceToProcessing(inferenceMode: string): string {
-  // Two presets only: 云端 API (default) vs 本地. Remote/auto map to cloud.
-  return inferenceMode === "local" ? "local" : "cloud";
+  if (inferenceMode === "local") return "local";
+  if (inferenceMode === "auto") return "auto";
+  return "cloud";
 }
 
-// Smart-processing selector — two selectable presets (云端 API / 仅在本机) plus a
+// Smart-processing selector — three selectable presets (本机 / 自动 / 云端 API) plus a
 // monthly-usage summary card. The cards ARE the switch.
 function InferenceModeSelector({
   processingMode,
