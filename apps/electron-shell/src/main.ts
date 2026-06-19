@@ -2770,6 +2770,8 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
         updateInstallRequested = true;
       } else if (latestUpdaterState.phase === "preparing") {
         updateInstallWhenPrepared = true;
+      } else if (latestUpdaterState.phase === "downloaded") {
+        await installDesktopUpdate(latestUpdaterState.version);
       }
     }
     return;
