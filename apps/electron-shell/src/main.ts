@@ -2721,8 +2721,11 @@ async function installDesktopUpdate(version?: string) {
     // app as quitting up front so our close-to-tray handler does not hide the
     // main window and leave ShipIt blocked on a still-running app instance.
     isQuitting = true;
-    scheduleMacShipItRescue(installingVersion);
     updater.quitAndInstall(false, true);
+    // Only arm the rescue after quitAndInstall returns successfully. If the
+    // updater throws synchronously, we do not want a detached post-exit ShipIt
+    // script to run later against a staged update the user did not install.
+    scheduleMacShipItRescue(installingVersion);
     scheduleUpdateInstallExitFallback();
   } catch (error) {
     clearUpdateInstallFallbackTimers();
