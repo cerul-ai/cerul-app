@@ -4957,6 +4957,15 @@ function SettingsScreen({
     Advanced: t("settings.section.advanced"),
     About: t("settings.section.about"),
   };
+  const sectionEyebrows: Record<string, string> = {
+    General: t("settings.section.general.eyebrow"),
+    Indexing: t("settings.section.indexing.eyebrow"),
+    Models: t("settings.section.models.eyebrow"),
+    Usage: t("settings.section.usage.eyebrow"),
+    Storage: t("settings.section.storage.eyebrow"),
+    Advanced: t("settings.section.advanced.eyebrow"),
+    About: t("settings.section.about.eyebrow"),
+  };
   const controlsDisabled = apiStatus !== "online";
   const activeSection = normalizeSettingsSection(section);
   const [saveState, setSaveState] = useState<{
@@ -5072,9 +5081,14 @@ function SettingsScreen({
       </aside>
       <main className="settings-shell-main">
         <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
-          <div>
-            <p className="page-eyebrow">{t("settings.eyebrow")}</p>
-            <h1 className="page-h1">{sectionLabels[activeSection] ?? activeSection}</h1>
+          <div className="settings-head-lead">
+            <span className="settings-num" aria-hidden="true">
+              {String(settingsSections.indexOf(activeSection) + 1).padStart(2, "0")}
+            </span>
+            <div>
+              <p className="page-eyebrow">{sectionEyebrows[activeSection] ?? t("settings.eyebrow")}</p>
+              <h1 className="page-h1">{sectionLabels[activeSection] ?? activeSection}</h1>
+            </div>
           </div>
           <span className={saveChipClass} role="status" aria-live="polite">
             {saveState.status === "saving" ? <Loader2 size={13} /> : <Check size={13} />}
@@ -5682,6 +5696,16 @@ function ModelsSettings({
         onSettingsChange={onSettingsChange}
       />
 
+      <div className="imode-posture">
+        <span className="imode-posture-lbl">{t("settings.models.posture")}</span>
+        {capabilities.map((cap) => (
+          <span key={cap.key} className={cap.isLocal ? "imode-pchip local" : "imode-pchip cloud"}>
+            {cap.name} → {cap.isLocal ? t("settings.models.loc.local") : t("settings.models.loc.cloud")}
+          </span>
+        ))}
+      </div>
+      <p className="imode-videonote">{t("settings.models.videoNote")}</p>
+
       <section className="model-connections-shell">
         <div className="model-advanced-head">
           <div className="model-advanced-head__titles">
@@ -5925,18 +5949,25 @@ function InferenceModeSelector({
     badgeTone: string;
   }[] = [
     {
-      id: "cloud",
-      label: t("settings.models.processing.cloud"),
-      desc: t("settings.models.processing.cloud.desc"),
-      badge: t("settings.models.processing.cloud.badge"),
-      badgeTone: "accent",
-    },
-    {
       id: "local",
       label: t("settings.models.processing.local"),
       desc: t("settings.models.processing.local.desc"),
       badge: t("settings.models.processing.local.badge"),
       badgeTone: "success",
+    },
+    {
+      id: "auto",
+      label: t("settings.models.processing.auto"),
+      desc: t("settings.models.processing.auto.desc"),
+      badge: t("settings.models.processing.auto.badge"),
+      badgeTone: "accent",
+    },
+    {
+      id: "cloud",
+      label: t("settings.models.processing.cloud"),
+      desc: t("settings.models.processing.cloud.desc"),
+      badge: t("settings.models.processing.cloud.badge"),
+      badgeTone: "accent",
     },
   ];
 
