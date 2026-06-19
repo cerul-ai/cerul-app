@@ -136,6 +136,19 @@
 /* keyboard focus rings on the nav */
 .settings-page .settings-nav button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
+/* ---- in-section controls aligned to the mockup ---- */
+/* group labels: soft sans, not mono-uppercase (matches the prototype) */
+.settings-page .settings-group-title { font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12.5px; }
+/* buttons: quiet pill look on a faint inset surface */
+.settings-page .btn-secondary { background: var(--surface-2); }
+.settings-page .btn-secondary:hover { background: var(--surface-3); }
+.settings-page .btn-ghost.accent { border: 1px dashed var(--accent-line); }
+/* destructive (non-solid) reads as a tinted danger pill, not bare text */
+.settings-page .btn-danger:not(.solid) { color: var(--danger); background: var(--danger-tint); border-color: var(--danger-line); }
+.settings-page .btn-danger:not(.solid):hover { background: var(--danger-soft); border-color: var(--danger); }
+/* selects sit on the same inset surface as the prototype */
+.settings-page select.select, .settings-page .select { background-color: var(--surface-2); }
+
 /* narrow window: nav already collapses to a horizontal scroller (app.css ≤720);
    keep the glass cards readable there too */
 @media (max-width: 860px) {
