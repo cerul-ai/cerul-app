@@ -5043,7 +5043,7 @@ function SettingsScreen({
           : "chip neutral";
 
   return (
-    <div className="page">
+    <div className="page settings-page">
       <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
         <div>
           <p className="page-eyebrow">{t("settings.eyebrow")}</p>
