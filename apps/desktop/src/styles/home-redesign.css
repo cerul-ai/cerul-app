@@ -1,0 +1,77 @@
+/* ============================================================
+   HOME — visual refresh to the Aurora Glass language.
+   Scoped under .home-page. Hero typography, a prominent frosted-glass
+   search box, glass recent cards. Loaded after app.css/extensions.css.
+   ============================================================ */
+
+/* ---- hero ---- */
+.home-page .home-search-stage { padding-top: 8vh; }
+.home-page .home-search-stage h1 { font-size: 42px; line-height: 1.1; letter-spacing: -0.03em; }
+[data-theme="dark"] .home-page .home-search-stage h1 { text-shadow: 0 2px 30px rgba(143, 176, 216, 0.16); }
+.home-page .home-summary { font-size: 14.5px; color: var(--text-muted); }
+
+/* ---- the big search box → prominent frosted glass ---- */
+.home-page .search-input {
+  height: 56px; font-size: 16px; border-radius: var(--r-xl); padding-left: 50px;
+  -webkit-backdrop-filter: blur(20px) saturate(1.3); backdrop-filter: blur(20px) saturate(1.3);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.home-page .search-wrap > svg { left: 18px; }
+[data-theme="light"] .home-page .search-input {
+  background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74));
+  border-color: var(--line);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 22px 50px -26px rgba(28,40,60,0.24);
+}
+[data-theme="dark"] .home-page .search-input {
+  background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5));
+  border-color: rgba(255,255,255,0.1);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 24px 56px -28px rgba(0,0,0,0.6);
+}
+.home-page .search-input:focus-visible, .home-page .search-input:focus {
+  border-color: var(--accent-line); box-shadow: var(--focus-ring), 0 22px 50px -24px rgba(28,40,60,0.26);
+}
+.home-page .search-wrap.disabled .search-input {
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-color: var(--line);
+  cursor: not-allowed;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* ---- recent-indexed cards → glass with a hover lift ---- */
+.home-page .recent-indexed-card {
+  border-radius: var(--r-xl); overflow: hidden;
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+[data-theme="light"] .home-page .recent-indexed-card {
+  background: linear-gradient(165deg, rgba(255,255,255,0.9), rgba(255,255,255,0.72));
+  border: 1px solid var(--line); box-shadow: 0 16px 38px -24px rgba(28,40,60,0.2);
+}
+[data-theme="dark"] .home-page .recent-indexed-card {
+  background: linear-gradient(165deg, rgba(36,40,49,0.6), rgba(22,25,31,0.45));
+  border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 20px 46px -26px rgba(0,0,0,0.6);
+}
+.home-page .recent-indexed-card:hover { transform: translateY(-2px); box-shadow: var(--card-sh-lift); border-color: var(--accent-line-soft); }
+.home-page .recent-indexed-card .body { padding: 12px 13px 14px; }
+
+/* ---- continue-watching card → glass ---- */
+[data-theme="light"] .home-page .continue-card { background: linear-gradient(165deg, rgba(255,255,255,0.9), rgba(255,255,255,0.72)); border: 1px solid var(--line); box-shadow: 0 16px 38px -24px rgba(28,40,60,0.2); }
+[data-theme="dark"] .home-page .continue-card { background: linear-gradient(165deg, rgba(36,40,49,0.6), rgba(22,25,31,0.45)); border: 1px solid rgba(255,255,255,0.08); }
+.home-page .continue-card { border-radius: var(--r-xl); }
+
+/* ---- section labels: softer, consistent with the redesign ---- */
+.home-page .section-label { font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12.5px; color: var(--text-faint); }
+.home-page .home-recent-block { margin-top: 44px; }
+
+@media (max-width: 720px) {
+  .home-page .home-search-stage { padding-top: 34px; }
+  .home-page .home-search-stage h1 { font-size: 23px; }
+  .home-page .home-search-stage p,
+  .home-page .home-summary {
+    max-width: 320px;
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+}
