@@ -139,9 +139,15 @@
 /* ---- in-section controls aligned to the mockup ---- */
 /* group labels: soft sans, not mono-uppercase (matches the prototype) */
 .settings-page .settings-group-title { font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12.5px; }
-/* buttons: quiet pill look on a faint inset surface */
-.settings-page .btn-secondary { background: var(--surface-2); }
-.settings-page .btn-secondary:hover { background: var(--surface-3); }
+/* buttons: refined inset pill — subtle lift + accent icons on hover */
+.settings-page .btn-secondary {
+  background: var(--surface-2); border-color: var(--line); box-shadow: var(--shadow-1);
+  font-weight: var(--fw-medium);
+}
+.settings-page .btn-secondary:hover { background: var(--surface-3); border-color: var(--accent-line); box-shadow: var(--shadow-2); }
+.settings-page .btn-secondary:active { transform: translateY(0.5px); }
+.settings-page .btn-secondary svg { color: var(--text-faint); transition: color var(--dur-fast) var(--ease); }
+.settings-page .btn-secondary:hover svg { color: var(--accent); }
 .settings-page .btn-ghost.accent { border: 1px dashed var(--accent-line); }
 /* destructive (non-solid) reads as a tinted danger pill, not bare text */
 .settings-page .btn-danger:not(.solid) { color: var(--danger); background: var(--danger-tint); border-color: var(--danger-line); }
