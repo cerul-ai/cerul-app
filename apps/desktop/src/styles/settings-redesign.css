@@ -12,8 +12,43 @@
 .settings-page .page-h1 { font-size: 30px; letter-spacing: -0.025em; }
 [data-theme="dark"] .settings-page .page-h1 { text-shadow: 0 2px 26px rgba(143, 176, 216, 0.14); }
 
+/* ---- full-window settings shell (Codex-style takeover; replaces the
+   in-app content page so the main rail is no longer beside settings) ---- */
+.settings-page.settings-shell {
+  position: fixed; top: var(--titlebar-h, 40px); left: 0; right: 0; bottom: 0;
+  z-index: 30; max-width: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: 264px minmax(0, 1fr);
+  background:
+    radial-gradient(680px 360px at 50% 4%, #ffffff, rgba(255, 255, 255, 0) 66%),
+    linear-gradient(180deg, #fafbfc, #eef1f4);
+}
+[data-theme="dark"] .settings-page.settings-shell {
+  background:
+    radial-gradient(700px 380px at 50% -10%, #222933, transparent 62%),
+    radial-gradient(440px 240px at 82% 4%, rgba(90, 134, 184, 0.22), transparent 58%),
+    linear-gradient(180deg, #14181d, #0d1014);
+}
+.settings-shell-side {
+  display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
+  padding: 18px 14px 16px; border-right: 1px solid var(--line);
+}
+[data-theme="dark"] .settings-shell-side { border-right-color: rgba(255, 255, 255, 0.07); }
+.settings-back {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  font: inherit; font-size: var(--fs-meta); font-weight: 500; color: var(--text-muted);
+  background: transparent; border: 0; cursor: pointer; padding: 7px 10px;
+  border-radius: var(--r-md); margin-bottom: 12px;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.settings-back:hover { background: var(--surface-3); color: var(--text); }
+.settings-back:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.settings-shell .settings-nav { position: static; top: auto; }
+.settings-shell-main { display: flex; flex-direction: column; min-height: 0; }
+.settings-shell-main .page-head { margin: 0; padding: 26px 40px 18px; border-bottom: 1px solid var(--line); }
+.settings-shell-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.settings-shell-scroll .settings-panel { max-width: 760px; margin: 0 auto; padding: 28px 40px 84px; }
+
 /* ---- paged nav: numbered + glow active ---- */
-.settings-page .settings-wrap { grid-template-columns: 212px 1fr; gap: 44px; }
 .settings-page .settings-nav { counter-reset: snav; gap: 3px; }
 .settings-page .settings-nav button { position: relative; height: 38px; padding: 0 12px; gap: 11px; }
 .settings-page .settings-nav button::before {
@@ -91,7 +126,9 @@
 
 /* narrow window: nav already collapses to a horizontal scroller (app.css ≤720);
    keep the glass cards readable there too */
-@media (max-width: 720px) {
-  .settings-page .settings-wrap { grid-template-columns: 1fr; gap: 16px; }
+@media (max-width: 860px) {
+  .settings-page.settings-shell { grid-template-columns: 208px minmax(0, 1fr); }
+  .settings-shell-main .page-head { padding: 22px 22px 16px; }
+  .settings-shell-scroll .settings-panel { padding: 22px 22px 60px; }
   .settings-page .settings-group-rows { padding: 2px 14px; }
 }

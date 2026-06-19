@@ -26,6 +26,7 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
+  ArrowLeft,
   ChevronRight,
   CircleDot,
   Clock,
@@ -1731,6 +1732,7 @@ function AppWorkspace() {
         ) : null}
         {view === "settings" ? (
           <SettingsScreen
+            onBack={() => navigate("home")}
             section={settingsSection}
             setSection={setSettingsSection}
             apiStatus={apiStatus}
@@ -4925,6 +4927,7 @@ function SettingsScreen({
   daemonStatus,
   onSettingsChange,
   requestConfirm,
+  onBack,
 }: {
   section: string;
   setSection: (section: string) => void;
@@ -4933,6 +4936,7 @@ function SettingsScreen({
   daemonStatus: DaemonStatus | null;
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
   requestConfirm: RequestConfirm;
+  onBack: () => void;
 }) {
   const t = useT();
   const sectionIcons: Record<string, LucideIcon> = {
@@ -5043,19 +5047,12 @@ function SettingsScreen({
           : "chip neutral";
 
   return (
-    <div className="page settings-page">
-      <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
-        <div>
-          <p className="page-eyebrow">{t("settings.eyebrow")}</p>
-          <h1 className="page-h1">{sectionLabels[activeSection] ?? activeSection}</h1>
-        </div>
-        <span className={saveChipClass} role="status" aria-live="polite">
-          {saveState.status === "saving" ? <Loader2 size={13} /> : <Check size={13} />}
-          {saveState.message}
-        </span>
-      </div>
-
-      <div className="settings-wrap">
+    <div className="page settings-page settings-shell">
+      <aside className="settings-shell-side">
+        <button type="button" className="settings-back" onClick={onBack}>
+          <ArrowLeft size={16} />
+          <span>{t("settings.back")}</span>
+        </button>
         <nav className="settings-nav" aria-label={t("settings.nav.aria")}>
           {settingsSections.map((item) => {
             const Icon = sectionIcons[item];
@@ -5072,6 +5069,19 @@ function SettingsScreen({
             );
           })}
         </nav>
+      </aside>
+      <main className="settings-shell-main">
+        <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
+          <div>
+            <p className="page-eyebrow">{t("settings.eyebrow")}</p>
+            <h1 className="page-h1">{sectionLabels[activeSection] ?? activeSection}</h1>
+          </div>
+          <span className={saveChipClass} role="status" aria-live="polite">
+            {saveState.status === "saving" ? <Loader2 size={13} /> : <Check size={13} />}
+            {saveState.message}
+          </span>
+        </div>
+        <div className="settings-shell-scroll">
         <div className="settings-panel">
           {apiStatus !== "online" ? (
             <p className="field-hint" style={{ marginBottom: 18 }}>{t("settings.offlineNotice")}</p>
@@ -5114,7 +5124,8 @@ function SettingsScreen({
           ) : null}
           {activeSection === "About" ? <AboutSettings /> : null}
         </div>
-      </div>
+        </div>
+      </main>
     </div>
   );
 }
