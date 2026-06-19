@@ -620,6 +620,13 @@ function createOverlayWindow() {
   });
 
   secureDesktopWindow(overlayWindow);
+  // Dismiss like a normal spotlight: when the overlay loses focus — the user
+  // clicks the main window, another page, or any other app — hide it.
+  // (Selecting a result also blurs the overlay as the main window comes
+  // forward, which hides it too; that's the desired behaviour.)
+  overlayWindow.on("blur", () => {
+    overlayWindow?.hide();
+  });
   overlayWindow.on("closed", () => {
     overlayWindow = null;
   });
