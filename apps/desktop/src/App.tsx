@@ -7715,8 +7715,7 @@ function AboutSettings() {
           label={t("settings.about.buildDate.label")}
           control={<span className="settings-value">{t("settings.about.buildDate.value")}</span>}
         />
-      </SettingsGroup>
-      <div className="settings-actions">
+        <div className="settings-actions settings-actions--incard">
         <button
           className="btn btn-secondary sm"
           type="button"
@@ -7786,7 +7785,8 @@ function AboutSettings() {
             <span>{t("settings.about.update.openRelease")}</span>
           </button>
         ) : null}
-      </div>
+        </div>
+      </SettingsGroup>
       {updateState.message ? (
         <InlineNotice
           tone={updateState.status === "error" ? "error" : "muted"}
