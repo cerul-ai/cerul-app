@@ -8,7 +8,7 @@
   </a>
   <h1>Cerul App</h1>
   <p><strong>A self-hosted second brain for everything you watch and hear.</strong></p>
-  <p>Point it at your folders, YouTube channels, and podcast feeds. Cerul watches, transcribes, and indexes them <strong>locally</strong> — then lets you search by meaning across speech and on-screen content — and jump straight to the moment — from a desktop app, a global overlay, or the Cerul Core API.</p>
+  <p>Point it at your folders, YouTube channels, and podcast feeds. Cerul watches them locally, transcribes with provider keys you control or local models, and indexes the results on your machine — then lets you search by meaning across speech and on-screen content, and jump straight to the moment, from a desktop app, a global overlay, or the Cerul Core API.</p>
 
   <p>
     <a href="https://cerul.ai"><strong>Website</strong></a> &middot;
@@ -132,7 +132,7 @@ scripts/           Build, packaging, and smoke-test scripts
 
 ## Status & roadmap
 
-Cerul App is in its **initial 0.0.22 release**. The foundation works end to end, and the release workflow now gates public macOS artifacts on signing, notarization, and installed-build smoke coverage.
+Cerul App is in alpha. Current release: **0.0.22**. The foundation works end to end, and the release workflow now gates public macOS artifacts on signing, notarization, and installed-build smoke coverage.
 
 **Working today**
 - Electron desktop shell, local REST API, storage, and indexing pipeline

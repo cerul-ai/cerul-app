@@ -7,8 +7,8 @@
     </picture>
   </a>
   <h1>Cerul App</h1>
-  <p><strong>你的视听第二大脑，数据不出本机。</strong></p>
-  <p>把它指向你的文件夹、YouTube 频道和播客订阅源。Cerul 会在<strong>本地</strong>监看、转写并索引它们 —— 然后让你跨语音与画面内容按语义搜索、一键跳到关键一刻，入口可以是桌面应用、全局浮层，或 Cerul Core API。</p>
+  <p><strong>你的视听第二大脑，本地优先、由你掌控。</strong></p>
+  <p>把它指向你的文件夹、YouTube 频道和播客订阅源。Cerul 会在本地监看它们，用你掌控的 provider key 或本地模型转写，并把结果索引在你的机器上 —— 然后让你跨语音与画面内容按语义搜索、一键跳到关键一刻，入口可以是桌面应用、全局浮层，或 Cerul Core API。</p>
 
   <p>
     <a href="https://cerul.ai"><strong>官网</strong></a> &middot;
@@ -132,7 +132,7 @@ scripts/           构建、打包与冒烟测试脚本
 
 ## 项目状态与路线图
 
-Cerul App 处于 **0.0.22 初版发布** 阶段。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
+Cerul App 仍处于 alpha 阶段。当前版本：**0.0.22**。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
 
 **今天已可用**
 - Electron 桌面外壳、本地 REST API、存储与索引流水线
