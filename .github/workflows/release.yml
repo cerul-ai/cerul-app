@@ -40,6 +40,9 @@ jobs:
             target/electron/*.zip.blockmap
             target/electron/latest-mac.yml
             target/electron/Cerul.app.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz.sha256
+            apps/electron-shell/mlx-runtime-manifest.json
           key: cerul-macos-update-${{ github.sha }}
 
       - name: Extract cached app bundle
@@ -178,6 +181,10 @@ jobs:
           fi
           if [ "${REQUIRE_MACOS_SIGNING:-false}" != "true" ]; then
             args+=(--allow-ad-hoc --skip-notarization)
+          fi
+          runtime_archive="$(find target/electron apps/electron-shell -type f -name mlx-runtime.tar.gz -print -quit 2>/dev/null || true)"
+          if [ -n "$runtime_archive" ]; then
+            export CERUL_MLX_RUNTIME_ARCHIVE="$runtime_archive"
           fi
           scripts/smoke-macos-signing.sh "${args[@]}"
       - uses: actions/upload-artifact@v7
