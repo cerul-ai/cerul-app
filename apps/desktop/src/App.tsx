@@ -835,6 +835,27 @@ function AppWorkspace() {
     };
   }, []);
 
+  // A search in the overlay window clears the shared first-run flag in the UI
+  // store. Re-read it when this window regains focus so the guidance also
+  // disappears live here, not only on the next launch. Active only while the
+  // guidance is showing.
+  useEffect(() => {
+    if (!firstRunActive) {
+      return;
+    }
+    function resync() {
+      loadPersistedUiState()
+        .then((state) => {
+          if (!state.firstRunActive) {
+            setFirstRunActive(false);
+          }
+        })
+        .catch(() => undefined);
+    }
+    window.addEventListener("focus", resync);
+    return () => window.removeEventListener("focus", resync);
+  }, [firstRunActive]);
+
   useEffect(() => {
     void refreshCoreData();
   }, []);
@@ -2245,15 +2266,21 @@ function HomeScreen({
     return <HomeEmptyState onAddSource={onAddSource} />;
   }
 
-  // First-run, first index still cooking: the one moment a takeover is earned.
-  // Turn dead waiting time into orientation (Scheme ②).
-  if (firstRunActive && searchDisabled) {
+  // First-run guidance only engages with real, loaded state — never on a
+  // stalled, failed, or still-connecting home. ② needs an actually-active
+  // index (a failed first batch falls through to the normal home + its status
+  // and recovery actions); ③ needs an online core with ≥1 indexed item so the
+  // banner/examples can't appear — or be clicked — before content is ready.
+  const firstRunIndexing = firstRunActive && searchDisabled && activeJobs.length > 0;
+  const firstRunReady = firstRunActive && apiStatus === "online" && indexedCount > 0;
+
+  if (firstRunIndexing) {
     return <FirstRunIndexing statusLabel={statusLabel} globalHotkey={globalHotkey} />;
   }
 
   return (
     <div className="page home-page" style={{ maxWidth: 920 }}>
-      {firstRunActive ? (
+      {firstRunReady ? (
         <FirstRunReadyHeader globalHotkey={globalHotkey} onDismiss={onResolveFirstRun} />
       ) : null}
       <div className="home-search-stage">
@@ -2295,7 +2322,7 @@ function HomeScreen({
           </p>
         ) : null}
 
-        {firstRunActive && !searchDisabled ? (
+        {firstRunReady ? (
           <FirstRunExamples onRunQuery={onRunQuery} />
         ) : null}
 

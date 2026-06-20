@@ -14,8 +14,16 @@ rg -qF "void persistFirstRunActive(true)" apps/desktop/src
 rg -qF "setFirstRunActive(Boolean(state.firstRunActive))" apps/desktop/src
 rg -qF "function resolveFirstRun()" apps/desktop/src
 
+# Guidance only engages with real, loaded state (PR #76 review): ② needs an
+# active index, ③ needs an online core with indexed content.
+rg -qF "const firstRunIndexing = firstRunActive && searchDisabled && activeJobs.length > 0" apps/desktop/src
+rg -qF 'const firstRunReady = firstRunActive && apiStatus === "online" && indexedCount > 0' apps/desktop/src
+
+# Overlay (⌥Space) searches/asks resolve the same shared flag.
+rg -qF "void persistFirstRunActive(false)" apps/desktop/src/OverlayApp.tsx
+
 # ② first-index cinematic takeover (the one earned takeover moment).
-rg -qF "if (firstRunActive && searchDisabled)" apps/desktop/src
+rg -qF "if (firstRunIndexing)" apps/desktop/src
 rg -qF "function FirstRunIndexing(" apps/desktop/src
 rg -qF "onb-illo onb-illo-source fr-illo" apps/desktop/src
 

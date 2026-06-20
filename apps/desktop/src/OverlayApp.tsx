@@ -7,6 +7,7 @@ import { useI18n } from "./lib/i18n";
 import type { TFunction } from "./lib/i18n";
 import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
+import { persistFirstRunActive } from "./lib/uiStore";
 import { isBackendFallbackSnippet } from "./lib/results";
 
 type OverlayResult = {
@@ -78,6 +79,17 @@ export function OverlayApp() {
   }>({ status: "idle" });
   const retainedQueryTimerRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  // A successful overlay search/ask is a real "first search" — clear the
+  // shared first-run flag so the main window's guidance won't reappear. Once
+  // per overlay session; the persisted write is what the main window reads.
+  const firstRunClearedRef = useRef(false);
+  function clearFirstRunGuidance() {
+    if (firstRunClearedRef.current) {
+      return;
+    }
+    firstRunClearedRef.current = true;
+    void persistFirstRunActive(false);
+  }
   const trimmedQuery = query.trim();
   const selectedResult = results[selectedIndex];
   const isUrlQuery = mode === "search" && isLikelyUrl(trimmedQuery);
@@ -206,6 +218,7 @@ export function OverlayApp() {
           }
           setResults(response.results.map((record) => mapOverlayResult(record, items, sources, t)));
           setSearchState("ready");
+          clearFirstRunGuidance();
         })
         .catch((searchError) => {
           if (cancelled) {
@@ -246,6 +259,7 @@ export function OverlayApp() {
           }
           setAskAnswer(answer);
           setAskState("ready");
+          clearFirstRunGuidance();
         })
         .catch((askErr) => {
           if (cancelled) {
