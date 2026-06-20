@@ -7,8 +7,8 @@
     </picture>
   </a>
   <h1>Cerul App</h1>
-  <p><strong>Self-hosted memory for everything you watch and hear.</strong></p>
-  <p>Point it at your folders, YouTube channels, and podcast feeds. Cerul watches, transcribes, and indexes them <strong>locally</strong> — then lets you search by meaning across speech and on-screen content, from a desktop app, a global overlay, or the Cerul Core API.</p>
+  <p><strong>A self-hosted second brain for everything you watch and hear.</strong></p>
+  <p>Point it at your folders, YouTube channels, and podcast feeds. Cerul watches, transcribes, and indexes them <strong>locally</strong> — then lets you search by meaning across speech and on-screen content — and jump straight to the moment — from a desktop app, a global overlay, or the Cerul Core API.</p>
 
   <p>
     <a href="https://cerul.ai"><strong>Website</strong></a> &middot;
@@ -20,7 +20,7 @@
   <p>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
-    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.5-22c55e?style=flat-square" />
+    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.22-22c55e?style=flat-square" />
   </p>
 
   <p>
@@ -32,7 +32,7 @@
 <br />
 
 > [!NOTE]
-> **Initial release.** Cerul App is the source-available, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.5**. The core is functional — desktop shell, Cerul Core, indexing pipeline, hybrid search, overlay, and tray all run today. Public release builds are published through GitHub Releases; macOS artifacts are signed and notarized when the release workflow has Developer ID credentials.
+> **Initial release.** Cerul App is the source-available, self-hostable companion to [Cerul Cloud](https://cerul.ai). Current version: **0.0.22**. The core is functional — desktop shell, Cerul Core, indexing pipeline, hybrid search, overlay, and tray all run today. Public release builds are published through GitHub Releases; macOS artifacts are signed and notarized when the release workflow has Developer ID credentials.
 
 ## Why Cerul App
 
@@ -132,7 +132,7 @@ scripts/           Build, packaging, and smoke-test scripts
 
 ## Status & roadmap
 
-Cerul App is in its **initial 0.0.5 release**. The foundation works end to end, and the release workflow now gates public macOS artifacts on signing, notarization, and installed-build smoke coverage.
+Cerul App is in its **initial 0.0.22 release**. The foundation works end to end, and the release workflow now gates public macOS artifacts on signing, notarization, and installed-build smoke coverage.
 
 **Working today**
 - Electron desktop shell, local REST API, storage, and indexing pipeline
