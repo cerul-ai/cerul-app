@@ -8,6 +8,7 @@ cargo metadata --no-deps --format-version 1 >/dev/null
 bash scripts/smoke-core-banner-ui.sh
 bash scripts/smoke-onboarding-ui.sh
 bash scripts/smoke-home-ui.sh
+bash scripts/smoke-first-run-ui.sh
 bash scripts/smoke-jobs-ui.sh
 bash scripts/smoke-notifications.sh
 bash scripts/smoke-tray.sh

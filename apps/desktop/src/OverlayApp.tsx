@@ -7,6 +7,7 @@ import { useI18n } from "./lib/i18n";
 import type { TFunction } from "./lib/i18n";
 import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
+import { loadPersistedUiState, persistFirstRunActive } from "./lib/uiStore";
 import { isBackendFallbackSnippet } from "./lib/results";
 
 type OverlayResult = {
@@ -78,6 +79,21 @@ export function OverlayApp() {
   }>({ status: "idle" });
   const retainedQueryTimerRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  // A successful overlay search/ask is a real "first search" — clear the shared
+  // first-run flag so the main window's guidance won't reappear. The overlay is
+  // long-lived, so read the flag fresh each time (storeGet is an IPC read of the
+  // single main-process store) rather than caching a once-per-session guard:
+  // that way a re-run onboarding after an earlier search is still handled, and
+  // established users (flag already false) incur no write.
+  function clearFirstRunGuidance() {
+    loadPersistedUiState()
+      .then((state) => {
+        if (state.firstRunActive) {
+          void persistFirstRunActive(false);
+        }
+      })
+      .catch(() => undefined);
+  }
   const trimmedQuery = query.trim();
   const selectedResult = results[selectedIndex];
   const isUrlQuery = mode === "search" && isLikelyUrl(trimmedQuery);
@@ -206,6 +222,12 @@ export function OverlayApp() {
           }
           setResults(response.results.map((record) => mapOverlayResult(record, items, sources, t)));
           setSearchState("ready");
+          // Only a search that actually matched indexed content counts as the
+          // first search — /search can return an empty set before any chunk is
+          // indexed, which must not dismiss guidance during the ② takeover.
+          if (response.results.length > 0) {
+            clearFirstRunGuidance();
+          }
         })
         .catch((searchError) => {
           if (cancelled) {
@@ -246,6 +268,11 @@ export function OverlayApp() {
           }
           setAskAnswer(answer);
           setAskState("ready");
+          // Likewise, only a grounded answer (with citations from indexed
+          // content) counts — an empty-library answer must not dismiss guidance.
+          if (answer.citations.length > 0) {
+            clearFirstRunGuidance();
+          }
         })
         .catch((askErr) => {
           if (cancelled) {

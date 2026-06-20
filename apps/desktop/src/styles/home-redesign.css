@@ -75,3 +75,104 @@
     line-height: 1.45;
   }
 }
+
+/* ============================================================
+   FIRST-RUN HOME — the ③+② guidance for the post-wizard cohort.
+   ② = the first-index cinematic takeout; ③ = a dismissible banner +
+   stepper that rides on top of the real home once content is ready.
+   Reuses .onb-illo / .chip.indexing / .spin already defined upstream.
+   ============================================================ */
+
+/* shared stepper (used by both ② and ③) */
+.fr-stepper { display: flex; align-items: center; gap: 0; width: 100%; max-width: 560px; margin: 4px auto 0; }
+.fr-step { display: flex; align-items: center; gap: 9px; flex: none; }
+.fr-mk {
+  width: 24px; height: 24px; border-radius: 999px; flex: none;
+  display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  border: 1.5px solid var(--line-strong); background: var(--surface); color: var(--text-faint);
+}
+.fr-step.done .fr-mk { background: var(--success); border-color: var(--success); color: #fff; }
+[data-theme="dark"] .fr-step.done .fr-mk { color: var(--text-on-accent); }
+.fr-step.active .fr-mk { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.fr-step-label { font-size: 12.5px; color: var(--text-faint); white-space: nowrap; }
+.fr-step.active .fr-step-label { color: var(--text); font-weight: 550; }
+.fr-step.done .fr-step-label { color: var(--text-muted); }
+.fr-conn { flex: 1; height: 1.5px; min-width: 22px; margin: 0 12px; background: var(--line-strong); }
+.fr-conn.fill { background: var(--success); }
+
+/* ===== ② first-index takeover ===== */
+.home-firstrun { display: flex; justify-content: center; }
+.fr-indexing { width: 100%; max-width: 600px; text-align: center; padding: 7vh 24px 48px; }
+.fr-illo { margin: 0 auto 14px; }
+.fr-indexing .onb-folder svg { width: 26px; height: 26px; }
+.fr-eyebrow {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 10px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.fr-eyebrow .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fr-title { font-size: 30px; line-height: 1.18; letter-spacing: -0.025em; font-weight: 700; margin: 0 0 12px; text-wrap: balance; }
+[data-theme="dark"] .fr-title { text-shadow: 0 2px 30px rgba(143, 176, 216, 0.16); }
+.fr-lead { font-size: 14.5px; line-height: 1.6; color: var(--text-muted); max-width: 46ch; margin: 0 auto 24px; }
+
+.fr-progress { max-width: 460px; margin: 0 auto 22px; text-align: left; }
+.fr-progress-head { display: flex; justify-content: center; margin-bottom: 11px; }
+.fr-bar { position: relative; height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.fr-bar-fill {
+  position: absolute; top: 0; left: 0; height: 100%; width: 40%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  animation: frIndeterminate 1.5s var(--ease) infinite;
+}
+@keyframes frIndeterminate {
+  0% { left: -42%; } 100% { left: 102%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fr-bar-fill { animation: none; width: 32%; left: 8%; }
+}
+
+.fr-indexing .fr-stepper { margin: 0 auto 26px; }
+.fr-feat-label { font-size: 13px; color: var(--text-faint); margin: 0 0 14px; }
+.fr-feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; text-align: left; }
+.fr-feat {
+  border-radius: var(--r-lg, 12px); border: 1px solid var(--line); background: var(--surface);
+  padding: 16px 14px; box-shadow: var(--shadow-1);
+}
+.fr-feat-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); margin-bottom: 11px; }
+.fr-feat strong { display: block; font-size: 13.5px; font-weight: 620; margin-bottom: 4px; }
+.fr-feat span { font-size: 12.5px; color: var(--text-muted); line-height: 1.5; }
+.fr-cost { display: inline-flex; align-items: center; gap: 7px; margin: 24px 0 0; font-size: 12.5px; color: var(--text-muted); }
+
+/* ===== ③ ready banner + stepper over the real home ===== */
+.fr-ready { margin-bottom: 26px; }
+.fr-banner {
+  display: flex; align-items: center; gap: 13px; padding: 13px 14px 13px 16px;
+  border-radius: var(--r-lg, 12px); background: var(--success-tint); border: 1px solid var(--success-line);
+  margin-bottom: 18px;
+}
+.fr-banner-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 999px; flex: none; background: var(--success-soft); color: var(--success); }
+.fr-banner-text { flex: 1; min-width: 0; }
+.fr-banner-text strong { display: block; font-size: 13.5px; font-weight: 620; color: var(--text); }
+.fr-banner-text span { font-size: 12.5px; color: var(--text-muted); }
+.fr-ready .fr-stepper { margin: 0; max-width: 600px; }
+
+/* ===== example search chips (payoff for "I don't know what to search") ===== */
+.fr-examples { margin-top: 16px; }
+.fr-examples-label { font-size: 12.5px; color: var(--text-faint); margin: 0 0 10px; }
+.fr-example-row { display: flex; flex-wrap: wrap; gap: 9px; }
+.fr-example {
+  display: inline-flex; align-items: center; gap: 9px; padding: 9px 14px 9px 12px;
+  border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
+  box-shadow: var(--shadow-1); cursor: pointer; font-size: 13px; color: var(--text);
+  transition: border-color var(--dur-fast, 120ms) var(--ease), box-shadow var(--dur-fast, 120ms) var(--ease), transform var(--dur-fast, 120ms) var(--ease);
+}
+.fr-example:hover { border-color: var(--accent-line); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.fr-example:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.fr-example-icon { color: var(--accent); flex: none; }
+.fr-example-tag { font-size: 10.5px; font-weight: 650; color: var(--accent-2); background: var(--copper-soft); padding: 2px 7px; border-radius: 999px; }
+
+@media (max-width: 720px) {
+  .fr-feat-grid { grid-template-columns: 1fr; }
+  .fr-title { font-size: 24px; }
+  .fr-step-label { display: none; }
+  .fr-conn { min-width: 16px; margin: 0 8px; }
+}

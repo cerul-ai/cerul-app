@@ -17,6 +17,12 @@ export type PersistedUiState = {
   // unset — a fresh install or after clearing local data — the app auto-opens
   // onboarding on launch so the first-run intro is always shown.
   hasCompletedOnboarding?: boolean;
+  // Set true when the wizard hands off to the home screen, marking the cohort
+  // that should see the first-run home guidance (the "now what?" indexing-wait
+  // takeover + the ready-state getting-started banner). Resolved to false on the
+  // first search or when the banner is dismissed, so it never shows to
+  // established users (who never had it set) or twice to a new one.
+  firstRunActive?: boolean;
 };
 
 let storePromise: Promise<DesktopStore | null> | null = null;
@@ -27,6 +33,7 @@ export async function loadPersistedUiState(): Promise<PersistedUiState> {
     return {
       lastRoute: await store.get<PersistedRoute>("lastRoute"),
       hasCompletedOnboarding: await store.get<boolean>("hasCompletedOnboarding"),
+      firstRunActive: await store.get<boolean>("firstRunActive"),
     };
   }
 
@@ -39,6 +46,10 @@ export async function persistLastRoute(route: PersistedRoute) {
 
 export async function persistOnboardingCompleted(hasCompletedOnboarding: boolean) {
   await persistUiPatch({ hasCompletedOnboarding });
+}
+
+export async function persistFirstRunActive(firstRunActive: boolean) {
+  await persistUiPatch({ firstRunActive });
 }
 
 async function persistUiPatch(patch: PersistedUiState) {
