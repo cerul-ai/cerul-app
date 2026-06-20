@@ -447,10 +447,6 @@ impl Transcriber for MlxSidecar {
         if let Some(progress) = progress {
             progress(100);
         }
-        anyhow::ensure!(
-            !response.segments.is_empty(),
-            "MLX ASR returned no timestamped segments"
-        );
         Ok(response
             .segments
             .into_iter()

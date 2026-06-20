@@ -15,3 +15,4 @@ pyclipper==1.4.0
 PyYAML==6.0.3
 soundfile==0.13.1
 huggingface-hub==1.16.1
+socksio==1.0.0

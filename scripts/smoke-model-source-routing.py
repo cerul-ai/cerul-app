@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,62 @@ def run_case(
         restore_env(previous_env)
 
 
+def assert_qwen_snapshots_require_tokenizer_files(sidecar: Any) -> None:
+    for model in (sidecar.DEFAULT_ASR_MODEL, sidecar.DEFAULT_FORCED_ALIGNER_MODEL):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir)
+            (snapshot / "config.json").write_text("{}", encoding="utf-8")
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+
+            missing = sidecar.pinned_snapshot_missing_reasons(snapshot, model)
+            if not any("vocab.json" in reason and "tokenizer_config.json" in reason for reason in missing):
+                raise AssertionError(f"{model}: tokenizer files should be required, got {missing}")
+
+            (snapshot / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+            (snapshot / "vocab.json").write_text("{}", encoding="utf-8")
+            missing = sidecar.pinned_snapshot_missing_reasons(snapshot, model)
+            if missing:
+                raise AssertionError(f"{model}: complete tokenizer snapshot should pass, got {missing}")
+
+
+def assert_complete_mirror_cache_bypasses_download_selection(sidecar: Any) -> None:
+    previous_env = {"HF_HOME": os.environ.get("HF_HOME")}
+    original_cache_root = sidecar.MODELS_CACHE_ROOT
+    original_bundled_snapshot_dir = sidecar.bundled_snapshot_dir
+    original_select_download_source = sidecar.select_download_source
+    model = sidecar.DEFAULT_FORCED_ALIGNER_MODEL
+    revision = sidecar.PINNED_MODEL_REVISIONS[model]
+
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sidecar.MODELS_CACHE_ROOT = root
+            os.environ["HF_HOME"] = str(root / "huggingface")
+            sidecar.bundled_snapshot_dir = lambda *_args: None
+
+            snapshot = sidecar.mirror_snapshot_dir(model, revision)
+            if snapshot is None:
+                raise AssertionError("mirror snapshot path should exist when cache root is set")
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").write_text("{}", encoding="utf-8")
+            (snapshot / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+            (snapshot / "vocab.json").write_text("{}", encoding="utf-8")
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+
+            def fail_select_download_source(*_args: Any, **_kwargs: Any) -> str:
+                raise AssertionError("complete mirror cache should bypass source selection")
+
+            sidecar.select_download_source = fail_select_download_source
+            resolved = sidecar.resolve_snapshot(model)
+            if resolved != snapshot:
+                raise AssertionError(f"expected complete mirror snapshot {snapshot}, got {resolved}")
+    finally:
+        sidecar.MODELS_CACHE_ROOT = original_cache_root
+        sidecar.bundled_snapshot_dir = original_bundled_snapshot_dir
+        sidecar.select_download_source = original_select_download_source
+        restore_env(previous_env)
+
+
 def main() -> None:
     sidecar = load_sidecar_module()
     success = {"ok": True}
@@ -138,6 +195,8 @@ def main() -> None:
         },
         expected_source=sidecar.SOURCE_MODELSCOPE,
     )
+    assert_qwen_snapshots_require_tokenizer_files(sidecar)
+    assert_complete_mirror_cache_bypasses_download_selection(sidecar)
     print("model source routing smoke passed")
 
 

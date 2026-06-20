@@ -71,6 +71,7 @@ sentencepiece==0.2.1
 setuptools==81.0.0
 shellingham==1.5.4
 six==1.17.0
+socksio==1.0.0
 soundfile==0.13.1
 tiktoken==0.13.0
 tokenizers==0.22.2
