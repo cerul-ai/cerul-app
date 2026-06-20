@@ -567,3 +567,70 @@ jobs:
               --content-type "application/octet-stream" \
               --content-disposition "attachment; filename=\"$(basename "$dmg_blockmap")\""
           fi
+
+  announce:
+    name: AI release notes + Discord announcement
+    needs: publish-dmg-assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    # Best-effort: a failure here must never affect the release that already shipped.
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history + tags so we can diff the commit range
+      - name: Generate AI release notes (GitHub / Discord / Tweet)
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          DOWNLOAD_URL: ${{ vars.DOWNLOAD_URL }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/ai-release-notes.sh "$TAG" --out notes
+      - name: Replace GitHub release body with AI notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -s notes/notes.github.md ]; then
+            gh release edit "$TAG" --notes-file notes/notes.github.md
+            echo "Updated release notes for $TAG."
+          else
+            echo "No AI notes generated; leaving the existing release body untouched."
+          fi
+      - name: Announce on Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ] || [ ! -s notes/notes.discord.md ]; then
+            echo "Webhook or Discord notes missing; skipping Discord announcement."
+            exit 0
+          fi
+          desc="$(cat notes/notes.discord.md)"; desc="${desc:0:3800}"
+          payload="$(jq -n \
+            --arg content "🚀 **Cerul ${TAG} is out!**" \
+            --arg title "Cerul ${TAG}" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+            --arg desc "$desc" \
+            '{username:"Cerul Releases", content:$content,
+              embeds:[{title:$title, url:$url, description:$desc, color:4090781}]}')"
+          curl -fsS -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
+          echo "Announced ${TAG} on Discord."
+      - name: Surface tweet draft for manual posting
+        if: always()
+        run: |
+          {
+            echo "## Cerul ${GITHUB_REF_NAME} — tweet draft (post manually)"
+            echo '```'
+            cat notes/notes.tweet.txt 2>/dev/null || echo "(none generated)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: release-notes-${{ github.ref_name }}
+          path: notes/
+          if-no-files-found: warn
