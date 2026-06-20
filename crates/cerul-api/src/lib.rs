@@ -3200,8 +3200,8 @@ fn repair_indexed_item_status_from_artifacts(paths: &AppPaths) -> anyhow::Result
             r#"
             SELECT id, metadata
             FROM items
-            WHERE status IN ('discovered', 'fetching', 'processing')
-              AND indexed_at IS NULL
+            WHERE status IN ('discovered', 'fetching', 'processing', 'failed')
+              AND (indexed_at IS NULL OR status = 'failed')
               AND metadata IS NOT NULL
             ORDER BY id ASC
             "#,
@@ -3226,6 +3226,7 @@ fn repair_indexed_item_status_from_artifacts(paths: &AppPaths) -> anyhow::Result
             UPDATE items
             SET status = 'indexed',
                 indexed_at = COALESCE(
+                    indexed_at,
                     (
                         SELECT MAX(finished_at)
                         FROM jobs
@@ -3237,8 +3238,8 @@ fn repair_indexed_item_status_from_artifacts(paths: &AppPaths) -> anyhow::Result
                 ),
                 error = NULL
             WHERE id = ?1
-              AND status IN ('discovered', 'fetching', 'processing')
-              AND indexed_at IS NULL
+              AND status IN ('discovered', 'fetching', 'processing', 'failed')
+              AND (indexed_at IS NULL OR status = 'failed')
             "#,
             [item_id.as_str()],
         )?;
@@ -4698,18 +4699,31 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO items (
-                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata, error
                 )
-                VALUES (
-                    'item-1',
-                    'source-1',
-                    'video',
-                    'video.mp4',
-                    'Video',
-                    NULL,
-                    'discovered',
-                    '{"embedding_index_status":"indexed","transcript_index_status":"indexed"}'
-                )
+                VALUES
+                    (
+                        'item-1',
+                        'source-1',
+                        'video',
+                        'video.mp4',
+                        'Video',
+                        NULL,
+                        'discovered',
+                        '{"embedding_index_status":"indexed","transcript_index_status":"indexed"}',
+                        NULL
+                    ),
+                    (
+                        'item-2',
+                        'source-1',
+                        'video',
+                        'failed-rebuild.mp4',
+                        'Failed Rebuild',
+                        NULL,
+                        'failed',
+                        '{"ocr_index_status":"indexed"}',
+                        'stale rebuild failure'
+                    )
                 "#,
                 [],
             )
@@ -4717,7 +4731,9 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO jobs (id, item_id, job_type, status, started_at, finished_at, progress)
-                VALUES ('job-done', 'item-1', 'index_video', 'completed', 1000, 1234, 1)
+                VALUES
+                    ('job-done', 'item-1', 'index_video', 'completed', 1000, 1234, 1),
+                    ('job-done-2', 'item-2', 'index_video', 'completed', 2000, 2222, 1)
                 "#,
                 [],
             )
@@ -4726,17 +4742,28 @@ mod tests {
 
         let repaired = repair_indexed_item_status_from_artifacts(&paths).unwrap();
 
-        assert_eq!(repaired, 1);
+        assert_eq!(repaired, 2);
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
-        let item: (String, Option<i64>) = conn
+        let item: (String, Option<i64>, Option<String>) = conn
             .query_row(
-                "SELECT status, indexed_at FROM items WHERE id = 'item-1'",
+                "SELECT status, indexed_at, error FROM items WHERE id = 'item-1'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(item.0, "indexed");
         assert_eq!(item.1, Some(1234));
+        assert_eq!(item.2, None);
+        let failed_rebuild: (String, Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT status, indexed_at, error FROM items WHERE id = 'item-2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(failed_rebuild.0, "indexed");
+        assert_eq!(failed_rebuild.1, Some(2222));
+        assert_eq!(failed_rebuild.2, None);
     }
 
     #[tokio::test]
