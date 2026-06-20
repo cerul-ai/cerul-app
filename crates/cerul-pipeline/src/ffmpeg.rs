@@ -85,7 +85,7 @@ pub async fn sample_frames(
         .args(["-y", "-i"])
         .arg(video)
         .args(["-vf", &frame_filter])
-        .args(["-fps_mode", "vfr", "-q:v", "3"])
+        .args(["-vsync", "vfr", "-q:v", "3"])
         .args(["-pix_fmt", "yuvj420p", "-strict", "unofficial"])
         .arg(pattern)
         .stdout(Stdio::null())
