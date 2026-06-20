@@ -13,7 +13,12 @@ rg -qF "const [selectedItemIds, setSelectedItemIds]" apps/desktop/src
 rg -qF "async function runBatchAction" apps/desktop/src
 rg -qF "const activeJobCount = visibleJobs.filter(isActiveJob).length" apps/desktop/src
 rg -qF ": [];" apps/desktop/src/App.tsx
-rg -qF "<IndexingStrip jobs={jobs} items={items} stepStarts={stepStarts} onOpen={onOpenJobs} />" apps/desktop/src/App.tsx
+rg -qF "<IndexingStrip" apps/desktop/src/App.tsx
+rg -qF "jobs={jobs}" apps/desktop/src/App.tsx
+rg -qF "items={items}" apps/desktop/src/App.tsx
+rg -qF "stepStarts={stepStarts}" apps/desktop/src/App.tsx
+rg -qF "paused={indexingPaused}" apps/desktop/src/App.tsx
+rg -qF "onOpen={onOpenJobs}" apps/desktop/src/App.tsx
 rg -qF "active.reduce(" apps/desktop/src/components/indexing-strip.tsx
 rg -qF "/ active.length" apps/desktop/src/components/indexing-strip.tsx
 rg -qF 'rep.job_type !== "index_audio"' apps/desktop/src/components/indexing-strip.tsx
@@ -28,7 +33,7 @@ rg -qF "item-progress-overlay" apps/desktop/src
 rg -qF "function ItemModalityIcon" apps/desktop/src
 rg -qF "item.thumbnailUrl" apps/desktop/src
 rg -qF "Math.round(item.progress * 100)" apps/desktop/src
-rg -qF "onDeleteItems={async (itemIds)" apps/desktop/src
+rg -qF "onDeleteItems={async (itemIds" apps/desktop/src
 rg -qF "onReindexItems={async (itemIds)" apps/desktop/src
 rg -qF "api.deleteItem(itemId)" apps/desktop/src
 rg -qF "api.reindexItem(itemId)" apps/desktop/src
