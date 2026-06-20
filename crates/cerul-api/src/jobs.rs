@@ -192,7 +192,13 @@ impl JobWorker {
 
         if is_job_cancelled(&self.paths, &job.id)? {
             if let Ok(item) = cerul_storage::get_item(&self.paths, &job.item_id) {
-                if let Err(error) = crate::cleanup_item_artifacts(&self.paths, &item).await {
+                if item.status == "indexed" {
+                    tracing::info!(
+                        job_id = %job.id,
+                        item_id = %job.item_id,
+                        "skipped artifact cleanup for cancelled indexed-item rebuild"
+                    );
+                } else if let Err(error) = crate::cleanup_item_artifacts(&self.paths, &item).await {
                     tracing::warn!(
                         %error,
                         job_id = %job.id,
@@ -454,8 +460,14 @@ pub fn requeue_interrupted_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
         conn.execute(
             r#"
             UPDATE items
-            SET status = 'discovered',
-                indexed_at = NULL,
+            SET status = CASE
+                    WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
+                    ELSE 'discovered'
+                END,
+                indexed_at = CASE
+                    WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN indexed_at
+                    ELSE NULL
+                END,
                 error = NULL
             WHERE id = ?1
               AND status IN ('fetching', 'processing', 'indexed')
@@ -822,6 +834,7 @@ fn mark_item_processing(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()
         SET status = 'processing',
             error = NULL
         WHERE id = ?1
+          AND status != 'indexed'
         "#,
         [job.item_id.as_str()],
     )?;
@@ -875,8 +888,14 @@ fn fail_job(paths: &AppPaths, job: &ClaimedJob, error: &str) -> anyhow::Result<(
     conn.execute(
         r#"
         UPDATE items
-        SET status = 'failed',
-            error = ?2
+        SET status = CASE
+                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
+                ELSE 'failed'
+            END,
+            error = CASE
+                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN NULL
+                ELSE ?2
+            END
         WHERE id = ?1
         "#,
         params![job.item_id.as_str(), error],
@@ -973,6 +992,7 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
                 error = NULL,
                 indexed_at = NULL
             WHERE id = ?1
+              AND status != 'indexed'
             "#,
             [job.item_id.as_str()],
         )?;
@@ -1043,6 +1063,11 @@ mod tests {
         fail: bool,
     }
 
+    struct CancelDuringProcessor {
+        paths: AppPaths,
+        calls: Mutex<Vec<String>>,
+    }
+
     #[async_trait]
     impl JobProcessor for FakeProcessor {
         async fn process(&self, job: &ClaimedJob) -> anyhow::Result<()> {
@@ -1056,6 +1081,22 @@ mod tests {
             }
 
             cerul_storage::mark_indexed(&self.paths, &job.item_id)?;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl JobProcessor for CancelDuringProcessor {
+        async fn process(&self, job: &ClaimedJob) -> anyhow::Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", job.job_type, job.item_id));
+            let conn = sqlite::open(&self.paths)?;
+            conn.execute(
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?1",
+                [job.id.as_str()],
+            )?;
             Ok(())
         }
     }
@@ -1125,7 +1166,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_marks_indexed_rebuild_job_failed_on_error() {
+    async fn worker_preserves_indexed_item_when_rebuild_job_fails() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_job(
@@ -1155,7 +1196,58 @@ mod tests {
             1.0,
             Some("fake indexing failure"),
         );
-        assert_item_status(&paths, "item-1", "failed", Some("fake indexing failure"));
+        assert_item_status(&paths, "item-1", "indexed", None);
+    }
+
+    #[tokio::test]
+    async fn worker_preserves_indexed_item_when_running_rebuild_is_cancelled() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "queued",
+            "indexed",
+        );
+        let legacy_key = cerul_pipeline::run::cache_key_for_discovery_id("item-1");
+        let scoped_key = cerul_pipeline::run::cache_key_for_item("item-1", "item-1");
+        for key in [&legacy_key, &scoped_key] {
+            let audio_cache = paths
+                .cache
+                .join("pipeline")
+                .join("audio")
+                .join(format!("{key}.wav"));
+            std::fs::create_dir_all(audio_cache.parent().unwrap()).unwrap();
+            std::fs::write(audio_cache, b"cached audio").unwrap();
+        }
+        let processor = Arc::new(CancelDuringProcessor {
+            paths: paths.clone(),
+            calls: Mutex::new(Vec::new()),
+        });
+        let worker = JobWorker::new(paths.clone(), processor.clone());
+
+        let outcome = worker.run_next_queued_job().await.unwrap().unwrap();
+
+        assert_eq!(outcome.status, "cancelled");
+        assert_eq!(
+            processor.calls.lock().unwrap().as_slice(),
+            ["index_video:item-1"]
+        );
+        assert_job(&paths, "job-1", "cancelled", 1.0, None);
+        assert_item_status(&paths, "item-1", "indexed", None);
+        for key in [&legacy_key, &scoped_key] {
+            assert!(
+                paths
+                    .cache
+                    .join("pipeline")
+                    .join("audio")
+                    .join(format!("{key}.wav"))
+                    .exists(),
+                "running indexed rebuild cancellation should not clear existing cache"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1441,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn requeue_interrupted_jobs_restores_running_items() {
+    fn requeue_interrupted_jobs_preserves_indexed_items() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_job(
@@ -1458,8 +1550,16 @@ mod tests {
 
         assert_eq!(updated, 1);
         assert_job(&paths, "job-1", "queued", 0.0, None);
-        assert_item_status(&paths, "item-1", "discovered", None);
-        assert_item_indexed_at(&paths, "item-1", None);
+        assert_item_status(&paths, "item-1", "indexed", None);
+        let conn = sqlite::open(&paths).unwrap();
+        let indexed_at: Option<i64> = conn
+            .query_row(
+                "SELECT indexed_at FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(indexed_at.is_some());
     }
 
     #[test]
@@ -1902,19 +2002,6 @@ mod tests {
 
         assert_eq!(row.0, status);
         assert_eq!(row.1.as_deref(), error);
-    }
-
-    fn assert_item_indexed_at(paths: &AppPaths, item_id: &str, indexed_at: Option<i64>) {
-        let conn = sqlite::open(paths).unwrap();
-        let value = conn
-            .query_row(
-                "SELECT indexed_at FROM items WHERE id = ?1",
-                [item_id],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .unwrap();
-
-        assert_eq!(value, indexed_at);
     }
 
     fn job_count_for_item(paths: &AppPaths, item_id: &str) -> i64 {

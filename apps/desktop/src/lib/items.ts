@@ -20,11 +20,20 @@ import type {
   VisualIndexStatus,
 } from "./types";
 
-export function itemStatus(status: string, indexedAt: number | null): ItemStatus {
+export function itemStatus(record: api.ItemRecord): ItemStatus {
+  const { status, indexed_at: indexedAt } = record;
   if (status === "failed" || status === "error") {
     return "failed";
   }
+  const hasIndexedArtifacts =
+    metadataString(record.metadata, "embedding_index_status") === "indexed" ||
+    metadataString(record.metadata, "transcript_index_status") === "indexed" ||
+    metadataString(record.metadata, "visual_index_status") === "indexed" ||
+    metadataString(record.metadata, "ocr_index_status") === "indexed";
   if (status === "indexed" || indexedAt !== null) {
+    return "indexed";
+  }
+  if (hasIndexedArtifacts && status !== "deleting") {
     return "indexed";
   }
   return "indexing";
@@ -371,7 +380,7 @@ export function mapItemRecord(
   jobRecords: api.JobRecord[],
   t: TFunction,
 ): Item {
-  const status = itemStatus(record.status, record.indexed_at);
+  const status = itemStatus(record);
   const job = latestActiveJobForItem(record.id, jobRecords);
   const itemProgress = status === "indexing" && job ? jobStepProgressPercent(job) / 100 : null;
   const rawPath = record.raw_path ?? metadataString(record.metadata, "raw_path");
