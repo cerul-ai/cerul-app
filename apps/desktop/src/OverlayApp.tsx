@@ -222,7 +222,12 @@ export function OverlayApp() {
           }
           setResults(response.results.map((record) => mapOverlayResult(record, items, sources, t)));
           setSearchState("ready");
-          clearFirstRunGuidance();
+          // Only a search that actually matched indexed content counts as the
+          // first search — /search can return an empty set before any chunk is
+          // indexed, which must not dismiss guidance during the ② takeover.
+          if (response.results.length > 0) {
+            clearFirstRunGuidance();
+          }
         })
         .catch((searchError) => {
           if (cancelled) {
@@ -263,7 +268,11 @@ export function OverlayApp() {
           }
           setAskAnswer(answer);
           setAskState("ready");
-          clearFirstRunGuidance();
+          // Likewise, only a grounded answer (with citations from indexed
+          // content) counts — an empty-library answer must not dismiss guidance.
+          if (answer.citations.length > 0) {
+            clearFirstRunGuidance();
+          }
         })
         .catch((askErr) => {
           if (cancelled) {

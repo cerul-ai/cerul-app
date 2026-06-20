@@ -22,8 +22,12 @@ rg -qF 'const firstRunReady = firstRunActive && apiStatus === "online" && indexe
 rg -qF "if (submittedQuery.trim()) {" apps/desktop/src
 rg -qF "loadPersistedUiState()" apps/desktop/src/OverlayApp.tsx
 
-# Overlay (⌥Space) searches/asks resolve the same shared flag.
+# Overlay (⌥Space) searches/asks resolve the same shared flag — but only when
+# they actually matched indexed content (PR #76 review, P2), never on an empty
+# hit during the ② takeover.
 rg -qF "void persistFirstRunActive(false)" apps/desktop/src/OverlayApp.tsx
+rg -qF "if (response.results.length > 0) {" apps/desktop/src/OverlayApp.tsx
+rg -qF "if (answer.citations.length > 0) {" apps/desktop/src/OverlayApp.tsx
 
 # ② first-index cinematic takeover (the one earned takeover moment).
 rg -qF "if (firstRunIndexing)" apps/desktop/src
