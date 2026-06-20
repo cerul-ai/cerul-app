@@ -1,1 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 508 508" role="img" aria-label="Cerul"><rect width="211" height="508"></rect><rect x="297" y="91" width="211" height="112"></rect><rect x="297" y="301" width="211" height="207"></rect></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Cerul">
+  <style>
+    .t0 { stop-color: #3a3f49; }
+    .t1 { stop-color: #15171c; }
+    .gl { fill: #eef0f4; }
+    .rg { stroke: #ffffff; stroke-opacity: .14; }
+    @media (prefers-color-scheme: dark) {
+      .t0 { stop-color: #f3f4f6; }
+      .t1 { stop-color: #cdd2d9; }
+      .gl { fill: #26292f; }
+      .rg { stroke: #28323e; stroke-opacity: .10; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0.42" y2="1">
+      <stop offset="0" class="t0"></stop><stop offset="1" class="t1"></stop>
+    </linearGradient>
+    <clipPath id="c"><rect width="1024" height="1024" rx="229"></rect></clipPath>
+  </defs>
+  <g clip-path="url(#c)">
+    <rect width="1024" height="1024" fill="url(#g)"></rect>
+    <g transform="translate(226 226) scale(1.126)" class="gl">
+      <rect width="211" height="508" rx="22"></rect><rect x="297" y="91" width="211" height="112" rx="22"></rect><rect x="297" y="301" width="211" height="207" rx="22"></rect>
+    </g>
+    <rect x="0.75" y="0.75" width="1022.5" height="1022.5" rx="228" fill="none" class="rg" stroke-width="1.5"></rect>
+  </g>
+</svg>

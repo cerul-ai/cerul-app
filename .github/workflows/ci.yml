@@ -258,6 +258,9 @@ jobs:
             target/electron/*.zip.blockmap
             target/electron/latest-mac.yml
             target/electron/Cerul.app.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz.sha256
+            apps/electron-shell/mlx-runtime-manifest.json
           key: cerul-macos-update-${{ github.sha }}
       - uses: actions/upload-artifact@v7
         with:
@@ -267,4 +270,7 @@ jobs:
             target/electron/*.zip.blockmap
             target/electron/latest-mac.yml
             target/electron/Cerul.app.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz
+            apps/electron-shell/mlx-runtime.tar.gz.sha256
+            apps/electron-shell/mlx-runtime-manifest.json
           if-no-files-found: error
