@@ -16,8 +16,11 @@ rg -qF "function resolveFirstRun()" apps/desktop/src
 
 # Guidance only engages with real, loaded state (PR #76 review): ② needs an
 # active index, ③ needs an online core with indexed content.
-rg -qF "const firstRunIndexing = firstRunActive && searchDisabled && activeJobs.length > 0" apps/desktop/src
+rg -qF "firstRunActive && searchDisabled && activeJobs.length > 0 && !onlyPausedQueuedJobs" apps/desktop/src
 rg -qF 'const firstRunReady = firstRunActive && apiStatus === "online" && indexedCount > 0' apps/desktop/src
+# Blank submits and overlay re-runs are handled (PR #76 review, P3).
+rg -qF "if (submittedQuery.trim()) {" apps/desktop/src
+rg -qF "loadPersistedUiState()" apps/desktop/src/OverlayApp.tsx
 
 # Overlay (⌥Space) searches/asks resolve the same shared flag.
 rg -qF "void persistFirstRunActive(false)" apps/desktop/src/OverlayApp.tsx

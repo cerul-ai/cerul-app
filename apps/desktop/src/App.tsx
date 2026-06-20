@@ -1266,14 +1266,20 @@ function AppWorkspace() {
       event.currentTarget.querySelector<HTMLInputElement>("input")?.value ??
       query;
     setQuery(submittedQuery);
-    resolveFirstRun();
+    // Only a real (non-empty) search counts as completing the first-run step;
+    // runSearch trims and bails on blank, so guard the resolve the same way.
+    if (submittedQuery.trim()) {
+      resolveFirstRun();
+    }
     navigate("results");
     void runSearch(submittedQuery);
   }
 
   function runQuery(value: string) {
     setQuery(value);
-    resolveFirstRun();
+    if (value.trim()) {
+      resolveFirstRun();
+    }
     navigate("results");
     void runSearch(value);
   }
@@ -2271,7 +2277,8 @@ function HomeScreen({
   // index (a failed first batch falls through to the normal home + its status
   // and recovery actions); ③ needs an online core with ≥1 indexed item so the
   // banner/examples can't appear — or be clicked — before content is ready.
-  const firstRunIndexing = firstRunActive && searchDisabled && activeJobs.length > 0;
+  const firstRunIndexing =
+    firstRunActive && searchDisabled && activeJobs.length > 0 && !onlyPausedQueuedJobs;
   const firstRunReady = firstRunActive && apiStatus === "online" && indexedCount > 0;
 
   if (firstRunIndexing) {
