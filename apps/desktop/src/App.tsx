@@ -30,6 +30,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock,
+  Command,
   Copy,
   Cloud,
   Cpu,
@@ -70,7 +71,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from "react";
 import * as api from "./lib/api";
 import { useAuthStore } from "./lib/cloud/authStore";
@@ -208,7 +209,12 @@ import {
   timestampDeepLink,
 } from "./lib/detail";
 import { durationMinutes, sortLibraryItems } from "./lib/library";
-import { loadPersistedUiState, persistLastRoute, persistOnboardingCompleted } from "./lib/uiStore";
+import {
+  loadPersistedUiState,
+  persistLastRoute,
+  persistOnboardingCompleted,
+  persistFirstRunActive,
+} from "./lib/uiStore";
 import type { PersistedRoute } from "./lib/uiStore";
 import {
   checkForDesktopUpdate,
@@ -620,6 +626,9 @@ function AppWorkspace() {
   const exchangeOAuthCode = useAuthStore((state) => state.exchangeOAuthCode);
   const initialRoute = readRouteState();
   const [view, setViewState] = useState<View>(initialRoute.view);
+  // First-run home guidance: true only for users who just finished the wizard,
+  // until they run a search or dismiss the banner. Gates the ③+② first-run home.
+  const [firstRunActive, setFirstRunActive] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(initialRoute.itemId);
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(initialRoute.chunkId);
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(
@@ -800,6 +809,8 @@ function AppWorkspace() {
         if (cancelled) {
           return;
         }
+
+        setFirstRunActive(Boolean(state.firstRunActive));
 
         // First run (a fresh or cleared install): no completed-onboarding flag,
         // no persisted route, and no explicit deep link → open the onboarding
@@ -1217,6 +1228,16 @@ function AppWorkspace() {
       .join(" · ");
   }
 
+  // First-run guidance ends the moment the user actually searches or dismisses
+  // the banner — it never lingers or reappears.
+  function resolveFirstRun() {
+    if (!firstRunActive) {
+      return;
+    }
+    setFirstRunActive(false);
+    void persistFirstRunActive(false);
+  }
+
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const submittedQuery =
@@ -1224,8 +1245,16 @@ function AppWorkspace() {
       event.currentTarget.querySelector<HTMLInputElement>("input")?.value ??
       query;
     setQuery(submittedQuery);
+    resolveFirstRun();
     navigate("results");
     void runSearch(submittedQuery);
+  }
+
+  function runQuery(value: string) {
+    setQuery(value);
+    resolveFirstRun();
+    navigate("results");
+    void runSearch(value);
   }
 
   async function runSearch(value: string) {
@@ -1318,6 +1347,8 @@ function AppWorkspace() {
       await refreshCoreData();
       setModelDownloadState({ status: "idle", error: null });
       void persistOnboardingCompleted(true);
+      setFirstRunActive(true);
+      void persistFirstRunActive(true);
       navigate("home");
     } catch (error) {
       setModelDownloadState({ status: "error", error: errorMessage(error) });
@@ -1557,6 +1588,9 @@ function AppWorkspace() {
             apiStatus={apiStatus}
             onOpenModelSettings={() => navigate("settings", { settingsSection: "Models" })}
             globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
+            firstRunActive={firstRunActive}
+            onResolveFirstRun={resolveFirstRun}
+            onRunQuery={runQuery}
           />
         ) : null}
         {view === "results" ? (
@@ -1941,6 +1975,147 @@ function HomeEmptyState({ onAddSource }: { onAddSource: () => void }) {
   );
 }
 
+// ---- First-run home guidance (Scheme ③ + ②) -------------------------------
+// Shown only to the post-wizard cohort (firstRunActive), only until the first
+// search or an explicit dismiss. Bridges the two "now what?" valleys: the first
+// indexing wait (②, a cinematic takeover) and the freshly-ready-but-blank home
+// (③, a dismissible banner + horizontal stepper over the real home).
+
+const FIRST_RUN_EXAMPLE_KEYS: { key: string; icon: LucideIcon; tagKey?: string }[] = [
+  { key: "firstRun.example.said", icon: Mic },
+  { key: "firstRun.example.shown", icon: ImageIcon, tagKey: "firstRun.tagVisual" },
+  { key: "firstRun.example.todo", icon: Sparkles },
+];
+
+function firstRunFeatures(t: TFunction, globalHotkey: string) {
+  return [
+    { icon: Mic, title: t("firstRun.feat.said.title"), desc: t("firstRun.feat.said.desc") },
+    { icon: ImageIcon, title: t("firstRun.feat.shown.title"), desc: t("firstRun.feat.shown.desc") },
+    {
+      icon: Command,
+      title: t("firstRun.feat.summon.title"),
+      desc: t("firstRun.feat.summon.desc", { hotkey: formatHotkeyLabel(globalHotkey) }),
+    },
+  ];
+}
+
+function FirstRunStepper({ activeIndex }: { activeIndex: number }) {
+  const t = useT();
+  const labels = [t("firstRun.steps.source"), t("firstRun.steps.index"), t("firstRun.steps.search")];
+  return (
+    <div className="fr-stepper" role="list" aria-label={t("firstRun.steps.aria")}>
+      {labels.map((label, index) => {
+        const status = index < activeIndex ? "done" : index === activeIndex ? "active" : "todo";
+        return (
+          <Fragment key={label}>
+            {index > 0 ? (
+              <span className={index <= activeIndex ? "fr-conn fill" : "fr-conn"} aria-hidden="true" />
+            ) : null}
+            <span className={`fr-step ${status}`} role="listitem">
+              <span className="fr-mk">{status === "done" ? <Check size={13} /> : index + 1}</span>
+              <span className="fr-step-label">{label}</span>
+            </span>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// Scheme ② — the first-index cinematic takeover. Reuses the wizard's floating-
+// file illustration + the Aurora Glass language already in handoff.css.
+function FirstRunIndexing({ statusLabel, globalHotkey }: { statusLabel: string; globalHotkey: string }) {
+  const t = useT();
+  const features = firstRunFeatures(t, globalHotkey);
+  return (
+    <div className="page home-firstrun">
+      <div className="fr-indexing">
+        <div className="onb-illo onb-illo-source fr-illo" aria-hidden="true">
+          <span className="onb-file onb-file-l"><span className="onb-play" /></span>
+          <span className="onb-file onb-file-r"><span className="onb-play" /></span>
+          <span className="onb-file onb-file-c"><span className="onb-play" /></span>
+          <span className="onb-folder">
+            <svg viewBox="0 0 508 508" width={26} height={26} aria-hidden="true">
+              <rect width="211" height="508" />
+              <rect x="297" y="91" width="211" height="112" />
+              <rect x="297" y="301" width="211" height="207" />
+            </svg>
+          </span>
+        </div>
+        <p className="fr-eyebrow"><span className="dot" />{t("firstRun.indexing.eyebrow")}</p>
+        <h1 className="fr-title">{t("firstRun.indexing.title")}</h1>
+        <p className="fr-lead">{t("firstRun.indexing.body")}</p>
+
+        <div className="fr-progress" role="status">
+          <div className="fr-progress-head">
+            <span className="chip indexing"><Loader2 size={13} className="spin" />{statusLabel}</span>
+          </div>
+          <div className="fr-bar"><span className="fr-bar-fill" /></div>
+        </div>
+
+        <FirstRunStepper activeIndex={1} />
+
+        <p className="fr-feat-label">{t("firstRun.indexing.featuresLabel")}</p>
+        <div className="fr-feat-grid">
+          {features.map((feat) => (
+            <div className="fr-feat" key={feat.title}>
+              <span className="fr-feat-icon"><feat.icon size={18} /></span>
+              <strong>{feat.title}</strong>
+              <span>{feat.desc}</span>
+            </div>
+          ))}
+        </div>
+
+        <p className="fr-cost"><Lock size={13} />{t("home.emptyHero.costBadge")}</p>
+      </div>
+    </div>
+  );
+}
+
+// Scheme ③ — freshly ready: a dismissible success banner + the stepper, sitting
+// on top of the real home below it.
+function FirstRunReadyHeader({ globalHotkey, onDismiss }: { globalHotkey: string; onDismiss: () => void }) {
+  const t = useT();
+  return (
+    <div className="fr-ready">
+      <div className="fr-banner">
+        <span className="fr-banner-icon"><Check size={18} /></span>
+        <div className="fr-banner-text">
+          <strong>{t("firstRun.banner.title")}</strong>
+          <span>{t("firstRun.banner.body", { hotkey: formatHotkeyLabel(globalHotkey) })}</span>
+        </div>
+        <button type="button" className="btn-icon sm" aria-label={t("firstRun.dismiss")} onClick={onDismiss}>
+          <X size={15} />
+        </button>
+      </div>
+      <FirstRunStepper activeIndex={2} />
+    </div>
+  );
+}
+
+// The clickable example queries — the payoff for "I don't know what to search".
+// They are prompts, not fabricated results.
+function FirstRunExamples({ onRunQuery }: { onRunQuery: (query: string) => void }) {
+  const t = useT();
+  return (
+    <div className="fr-examples">
+      <p className="fr-examples-label">{t("firstRun.examplesLabel")}</p>
+      <div className="fr-example-row">
+        {FIRST_RUN_EXAMPLE_KEYS.map(({ key, icon: Icon, tagKey }) => {
+          const text = t(key);
+          return (
+            <button type="button" className="fr-example" key={key} onClick={() => onRunQuery(text)}>
+              <Icon size={15} className="fr-example-icon" />
+              <span>{text}</span>
+              {tagKey ? <span className="fr-example-tag">{t(tagKey)}</span> : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function HomeScreen({
   query,
   setQuery,
@@ -1955,6 +2130,9 @@ function HomeScreen({
   apiStatus,
   onOpenModelSettings,
   globalHotkey,
+  firstRunActive,
+  onResolveFirstRun,
+  onRunQuery,
 }: {
   query: string;
   setQuery: (value: string) => void;
@@ -1969,6 +2147,9 @@ function HomeScreen({
   apiStatus: ApiStatus;
   onOpenModelSettings: () => void;
   globalHotkey: string;
+  firstRunActive: boolean;
+  onResolveFirstRun: () => void;
+  onRunQuery: (query: string) => void;
 }) {
   const t = useT();
   const indexedCount = items.filter((item) => item.status === "indexed").length;
@@ -2064,8 +2245,17 @@ function HomeScreen({
     return <HomeEmptyState onAddSource={onAddSource} />;
   }
 
+  // First-run, first index still cooking: the one moment a takeover is earned.
+  // Turn dead waiting time into orientation (Scheme ②).
+  if (firstRunActive && searchDisabled) {
+    return <FirstRunIndexing statusLabel={statusLabel} globalHotkey={globalHotkey} />;
+  }
+
   return (
     <div className="page home-page" style={{ maxWidth: 920 }}>
+      {firstRunActive ? (
+        <FirstRunReadyHeader globalHotkey={globalHotkey} onDismiss={onResolveFirstRun} />
+      ) : null}
       <div className="home-search-stage">
         <h1>{t("home.heading")}</h1>
         <p className="muted home-summary">
@@ -2103,6 +2293,10 @@ function HomeScreen({
           <p className="field-hint" id="home-search-helper" style={{ marginTop: 10 }}>
             {t("home.lockedHint")}
           </p>
+        ) : null}
+
+        {firstRunActive && !searchDisabled ? (
+          <FirstRunExamples onRunQuery={onRunQuery} />
         ) : null}
 
         <div className="row gap-3 home-status-line">

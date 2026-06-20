@@ -19,7 +19,7 @@ rg -qF 'onboarding.final.addingOne' apps/desktop/src
 rg -qF 'onboarding.final.addingOther' apps/desktop/src
 rg -qF 'asr_model: "whisper-1"' apps/desktop/src
 rg -qF 'active_embedding_profile: "gemini-embedding-2-3072"' apps/desktop/src
-rg -qF '"onboarding.step0.kicker": "Cerul indexes your videos and podcasts into searchable memory — processed on-device by default."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"onboarding.step0.kicker": "Cerul is your second brain for video & audio — it indexes your videos and podcasts into searchable memory on this machine, using provider keys you control or local models."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"onboarding.model.asrDesc": "On-device when it can, online only when higher quality is needed — Cerul handles the details."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "\"onboarding.model.embeddingDesc\": \"People, topics, spoken words, and what's on screen — all searchable the moment you add a source.\"" apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"onboarding.model.connectionsDesc": "Adjust later in Settings → Smart processing, or connect your own OpenAI-compatible service."' apps/desktop/src/lib/i18n-catalog.ts
