@@ -101,7 +101,7 @@ echo "==> Verifying the runtime is self-contained, relocatable, and complete"
 import sys
 assert sys.prefix.endswith("mlx-runtime"), f"not relocated cleanly: {sys.prefix}"
 import mlx.core, mlx_vlm, mlx_lm, mlx_whisper, mlx_embeddings, mlx_qwen3_asr  # noqa: F401
-import cv2, numpy, onnxruntime, PIL, pyclipper, soundfile, yaml, huggingface_hub  # noqa: F401
+import cv2, numpy, onnxruntime, PIL, pyclipper, socksio, soundfile, yaml, huggingface_hub  # noqa: F401
 from mlx_whisper import transcribe  # noqa: F401
 from mlx_vlm import load  # noqa: F401
 assert "torch" not in sys.modules, "torch should never load"

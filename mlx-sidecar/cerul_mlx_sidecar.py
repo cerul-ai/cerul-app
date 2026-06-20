@@ -112,6 +112,16 @@ MODELSCOPE_MODEL_REVISIONS = {
     DEFAULT_WHISPER_MODEL: "2ea465385494dbe25b7d5a2ec15f2c4fdfe3e33b",
 }
 PINNED_SNAPSHOT_REQUIRED_FILES = {
+    DEFAULT_ASR_MODEL: (
+        "config.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    ),
+    DEFAULT_FORCED_ALIGNER_MODEL: (
+        "config.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    ),
     DEFAULT_EMBEDDING_MODEL: (
         "config.json",
         "preprocessor_config.json",
@@ -961,6 +971,12 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
             if not missing_reasons:
                 return modelscope_cached
 
+        mirror_cached = mirror_snapshot_dir(model_id_or_path, pinned)
+        if mirror_cached is not None:
+            missing_reasons = pinned_snapshot_missing_reasons(mirror_cached, model_id_or_path)
+            if not missing_reasons:
+                return mirror_cached
+
         selected_source = select_download_source(model_id_or_path, pinned)
         source_order = download_source_order(selected_source)
         for source in source_order:
@@ -1654,8 +1670,8 @@ class CerulMlxRuntime:
         in-memory to N-bit, cache + reuse the objects, and hand those to
         transcribe(). Same official weights, just smaller/faster. The aligner's
         model lives on a lazily-built backend, so force it loaded before
-        quantizing; if anything there fails we keep the aligner at fp16 rather
-        than lose word-level timestamps.
+        quantizing; if that fails the aligner is unusable, so skip it instead
+        of caching an object that will fail the actual transcription call.
         """
         asr_path = self._resolved_qwen_asr_path(self.args.asr_model)
         aligner_path = (
@@ -1682,9 +1698,10 @@ class CerulMlxRuntime:
                 aligner._ensure_loaded()
                 quantize_model(aligner._backend.model, bits=bits, group_size=64)
                 print(f"asr: loaded forced aligner ({bits}-bit)", file=sys.stderr)
-            except Exception as exc:  # noqa: BLE001 - keep aligner at fp16 on failure
-                print(f"asr: forced-aligner quantization skipped ({exc})", file=sys.stderr)
-            self._asr_aligner_obj = aligner
+                self._asr_aligner_obj = aligner
+            except Exception as exc:  # noqa: BLE001 - keep transcription alive without aligner
+                print(f"asr: forced-aligner disabled ({exc})", file=sys.stderr)
+                aligner_path = None
 
         return self._asr_model_obj, (self._asr_aligner_obj or aligner_path)
 

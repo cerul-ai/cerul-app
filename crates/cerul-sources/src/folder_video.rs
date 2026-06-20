@@ -12,6 +12,20 @@ use crate::SourcePlugin;
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
 const EXTENSIONS: &[&str] = &["mp4", "mkv", "webm", "mov", "m4v"];
+const IGNORED_DIR_NAMES: &[&str] = &[
+    ".cache",
+    ".git",
+    ".hg",
+    ".svn",
+    ".trash",
+    "__macosx",
+    "cache",
+    "caches",
+    "com.lveditor.draft",
+    "node_modules",
+    "templatedraft",
+    "videoalg",
+];
 
 #[derive(Debug, Clone)]
 pub struct FolderVideo {
@@ -60,7 +74,12 @@ impl SourcePlugin for FolderVideo {
     async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
         let mut items = Vec::new();
 
-        for entry in walkdir::WalkDir::new(&self.path) {
+        for entry in walkdir::WalkDir::new(&self.path)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry.depth() == 0 || should_visit_entry(entry.path(), entry.file_type().is_dir())
+            })
+        {
             let entry = entry?;
             if !entry.file_type().is_file() {
                 continue;
@@ -130,6 +149,17 @@ impl SourcePlugin for FolderVideo {
     }
 }
 
+fn should_visit_entry(path: &Path, is_dir: bool) -> bool {
+    if !is_dir {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    let lower = name.to_ascii_lowercase();
+    !IGNORED_DIR_NAMES.contains(&lower.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +187,59 @@ mod tests {
         assert!(items
             .iter()
             .all(|item| item.metadata["raw_path"].as_str().is_some()));
+    }
+
+    #[tokio::test]
+    async fn skips_common_cache_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("Cache");
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(cache.join("temporary.mp4"), b"video").unwrap();
+        std::fs::write(nested.join("clip.mp4"), b"video").unwrap();
+
+        let source = FolderVideo::new(json!({ "path": temp.path() })).unwrap();
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("clip"));
+    }
+
+    #[tokio::test]
+    async fn skips_editor_working_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let draft = temp.path().join("com.lveditor.draft");
+        let template = temp.path().join("templateDraft");
+        let video_alg = temp.path().join("videoAlg");
+        let keep = temp.path().join("exports");
+        for dir in [&draft, &template, &video_alg, &keep] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(draft.join("draft.mp4"), b"video").unwrap();
+        std::fs::write(template.join("template.mp4"), b"video").unwrap();
+        std::fs::write(video_alg.join("intermediate.mp4"), b"video").unwrap();
+        std::fs::write(keep.join("final.mp4"), b"video").unwrap();
+
+        let source = FolderVideo::new(json!({ "path": temp.path() })).unwrap();
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("final"));
+    }
+
+    #[tokio::test]
+    async fn still_scans_selected_root_named_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("Cache");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("intentional.mp4"), b"video").unwrap();
+
+        let source = FolderVideo::new(json!({ "path": cache })).unwrap();
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("intentional"));
     }
 
     #[tokio::test]

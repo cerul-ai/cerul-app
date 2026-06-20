@@ -78,14 +78,15 @@ pub async fn sample_frames(
 
     let pattern = out_dir.join("frame_%06d.jpg");
     let frame_filter = format!(
-        "fps=1/{interval_sec},scale='min(640,iw)':'min(640,ih)':force_original_aspect_ratio=decrease,setsar=1"
+        "select='eq(n,0)+gte(t,prev_selected_t+{interval_sec})',scale='min(640,iw)':'min(640,ih)':force_original_aspect_ratio=decrease,setsar=1"
     );
     let mut command = Command::new(bundled_ffmpeg_path());
     command
         .args(["-y", "-i"])
         .arg(video)
         .args(["-vf", &frame_filter])
-        .args(["-q:v", "3"])
+        .args(["-fps_mode", "vfr", "-q:v", "3"])
+        .args(["-pix_fmt", "yuvj420p", "-strict", "unofficial"])
         .arg(pattern)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -453,6 +454,19 @@ mod tests {
 
         assert!(!sampled.is_empty());
         assert!(sampled.iter().all(|path| path.is_file()));
+    }
+
+    #[tokio::test]
+    async fn ffmpeg_sample_frames_keeps_first_frame_for_short_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let video = temp.path().join("short.mp4");
+        let frames = temp.path().join("frames");
+
+        create_sample_video(&video).await.unwrap();
+        let sampled = sample_frames(&video, &frames, 30).await.unwrap();
+
+        assert!(!sampled.is_empty());
+        assert!(sampled[0].is_file());
     }
 
     #[tokio::test]
