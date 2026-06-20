@@ -11,6 +11,7 @@
   <p>Point it at your folders, YouTube channels, and podcast feeds. Cerul watches them locally, transcribes with provider keys you control or local models, and indexes the results on your machine — then lets you search by meaning across speech and on-screen content, and jump straight to the moment, from a desktop app, a global overlay, or the Cerul Core API.</p>
 
   <p>
+    <a href="https://app.cerul.ai"><strong>Get the app</strong></a> &middot;
     <a href="https://cerul.ai"><strong>Website</strong></a> &middot;
     <a href="https://github.com/cerul-ai/cerul"><strong>Main Repo</strong></a> &middot;
     <a href="https://x.com/cerul_hq"><img src="https://img.shields.io/badge/follow-%40cerul__hq-000?style=flat-square&logo=x" alt="Follow on X" /></a> &middot;
@@ -27,6 +28,8 @@
     <strong>English</strong> &middot;
     <a href="README.zh-CN.md">简体中文</a>
   </p>
+
+  <a href="https://app.cerul.ai"><img src="apps/desktop/public/brand/screenshots/app-cerul-home.png" alt="Cerul App — search what you watch and hear, locally" width="840" /></a>
 </div>
 
 <br />
