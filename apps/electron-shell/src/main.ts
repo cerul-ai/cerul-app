@@ -4,6 +4,7 @@ import {
   Notification,
   Tray,
   app,
+  autoUpdater as nativeAutoUpdater,
   dialog,
   globalShortcut,
   ipcMain,
@@ -84,6 +85,10 @@ let updateInstallRequested = false;
 let updaterCheckInstallRequested = false;
 let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
+let updateInstallFallbackRunId = 0;
+let macUpdatePreparationRunId = 0;
+let updateInstallWhenPrepared = false;
+let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
@@ -120,6 +125,7 @@ type UpdaterState =
       transferredBytes?: number;
       totalBytes?: number;
     }
+  | { phase: "preparing"; version: string }
   | { phase: "installing"; version: string }
   | { phase: "downloaded"; version: string }
   | { phase: "error"; version?: string; message: string; releaseUrl: string };
@@ -133,6 +139,22 @@ type UpdaterProgress = {
 
 type UpdaterCheckOptions = {
   installWhenDownloaded?: boolean;
+};
+
+type MacShipItStateBaseline = {
+  path: string;
+  startedAtMs: number;
+  previousMtimeMs: number | null;
+};
+
+type NativeUpdateDownloadedListener = (...args: unknown[]) => void;
+
+type MacUpdateInstallHandoff = {
+  version: string;
+  stateBaseline: MacShipItStateBaseline;
+  updater: AppUpdater;
+  nativeUpdateDownloadedListeners: NativeUpdateDownloadedListener[];
+  rescueCancelPath: string | null;
 };
 
 type ApiOutputTail = {
@@ -165,6 +187,7 @@ type BundleProcessHolder = {
   pid: number;
   command: string;
   paths: string[];
+  knownBundleSidecar?: boolean;
 };
 
 protocol.registerSchemesAsPrivileged([
@@ -1495,11 +1518,88 @@ function readBundleProcessHolders(bundlePath: string) {
   };
 }
 
+function readBundleArgumentProcessHolders(bundlePath: string) {
+  const knownSidecarPaths = bundleArgumentSidecarPaths(bundlePath);
+  const result = spawnSync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    timeout: 3_000,
+  });
+
+  const holders: BundleProcessHolder[] = [];
+  const stdout = typeof result.stdout === "string" ? result.stdout : "";
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.trimStart().match(/^(\d+)\s+(.+)$/);
+    if (!match) {
+      continue;
+    }
+    const pid = Number(match[1]);
+    const commandLine = match[2];
+    const knownBundleSidecar = commandLineReferencesKnownBundleSidecar(commandLine, knownSidecarPaths);
+    if (!Number.isFinite(pid) || pid === process.pid || !knownBundleSidecar) {
+      continue;
+    }
+    holders.push({ pid, command: commandLine, paths: [commandLine], knownBundleSidecar });
+  }
+  return {
+    holders: holders.sort((left, right) => left.pid - right.pid),
+    error: result.error ? result.error.message : null,
+  };
+}
+
+function bundleArgumentSidecarPaths(bundlePath: string) {
+  const resourcesPath = path.join(bundlePath, "Contents", "Resources");
+  const thirdPartyPath = path.join(resourcesPath, "third-party", targetTriple());
+  return [
+    path.join(resourcesPath, "bin", executableName(packagedCoreBinaryName)),
+    path.join(resourcesPath, "bin", executableName(devCoreBinaryName)),
+    path.join(thirdPartyPath, executableName("qdrant")),
+    path.join(resourcesPath, "mlx-sidecar", "cerul_mlx_sidecar.py"),
+  ].map(normalizeProcessPathForMatch);
+}
+
+function normalizeProcessPathForMatch(value: string) {
+  return value.replace(/\\/g, "/").toLowerCase();
+}
+
+function commandLineReferencesKnownBundleSidecar(commandLine: string, knownSidecarPaths: string[]) {
+  const normalizedCommand = normalizeProcessPathForMatch(commandLine);
+  return knownSidecarPaths.some((sidecarPath) => normalizedCommand.includes(sidecarPath));
+}
+
+function mergeBundleProcessHolders(...holderGroups: BundleProcessHolder[][]) {
+  const merged = new Map<number, BundleProcessHolder>();
+  for (const holders of holderGroups) {
+    for (const holder of holders) {
+      const existing = merged.get(holder.pid);
+      if (!existing) {
+        merged.set(holder.pid, { ...holder, paths: [...holder.paths] });
+        continue;
+      }
+      if (holder.knownBundleSidecar) {
+        existing.knownBundleSidecar = true;
+      }
+      if (!existing.command && holder.command) {
+        existing.command = holder.command;
+      }
+      for (const entry of holder.paths) {
+        if (!existing.paths.includes(entry)) {
+          existing.paths.push(entry);
+        }
+      }
+    }
+  }
+  return Array.from(merged.values()).sort((left, right) => left.pid - right.pid);
+}
+
 function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
   if (holder.pid === process.pid) {
     return false;
   }
-  const command = path.basename(holder.command).toLowerCase();
+  if (holder.knownBundleSidecar) {
+    return true;
+  }
+  const command = processCommandExecutableName(holder.command);
   return (
     command === packagedCoreBinaryName ||
     command === devCoreBinaryName ||
@@ -1508,6 +1608,13 @@ function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
     command === "python3" ||
     command.startsWith("python3.")
   );
+}
+
+function processCommandExecutableName(command: string) {
+  const trimmed = command.trim();
+  const match = trimmed.match(/^"([^"]+)"|'([^']+)'|(\S+)/);
+  const executable = match?.[1] ?? match?.[2] ?? match?.[3] ?? trimmed;
+  return path.basename(executable).toLowerCase();
 }
 
 function formatBundleProcessHolders(holders: BundleProcessHolder[]) {
@@ -1534,14 +1641,19 @@ async function waitForPidsToExit(pids: number[], timeoutMs: number) {
 }
 
 async function stopUpdateInstallBundleSidecars(bundlePath: string, lines: string[]) {
-  const before = readBundleProcessHolders(bundlePath);
-  if (before.error) {
-    lines.push(`bundle_holder_scan_error=${before.error}`);
+  const openFileScan = readBundleProcessHolders(bundlePath);
+  const argvScan = readBundleArgumentProcessHolders(bundlePath);
+  if (openFileScan.error) {
+    lines.push(`bundle_holder_scan_error=${openFileScan.error}`);
   }
+  if (argvScan.error) {
+    lines.push(`bundle_argv_holder_scan_error=${argvScan.error}`);
+  }
+  const before = mergeBundleProcessHolders(openFileScan.holders, argvScan.holders);
   lines.push("== bundle holders before sidecar cleanup ==");
-  lines.push(formatBundleProcessHolders(before.holders));
+  lines.push(formatBundleProcessHolders(before));
 
-  const targets = before.holders.filter(shouldTerminateUpdateInstallHolder);
+  const targets = before.filter(shouldTerminateUpdateInstallHolder);
   if (targets.length === 0) {
     lines.push("sidecar_cleanup_targets=<empty>");
     return;
@@ -1572,12 +1684,17 @@ async function stopUpdateInstallBundleSidecars(bundlePath: string, lines: string
   }
   lines.push(`sidecar_cleanup_remaining_pids=${remaining.length > 0 ? remaining.join(",") : "<empty>"}`);
 
-  const after = readBundleProcessHolders(bundlePath);
-  if (after.error) {
-    lines.push(`bundle_holder_rescan_error=${after.error}`);
+  const openFileRescan = readBundleProcessHolders(bundlePath);
+  const argvRescan = readBundleArgumentProcessHolders(bundlePath);
+  if (openFileRescan.error) {
+    lines.push(`bundle_holder_rescan_error=${openFileRescan.error}`);
   }
+  if (argvRescan.error) {
+    lines.push(`bundle_argv_holder_rescan_error=${argvRescan.error}`);
+  }
+  const after = mergeBundleProcessHolders(openFileRescan.holders, argvRescan.holders);
   lines.push("== bundle holders after sidecar cleanup ==");
-  lines.push(formatBundleProcessHolders(after.holders));
+  lines.push(formatBundleProcessHolders(after));
 }
 
 function sampleProcessDiagnostic(pid: number) {
@@ -2133,6 +2250,225 @@ function updaterInstallCleanupLogPath() {
   return path.join(app.getPath("userData"), "updater-install-cleanup.log");
 }
 
+function updaterShipItRescueLogPath() {
+  return path.join(app.getPath("userData"), "updater-shipit-rescue.log");
+}
+
+function macShipItStatePath() {
+  return path.join(
+    os.homedir(),
+    "Library",
+    "Caches",
+    `${macBundleIdentifier}.ShipIt`,
+    "ShipItState.plist",
+  );
+}
+
+function shipItStateMtimeMs(filePath: string) {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.isFile() ? stats.mtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
+function captureMacShipItStateBaseline(startedAtMs = Date.now()): MacShipItStateBaseline {
+  const statePath = macShipItStatePath();
+  return {
+    path: statePath,
+    startedAtMs,
+    previousMtimeMs: shipItStateMtimeMs(statePath),
+  };
+}
+
+function isFreshMacShipItState(stateBaseline: MacShipItStateBaseline) {
+  const currentMtimeMs = shipItStateMtimeMs(stateBaseline.path);
+  if (currentMtimeMs === null) {
+    return false;
+  }
+  if (stateBaseline.previousMtimeMs !== null) {
+    return currentMtimeMs > stateBaseline.previousMtimeMs;
+  }
+  return currentMtimeMs >= stateBaseline.startedAtMs - 1_000;
+}
+
+function describeMacShipItState(stateBaseline: MacShipItStateBaseline) {
+  const currentMtimeMs = shipItStateMtimeMs(stateBaseline.path);
+  return [
+    `state=${stateBaseline.path}`,
+    `startedAt=${new Date(stateBaseline.startedAtMs).toISOString()}`,
+    `previousMtimeMs=${stateBaseline.previousMtimeMs ?? ""}`,
+    `currentMtimeMs=${currentMtimeMs ?? ""}`,
+  ].join(" ");
+}
+
+function appendUpdaterShipItRescueLog(line: string) {
+  try {
+    fs.appendFileSync(updaterShipItRescueLogPath(), `${line}\n`, "utf8");
+  } catch (error) {
+    console.warn("failed to append updater ShipIt rescue log", error);
+  }
+}
+
+function captureMacNativeUpdateDownloadedListeners() {
+  if (process.platform !== "darwin") {
+    return [];
+  }
+  return nativeAutoUpdater.listeners("update-downloaded") as NativeUpdateDownloadedListener[];
+}
+
+function cancelMacUpdateInstallHandoff(handoff: MacUpdateInstallHandoff) {
+  const preservedListeners = new Set(handoff.nativeUpdateDownloadedListeners);
+  for (const listener of nativeAutoUpdater.listeners("update-downloaded") as NativeUpdateDownloadedListener[]) {
+    if (!preservedListeners.has(listener)) {
+      nativeAutoUpdater.removeListener("update-downloaded", listener);
+    }
+  }
+
+  closeMacUpdaterProxyServer(handoff.updater);
+
+  if (handoff.rescueCancelPath) {
+    try {
+      fs.writeFileSync(
+        handoff.rescueCancelPath,
+        `cancelledAt=${new Date().toISOString()}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      console.warn("failed to cancel ShipIt rescue script", error);
+    }
+  }
+
+  appendUpdaterShipItRescueLog(
+    `cancelled_pending_mac_handoff ${describeMacShipItState(handoff.stateBaseline)}`,
+  );
+}
+
+function closeMacUpdaterProxyServer(updater: AppUpdater) {
+  const closeProxyServer = (updater as AppUpdater & { closeServerIfExists?: () => void })
+    .closeServerIfExists;
+  if (typeof closeProxyServer === "function") {
+    try {
+      closeProxyServer.call(updater);
+    } catch (error) {
+      console.warn("failed to close macOS updater proxy server", error);
+    }
+  }
+}
+
+async function waitForFreshMacShipItState(stateBaseline: MacShipItStateBaseline, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (!isFreshMacShipItState(stateBaseline) && Date.now() < deadline) {
+    await delay(250);
+  }
+  return isFreshMacShipItState(stateBaseline);
+}
+
+function clearPreparedMacUpdateHandoff(version?: string) {
+  if (!preparedMacUpdateHandoff || !version || preparedMacUpdateHandoff.version === version) {
+    preparedMacUpdateHandoff = null;
+    updateInstallWhenPrepared = false;
+  }
+}
+
+function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater, installWhenReady = false) {
+  updateInstallWhenPrepared = installWhenReady;
+  if (process.platform !== "darwin") {
+    if (installWhenReady) {
+      setUpdaterState({ phase: "installing", version });
+      setTimeout(() => void installDesktopUpdate(version), 500);
+    } else {
+      setUpdaterState({ phase: "downloaded", version });
+    }
+    return;
+  }
+
+  const runId = macUpdatePreparationRunId + 1;
+  macUpdatePreparationRunId = runId;
+  const macHandoff: MacUpdateInstallHandoff = {
+    version,
+    stateBaseline: captureMacShipItStateBaseline(),
+    updater,
+    nativeUpdateDownloadedListeners: captureMacNativeUpdateDownloadedListeners(),
+    rescueCancelPath: null,
+  };
+  preparedMacUpdateHandoff = macHandoff;
+  setUpdaterState({ phase: "preparing", version });
+  appendUpdaterShipItRescueLog(
+    `preparing_mac_update_for_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
+  );
+
+  const cleanup = () => {
+    nativeAutoUpdater.removeListener("update-downloaded", onDownloaded);
+    nativeAutoUpdater.removeListener("error", onError);
+  };
+  const fail = (error: unknown) => {
+    cleanup();
+    if (runId !== macUpdatePreparationRunId) {
+      return;
+    }
+    cancelMacUpdateInstallHandoff(macHandoff);
+    clearPreparedMacUpdateHandoff(version);
+    setUpdaterError(error, version);
+  };
+  const onError = (error: unknown) => {
+    fail(error);
+  };
+  const onDownloaded = () => {
+    void (async () => {
+      cleanup();
+      if (runId !== macUpdatePreparationRunId) {
+        return;
+      }
+      const stateReady = await waitForFreshMacShipItState(macHandoff.stateBaseline, 10_000);
+      if (runId !== macUpdatePreparationRunId) {
+        return;
+      }
+      if (!stateReady) {
+        fail(new Error("macOS updater prepared update but did not write a fresh ShipItState.plist"));
+        return;
+      }
+      closeMacUpdaterProxyServer(updater);
+      preparedMacUpdateHandoff = macHandoff;
+      const shouldInstallWhenReady = updateInstallWhenPrepared;
+      updateInstallWhenPrepared = false;
+      appendUpdaterShipItRescueLog(
+        `mac_update_ready_to_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
+      );
+      setUpdaterState({ phase: "downloaded", version });
+      if (shouldInstallWhenReady) {
+        setTimeout(() => void installDesktopUpdate(version), 500);
+      }
+    })();
+  };
+
+  nativeAutoUpdater.once("update-downloaded", onDownloaded);
+  nativeAutoUpdater.once("error", onError);
+  try {
+    nativeAutoUpdater.checkForUpdates();
+  } catch (error) {
+    fail(error);
+    return;
+  }
+
+  setTimeout(() => {
+    if (runId !== macUpdatePreparationRunId || latestUpdaterState.phase !== "preparing") {
+      return;
+    }
+    fail(new Error("macOS updater did not finish preparing the update before timeout"));
+  }, 5 * 60_000);
+}
+
+function quitViaNativeMacUpdater() {
+  try {
+    nativeAutoUpdater.quitAndInstall();
+  } catch (error) {
+    console.warn("native macOS updater quitAndInstall fallback failed", error);
+    app.quit();
+  }
+}
+
 function writeUpdaterInstallCleanupLog(lines: string[]) {
   try {
     fs.writeFileSync(updaterInstallCleanupLogPath(), `${lines.join("\n")}\n`, "utf8");
@@ -2205,6 +2541,7 @@ function collectUpdaterDiagnostics() {
   const shipItState = path.join(shipItCache, "ShipItState.plist");
   const pendingInfo = path.join(updaterCache, "pending", "update-info.json");
   const installCleanupLog = updaterInstallCleanupLogPath();
+  const shipItRescueLog = updaterShipItRescueLogPath();
   const lines = [
     "== Cerul updater diagnostics ==",
     `createdAt=${new Date().toISOString()}`,
@@ -2230,6 +2567,9 @@ function collectUpdaterDiagnostics() {
     "",
     "== last updater install cleanup ==",
     readTextIfExists(installCleanupLog) ?? "[[missing]]",
+    "",
+    "== last ShipIt rescue ==",
+    readTextIfExists(shipItRescueLog) ?? "[[missing]]",
     "",
     "== updater cache tree ==",
     ...listTree(updaterCache),
@@ -2318,8 +2658,13 @@ function wireAutoUpdater(updater: AppUpdater) {
   // Codex-like flow: signed update assets download in the background after a
   // successful check. The rail button then installs an already prepared update.
   updater.autoDownload = true;
-  updater.autoInstallOnAppQuit = true;
+  // On macOS, electron-updater emits its own update-downloaded event before
+  // native Squirrel has necessarily finished its handoff. Keep the Squirrel
+  // fetch/install tied to explicit quitAndInstall so a fallback app.quit cannot
+  // strand a staged update.
+  updater.autoInstallOnAppQuit = process.platform !== "darwin";
   updater.on("update-available", (info) => {
+    clearPreparedMacUpdateHandoff();
     if (updaterCheckInstallRequested) {
       updateInstallRequested = true;
       updaterCheckInstallRequested = false;
@@ -2329,6 +2674,7 @@ function wireAutoUpdater(updater: AppUpdater) {
   updater.on("update-not-available", () => {
     updaterCheckInstallRequested = false;
     updateInstallRequested = false;
+    clearPreparedMacUpdateHandoff();
   });
   updater.on("download-progress", (progress) => {
     const version =
@@ -2339,15 +2685,10 @@ function wireAutoUpdater(updater: AppUpdater) {
   });
   updater.on("update-downloaded", (info) => {
     const version = normalizeVersion(info.version);
-    const shouldAutoInstall = updateInstallRequested;
+    const installWhenReady = updateInstallRequested || updaterCheckInstallRequested;
     updateInstallRequested = false;
     updaterCheckInstallRequested = false;
-    if (!shouldAutoInstall) {
-      setUpdaterState({ phase: "downloaded", version });
-      return;
-    }
-    setUpdaterState({ phase: "installing", version });
-    setTimeout(() => void installDesktopUpdate(version), 500);
+    prepareDownloadedUpdateForRestart(version, updater, installWhenReady);
   });
   updater.on("error", (error) => {
     // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
@@ -2360,11 +2701,13 @@ function wireAutoUpdater(updater: AppUpdater) {
     if (updateInstallRequested) {
       updateInstallRequested = false;
     }
+    clearPreparedMacUpdateHandoff();
     setUpdaterState({
       phase: "error",
       version:
         latestUpdaterState.phase === "available" ||
         latestUpdaterState.phase === "downloading" ||
+        latestUpdaterState.phase === "preparing" ||
         latestUpdaterState.phase === "installing" ||
         latestUpdaterState.phase === "downloaded"
           ? latestUpdaterState.version
@@ -2418,12 +2761,15 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
 
   if (
     latestUpdaterState.phase === "downloading" ||
+    latestUpdaterState.phase === "preparing" ||
     latestUpdaterState.phase === "downloaded" ||
     latestUpdaterState.phase === "installing"
   ) {
     if (installWhenDownloaded) {
       if (latestUpdaterState.phase === "downloading") {
         updateInstallRequested = true;
+      } else if (latestUpdaterState.phase === "preparing") {
+        updateInstallWhenPrepared = true;
       } else if (latestUpdaterState.phase === "downloaded") {
         await installDesktopUpdate(latestUpdaterState.version);
       }
@@ -2491,6 +2837,7 @@ async function startDesktopUpdateDownload() {
 }
 
 function clearUpdateInstallFallbackTimers() {
+  updateInstallFallbackRunId += 1;
   if (updateInstallFallbackTimer) {
     clearTimeout(updateInstallFallbackTimer);
     updateInstallFallbackTimer = null;
@@ -2501,17 +2848,217 @@ function clearUpdateInstallFallbackTimers() {
   }
 }
 
-function scheduleUpdateInstallExitFallback() {
+async function abortDesktopUpdateInstallHandoff(
+  error: unknown,
+  version?: string,
+  macHandoff?: MacUpdateInstallHandoff,
+) {
   clearUpdateInstallFallbackTimers();
+  if (macHandoff) {
+    cancelMacUpdateInstallHandoff(macHandoff);
+  }
+  clearPreparedMacUpdateHandoff(version);
+  updateInstallRequested = false;
+  updaterCheckInstallRequested = false;
+  isQuitting = false;
+  setUpdaterError(error, version);
+  try {
+    await startRustCore();
+  } catch (restartError) {
+    console.error("failed to restart Cerul Core after updater handoff abort", restartError);
+  }
+  startStatusMonitor();
+}
+
+function scheduleUpdateInstallExitFallback(macHandoff?: MacUpdateInstallHandoff) {
+  clearUpdateInstallFallbackTimers();
+  const runId = updateInstallFallbackRunId + 1;
+  updateInstallFallbackRunId = runId;
+  if (process.platform === "darwin") {
+    if (!macHandoff) {
+      console.warn("macOS update install fallback skipped without handoff state");
+      return;
+    }
+    void scheduleMacUpdateInstallExitFallback(runId, macHandoff);
+    return;
+  }
+  const quitDelayMs = 1_500;
+  const forceExitDelayMs = 9_000;
   updateInstallFallbackTimer = setTimeout(() => {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
     if (!isQuitting) {
       isQuitting = true;
     }
     app.quit();
-  }, 1500);
+  }, quitDelayMs);
   updateInstallForceExitTimer = setTimeout(() => {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
     app.exit(0);
-  }, 9000);
+  }, forceExitDelayMs);
+}
+
+async function scheduleMacUpdateInstallExitFallback(
+  runId: number,
+  macHandoff: MacUpdateInstallHandoff,
+) {
+  const stateBaseline = macHandoff.stateBaseline;
+  const deadline = Date.now() + 120_000;
+  let stateLogged = false;
+  while (!isFreshMacShipItState(stateBaseline) && Date.now() < deadline) {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
+    if (!stateLogged) {
+      appendUpdaterShipItRescueLog(
+        `waiting_for_fresh_shipit_state createdAt=${new Date().toISOString()} ${describeMacShipItState(stateBaseline)}`,
+      );
+      stateLogged = true;
+    }
+    await delay(500);
+  }
+  if (runId !== updateInstallFallbackRunId) {
+    return;
+  }
+  if (!isFreshMacShipItState(stateBaseline)) {
+    const message = "macOS updater did not stage a fresh ShipItState.plist before fallback quit";
+    appendUpdaterShipItRescueLog(`${message} ${describeMacShipItState(stateBaseline)}`);
+    const version = latestUpdaterState.phase === "installing" ? latestUpdaterState.version : undefined;
+    await abortDesktopUpdateInstallHandoff(new Error(message), version, macHandoff);
+    return;
+  }
+
+  updateInstallFallbackTimer = setTimeout(() => {
+    if (runId !== updateInstallFallbackRunId) {
+      return;
+    }
+    if (!isQuitting) {
+      isQuitting = true;
+    }
+    quitViaNativeMacUpdater();
+    updateInstallForceExitTimer = setTimeout(() => {
+      if (runId !== updateInstallFallbackRunId) {
+        return;
+      }
+      app.exit(0);
+    }, 30_000);
+  }, 15_000);
+}
+
+function scheduleMacShipItRescue(version: string, stateBaseline: MacShipItStateBaseline) {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+  const bundlePath = macAppBundlePath();
+  if (!bundlePath) {
+    return null;
+  }
+
+  const shipItPath = path.join(bundlePath, "Contents", "Frameworks", "Squirrel.framework", "Resources", "ShipIt");
+  const shipItStatePath = macShipItStatePath();
+  const logPath = updaterShipItRescueLogPath();
+  const scriptId = `${process.pid}-${Date.now()}`;
+  const scriptPath = path.join(os.tmpdir(), `cerul-shipit-rescue-${scriptId}.sh`);
+  const cancelPath = path.join(os.tmpdir(), `cerul-shipit-rescue-${scriptId}.cancel`);
+  const shipItIdentifier = `${macBundleIdentifier}.ShipIt`;
+  const shipItProcessPattern = `ShipIt ${shipItIdentifier}`;
+  const previousStateMtimeSeconds = Math.floor((stateBaseline.previousMtimeMs ?? 0) / 1000);
+  const stateReadyAfterSeconds = Math.floor(stateBaseline.startedAtMs / 1000);
+  const lines = [
+    "#!/bin/sh",
+    "set -u",
+    `PARENT_PID=${process.pid}`,
+    `TARGET_VERSION=${shellQuote(version)}`,
+    `BUNDLE=${shellQuote(bundlePath)}`,
+    `SHIPIT=${shellQuote(shipItPath)}`,
+    `STATE=${shellQuote(shipItStatePath)}`,
+    `LOG=${shellQuote(logPath)}`,
+    `SCRIPT=${shellQuote(scriptPath)}`,
+    `CANCELLED=${shellQuote(cancelPath)}`,
+    `SHIPIT_IDENTIFIER=${shellQuote(shipItIdentifier)}`,
+    `SHIPIT_PATTERN=${shellQuote(shipItProcessPattern)}`,
+    `STATE_MTIME_BEFORE=${previousStateMtimeSeconds}`,
+    `STATE_READY_AFTER=${stateReadyAfterSeconds}`,
+    'mkdir -p "$(dirname "$LOG")"',
+    'echo "createdAt=$(date -u +%Y-%m-%dT%H:%M:%SZ) target=$TARGET_VERSION parent=$PARENT_PID state_mtime_before=$STATE_MTIME_BEFORE state_ready_after=$STATE_READY_AFTER" >> "$LOG"',
+    'current_version() { /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$BUNDLE/Contents/Info.plist" 2>/dev/null || true; }',
+    'state_mtime() { stat -f "%m" "$STATE" 2>/dev/null || echo 0; }',
+    'state_is_fresh() {',
+    '  [ -f "$STATE" ] || return 1',
+    '  MTIME="$(state_mtime)"',
+    '  case "$MTIME" in ""|*[!0-9]*) MTIME=0 ;; esac',
+    '  if [ "$STATE_MTIME_BEFORE" -gt 0 ]; then',
+    '    [ "$MTIME" -gt "$STATE_MTIME_BEFORE" ]',
+    "  else",
+    '    [ "$MTIME" -ge "$STATE_READY_AFTER" ]',
+    "  fi",
+    "}",
+    'bundle_is_writable() { [ -w "$BUNDLE" ] && [ -w "$BUNDLE/Contents" ]; }',
+    'run_shipit_rescue_as_current_user() { "$SHIPIT" "$SHIPIT_IDENTIFIER" "$STATE" >> "$LOG" 2>&1; }',
+    'while kill -0 "$PARENT_PID" 2>/dev/null; do sleep 0.5; done',
+    'if [ -f "$CANCELLED" ]; then',
+    '  echo "shipit_rescue_cancelled_before_delay" >> "$LOG"',
+    '  rm -f "$SCRIPT" "$CANCELLED"',
+    "  exit 0",
+    "fi",
+    'sleep 8',
+    'if [ -f "$CANCELLED" ]; then',
+    '  echo "shipit_rescue_cancelled_after_parent_exit" >> "$LOG"',
+    '  rm -f "$SCRIPT" "$CANCELLED"',
+    "  exit 0",
+    "fi",
+    'CURRENT="$(current_version)"',
+    'echo "after_parent_exit current=$CURRENT" >> "$LOG"',
+    '[ "$CURRENT" = "$TARGET_VERSION" ] && { rm -f "$SCRIPT"; exit 0; }',
+    "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do",
+    '  if pgrep -f "$SHIPIT_PATTERN" >/dev/null 2>&1; then',
+    '    echo "waiting_for_existing_shipit" >> "$LOG"',
+    "    sleep 1",
+    "  else",
+    "    break",
+    "  fi",
+    "done",
+    'if pgrep -f "$SHIPIT_PATTERN" >/dev/null 2>&1; then',
+    '  echo "shipit_rescue_skipped_existing_shipit_still_running" >> "$LOG"',
+    '  rm -f "$SCRIPT"',
+    "  exit 0",
+    "fi",
+    'CURRENT="$(current_version)"',
+    'echo "after_existing_shipit_wait current=$CURRENT" >> "$LOG"',
+    '[ "$CURRENT" = "$TARGET_VERSION" ] && { rm -f "$SCRIPT"; exit 0; }',
+    'if ! bundle_is_writable; then',
+    '  echo "shipit_rescue_skipped_bundle_not_writable bundle=$BUNDLE" >> "$LOG"',
+    '  rm -f "$SCRIPT"',
+    "  exit 0",
+    "fi",
+    'if [ -x "$SHIPIT" ] && state_is_fresh; then',
+    '  echo "running_shipit_rescue shipit=$SHIPIT state=$STATE state_mtime=$(state_mtime)" >> "$LOG"',
+    "  run_shipit_rescue_as_current_user",
+    '  echo "shipit_rescue_status=$?" >> "$LOG"',
+    "else",
+    '  echo "shipit_rescue_skipped shipit_exists=$(test -x "$SHIPIT" && echo 1 || echo 0) state_exists=$(test -f "$STATE" && echo 1 || echo 0) state_fresh=$(state_is_fresh && echo 1 || echo 0) bundle_writable=$(bundle_is_writable && echo 1 || echo 0) state_mtime=$(state_mtime)" >> "$LOG"',
+    "fi",
+    'CURRENT="$(current_version)"',
+    'echo "final current=$CURRENT" >> "$LOG"',
+    'rm -f "$SCRIPT"',
+    "",
+  ];
+
+  try {
+    fs.writeFileSync(scriptPath, lines.join("\n"), { mode: 0o700 });
+    const child = spawn("/bin/sh", [scriptPath], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    return cancelPath;
+  } catch (error) {
+    console.warn("failed to schedule ShipIt rescue", error);
+    return null;
+  }
 }
 
 async function prepareDesktopUpdateInstall(version: string) {
@@ -2547,23 +3094,49 @@ async function installDesktopUpdate(version?: string) {
     setUpdaterError(new Error("electron-updater is unavailable"), version);
     return;
   }
-  const installingVersion =
-    version ??
-    (latestUpdaterState.phase === "downloaded" || latestUpdaterState.phase === "installing"
-      ? latestUpdaterState.version
-      : app.getVersion());
+  let installingVersion = version;
+  if (!installingVersion) {
+    installingVersion =
+      latestUpdaterState.phase === "preparing" ||
+      latestUpdaterState.phase === "downloaded" ||
+      latestUpdaterState.phase === "installing"
+        ? latestUpdaterState.version
+        : app.getVersion();
+  }
   setUpdaterState({ phase: "installing", version: installingVersion });
+  let macHandoff: MacUpdateInstallHandoff | undefined;
   try {
     await prepareDesktopUpdateInstall(installingVersion);
+    if (process.platform === "darwin") {
+      macHandoff =
+        preparedMacUpdateHandoff?.version === installingVersion &&
+        isFreshMacShipItState(preparedMacUpdateHandoff.stateBaseline)
+          ? preparedMacUpdateHandoff
+          : {
+              version: installingVersion,
+              stateBaseline: captureMacShipItStateBaseline(),
+              updater,
+              nativeUpdateDownloadedListeners: captureMacNativeUpdateDownloadedListeners(),
+              rescueCancelPath: null,
+            };
+    }
     // Electron's autoUpdater closes windows before `before-quit` fires. Mark the
     // app as quitting up front so our close-to-tray handler does not hide the
     // main window and leave ShipIt blocked on a still-running app instance.
     isQuitting = true;
     updater.quitAndInstall(false, true);
-    scheduleUpdateInstallExitFallback();
+    // Only arm the rescue after quitAndInstall returns successfully. If the
+    // updater throws synchronously, we do not want a detached post-exit ShipIt
+    // script to run later against a staged update the user did not install.
+    if (macHandoff) {
+      macHandoff.rescueCancelPath = scheduleMacShipItRescue(
+        installingVersion,
+        macHandoff.stateBaseline,
+      );
+    }
+    scheduleUpdateInstallExitFallback(macHandoff);
   } catch (error) {
-    clearUpdateInstallFallbackTimers();
-    setUpdaterError(error, installingVersion);
+    await abortDesktopUpdateInstallHandoff(error, installingVersion, macHandoff);
   }
 }
 
