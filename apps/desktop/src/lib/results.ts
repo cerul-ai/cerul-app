@@ -18,7 +18,8 @@ export function mapResultMatch(
   bestScore: number,
   t: TFunction,
 ): ResultMatch {
-  const confidence = resultConfidence(record.score, bestScore);
+  const matchScore = resultMatchScore(record, bestScore);
+  const confidence = resultConfidence(matchScore, 1);
   const scoreInfo = resultScoreInfo(record, bestScore, t);
   return {
     id: record.chunk_id,
@@ -39,7 +40,8 @@ export function mapSearchResult(
   t: TFunction,
 ): Result {
   const item = allItems.find((candidate) => candidate.id === record.item_id);
-  const confidence = resultConfidence(record.score, bestScore);
+  const matchScore = resultMatchScore(record, bestScore);
+  const confidence = resultConfidence(matchScore, 1);
   const scoreInfo = resultScoreInfo(record, bestScore, t);
   return {
     id: record.chunk_id,
@@ -51,10 +53,10 @@ export function mapSearchResult(
     duration: item?.duration ?? "",
     snippet: displaySnippet(record, t),
     color: item?.color ?? "steel",
-    thumbnailUrl: record.frame_path ? api.chunkFrameUrl(record.chunk_id) : null,
+    thumbnailUrl: resultThumbnailUrl(record, item),
     confidence,
     confidenceLabel: resultConfidenceLabel(confidence, t),
-    score: record.score,
+    score: matchScore,
     scoreLabel: scoreInfo.label,
     scoreTitle: scoreInfo.title,
     chunkType: record.chunk_type,
@@ -68,7 +70,10 @@ export function mapSearchResults(
   t: TFunction,
 ): Result[] {
   const grouped = new Map<string, Result>();
-  const bestScore = records[0]?.score ?? 0;
+  const bestScore = records
+    .map((record) => record.score)
+    .filter((score) => Number.isFinite(score) && score > 0)
+    .sort((left, right) => right - left)[0] ?? 0;
 
   for (const record of records) {
     const groupKey = resultGroupKey(record);
@@ -109,34 +114,56 @@ export function resultConfidenceLabel(confidence: ResultConfidence, t: TFunction
 }
 
 export function resultScoreInfo(record: api.SearchResultRecord, bestScore: number, t: TFunction) {
+  const matchScore = resultMatchScore(record, bestScore);
   const similarityScore = record.similarity_score;
-  if (similarityScore !== null && Number.isFinite(similarityScore)) {
-    return {
-      label: t("result.score.match", {
-        pct: Math.round(Math.min(Math.max(similarityScore, 0), 1) * 100),
-      }),
-      title: t("result.score.similarityTitle"),
-    };
-  }
-
-  if (!Number.isFinite(record.score) || record.score <= 0) {
+  const similarityTitle =
+    similarityScore !== null && Number.isFinite(similarityScore)
+      ? `${t("result.score.similarityTitle")}: ${Math.round(Math.min(Math.max(similarityScore, 0), 1) * 100)}%`
+      : null;
+  const title = similarityTitle
+    ? `${t("result.score.rankTitle")} · ${similarityTitle}`
+    : t("result.score.rankTitle");
+  if (!Number.isFinite(matchScore) || matchScore <= 0) {
     return {
       label: t("result.score.rank", { pct: 0 }),
-      title: t("result.score.rankTitle"),
-    };
-  }
-  if (Number.isFinite(bestScore) && bestScore > 0) {
-    return {
-      label: t("result.score.rank", {
-        pct: Math.round(Math.min(Math.max(record.score / bestScore, 0), 1) * 100),
-      }),
-      title: t("result.score.rankTitle"),
+      title,
     };
   }
   return {
-    label: t("result.score.rankRaw", { score: record.score.toFixed(3) }),
-    title: t("result.score.rankTitle"),
+    label: t("result.score.rank", {
+      pct: Math.round(matchScore * 100),
+    }),
+    title,
   };
+}
+
+function resultMatchScore(record: api.SearchResultRecord, bestScore: number): number {
+  if (
+    record.match_score !== null &&
+    record.match_score !== undefined &&
+    Number.isFinite(record.match_score)
+  ) {
+    return Math.min(Math.max(record.match_score, 0), 1);
+  }
+  if (
+    Number.isFinite(record.score) &&
+    record.score > 0 &&
+    Number.isFinite(bestScore) &&
+    bestScore > 0
+  ) {
+    return Math.min(Math.max(record.score / bestScore, 0), 1);
+  }
+  return 0;
+}
+
+function resultThumbnailUrl(record: api.SearchResultRecord, item: Item | undefined): string | null {
+  if (record.frame_path) {
+    return api.chunkFrameUrl(record.chunk_id);
+  }
+  if (record.nearest_frame_chunk_id) {
+    return api.chunkFrameUrl(record.nearest_frame_chunk_id);
+  }
+  return item?.thumbnailUrl ?? null;
 }
 
 function resultGroupKey(record: api.SearchResultRecord) {

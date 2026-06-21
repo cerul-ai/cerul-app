@@ -2590,7 +2590,7 @@ function ResultsScreen({
             (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0) ||
             right.score - left.score,
         )
-      : filteredResults;
+      : [...filteredResults].sort((left, right) => right.score - left.score);
   const modalityCounts = {
     all: results.length,
     audio: results.filter((result) => resultModality(result) === "audio").length,

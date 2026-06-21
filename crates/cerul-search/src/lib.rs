@@ -18,6 +18,10 @@ pub struct SearchResult {
     pub end_sec: Option<f64>,
     pub snippet: String,
     pub frame_path: Option<String>,
+    /// User-facing match score derived from the final fused ranking score for
+    /// this query. Normalized to 0.0..=1.0 after dedupe so the UI can display
+    /// and sort by the same signal that placed the result.
+    pub match_score: f32,
     pub score: f32,
     pub similarity_score: Option<f32>,
     /// Item title, joined in so the UI can label a result without a separate
@@ -153,8 +157,9 @@ pub async fn search_fts_only_with_diagnostics(
     let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
     let fts_hits_count = hits.len();
     let results = hydrate(paths, &hits)?;
+    let results = finalize_results(results, limit);
     Ok(SearchResponse {
-        results: dedupe_results(results, limit),
+        results,
         diagnostics: SearchDiagnostics::fts_only(fts_hits_count, fallback_reason),
     })
 }
@@ -257,7 +262,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     let top_hits = merged.into_iter().take(retrieval_limit).collect::<Vec<_>>();
 
     let results = hydrate(paths, &top_hits)?;
-    let results = dedupe_results(results, limit);
+    let results = finalize_results(results, limit);
     let retrieval_mode = retrieval_mode(vector_hits_count, fts_hits_count);
     Ok(SearchResponse {
         results,
@@ -556,6 +561,7 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult
             end_sec: chunk.end_sec,
             snippet,
             frame_path: chunk.frame_path.clone(),
+            match_score: 0.0,
             score: hit.score,
             similarity_score: hit.similarity_score,
             item_title: chunk.item_title.clone(),
@@ -565,6 +571,40 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult
 
     attach_nearest_frame_chunk_ids(&conn, &mut results)?;
     Ok(results)
+}
+
+fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+    let mut results = dedupe_results(results, limit);
+    apply_match_scores(&mut results);
+    results
+}
+
+fn apply_match_scores(results: &mut [SearchResult]) {
+    let best_score = results
+        .iter()
+        .filter_map(|result| {
+            if result.score.is_finite() && result.score > 0.0 {
+                Some(result.score)
+            } else {
+                None
+            }
+        })
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+
+    let Some(best_score) = best_score else {
+        for result in results {
+            result.match_score = 0.0;
+        }
+        return;
+    };
+
+    for result in results {
+        result.match_score = if result.score.is_finite() && result.score > 0.0 {
+            (result.score / best_score).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -876,6 +916,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["chunk-a", "chunk-c", "chunk-d"]
         );
+    }
+
+    #[test]
+    fn match_score_normalizes_final_fused_score() {
+        let results = vec![
+            result("chunk-a", "item-1", "transcript", Some(10.0), 0.04),
+            result("chunk-b", "item-2", "keyframe", Some(20.0), 0.02),
+            result("chunk-c", "item-3", "transcript", Some(30.0), 0.0),
+        ];
+
+        let scored = finalize_results(results, 10);
+
+        assert_eq!(
+            scored
+                .iter()
+                .map(|result| result.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chunk-a", "chunk-b", "chunk-c"]
+        );
+        assert_eq!(scored[0].match_score, 1.0);
+        assert_eq!(scored[1].match_score, 0.5);
+        assert_eq!(scored[2].match_score, 0.0);
     }
 
     #[tokio::test]
@@ -1396,6 +1458,7 @@ mod tests {
             end_sec: start_sec.map(|start| start + 10.0),
             snippet: chunk_id.to_string(),
             frame_path: None,
+            match_score: 0.0,
             score,
             similarity_score: None,
             item_title: None,
