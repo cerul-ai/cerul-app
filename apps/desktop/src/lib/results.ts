@@ -37,6 +37,7 @@ export function mapSearchResult(
   record: api.SearchResultRecord,
   allItems: Item[],
   bestScore: number,
+  backendRank: number,
   t: TFunction,
 ): Result {
   const item = allItems.find((candidate) => candidate.id === record.item_id);
@@ -57,7 +58,7 @@ export function mapSearchResult(
     confidence,
     confidenceLabel: resultConfidenceLabel(confidence, t),
     score: matchScore,
-    rankScore: resultRankScore(record),
+    rankScore: -backendRank,
     scoreLabel: scoreInfo.label,
     scoreTitle: scoreInfo.title,
     chunkType: record.chunk_type,
@@ -76,7 +77,7 @@ export function mapSearchResults(
     .filter((score) => Number.isFinite(score) && score > 0)
     .sort((left, right) => right - left)[0] ?? 0;
 
-  for (const record of records) {
+  for (const [backendRank, record] of records.entries()) {
     const groupKey = resultGroupKey(record);
     const existing = grouped.get(groupKey);
     if (existing) {
@@ -84,7 +85,7 @@ export function mapSearchResults(
       continue;
     }
 
-    grouped.set(groupKey, mapSearchResult(record, allItems, bestScore, t));
+    grouped.set(groupKey, mapSearchResult(record, allItems, bestScore, backendRank, t));
   }
 
   return Array.from(grouped.values());
@@ -153,13 +154,6 @@ function resultMatchScore(record: api.SearchResultRecord, bestScore: number): nu
     bestScore > 0
   ) {
     return Math.min(Math.max(record.score / bestScore, 0), 1);
-  }
-  return 0;
-}
-
-function resultRankScore(record: api.SearchResultRecord): number {
-  if (Number.isFinite(record.score) && record.score > 0) {
-    return record.score;
   }
   return 0;
 }
