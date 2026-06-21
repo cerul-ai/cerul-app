@@ -116,11 +116,13 @@ PINNED_SNAPSHOT_REQUIRED_FILES = {
         "config.json",
         "tokenizer_config.json",
         "vocab.json",
+        "merges.txt",
     ),
     DEFAULT_FORCED_ALIGNER_MODEL: (
         "config.json",
         "tokenizer_config.json",
         "vocab.json",
+        "merges.txt",
     ),
     DEFAULT_EMBEDDING_MODEL: (
         "config.json",
@@ -1040,6 +1042,19 @@ def resolve_snapshot(model_id_or_path: str, allow_patterns: list[str] | None = N
     return snapshot
 
 
+def qwen_asr_transcribe_kwargs(model_arg: Any, aligner_arg: Any, language: str | None) -> dict[str, Any]:
+    return_timestamps = aligner_arg is not None and aligner_arg != ""
+    kwargs: dict[str, Any] = {
+        "model": model_arg,
+        "return_timestamps": return_timestamps,
+    }
+    if return_timestamps:
+        kwargs["forced_aligner"] = aligner_arg
+    if language and language != "auto":
+        kwargs["language"] = language
+    return kwargs
+
+
 def allow_patterns_for_model(model_id_or_path: str) -> list[str] | None:
     if model_id_or_path == DEFAULT_EMBEDDING_MODEL:
         return QWEN3_VL_ALLOW_PATTERNS
@@ -1717,13 +1732,7 @@ class CerulMlxRuntime:
         try:
             module = __import__("mlx_qwen3_asr")
             model_arg, aligner_arg = self._transcription_components(module)
-            kwargs: dict[str, Any] = {
-                "model": model_arg,
-                "return_timestamps": True,
-                "forced_aligner": aligner_arg,
-            }
-            if language and language != "auto":
-                kwargs["language"] = language
+            kwargs = qwen_asr_transcribe_kwargs(model_arg, aligner_arg, language)
             result = module.transcribe(audio_path, **kwargs)
             text = result.get("text") if isinstance(result, dict) else getattr(result, "text", "")
             raw_segments = result.get("segments") if isinstance(result, dict) else getattr(result, "segments", [])

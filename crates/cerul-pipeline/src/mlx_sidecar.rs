@@ -447,15 +447,7 @@ impl Transcriber for MlxSidecar {
         if let Some(progress) = progress {
             progress(100);
         }
-        Ok(response
-            .segments
-            .into_iter()
-            .map(|segment| Segment {
-                start: segment.start,
-                end: segment.end,
-                text: segment.text,
-            })
-            .collect())
+        Ok(response.into_segments())
     }
 
     fn inference_provider(&self) -> Option<InferenceProviderInfo> {
@@ -584,7 +576,40 @@ struct EmbeddingResponse {
 
 #[derive(Debug, Deserialize)]
 struct TranscribeResponse {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
     segments: Vec<SidecarSegment>,
+}
+
+impl TranscribeResponse {
+    fn into_segments(self) -> Vec<Segment> {
+        let segments = self
+            .segments
+            .into_iter()
+            .map(|segment| Segment {
+                start: segment.start,
+                end: segment.end,
+                text: segment.text,
+            })
+            .collect::<Vec<_>>();
+        if !segments.is_empty() {
+            return segments;
+        }
+
+        let Some(text) = self.text else {
+            return Vec::new();
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        vec![Segment {
+            start: 0.0,
+            end: 1.0,
+            text: text.to_string(),
+        }]
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -806,5 +831,25 @@ mod tests {
         assert!(config.script.ends_with("mlx-sidecar/cerul_mlx_sidecar.py"));
         assert_eq!(config.embedding_model, DEFAULT_EMBEDDING_MODEL);
         assert_eq!(config.models_cache, paths.models.join("mlx"));
+    }
+
+    #[test]
+    fn transcribe_response_preserves_top_level_text_without_segments() {
+        let response: TranscribeResponse =
+            serde_json::from_value(json!({ "text": "recognized speech", "segments": [] })).unwrap();
+        let segments = response.into_segments();
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start, 0.0);
+        assert_eq!(segments[0].end, 1.0);
+        assert_eq!(segments[0].text, "recognized speech");
+    }
+
+    #[test]
+    fn transcribe_response_accepts_empty_text_without_segments_as_no_speech() {
+        let response: TranscribeResponse =
+            serde_json::from_value(json!({ "text": "  ", "segments": [] })).unwrap();
+
+        assert!(response.into_segments().is_empty());
     }
 }

@@ -102,11 +102,17 @@ def assert_qwen_snapshots_require_tokenizer_files(sidecar: Any) -> None:
             (snapshot / "model.safetensors").write_bytes(b"weights")
 
             missing = sidecar.pinned_snapshot_missing_reasons(snapshot, model)
-            if not any("vocab.json" in reason and "tokenizer_config.json" in reason for reason in missing):
+            if not any(
+                "vocab.json" in reason
+                and "merges.txt" in reason
+                and "tokenizer_config.json" in reason
+                for reason in missing
+            ):
                 raise AssertionError(f"{model}: tokenizer files should be required, got {missing}")
 
             (snapshot / "tokenizer_config.json").write_text("{}", encoding="utf-8")
             (snapshot / "vocab.json").write_text("{}", encoding="utf-8")
+            (snapshot / "merges.txt").write_text("#version: 0.2\n", encoding="utf-8")
             missing = sidecar.pinned_snapshot_missing_reasons(snapshot, model)
             if missing:
                 raise AssertionError(f"{model}: complete tokenizer snapshot should pass, got {missing}")
@@ -134,6 +140,7 @@ def assert_complete_mirror_cache_bypasses_download_selection(sidecar: Any) -> No
             (snapshot / "config.json").write_text("{}", encoding="utf-8")
             (snapshot / "tokenizer_config.json").write_text("{}", encoding="utf-8")
             (snapshot / "vocab.json").write_text("{}", encoding="utf-8")
+            (snapshot / "merges.txt").write_text("#version: 0.2\n", encoding="utf-8")
             (snapshot / "model.safetensors").write_bytes(b"weights")
 
             def fail_select_download_source(*_args: Any, **_kwargs: Any) -> str:
@@ -148,6 +155,14 @@ def assert_complete_mirror_cache_bypasses_download_selection(sidecar: Any) -> No
         sidecar.bundled_snapshot_dir = original_bundled_snapshot_dir
         sidecar.select_download_source = original_select_download_source
         restore_env(previous_env)
+
+
+def assert_qwen_asr_disables_timestamps_without_aligner(sidecar: Any) -> None:
+    kwargs = sidecar.qwen_asr_transcribe_kwargs("asr-model", None, "auto")
+    if kwargs.get("return_timestamps") is not False:
+        raise AssertionError(f"aligner-less Qwen ASR should disable timestamps, got {kwargs}")
+    if "forced_aligner" in kwargs:
+        raise AssertionError(f"aligner-less Qwen ASR should omit forced_aligner, got {kwargs}")
 
 
 def main() -> None:
@@ -197,6 +212,7 @@ def main() -> None:
     )
     assert_qwen_snapshots_require_tokenizer_files(sidecar)
     assert_complete_mirror_cache_bypasses_download_selection(sidecar)
+    assert_qwen_asr_disables_timestamps_without_aligner(sidecar)
     print("model source routing smoke passed")
 
 
