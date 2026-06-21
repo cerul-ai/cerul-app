@@ -57,6 +57,7 @@ export function mapSearchResult(
     confidence,
     confidenceLabel: resultConfidenceLabel(confidence, t),
     score: matchScore,
+    rankScore: resultRankScore(record),
     scoreLabel: scoreInfo.label,
     scoreTitle: scoreInfo.title,
     chunkType: record.chunk_type,
@@ -152,6 +153,13 @@ function resultMatchScore(record: api.SearchResultRecord, bestScore: number): nu
     bestScore > 0
   ) {
     return Math.min(Math.max(record.score / bestScore, 0), 1);
+  }
+  return 0;
+}
+
+function resultRankScore(record: api.SearchResultRecord): number {
+  if (Number.isFinite(record.score) && record.score > 0) {
+    return record.score;
   }
   return 0;
 }

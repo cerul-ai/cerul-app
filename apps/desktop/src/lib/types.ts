@@ -68,6 +68,7 @@ export type Result = {
   confidence: ResultConfidence;
   confidenceLabel: string;
   score: number;
+  rankScore: number;
   scoreLabel: string;
   scoreTitle: string;
   chunkType: string;

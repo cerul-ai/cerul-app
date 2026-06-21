@@ -2588,9 +2588,9 @@ function ResultsScreen({
       ? [...filteredResults].sort(
           (left, right) =>
             (right.indexedAtEpoch ?? 0) - (left.indexedAtEpoch ?? 0) ||
-            right.score - left.score,
+            right.rankScore - left.rankScore,
         )
-      : [...filteredResults].sort((left, right) => right.score - left.score);
+      : [...filteredResults].sort((left, right) => right.rankScore - left.rankScore);
   const modalityCounts = {
     all: results.length,
     audio: results.filter((result) => resultModality(result) === "audio").length,
