@@ -18,8 +18,14 @@ pub struct SearchResult {
     pub end_sec: Option<f64>,
     pub snippet: String,
     pub frame_path: Option<String>,
+    /// User-facing match score derived from the final fused ranking score.
+    /// Calibrated to 0.0..=1.0 after dedupe so the UI can display the same
+    /// signal that placed the result without making the top hit always 100%.
+    pub match_score: f32,
     pub score: f32,
     pub similarity_score: Option<f32>,
+    #[serde(skip)]
+    source_mask: u8,
     /// Item title, joined in so the UI can label a result without a separate
     /// items fetch (which can be empty/stale and leave the row showing a raw id).
     pub item_title: Option<String>,
@@ -56,7 +62,12 @@ pub struct RawHit {
     pub chunk_id: String,
     pub score: f32,
     pub similarity_score: Option<f32>,
+    source_mask: u8,
 }
+
+const SOURCE_TEXT: u8 = 1 << 0;
+const SOURCE_TEXT_VECTOR: u8 = 1 << 1;
+const SOURCE_IMAGE_VECTOR: u8 = 1 << 2;
 
 pub fn crate_ready() -> bool {
     true
@@ -153,8 +164,9 @@ pub async fn search_fts_only_with_diagnostics(
     let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
     let fts_hits_count = hits.len();
     let results = hydrate(paths, &hits)?;
+    let results = finalize_results(results, limit);
     Ok(SearchResponse {
-        results: dedupe_results(results, limit),
+        results,
         diagnostics: SearchDiagnostics::fts_only(fts_hits_count, fallback_reason),
     })
 }
@@ -257,7 +269,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     let top_hits = merged.into_iter().take(retrieval_limit).collect::<Vec<_>>();
 
     let results = hydrate(paths, &top_hits)?;
-    let results = dedupe_results(results, limit);
+    let results = finalize_results(results, limit);
     let retrieval_mode = retrieval_mode(vector_hits_count, fts_hits_count);
     Ok(SearchResponse {
         results,
@@ -357,8 +369,15 @@ fn retrieval_limit(limit: usize) -> usize {
 pub fn rrf_merge(sources: Vec<Vec<RawHit>>, k: usize) -> Vec<RawHit> {
     let mut scores = HashMap::<String, f32>::new();
     let mut similarity_scores = HashMap::<String, f32>::new();
+    let mut source_masks = HashMap::<String, u8>::new();
 
-    for source in sources {
+    for (source_index, source) in sources.into_iter().enumerate() {
+        let source_mask = match source_index {
+            0 => SOURCE_TEXT,
+            1 => SOURCE_TEXT_VECTOR,
+            2 => SOURCE_IMAGE_VECTOR,
+            _ => 0,
+        };
         let mut seen_in_source = HashSet::new();
         for (rank, hit) in source.into_iter().enumerate() {
             if !seen_in_source.insert(hit.chunk_id.clone()) {
@@ -366,6 +385,11 @@ pub fn rrf_merge(sources: Vec<Vec<RawHit>>, k: usize) -> Vec<RawHit> {
             }
 
             let chunk_id = hit.chunk_id;
+            let effective_source_mask = if hit.source_mask == 0 {
+                source_mask
+            } else {
+                hit.source_mask | source_mask
+            };
             if let Some(similarity_score) = hit.similarity_score {
                 similarity_scores
                     .entry(chunk_id.clone())
@@ -376,6 +400,7 @@ pub fn rrf_merge(sources: Vec<Vec<RawHit>>, k: usize) -> Vec<RawHit> {
                     })
                     .or_insert(similarity_score);
             }
+            *source_masks.entry(chunk_id.clone()).or_default() |= effective_source_mask;
             *scores.entry(chunk_id).or_default() += 1.0 / (k as f32 + rank as f32 + 1.0);
         }
     }
@@ -384,6 +409,7 @@ pub fn rrf_merge(sources: Vec<Vec<RawHit>>, k: usize) -> Vec<RawHit> {
         .into_iter()
         .map(|(chunk_id, score)| RawHit {
             similarity_score: similarity_scores.remove(&chunk_id),
+            source_mask: source_masks.remove(&chunk_id).unwrap_or_default(),
             chunk_id,
             score,
         })
@@ -449,6 +475,7 @@ async fn sqlite_fts_search(
             chunk_id,
             score: (-rank_score) as f32,
             similarity_score: None,
+            source_mask: SOURCE_TEXT,
         })
     })?;
 
@@ -492,6 +519,7 @@ async fn sqlite_literal_search(
             chunk_id,
             score: 0.01,
             similarity_score: None,
+            source_mask: SOURCE_TEXT,
         })
     })?;
 
@@ -513,6 +541,7 @@ async fn qdrant_vector_search(
             chunk_id: hit.chunk_id,
             score: 0.0,
             similarity_score: Some(similarity_from_qdrant_score(hit.score, distance_metric)),
+            source_mask: 0,
         })
         .collect())
 }
@@ -556,8 +585,10 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult
             end_sec: chunk.end_sec,
             snippet,
             frame_path: chunk.frame_path.clone(),
+            match_score: 0.0,
             score: hit.score,
             similarity_score: hit.similarity_score,
+            source_mask: hit.source_mask,
             item_title: chunk.item_title.clone(),
             nearest_frame_chunk_id: None,
         });
@@ -565,6 +596,42 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult
 
     attach_nearest_frame_chunk_ids(&conn, &mut results)?;
     Ok(results)
+}
+
+fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+    let mut results = dedupe_results(results, limit);
+    apply_match_scores(&mut results);
+    results
+}
+
+fn apply_match_scores(results: &mut [SearchResult]) {
+    for result in results {
+        result.match_score = calibrated_match_score(result.score, result.source_mask);
+    }
+}
+
+fn calibrated_match_score(score: f32, source_mask: u8) -> f32 {
+    if !score.is_finite() || score <= 0.0 {
+        return 0.0;
+    }
+
+    // Keep this user-facing score deliberately conservative:
+    // - one channel tops out below 80%
+    // - two independent channels can reach the high 80s
+    // - only three-channel evidence can enter the low/mid 90s
+    // 97-100 is intentionally reserved for a future stricter verifier.
+    let channel_count = source_mask.count_ones().clamp(1, 3) as f32;
+    const RRF_K: f32 = 60.0;
+    let ideal_score = channel_count / (RRF_K + 1.0);
+    let strength = (score / ideal_score).clamp(0.0, 1.0).powf(2.0);
+
+    let (floor, ceiling) = match channel_count as u8 {
+        1 => (0.30, 0.78),
+        2 => (0.55, 0.89),
+        _ => (0.70, 0.96),
+    };
+
+    floor + (ceiling - floor) * strength
 }
 
 #[derive(Debug, Clone)]
@@ -832,22 +899,26 @@ mod tests {
                         chunk_id: "shared".to_string(),
                         score: 0.0,
                         similarity_score: Some(0.91),
+                        source_mask: 0,
                     },
                     RawHit {
                         chunk_id: "single".to_string(),
                         score: 0.0,
                         similarity_score: Some(0.74),
+                        source_mask: 0,
                     },
                 ],
                 vec![RawHit {
                     chunk_id: "shared".to_string(),
                     score: 0.0,
                     similarity_score: Some(0.87),
+                    source_mask: 0,
                 }],
                 vec![RawHit {
                     chunk_id: "shared".to_string(),
                     score: 0.0,
                     similarity_score: None,
+                    source_mask: 0,
                 }],
             ],
             60,
@@ -875,6 +946,47 @@ mod tests {
                 .map(|hit| hit.chunk_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["chunk-a", "chunk-c", "chunk-d"]
+        );
+    }
+
+    #[test]
+    fn match_score_calibrates_final_fused_score_conservatively() {
+        let results = vec![
+            result("chunk-a", "item-1", "transcript", Some(10.0), 0.04),
+            result("chunk-b", "item-2", "keyframe", Some(20.0), 0.01),
+            result("chunk-c", "item-3", "transcript", Some(30.0), 0.0),
+        ];
+
+        let scored = finalize_results(results, 10);
+
+        assert_eq!(
+            scored
+                .iter()
+                .map(|result| result.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chunk-a", "chunk-b", "chunk-c"]
+        );
+        assert!((scored[0].match_score - 0.78).abs() < 0.001);
+        assert!(scored[1].match_score > 0.47 && scored[1].match_score < 0.49);
+        assert_eq!(scored[2].match_score, 0.0);
+    }
+
+    #[test]
+    fn match_score_uses_channel_tiers() {
+        let top_rank = 1.0 / 61.0;
+
+        assert!((calibrated_match_score(top_rank, SOURCE_TEXT) - 0.78).abs() < 0.001);
+        assert!(
+            (calibrated_match_score(top_rank * 2.0, SOURCE_TEXT | SOURCE_TEXT_VECTOR) - 0.89).abs()
+                < 0.001
+        );
+        assert!(
+            (calibrated_match_score(
+                top_rank * 3.0,
+                SOURCE_TEXT | SOURCE_TEXT_VECTOR | SOURCE_IMAGE_VECTOR
+            ) - 0.96)
+                .abs()
+                < 0.001
         );
     }
 
@@ -951,6 +1063,7 @@ mod tests {
                 chunk_id: "item-1:transcript:000000".to_string(),
                 score: 1.0,
                 similarity_score: Some(1.0),
+                source_mask: SOURCE_TEXT,
             }],
         )
         .unwrap();
@@ -1057,11 +1170,13 @@ mod tests {
                     chunk_id: "item-1:transcript:000001".to_string(),
                     score: 0.9,
                     similarity_score: Some(0.9),
+                    source_mask: SOURCE_TEXT,
                 },
                 RawHit {
                     chunk_id: "item-1:transcript:000000".to_string(),
                     score: 0.8,
                     similarity_score: Some(0.8),
+                    source_mask: SOURCE_TEXT,
                 },
             ],
         )
@@ -1396,8 +1511,10 @@ mod tests {
             end_sec: start_sec.map(|start| start + 10.0),
             snippet: chunk_id.to_string(),
             frame_path: None,
+            match_score: 0.0,
             score,
             similarity_score: None,
+            source_mask: SOURCE_TEXT,
             item_title: None,
             nearest_frame_chunk_id: None,
         }

@@ -253,6 +253,8 @@ export type SearchResultRecord = {
   end_sec: number | null;
   snippet: string;
   frame_path: string | null;
+  // Optional while older local cores are still possible during development.
+  match_score?: number | null;
   score: number;
   similarity_score: number | null;
   // Optional: older backends omit these, so treat them as possibly undefined.

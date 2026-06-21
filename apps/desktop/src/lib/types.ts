@@ -68,6 +68,8 @@ export type Result = {
   confidence: ResultConfidence;
   confidenceLabel: string;
   score: number;
+  // Derived from backend result order. Higher sorts earlier.
+  rankScore: number;
   scoreLabel: string;
   scoreTitle: string;
   chunkType: string;

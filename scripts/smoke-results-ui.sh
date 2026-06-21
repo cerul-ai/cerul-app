@@ -20,7 +20,9 @@ rg -qF "function resultModality" apps/desktop/src
 rg -qF "function ResultModalityIcon" apps/desktop/src
 rg -qF "FileAudio" apps/desktop/src
 rg -qF "Image as ImageIcon" apps/desktop/src
-rg -qF "thumbnailUrl: record.frame_path ? api.chunkFrameUrl(record.chunk_id) : null" apps/desktop/src
+rg -qF "function resultThumbnailUrl" apps/desktop/src/lib/results.ts
+rg -qF "record.nearest_frame_chunk_id" apps/desktop/src/lib/results.ts
+rg -qF "return item?.thumbnailUrl ?? null" apps/desktop/src/lib/results.ts
 rg -qF "result.thumbnailUrl" apps/desktop/src
 rg -qF "chunkFrameUrl" apps/desktop/src/lib/api.ts
 rg -qF "<ResultModalityIcon result={result} size={14} />" apps/desktop/src
@@ -43,4 +45,4 @@ rg -qF ".thumb.has-image img" apps/desktop/src/styles/extensions.css
 rg -qF ".result-more-matches" apps/desktop/src/styles/extensions.css
 rg -qF ".results-filter-row" apps/desktop/src/styles/app.css
 
-echo "results_ui_smoke keyboard_nav=arrow_up_down enter_opens_active_result cmd_down_expands_more_matches filters=modality sort=recent_by_item_indexed_at thumbnails=keyframe_url modality_icons=video_audio_image active_result_style=enabled loading_skeleton=enabled local_empty_state=enabled"
+echo "results_ui_smoke keyboard_nav=arrow_up_down enter_opens_active_result cmd_down_expands_more_matches filters=modality sort=recent_by_item_indexed_at thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image active_result_style=enabled loading_skeleton=enabled local_empty_state=enabled"
