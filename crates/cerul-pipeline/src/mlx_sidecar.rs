@@ -14,6 +14,7 @@ use std::{
 
 use anyhow::Context;
 use cerul_storage::AppPaths;
+use hound::WavReader;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -447,15 +448,15 @@ impl Transcriber for MlxSidecar {
         if let Some(progress) = progress {
             progress(100);
         }
-        Ok(response
-            .segments
-            .into_iter()
-            .map(|segment| Segment {
-                start: segment.start,
-                end: segment.end,
-                text: segment.text,
-            })
-            .collect())
+        let fallback_duration_sec = audio_duration_sec(audio_path).unwrap_or_else(|error| {
+            tracing::warn!(
+                %error,
+                audio_path = %audio_path.display(),
+                "failed to read transcript fallback duration"
+            );
+            1.0
+        });
+        Ok(response.into_segments(fallback_duration_sec))
     }
 
     fn inference_provider(&self) -> Option<InferenceProviderInfo> {
@@ -584,7 +585,52 @@ struct EmbeddingResponse {
 
 #[derive(Debug, Deserialize)]
 struct TranscribeResponse {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
     segments: Vec<SidecarSegment>,
+}
+
+impl TranscribeResponse {
+    fn into_segments(self, fallback_duration_sec: f64) -> Vec<Segment> {
+        let segments = self
+            .segments
+            .into_iter()
+            .map(|segment| Segment {
+                start: segment.start,
+                end: segment.end,
+                text: segment.text,
+            })
+            .collect::<Vec<_>>();
+        if !segments.is_empty() {
+            return segments;
+        }
+
+        let Some(text) = self.text else {
+            return Vec::new();
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        vec![Segment {
+            start: 0.0,
+            end: fallback_duration_sec.max(0.001),
+            text: text.to_string(),
+        }]
+    }
+}
+
+fn audio_duration_sec(audio_path: &Path) -> anyhow::Result<f64> {
+    let reader = WavReader::open(audio_path).with_context(|| {
+        format!(
+            "failed to read audio duration from {}",
+            audio_path.display()
+        )
+    })?;
+    let spec = reader.spec();
+    anyhow::ensure!(spec.sample_rate > 0, "audio sample rate must be positive");
+    Ok(f64::from(reader.duration()) / f64::from(spec.sample_rate))
 }
 
 #[derive(Debug, Deserialize)]
@@ -806,5 +852,44 @@ mod tests {
         assert!(config.script.ends_with("mlx-sidecar/cerul_mlx_sidecar.py"));
         assert_eq!(config.embedding_model, DEFAULT_EMBEDDING_MODEL);
         assert_eq!(config.models_cache, paths.models.join("mlx"));
+    }
+
+    #[test]
+    fn transcribe_response_preserves_top_level_text_without_segments() {
+        let response: TranscribeResponse =
+            serde_json::from_value(json!({ "text": "recognized speech", "segments": [] })).unwrap();
+        let segments = response.into_segments(42.5);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].start, 0.0);
+        assert_eq!(segments[0].end, 42.5);
+        assert_eq!(segments[0].text, "recognized speech");
+    }
+
+    #[test]
+    fn transcribe_response_accepts_empty_text_without_segments_as_no_speech() {
+        let response: TranscribeResponse =
+            serde_json::from_value(json!({ "text": "  ", "segments": [] })).unwrap();
+
+        assert!(response.into_segments(42.5).is_empty());
+    }
+
+    #[test]
+    fn audio_duration_sec_reads_wav_duration() {
+        let temp = tempfile::tempdir().unwrap();
+        let wav = temp.path().join("audio.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+        for _ in 0..32_000 {
+            writer.write_sample::<i16>(0).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        assert_eq!(audio_duration_sec(&wav).unwrap(), 2.0);
     }
 }
