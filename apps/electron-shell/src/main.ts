@@ -9,6 +9,7 @@ import {
   globalShortcut,
   ipcMain,
   nativeImage,
+  nativeTheme,
   net,
   protocol,
   safeStorage,
@@ -257,6 +258,10 @@ app
     );
     registerIpcHandlers();
     await startRustCore();
+    // Mirror the saved in-app theme onto the native appearance before any window
+    // paints, so the overlay's vibrancy / menu-bar glass and the main window's
+    // native chrome don't show the macOS system appearance on the first frame.
+    await syncNativeThemeFromSettings();
     createMainWindow();
     createOverlayWindow();
     setupTray();
@@ -902,6 +907,11 @@ function showOverlay() {
   if (!overlayWindow) {
     createOverlayWindow();
   }
+  // Re-mirror the theme on each summon so a mid-session theme switch is reflected
+  // in the native vibrancy. Fire-and-forget keeps the spotlight summon instant;
+  // startup already set the correct appearance, so at worst the first summon
+  // right after a theme change shows one stale frame before themeSource updates.
+  void syncNativeThemeFromSettings();
   const display = mainWindow?.getBounds() ?? { x: 0, y: 0, width: 1440, height: 920 };
   // Open compact and top-anchored; the renderer measures the panel and grows the
   // window to fit it via "resize_overlay", so there's no transparent dead-zone
@@ -1775,6 +1785,19 @@ async function initialGlobalHotkey() {
 
 async function shouldCloseToTray() {
   return settingBoolean(await readApiSettings(), "close_to_tray", true);
+}
+
+// macOS renders the overlay's native vibrancy (see createOverlayWindow) and the
+// menu-bar popover using each window's *effective appearance* — i.e.
+// nativeTheme.themeSource — not the renderer's in-app `data-theme`. Left at the
+// default "system", that frosted glass follows the macOS light/dark setting and
+// looks mismatched whenever it differs from the theme the user picked in-app.
+// Mirror the saved theme onto themeSource so the native glass (and the main
+// window's native chrome: traffic lights, scrollbars, form controls) tracks the
+// in-app theme. "System" keeps following the OS, which is the intended behaviour.
+async function syncNativeThemeFromSettings() {
+  const theme = settingString(await readApiSettings(), "theme", "Dark");
+  nativeTheme.themeSource = theme === "Light" ? "light" : theme === "Dark" ? "dark" : "system";
 }
 
 async function readApiSettings() {
