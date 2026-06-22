@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     net::TcpListener,
@@ -355,7 +355,16 @@ pub async fn retrieve_collection_vectors(
         return Ok(HashMap::new());
     }
 
-    let ids = chunk_ids.iter().map(|id| point_id(id)).collect::<Vec<_>>();
+    let mut ids = Vec::with_capacity(chunk_ids.len() * 2);
+    let mut seen_ids = HashSet::new();
+    for id in chunk_ids {
+        for point_key in [id.clone(), format!("{id}:image")] {
+            let qdrant_id = point_id(&point_key);
+            if seen_ids.insert(qdrant_id.clone()) {
+                ids.push(qdrant_id);
+            }
+        }
+    }
     let points: Vec<QdrantRetrievedPoint> = qdrant_post(
         paths,
         &format!("/collections/{collection}/points"),

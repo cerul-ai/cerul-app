@@ -392,13 +392,19 @@ async fn sqlite_text_search(
     limit: usize,
 ) -> anyhow::Result<Vec<RawHit>> {
     let mut hits = sqlite_fts_search(paths, query, limit).await?;
-    let mut seen = hits
-        .iter()
-        .map(|hit| hit.chunk_id.clone())
-        .collect::<HashSet<_>>();
 
     for hit in sqlite_literal_search(paths, query, limit).await? {
-        if seen.insert(hit.chunk_id.clone()) {
+        if let Some(existing) = hits
+            .iter_mut()
+            .find(|existing| existing.chunk_id == hit.chunk_id)
+        {
+            existing.source_mask |= hit.source_mask;
+            existing.exact_match |= hit.exact_match;
+            if hit.score > existing.score {
+                existing.score = hit.score;
+                existing.similarity_score = hit.similarity_score;
+            }
+        } else {
             hits.push(hit);
         }
         if hits.len() >= limit {
@@ -943,9 +949,27 @@ fn hydrate_legacy_chunks(
 }
 
 fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
-    let mut results = dedupe_results(results, limit);
+    let mut results = results;
     apply_match_scores(&mut results);
-    results
+    results.sort_by(|left, right| {
+        right
+            .exact_match
+            .cmp(&left.exact_match)
+            .then_with(|| {
+                right
+                    .match_score
+                    .partial_cmp(&left.match_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+    dedupe_results(results, limit)
 }
 
 fn apply_match_scores(results: &mut [SearchResult]) {
@@ -1456,9 +1480,29 @@ mod tests {
 
         let scored = finalize_results(vec![semantic, lexical, exact], 10);
 
-        assert!((scored[0].match_score - 0.91).abs() < 0.001);
-        assert!((scored[1].match_score - 0.43).abs() < 0.001);
-        assert!((scored[2].match_score - 0.92).abs() < 0.001);
+        assert_eq!(
+            scored
+                .iter()
+                .map(|result| result.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chunk-c", "chunk-a", "chunk-b"]
+        );
+        assert!((scored[0].match_score - 0.92).abs() < 0.001);
+        assert!((scored[1].match_score - 0.91).abs() < 0.001);
+        assert!((scored[2].match_score - 0.43).abs() < 0.001);
+    }
+
+    #[test]
+    fn finalize_results_ranks_late_exact_hits_before_truncating() {
+        let semantic = result("chunk-a", "item-1", "moment", Some(10.0), 0.90);
+        let mut exact = result("chunk-b", "item-2", "transcript", Some(20.0), 0.01);
+        exact.source_mask = SOURCE_TEXT | SOURCE_EXACT;
+        exact.exact_match = true;
+
+        let scored = finalize_results(vec![semantic, exact], 1);
+
+        assert_eq!(scored[0].chunk_id, "chunk-b");
+        assert!(scored[0].exact_match);
     }
 
     #[test]
@@ -2050,6 +2094,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_text_search_merges_literal_exact_flags_into_fts_hits() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(2.0),
+            Some(8.0),
+            "display code XR-42",
+            None,
+            &profile,
+        );
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
+
+        let hits = sqlite_text_search(&paths, "XR-42", 5).await.unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].chunk_id, "item-1:unit:v2:000000");
+        assert!(hits[0].exact_match);
+        assert_ne!(hits[0].source_mask & SOURCE_EXACT, 0);
+    }
+
+    #[tokio::test]
     async fn sqlite_text_search_hides_unindexed_retrieval_units() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -2133,6 +2204,80 @@ mod tests {
             Some("item-1:keyframe:000001")
         );
         assert_eq!(first.frame_path, None);
+    }
+
+    #[tokio::test]
+    async fn merge_unified_hits_fetches_image_point_for_lexical_image_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item_with_type(&paths, "item-1", "image", "folder_image", "Sample image");
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit_id = "item-1:unit:v2:000000";
+        let unit = StorageRetrievalUnit {
+            id: unit_id.to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "image".to_string(),
+            start_sec: None,
+            end_sec: None,
+            content_text: "Photo title: XR-42 badge".to_string(),
+            transcript_text: None,
+            ocr_text: None,
+            visual_text: None,
+            summary_text: None,
+            representative_chunk_id: Some("item-1:image:000000".to_string()),
+            representative_frame_path: Some(
+                temp.path().join("photo.jpg").to_string_lossy().into_owned(),
+            ),
+            embedding_profile_id: profile.id.clone(),
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        };
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
+        let collection = cerul_storage::vectors::unified_collection_name(
+            &paths,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        );
+        let records = [VectorRecord::new_for_dimensions_with_point_key(
+            format!("{unit_id}:image"),
+            unit_id.to_string(),
+            "item-1".to_string(),
+            fake_vector(44),
+            profile.output_dimension,
+        )
+        .unwrap()];
+        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &records,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let hits = merge_unified_hits(
+            &paths,
+            &collection,
+            &fake_vector(44),
+            &profile.distance_metric,
+            Vec::new(),
+            vec![RawHit {
+                chunk_id: unit_id.to_string(),
+                score: 0.01,
+                similarity_score: None,
+                exact_match: false,
+                source_mask: SOURCE_TEXT,
+            }],
+            5,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hits[0].chunk_id, unit_id);
+        assert!(hits[0].similarity_score.unwrap_or_default() > 0.99);
     }
 
     #[tokio::test]

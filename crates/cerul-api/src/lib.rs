@@ -2346,6 +2346,7 @@ async fn reindex_item(
         "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
         [id.as_str()],
     )?;
+    clear_item_unified_search_index_with_tx(&tx, &id)?;
     let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type, true)?;
     tx.commit()?;
 
@@ -5875,12 +5876,40 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
-                VALUES ('chunk-1', 'item-1', 'transcript', 0, 5, 'hello', '{}')
+                VALUES
+                    ('chunk-1', 'item-1', 'transcript', 0, 5, 'hello', '{}'),
+                    ('item-1:understanding:summary', 'item-1', 'understanding', NULL, NULL, 'old understanding text', '{}')
                 "#,
                 [],
             )
             .unwrap();
         }
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        cerul_storage::replace_item_retrieval_units(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageRetrievalUnit {
+                id: "item-1:unit:v2:000000".to_string(),
+                item_id: "item-1".to_string(),
+                unit_index: 0,
+                unit_kind: "summary".to_string(),
+                start_sec: None,
+                end_sec: None,
+                content_text: "old understanding text".to_string(),
+                transcript_text: None,
+                ocr_text: None,
+                visual_text: None,
+                summary_text: Some("old understanding text".to_string()),
+                representative_chunk_id: Some("item-1:understanding:summary".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id,
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        )
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 1)
+            .unwrap();
         seed_indexing_schema_version(&paths);
         let app = router_with_paths(paths.clone());
 
@@ -5919,6 +5948,34 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(jobs, 1);
+            let understanding_chunks: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let retrieval_units: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let search_index_state: (String, i64, i64) = conn
+                .query_row(
+                    r#"
+                    SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                    FROM items
+                    WHERE id = 'item-1'
+                    "#,
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(understanding_chunks, 0);
+            assert_eq!(retrieval_units, 0);
+            assert_eq!(search_index_state, ("pending".to_string(), 0, 0));
         }
 
         let delete = app

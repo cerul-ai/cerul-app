@@ -345,6 +345,7 @@ fn build_timed_units(
         let representative_chunk = representative_chunk(
             &transcript_lines,
             &transcript_chunks,
+            &understanding_chunks,
             &ocr_chunks,
             &window,
             &frame_times,
@@ -610,6 +611,7 @@ fn collect_ocr_text_in_window(
 fn representative_chunk(
     transcript_lines: &[&ChunkInfo],
     transcript_chunks: &[&ChunkInfo],
+    understanding_chunks: &[&ChunkInfo],
     ocr_chunks: &[&ChunkInfo],
     window: &Window,
     frame_times: &HashMap<String, f64>,
@@ -639,6 +641,19 @@ fn representative_chunk(
                             window.start_sec,
                             window.end_sec,
                         )
+                })
+                .map(|chunk| chunk.id.clone())
+        })
+        .or_else(|| {
+            understanding_chunks
+                .iter()
+                .find(|chunk| {
+                    overlaps(
+                        chunk.start_sec,
+                        chunk.end_sec,
+                        window.start_sec,
+                        window.end_sec,
+                    )
                 })
                 .map(|chunk| chunk.id.clone())
         })
@@ -1186,6 +1201,30 @@ mod tests {
                     .as_deref()
                     .is_some_and(|text| text.contains("late spoken phrase"))
         }));
+    }
+
+    #[test]
+    fn build_units_uses_understanding_chunk_as_representative() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES ('item-1:understanding:event:0000', 'item-1', 'understanding', 40, 45, 'only visual understanding evidence', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(
+            units[0].representative_chunk_id.as_deref(),
+            Some("item-1:understanding:event:0000")
+        );
     }
 
     #[test]

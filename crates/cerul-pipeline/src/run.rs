@@ -931,6 +931,7 @@ impl VideoPipeline {
         span: f64,
     ) -> anyhow::Result<StorageWriteSummary> {
         let profile = self.active_embedding_profile()?;
+        cerul_storage::set_item_search_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
         let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
         anyhow::ensure!(
             !units.is_empty(),
@@ -2453,6 +2454,53 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("expected"));
+    }
+
+    #[tokio::test]
+    async fn retrieval_unit_rebuild_marks_search_index_pending_before_vector_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let images = temp.path().join("images");
+        std::fs::create_dir(&images).unwrap();
+        let image = images.join("photo.jpg");
+        write_color_image(&image, [40, 120, 200]);
+        insert_source(&paths, "image-source", "folder_image", &images);
+        insert_item(&paths, "image-1", "image-source", "image", "photo", &image);
+        cerul_storage::write_media_sqlite_chunks(
+            &paths,
+            "image-1",
+            &[],
+            &[StorageImageChunk::image(image.clone(), json!({}))],
+        )
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "image-1", "indexed", None, 1, 1)
+            .unwrap();
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(FakeTranscriber),
+            Arc::new(FakeEmbedder),
+        )
+        .with_embedding_profile(bad_dimension_profile(&paths));
+        let error = pipeline
+            .embed_and_write_retrieval_units("image-1", 0.0, 0.1)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("expected"));
+        let conn = sqlite::open(&paths).unwrap();
+        let state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'image-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("pending".to_string(), 0, 0));
     }
 
     #[tokio::test]
