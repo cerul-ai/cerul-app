@@ -1806,6 +1806,10 @@ function AppWorkspace() {
               await api.removeSource(source.id);
               await refreshCoreData();
             }}
+            onRetryFailedSource={async (source) => {
+              await api.retryFailedSourceItems(source.id);
+              await refreshCoreData();
+            }}
             onViewItems={() => navigate("library")}
             requestConfirm={requestConfirm}
           />
@@ -5556,15 +5560,26 @@ function IndexingSettings({
 }) {
   const t = useT();
   const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 4);
+  const webCookieMode = settingString(settings, "web_video_cookie_mode", "off");
+  const webCookieBrowser = settingString(settings, "web_video_cookie_browser", "chrome");
+  const webCookiesPath = settingString(settings, "web_video_cookies_path", "");
   // Track the value locally while dragging; persist once on release —
   // each tick used to fire a PATCH plus a 7-request full refresh.
   const [jobsDraft, setJobsDraft] = useState<number | null>(null);
+  const [cookiesPathDraft, setCookiesPathDraft] = useState<string | null>(null);
   const shownJobs = jobsDraft ?? concurrentJobs;
+  const shownCookiesPath = cookiesPathDraft ?? webCookiesPath;
   const commitJobs = () => {
     if (jobsDraft !== null && jobsDraft !== concurrentJobs) {
       void onSettingsChange({ concurrent_jobs: jobsDraft });
     }
     setJobsDraft(null);
+  };
+  const commitCookiesPath = () => {
+    if (cookiesPathDraft !== null && cookiesPathDraft !== webCookiesPath) {
+      void onSettingsChange({ web_video_cookies_path: cookiesPathDraft });
+    }
+    setCookiesPathDraft(null);
   };
 
   return (
@@ -5612,6 +5627,69 @@ function IndexingSettings({
             />
           }
         />
+      </SettingsGroup>
+      <SettingsGroup title={t("settings.indexing.webAccess.title")}>
+        <SettingRow
+          label={t("settings.indexing.webAccess.cookies.label")}
+          description={t("settings.indexing.webAccess.cookies.description")}
+          control={
+            <Segmented
+              values={["off", "browser", "file"]}
+              labels={{
+                off: t("settings.indexing.webAccess.cookies.off"),
+                browser: t("settings.indexing.webAccess.cookies.browser"),
+                file: t("settings.indexing.webAccess.cookies.file"),
+              }}
+              value={webCookieMode}
+              disabled={disabled}
+              onChange={(value) => void onSettingsChange({ web_video_cookie_mode: value })}
+            />
+          }
+        />
+        {webCookieMode === "browser" ? (
+          <SettingRow
+            label={t("settings.indexing.webAccess.browser.label")}
+            description={t("settings.indexing.webAccess.browser.description")}
+            control={
+              <select
+                className="select"
+                value={webCookieBrowser}
+                disabled={disabled}
+                onChange={(event) =>
+                  void onSettingsChange({ web_video_cookie_browser: event.currentTarget.value })
+                }
+              >
+                {["chrome", "safari", "firefox", "edge", "brave", "chromium"].map((browser) => (
+                  <option key={browser} value={browser}>
+                    {t(`settings.indexing.webAccess.browser.${browser}`)}
+                  </option>
+                ))}
+              </select>
+            }
+          />
+        ) : null}
+        {webCookieMode === "file" ? (
+          <SettingRow
+            label={t("settings.indexing.webAccess.cookiesPath.label")}
+            description={t("settings.indexing.webAccess.cookiesPath.description")}
+            control={
+              <input
+                className="input mono"
+                type="text"
+                value={shownCookiesPath}
+                placeholder="~/Downloads/youtube-cookies.txt"
+                disabled={disabled}
+                onChange={(event) => setCookiesPathDraft(event.currentTarget.value)}
+                onBlur={commitCookiesPath}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            }
+          />
+        ) : null}
       </SettingsGroup>
       <SettingsGroup title={t("settings.indexing.files.title")}>
         <SettingRow

@@ -22,6 +22,7 @@ export function SourcesScreen({
   onPauseSource,
   onResumeSource,
   onRemoveSource,
+  onRetryFailedSource,
   onViewItems,
   requestConfirm,
 }: {
@@ -31,6 +32,7 @@ export function SourcesScreen({
   onPauseSource: (source: Source) => Promise<void>;
   onResumeSource: (source: Source) => Promise<void>;
   onRemoveSource: (source: Source) => Promise<void>;
+  onRetryFailedSource: (source: Source) => Promise<void>;
   onViewItems: (source: Source) => void;
   requestConfirm: RequestConfirm;
 }) {
@@ -68,6 +70,19 @@ export function SourcesScreen({
     await runSourceAction(source, () => onRemoveSource(source));
   }
 
+  async function retryFailedSource(source: Source) {
+    const confirmed = await requestConfirm({
+      title: t("sources.retryFailed.confirm.title"),
+      body: t("sources.retryFailed.confirm.body", { count: source.failedItems }),
+      confirmLabel: t("sources.retryFailed.confirm.confirm"),
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    await runSourceAction(source, () => onRetryFailedSource(source));
+  }
+
   const groups = [
     { type: "folder" as const, label: t("sources.group.folder") },
     { type: "web_video" as const, label: t("sources.group.webVideo") },
@@ -87,6 +102,7 @@ export function SourcesScreen({
         onPause={() => void runSourceAction(source, () => onPauseSource(source))}
         onResume={() => void runSourceAction(source, () => onResumeSource(source))}
         onRemove={() => void removeSource(source)}
+        onRetryFailed={() => void retryFailedSource(source)}
         onFix={onAddSource}
         onViewItems={() => onViewItems(source)}
       />

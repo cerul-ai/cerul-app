@@ -154,6 +154,7 @@ export type Source = {
   name: string;
   status: SourceStatus;
   items: number;
+  failedItems: number;
   lastPolled: string;
   error: string | null;
 };

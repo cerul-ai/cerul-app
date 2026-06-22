@@ -467,6 +467,13 @@ export async function resumeSource(id: string) {
   });
 }
 
+export async function retryFailedSourceItems(id: string) {
+  return fetchJson<{ status: string; id: string; items: number; queued_jobs: number }>(
+    `/sources/${encodeURIComponent(id)}/retry-failed`,
+    { method: "POST" },
+  );
+}
+
 export async function removeSource(id: string) {
   return fetchJson<{ status: string; id: string }>(`/sources/${encodeURIComponent(id)}`, {
     method: "DELETE",
