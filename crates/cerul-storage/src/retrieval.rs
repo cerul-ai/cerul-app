@@ -389,7 +389,11 @@ fn build_timed_units(
         });
     }
 
-    let mut next_index = units.len();
+    let mut next_index = units
+        .iter()
+        .map(|unit| unit.unit_index as usize)
+        .max()
+        .map_or(0, |index| index + 1);
     for chunk in frame_chunks {
         let covered_by_timed_unit = units
             .iter()
@@ -1313,6 +1317,37 @@ mod tests {
                 && unit.representative_frame_path.as_deref()
                     == Some(silent_frame.to_string_lossy().as_ref())
         }));
+    }
+
+    #[test]
+    fn build_units_does_not_reuse_skipped_window_indexes_for_frame_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let intro_frame = temp.path().join("intro-frame.jpg");
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 35.0,
+                end: 45.0,
+                text: "spoken section after silent intro".to_string(),
+            }],
+            &[],
+            &[],
+            &[StorageImageChunk::keyframe_at(intro_frame, 0.0, 5.0)],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+        let ids = units
+            .iter()
+            .map(|unit| unit.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(ids.len(), units.len());
+        assert!(units.iter().any(|unit| unit.transcript_text.is_some()));
+        assert!(units.iter().any(|unit| unit.unit_kind == "image"));
     }
 
     #[test]
