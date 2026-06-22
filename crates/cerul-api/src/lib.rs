@@ -1822,6 +1822,10 @@ async fn retry_failed_source_items(
             "DELETE FROM item_understandings WHERE item_id = ?1",
             [item_id.as_str()],
         )?;
+        tx.execute(
+            "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
+            [item_id.as_str()],
+        )?;
         if enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)? {
             queued_jobs += 1;
         }
@@ -2331,6 +2335,10 @@ async fn reindex_item(
     )?;
     tx.execute(
         "DELETE FROM item_understandings WHERE item_id = ?1",
+        [id.as_str()],
+    )?;
+    tx.execute(
+        "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
         [id.as_str()],
     )?;
     let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type, true)?;
@@ -4595,6 +4603,14 @@ mod tests {
                 [],
             )
             .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, text, metadata)
+                VALUES ('item-1:understanding:summary', 'item-1', 'understanding', 'old understanding text', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
         }
 
         let app = router_with_paths(paths.clone());
@@ -4633,6 +4649,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(understanding_count, 0);
+        let understanding_chunk_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(understanding_chunk_count, 0);
 
         let queued_jobs: i64 = conn
             .query_row(

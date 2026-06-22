@@ -3147,9 +3147,13 @@ function searchFallbackReasonLabel(reason: string, t: TFunction) {
     case "vector_search_failed":
       return t("results.diagnostics.reason.vectorSearchFailed");
     case "vector_index_empty":
+    case "unified_vector_index_empty":
       return t("results.diagnostics.reason.vectorIndexEmpty");
     case "no_vector_hits":
+    case "no_unified_vector_hits":
       return t("results.diagnostics.reason.noVectorHits");
+    case "search_index_rebuilding_legacy_fts":
+      return t("results.diagnostics.reason.searchIndexRebuildingLegacyFts");
     case "qdrant_health_check_failed":
       return t("results.diagnostics.reason.qdrantHealthCheckFailed");
     default:

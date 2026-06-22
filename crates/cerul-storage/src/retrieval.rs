@@ -36,12 +36,7 @@ pub struct StorageRetrievalUnit {
 
 impl StorageRetrievalUnit {
     pub fn uses_image_embedding(&self) -> bool {
-        self.unit_kind == "image"
-            && self.representative_frame_path.is_some()
-            && self.transcript_text.as_deref().is_none_or(str::is_empty)
-            && self.ocr_text.as_deref().is_none_or(str::is_empty)
-            && self.visual_text.as_deref().is_none_or(str::is_empty)
-            && self.summary_text.as_deref().is_none_or(str::is_empty)
+        self.unit_kind == "image" && self.representative_frame_path.is_some()
     }
 }
 
@@ -440,7 +435,7 @@ fn windows_for_item(
     frame_chunks: &[&ChunkInfo],
     frame_times: &HashMap<String, f64>,
 ) -> Vec<Window> {
-    let understanding_windows = understanding_chunks
+    let mut windows = understanding_chunks
         .iter()
         .filter_map(|chunk| {
             let text = chunk.text.as_deref()?.trim();
@@ -455,9 +450,6 @@ fn windows_for_item(
             })
         })
         .collect::<Vec<_>>();
-    if !understanding_windows.is_empty() {
-        return understanding_windows;
-    }
 
     let starts = transcript_chunks
         .iter()
@@ -468,14 +460,16 @@ fn windows_for_item(
         .filter_map(|chunk| chunk.end_sec.or(chunk.start_sec))
         .collect::<Vec<_>>();
     let Some(first_start) = starts.iter().copied().reduce(f64::min) else {
-        return visual_only_windows(ocr_chunks, frame_chunks, frame_times);
+        if windows.is_empty() {
+            return visual_only_windows(ocr_chunks, frame_chunks, frame_times);
+        }
+        return windows;
     };
     let last_end = ends
         .iter()
         .copied()
         .reduce(f64::max)
         .unwrap_or(first_start + WINDOW_SEC);
-    let mut windows = Vec::new();
     let mut start = first_start;
     while start <= last_end {
         let end = (start + WINDOW_SEC).min(last_end.max(start + 1.0));
@@ -902,6 +896,53 @@ pub fn best_sub_unit_for_query(
     Ok(fallback)
 }
 
+pub fn best_visual_sub_unit_for_query(
+    paths: &AppPaths,
+    item_id: &str,
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    query: &str,
+) -> anyhow::Result<Option<(String, Option<f64>)>> {
+    let Some(pattern) = literal_pattern_for_terms(query) else {
+        return Ok(None);
+    };
+    let conn = sqlite::open(paths)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, start_sec, text
+        FROM chunks
+        WHERE item_id = ?1
+          AND chunk_type IN ('ocr', 'understanding')
+          AND text IS NOT NULL
+          AND TRIM(text) <> ''
+          AND (?2 IS NULL OR start_sec IS NULL OR COALESCE(end_sec, start_sec) >= ?2)
+          AND (?3 IS NULL OR start_sec IS NULL OR start_sec <= ?3)
+        ORDER BY
+          CASE chunk_type WHEN 'ocr' THEN 0 ELSE 1 END,
+          COALESCE(start_sec, 9223372036854775807),
+          id
+        "#,
+    )?;
+    let rows = stmt.query_map(params![item_id, start_sec, end_sec], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<f64>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (id, start, text) = row?;
+        if text
+            .as_deref()
+            .is_some_and(|text| text.to_lowercase().contains(&pattern))
+        {
+            return Ok(Some((id, start)));
+        }
+    }
+    Ok(None)
+}
+
 fn literal_pattern_for_terms(query: &str) -> Option<String> {
     let trimmed = query.trim().trim_matches('"').to_lowercase();
     if trimmed.is_empty() {
@@ -990,6 +1031,55 @@ mod tests {
     }
 
     #[test]
+    fn build_units_keeps_transcript_windows_with_understanding() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[
+                StorageTranscriptChunk {
+                    start: 0.0,
+                    end: 10.0,
+                    text: "early spoken phrase".to_string(),
+                },
+                StorageTranscriptChunk {
+                    start: 120.0,
+                    end: 130.0,
+                    text: "late spoken phrase survives understanding".to_string(),
+                },
+            ],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES ('item-1:understanding:event:0000', 'item-1', 'understanding', 4, 8, 'visual understanding event', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert!(units
+            .iter()
+            .any(|unit| unit.visual_text.as_deref() == Some("visual understanding event")));
+        assert!(units.iter().any(|unit| {
+            unit.start_sec.is_some()
+                && unit
+                    .transcript_text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("late spoken phrase"))
+        }));
+    }
+
+    #[test]
     fn build_units_preserves_ocr_for_visual_only_video() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -1018,5 +1108,30 @@ mod tests {
         assert!(units[0]
             .content_text
             .contains("On-screen text: visible checkout code XR-42"));
+    }
+
+    #[test]
+    fn image_units_with_metadata_still_use_image_embedding() {
+        let unit = StorageRetrievalUnit {
+            id: "item-1:unit:v2:000000".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "image".to_string(),
+            start_sec: None,
+            end_sec: None,
+            content_text: "Title: Photo\nTopics/Summary: EXIF DateTimeOriginal: 2026:06:22"
+                .to_string(),
+            transcript_text: None,
+            ocr_text: None,
+            visual_text: None,
+            summary_text: Some("EXIF DateTimeOriginal: 2026:06:22".to_string()),
+            representative_chunk_id: Some("item-1:image:000000".to_string()),
+            representative_frame_path: Some("/tmp/photo.jpg".to_string()),
+            embedding_profile_id: "profile-1".to_string(),
+            index_version: SEARCH_INDEX_VERSION,
+            metadata: Value::Null,
+        };
+
+        assert!(unit.uses_image_embedding());
     }
 }

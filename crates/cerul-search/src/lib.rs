@@ -181,12 +181,12 @@ pub async fn search_fts_only_with_diagnostics(
     let mut fts_hits_count = hits.len();
     let mut results = hydrate(paths, &hits, &req.q)?;
     let mut fallback_reason = fallback_reason;
-    if results.is_empty() && should_try_legacy_fts(paths) {
+    if should_try_legacy_fts(paths) {
         let legacy_results =
             legacy_sqlite_text_results(paths, &req.q, retrieval_limit(limit)).await?;
         if !legacy_results.is_empty() {
-            fts_hits_count = legacy_results.len();
-            results = legacy_results;
+            fts_hits_count += legacy_results.len();
+            results.extend(legacy_results);
             fallback_reason.get_or_insert_with(|| "search_index_rebuilding_legacy_fts".to_string());
         }
     }
@@ -297,13 +297,13 @@ pub async fn search_with_vectors_for_profile_diagnostics(
 
     let mut results = hydrate(paths, &top_hits, &req.q)?;
     let mut used_legacy_fts = false;
-    if results.is_empty() && should_try_legacy_fts(paths) {
+    if should_try_legacy_fts(paths) {
         let legacy_results = legacy_sqlite_text_results(paths, &req.q, retrieval_limit).await?;
         if !legacy_results.is_empty() {
-            fts_hits_count = legacy_results.len();
-            results = legacy_results;
-            used_legacy_fts = true;
-            fallback_reason = Some("search_index_rebuilding_legacy_fts".to_string());
+            fts_hits_count += legacy_results.len();
+            used_legacy_fts = results.is_empty();
+            results.extend(legacy_results);
+            fallback_reason.get_or_insert_with(|| "search_index_rebuilding_legacy_fts".to_string());
         }
     }
     let results = finalize_results(results, limit);
@@ -770,18 +770,36 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
         let Some(unit) = units.get(&hit.chunk_id) else {
             continue;
         };
-        let snippet = best_snippet(unit, query);
-        let sub_unit = cerul_storage::best_sub_unit_for_query(
-            paths,
-            &unit.item_id,
-            unit.start_sec,
-            unit.end_sec,
-            query,
-        )
-        .ok()
-        .flatten();
-        let (playback_chunk_id, start_sec) = match sub_unit {
-            Some((chunk_id, start)) => (chunk_id, Some(start)),
+        let (snippet, matched_field) = best_snippet(unit, query);
+        let visual_sub_unit = if matched_field.is_some_and(SnippetField::prefers_visual_playback) {
+            cerul_storage::best_visual_sub_unit_for_query(
+                paths,
+                &unit.item_id,
+                unit.start_sec,
+                unit.end_sec,
+                query,
+            )
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        let spoken_sub_unit = if matched_field == Some(SnippetField::Transcript) {
+            cerul_storage::best_sub_unit_for_query(
+                paths,
+                &unit.item_id,
+                unit.start_sec,
+                unit.end_sec,
+                query,
+            )
+            .ok()
+            .flatten()
+            .map(|(chunk_id, start)| (chunk_id, Some(start)))
+        } else {
+            None
+        };
+        let (playback_chunk_id, start_sec) = match visual_sub_unit.or(spoken_sub_unit) {
+            Some((chunk_id, start)) => (chunk_id, start.or(unit.start_sec)),
             None => (
                 unit.representative_chunk_id
                     .clone()
@@ -1020,29 +1038,50 @@ fn load_units_for_hits(
     Ok(units)
 }
 
-fn best_snippet(unit: &HydratedUnit, query: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnippetField {
+    Transcript,
+    Ocr,
+    Visual,
+    Summary,
+    Content,
+}
+
+impl SnippetField {
+    fn prefers_visual_playback(self) -> bool {
+        matches!(self, Self::Ocr | Self::Visual)
+    }
+}
+
+fn best_snippet(unit: &HydratedUnit, query: &str) -> (String, Option<SnippetField>) {
     let fields = [
-        unit.transcript_text.as_deref(),
-        unit.ocr_text.as_deref(),
-        unit.visual_text.as_deref(),
-        unit.summary_text.as_deref(),
-        Some(unit.content_text.as_str()),
+        (SnippetField::Transcript, unit.transcript_text.as_deref()),
+        (SnippetField::Ocr, unit.ocr_text.as_deref()),
+        (SnippetField::Visual, unit.visual_text.as_deref()),
+        (SnippetField::Summary, unit.summary_text.as_deref()),
+        (SnippetField::Content, Some(unit.content_text.as_str())),
     ];
 
-    for text in fields.iter().copied().flatten() {
+    for (field, text) in fields.iter().copied() {
+        let Some(text) = text else {
+            continue;
+        };
         let trimmed = text.trim();
         if !trimmed.is_empty() && text_matches_query(trimmed, query) {
-            return trimmed.chars().take(320).collect();
+            return (trimmed.chars().take(320).collect(), Some(field));
         }
     }
 
-    for text in fields.iter().copied().flatten() {
+    for (_, text) in fields.iter().copied() {
+        let Some(text) = text else {
+            continue;
+        };
         let trimmed = text.trim();
         if !trimmed.is_empty() {
-            return trimmed.chars().take(320).collect();
+            return (trimmed.chars().take(320).collect(), None);
         }
     }
-    fallback_snippet(&unit.unit_kind, unit.start_sec)
+    (fallback_snippet(&unit.unit_kind, unit.start_sec), None)
 }
 
 fn text_matches_query(text: &str, query: &str) -> bool {
@@ -1601,6 +1640,23 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES ('item-1:transcript:000000', 'item-1', 'transcript', 20, 40, 'spoken text that does not include the visible code', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, text, frame_path, metadata)
+            VALUES ('item-1:ocr:000000', 'item-1', 'ocr', 'checkout display shows XR-42', '/tmp/frame.jpg', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
         let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
         let mut unit = manual_unit(
             "item-1:unit:v2:000000",
@@ -1609,7 +1665,7 @@ mod tests {
             Some(20.0),
             Some(40.0),
             "spoken text that does not include the visible code",
-            None,
+            Some("item-1:transcript:000000"),
             &profile,
         );
         unit.ocr_text = Some("checkout display shows XR-42".to_string());
@@ -1631,6 +1687,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(results[0].snippet, "checkout display shows XR-42");
+        assert_eq!(results[0].chunk_id, "item-1:ocr:000000");
+        assert_eq!(results[0].chunk_type, "ocr");
     }
 
     #[tokio::test]
@@ -1702,6 +1760,62 @@ mod tests {
         );
         assert_eq!(response.results[0].chunk_id, "item-1:transcript:000000");
         assert!(response.results[0].snippet.contains("legacy transcript"));
+    }
+
+    #[tokio::test]
+    async fn fts_fallback_appends_legacy_chunks_during_partial_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        insert_item_with_type(&paths, "item-2", "video", "folder_video", "Legacy item");
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let units = vec![manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(2.0),
+            Some(8.0),
+            "shared phrase rebuilt unit",
+            None,
+            &profile,
+        )];
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-2",
+            &[StorageTranscriptChunk {
+                start: 30.0,
+                end: 40.0,
+                text: "shared phrase legacy chunk".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        let response = search_fts_only_with_diagnostics(
+            &paths,
+            SearchRequest {
+                q: "shared phrase".to_string(),
+                limit: 5,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let item_ids = response
+            .results
+            .iter()
+            .map(|result| result.item_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(item_ids.contains(&"item-1"));
+        assert!(item_ids.contains(&"item-2"));
+        assert_eq!(
+            response.diagnostics.fallback_reason.as_deref(),
+            Some("search_index_rebuilding_legacy_fts")
+        );
     }
 
     #[tokio::test]

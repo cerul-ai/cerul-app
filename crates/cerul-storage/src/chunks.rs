@@ -602,7 +602,10 @@ fn write_sqlite_chunks(
     let mut conn = sqlite::open(paths)?;
     let tx = conn.transaction()?;
 
-    tx.execute("DELETE FROM chunks WHERE item_id = ?1", [item_id])?;
+    tx.execute(
+        "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type != 'understanding'",
+        [item_id],
+    )?;
 
     {
         let mut stmt = tx.prepare(
@@ -811,5 +814,54 @@ mod tests {
         assert_eq!(transcript_count, 1);
         assert!(frame_path.ends_with("frame-2.jpg"));
         assert!(metadata.contains("\"index\":0"));
+    }
+
+    #[test]
+    fn media_sqlite_rewrite_preserves_understanding_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let item_id = "item-1";
+        insert_test_item(&paths, item_id);
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata) VALUES ('item-1:understanding:summary', ?1, 'understanding', NULL, NULL, 'understanding survives rewrite', '{}')",
+                [item_id],
+            )
+            .unwrap();
+        }
+
+        write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            item_id,
+            &[StorageTranscriptChunk {
+                start: 1.0,
+                end: 2.0,
+                text: "fresh transcript".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        let conn = sqlite::open(&paths).unwrap();
+        let understanding_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
+                [item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let transcript_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND chunk_type = 'transcript'",
+                [item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(understanding_count, 1);
+        assert_eq!(transcript_count, 1);
     }
 }

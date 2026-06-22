@@ -951,13 +951,15 @@ impl VideoPipeline {
                 &text_inputs,
             )
             .await?;
-        self.record_embedding_text_usage(
-            item_id,
-            estimate_text_tokens(&text_inputs),
-            text_inputs.len(),
-            "succeeded",
-            json!({ "source": "indexing", "index": "retrieval_units" }),
-        );
+        if !text_inputs.is_empty() {
+            self.record_embedding_text_usage(
+                item_id,
+                estimate_text_tokens(&text_inputs),
+                text_inputs.len(),
+                "succeeded",
+                json!({ "source": "indexing", "index": "retrieval_units" }),
+            );
+        }
 
         let image_paths = image_units
             .iter()
