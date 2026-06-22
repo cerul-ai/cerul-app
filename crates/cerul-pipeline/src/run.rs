@@ -604,175 +604,38 @@ impl VideoPipeline {
         )?;
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
-        let texts = transcript_storage
-            .chunks
-            .iter()
-            .map(|chunk| chunk.text.clone())
-            .chain(storage_ocr_chunks.iter().map(|chunk| chunk.text.clone()))
-            .collect::<Vec<_>>();
-        let text_input_tokens = estimate_text_tokens(&texts);
-        let text_chunk_count = texts.len();
         self.report_progress(
             item_id,
-            "embedding_text",
-            0.68,
-            "Embedding transcript and OCR chunks",
+            "writing_index",
+            0.80,
+            "Writing unified search index",
         );
-        let text_outcome = self
-            .embed_texts_with_progress(
-                item_id,
-                "embedding_text",
-                0.68,
-                0.12,
-                "Embedding transcript and OCR chunks",
-                &texts,
-            )
-            .await;
-        let text_vectors = match text_outcome {
-            Ok(vectors) => {
-                self.record_embedding_text_usage(
-                    item_id,
-                    text_input_tokens,
-                    text_chunk_count,
-                    "succeeded",
-                    json!({ "source": "indexing" }),
-                );
-                vectors
-            }
-            Err(error) => {
-                let message = error.to_string();
-                tracing::warn!(%error, item_id, "text embedding failed; transcript remains searchable via FTS");
-                self.record_embedding_text_usage(
-                    item_id,
-                    text_input_tokens,
-                    text_chunk_count,
-                    "failed",
-                    json!({ "source": "indexing", "error": message }),
-                );
-                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
-                cerul_storage::set_video_multimodal_index_status(
-                    &self.paths,
-                    item_id,
-                    "pending",
-                    None,
-                    frames.len(),
-                    0,
-                    if self.ocr_enabled {
-                        "indexed"
-                    } else {
-                        "disabled"
-                    },
-                    None,
-                    storage_ocr_chunks.len(),
-                )?;
-                self.report_progress(
-                    item_id,
-                    "partial",
-                    1.0,
-                    "Transcript searchable; embedding failed",
-                );
-                cerul_storage::mark_indexed(&self.paths, item_id)?;
-                self.cleanup_success_temp_artifacts(item_id, &audio_path)
-                    .await;
-                return Ok(ProcessVideoSummary::from_write_summary(
-                    item_id,
-                    audio_path,
-                    frames_dir,
-                    frames.len(),
-                    storage_ocr_chunks.len(),
-                    sqlite_summary,
-                ));
-            }
-        };
-
-        let frame_count = frames.len();
-        self.report_progress(item_id, "embedding_frames", 0.80, "Embedding visual frames");
-        let image_outcome = self
-            .embed_images_with_progress(
-                item_id,
-                "embedding_frames",
-                0.80,
-                0.12,
-                "Embedding visual frames",
-                &frames,
-            )
-            .await;
-        // Frame embedding is an enhancement, not a hard requirement: if it fails
-        // still keep the transcript searchable instead of failing the job.
-        let mut visual_index_error = None;
-        let (embedded_keyframes, image_vectors) = match image_outcome {
-            Ok(vectors) => {
-                self.record_embedding_image_usage(
-                    item_id,
-                    frame_count,
-                    "succeeded",
-                    json!({ "source": "indexing" }),
-                );
-                (keyframes.clone(), vectors)
-            }
-            Err(error) => {
-                let message = error.to_string();
-                tracing::warn!(%error, "frame embedding failed; indexing video with transcript only");
-                self.record_embedding_image_usage(
-                    item_id,
-                    frame_count,
-                    "failed",
-                    json!({ "source": "indexing", "error": message }),
-                );
-                self.report_progress(
-                    item_id,
-                    "visual_failed",
-                    0.88,
-                    "Transcript indexed; visual frames unavailable",
-                );
-                visual_index_error = Some(message);
-                (Vec::new(), Vec::new())
-            }
-        };
-
-        self.report_progress(item_id, "writing_index", 0.92, "Writing vector index");
-        let write_result = match &self.embedding_profile {
-            Some(profile) => {
-                cerul_storage::replace_media_embeddings_with_ocr_for_profile(
-                    &self.paths,
-                    item_id,
-                    &transcript_storage.chunks,
-                    &storage_ocr_chunks,
-                    &embedded_keyframes,
-                    &text_vectors,
-                    &image_vectors,
-                    profile,
-                )
-                .await
-            }
-            None => {
-                cerul_storage::replace_media_embeddings_with_ocr(
-                    &self.paths,
-                    item_id,
-                    &transcript_storage.chunks,
-                    &storage_ocr_chunks,
-                    &embedded_keyframes,
-                    &text_vectors,
-                    &image_vectors,
-                )
-                .await
-            }
-        };
-        let write_summary = match write_result {
+        let vector_summary = match self
+            .embed_and_write_retrieval_units(item_id, 0.80, 0.12)
+            .await
+        {
             Ok(write_summary) => write_summary,
             Err(error) => {
                 let message = error.to_string();
                 tracing::warn!(
                     %error,
                     item_id,
-                    "vector index write failed; keeping transcript searchable via FTS"
+                    "unified retrieval index write failed; keeping canonical transcript and OCR artifacts"
                 );
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
-                cerul_storage::set_video_multimodal_index_status(
+                cerul_storage::set_item_search_index_status(
                     &self.paths,
                     item_id,
                     "failed",
                     Some(&message),
+                    0,
+                    0,
+                )?;
+                cerul_storage::set_video_multimodal_index_status(
+                    &self.paths,
+                    item_id,
+                    "display_only",
+                    None,
                     frames.len(),
                     0,
                     if self.ocr_enabled {
@@ -788,7 +651,7 @@ impl VideoPipeline {
                     item_id,
                     "partial",
                     1.0,
-                    "Transcript searchable; vector index unavailable",
+                    "Transcript saved; search index unavailable",
                 );
                 self.cleanup_success_temp_artifacts(item_id, &audio_path)
                     .await;
@@ -802,18 +665,19 @@ impl VideoPipeline {
                 ));
             }
         };
-        let visual_status = if visual_index_error.is_some() {
-            "failed"
-        } else {
-            "indexed"
+        let write_summary = StorageWriteSummary {
+            transcript_chunks: sqlite_summary.transcript_chunks,
+            keyframes: sqlite_summary.keyframes,
+            text_vectors: vector_summary.text_vectors,
+            image_vectors: vector_summary.image_vectors,
         };
         cerul_storage::set_video_multimodal_index_status(
             &self.paths,
             item_id,
-            visual_status,
-            visual_index_error.as_deref(),
+            "display_only",
+            None,
             frames.len(),
-            write_summary.image_vectors,
+            0,
             if self.ocr_enabled {
                 "indexed"
             } else {
@@ -878,83 +742,27 @@ impl VideoPipeline {
             &[],
         )?;
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
-        let text_vectors = match self.embed_storage_chunks(&transcript_storage.chunks).await {
-            Ok(vectors) => {
-                let texts = transcript_storage
-                    .chunks
-                    .iter()
-                    .map(|chunk| chunk.text.clone())
-                    .collect::<Vec<_>>();
-                self.record_embedding_text_usage(
-                    item_id,
-                    estimate_text_tokens(&texts),
-                    texts.len(),
-                    "succeeded",
-                    json!({ "source": "indexing" }),
-                );
-                vectors
-            }
-            Err(error) => {
-                let message = error.to_string();
-                tracing::warn!(%error, item_id, "audio embedding failed; transcript remains searchable via FTS");
-                let texts = transcript_storage
-                    .chunks
-                    .iter()
-                    .map(|chunk| chunk.text.clone())
-                    .collect::<Vec<_>>();
-                self.record_embedding_text_usage(
-                    item_id,
-                    estimate_text_tokens(&texts),
-                    texts.len(),
-                    "failed",
-                    json!({ "source": "indexing", "error": message }),
-                );
-                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
-                cerul_storage::mark_indexed(&self.paths, item_id)?;
-                self.cleanup_success_temp_artifacts(item_id, &audio_path)
-                    .await;
-                return Ok(ProcessAudioSummary::from_write_summary(
-                    item_id,
-                    audio_path,
-                    sqlite_summary,
-                ));
-            }
-        };
-        let write_result = match &self.embedding_profile {
-            Some(profile) => {
-                cerul_storage::replace_media_embeddings_for_profile(
-                    &self.paths,
-                    item_id,
-                    &transcript_storage.chunks,
-                    &[],
-                    &text_vectors,
-                    &[],
-                    profile,
-                )
-                .await
-            }
-            None => {
-                cerul_storage::replace_media_embeddings(
-                    &self.paths,
-                    item_id,
-                    &transcript_storage.chunks,
-                    &[],
-                    &text_vectors,
-                    &[],
-                )
-                .await
-            }
-        };
-        let write_summary = match write_result {
+        let vector_summary = match self
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16)
+            .await
+        {
             Ok(write_summary) => write_summary,
             Err(error) => {
                 let message = error.to_string();
                 tracing::warn!(
                     %error,
                     item_id,
-                    "audio vector index write failed; transcript remains searchable via FTS"
+                    "audio unified retrieval index write failed; keeping canonical transcript artifacts"
                 );
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                cerul_storage::set_item_search_index_status(
+                    &self.paths,
+                    item_id,
+                    "failed",
+                    Some(&message),
+                    0,
+                    0,
+                )?;
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
                 self.cleanup_success_temp_artifacts(item_id, &audio_path)
                     .await;
@@ -964,6 +772,12 @@ impl VideoPipeline {
                     sqlite_summary,
                 ));
             }
+        };
+        let write_summary = StorageWriteSummary {
+            transcript_chunks: sqlite_summary.transcript_chunks,
+            keyframes: sqlite_summary.keyframes,
+            text_vectors: vector_summary.text_vectors,
+            image_vectors: vector_summary.image_vectors,
         };
         set_embedding_index_status(
             &self.paths,
@@ -1006,84 +820,27 @@ impl VideoPipeline {
             cerul_storage::write_media_sqlite_chunks(&self.paths, item_id, &[], &image_chunks)?;
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
-        let image_vectors = match self
-            .embed_image_paths(std::slice::from_ref(&image_path))
+        let vector_summary = match self
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16)
             .await
         {
-            Ok(vectors) => {
-                self.record_embedding_image_usage(
-                    item_id,
-                    1,
-                    "succeeded",
-                    json!({ "source": "indexing", "image_path": image_path.display().to_string() }),
-                );
-                vectors
-            }
-            Err(error) => {
-                let message = error.to_string();
-                tracing::warn!(%error, item_id, "image embedding failed; image chunk remains searchable");
-                self.record_embedding_image_usage(
-                    item_id,
-                    1,
-                    "failed",
-                    json!({
-                        "source": "indexing",
-                        "image_path": image_path.display().to_string(),
-                        "error": message
-                    }),
-                );
-                if let Err(clear_error) = self.clear_item_embeddings(item_id).await {
-                    tracing::warn!(
-                        error = %clear_error,
-                        item_id,
-                        "failed to clear stale image embeddings after image embedding failure"
-                    );
-                }
-                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
-                cerul_storage::mark_indexed(&self.paths, item_id)?;
-                return Ok(ProcessImageSummary::from_write_summary(
-                    item_id,
-                    image_path,
-                    exif_fields,
-                    sqlite_summary,
-                ));
-            }
-        };
-        let write_result = match &self.embedding_profile {
-            Some(profile) => {
-                cerul_storage::replace_media_embeddings_for_profile(
-                    &self.paths,
-                    item_id,
-                    &[],
-                    &image_chunks,
-                    &[],
-                    &image_vectors,
-                    profile,
-                )
-                .await
-            }
-            None => {
-                cerul_storage::replace_media_embeddings(
-                    &self.paths,
-                    item_id,
-                    &[],
-                    &image_chunks,
-                    &[],
-                    &image_vectors,
-                )
-                .await
-            }
-        };
-        let write_summary = match write_result {
             Ok(write_summary) => write_summary,
             Err(error) => {
                 let message = error.to_string();
                 tracing::warn!(
                     %error,
                     item_id,
-                    "image vector index write failed; keeping image chunk indexed without vectors"
+                    "image unified retrieval index write failed; keeping image chunk indexed without vectors"
                 );
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                cerul_storage::set_item_search_index_status(
+                    &self.paths,
+                    item_id,
+                    "failed",
+                    Some(&message),
+                    0,
+                    0,
+                )?;
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
                 return Ok(ProcessImageSummary::from_write_summary(
                     item_id,
@@ -1095,9 +852,9 @@ impl VideoPipeline {
         };
         let write_summary = StorageWriteSummary {
             transcript_chunks: sqlite_summary.transcript_chunks,
-            keyframes: write_summary.keyframes,
-            text_vectors: write_summary.text_vectors,
-            image_vectors: write_summary.image_vectors,
+            keyframes: sqlite_summary.keyframes,
+            text_vectors: vector_summary.text_vectors,
+            image_vectors: vector_summary.image_vectors,
         };
         set_embedding_index_status(
             &self.paths,
@@ -1115,28 +872,6 @@ impl VideoPipeline {
             exif_fields,
             write_summary,
         ))
-    }
-
-    async fn clear_item_embeddings(&self, item_id: &str) -> anyhow::Result<()> {
-        match &self.embedding_profile {
-            Some(profile) => {
-                cerul_storage::replace_media_embeddings_for_profile(
-                    &self.paths,
-                    item_id,
-                    &[],
-                    &[],
-                    &[],
-                    &[],
-                    profile,
-                )
-                .await?;
-            }
-            None => {
-                cerul_storage::replace_media_embeddings(&self.paths, item_id, &[], &[], &[], &[])
-                    .await?;
-            }
-        }
-        Ok(())
     }
 
     async fn transcribe_to_storage_chunks(
@@ -1173,26 +908,134 @@ impl VideoPipeline {
         ))
     }
 
-    async fn embed_storage_chunks(
-        &self,
-        chunks: &[StorageTranscriptChunk],
-    ) -> anyhow::Result<Vec<Vec<f32>>> {
-        let embedder = Arc::clone(&self.embedder);
-        let texts = chunks
-            .iter()
-            .map(|chunk| chunk.text.clone())
-            .collect::<Vec<_>>();
-
-        let _model_permit = self.acquire_model_permit().await?;
-        tokio::task::spawn_blocking(move || embedder.embed_texts(&texts)).await?
+    fn active_embedding_profile(&self) -> anyhow::Result<cerul_storage::vectors::EmbeddingProfile> {
+        match &self.embedding_profile {
+            Some(profile) => Ok(profile.clone()),
+            None => cerul_storage::vectors::ensure_active_embedding_profile(&self.paths),
+        }
     }
 
-    async fn embed_image_paths(&self, paths: &[PathBuf]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let embedder = Arc::clone(&self.embedder);
-        let paths = paths.to_vec();
+    async fn embed_and_write_retrieval_units(
+        &self,
+        item_id: &str,
+        base: f64,
+        span: f64,
+    ) -> anyhow::Result<StorageWriteSummary> {
+        let profile = self.active_embedding_profile()?;
+        let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
+        anyhow::ensure!(
+            !units.is_empty(),
+            "no retrieval units generated for item {item_id}"
+        );
 
-        let _model_permit = self.acquire_model_permit().await?;
-        tokio::task::spawn_blocking(move || embedder.embed_images(&paths)).await?
+        let text_units = units
+            .iter()
+            .filter(|unit| !unit.uses_image_embedding())
+            .collect::<Vec<_>>();
+        let image_units = units
+            .iter()
+            .filter(|unit| unit.uses_image_embedding())
+            .collect::<Vec<_>>();
+
+        let text_inputs = text_units
+            .iter()
+            .map(|unit| unit.content_text.clone())
+            .collect::<Vec<_>>();
+        let text_vectors = self
+            .embed_texts_with_progress(
+                item_id,
+                "embedding_units",
+                base,
+                span * 0.75,
+                "Embedding searchable moments",
+                &text_inputs,
+            )
+            .await?;
+        self.record_embedding_text_usage(
+            item_id,
+            estimate_text_tokens(&text_inputs),
+            text_inputs.len(),
+            "succeeded",
+            json!({ "source": "indexing", "index": "retrieval_units" }),
+        );
+
+        let image_paths = image_units
+            .iter()
+            .filter_map(|unit| unit.representative_frame_path.as_ref().map(PathBuf::from))
+            .collect::<Vec<_>>();
+        let image_vectors = self
+            .embed_images_with_progress(
+                item_id,
+                "embedding_unit_images",
+                base + span * 0.75,
+                span * 0.25,
+                "Embedding image-only moments",
+                &image_paths,
+            )
+            .await?;
+        if !image_paths.is_empty() {
+            self.record_embedding_image_usage(
+                item_id,
+                image_paths.len(),
+                "succeeded",
+                json!({ "source": "indexing", "index": "retrieval_units" }),
+            );
+        }
+
+        anyhow::ensure!(
+            text_vectors.len() == text_units.len(),
+            "retrieval text unit count ({}) does not match vector count ({})",
+            text_units.len(),
+            text_vectors.len()
+        );
+        anyhow::ensure!(
+            image_vectors.len() == image_units.len(),
+            "retrieval image unit count ({}) does not match vector count ({})",
+            image_units.len(),
+            image_vectors.len()
+        );
+
+        let mut records = Vec::with_capacity(text_vectors.len() + image_vectors.len());
+        for (unit, vector) in text_units.into_iter().zip(text_vectors.iter()) {
+            records.push(cerul_storage::vectors::VectorRecord::new_for_dimensions(
+                unit.id.clone(),
+                unit.item_id.clone(),
+                vector.clone(),
+                profile.output_dimension,
+            )?);
+        }
+        for (unit, vector) in image_units.into_iter().zip(image_vectors.iter()) {
+            records.push(cerul_storage::vectors::VectorRecord::new_for_dimensions(
+                unit.id.clone(),
+                unit.item_id.clone(),
+                vector.clone(),
+                profile.output_dimension,
+            )?);
+        }
+
+        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+            &self.paths,
+            item_id,
+            &records,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await?;
+        cerul_storage::set_item_search_index_status(
+            &self.paths,
+            item_id,
+            "indexed",
+            None,
+            units.len(),
+            records.len(),
+        )?;
+
+        Ok(StorageWriteSummary {
+            transcript_chunks: units.len(),
+            keyframes: image_paths.len(),
+            text_vectors: text_vectors.len(),
+            image_vectors: image_vectors.len(),
+        })
     }
 
     fn record_asr_usage(
@@ -2150,7 +1993,7 @@ mod tests {
         assert_eq!(summary.transcript_chunks, 1);
         assert_eq!(summary.text_vectors, 1);
         assert!(summary.sampled_frames > 0);
-        assert_eq!(summary.image_vectors, summary.sampled_frames);
+        assert_eq!(summary.image_vectors, 0);
         assert!(!summary.audio_path.exists());
 
         let conn = sqlite::open(&paths).unwrap();
@@ -2182,26 +2025,20 @@ mod tests {
         let ocr_count = chunk_count("ocr");
         assert_eq!(transcript_count, summary.transcript_chunks as i64);
         assert!(transcript_line_count > 0);
-        assert_eq!(keyframe_count, summary.image_vectors as i64);
+        assert_eq!(keyframe_count, summary.sampled_frames as i64);
         assert_eq!(ocr_count, 0);
         assert_eq!(
             total_chunk_count,
             transcript_count + transcript_line_count + keyframe_count + ocr_count
         );
 
-        let profile = vectors::ensure_active_embedding_profile(&paths).unwrap();
-        let collections = vectors::collection_names(&paths, &profile);
         assert_eq!(
-            vectors::collection_point_count(&paths, &collections.text)
-                .await
-                .unwrap(),
-            summary.text_vectors
+            retrieval_unit_count_for_item(&paths, "item-1"),
+            (summary.text_vectors + summary.image_vectors) as i64
         );
         assert_eq!(
-            vectors::collection_point_count(&paths, &collections.image)
-                .await
-                .unwrap(),
-            summary.image_vectors
+            unified_point_count(&paths).await,
+            summary.text_vectors + summary.image_vectors
         );
         let stages = progress.stages.lock().unwrap();
         let preparing_index = stages
@@ -2245,7 +2082,7 @@ mod tests {
         .with_frame_interval_sec(2);
         let summary = pipeline.process_video_item("item-1").await.unwrap();
 
-        // No transcript, but frames are still sampled and embedded for visual search.
+        // No transcript, but frames are still sampled and embedded as image-only retrieval units.
         assert_eq!(summary.transcript_chunks, 0);
         assert_eq!(summary.text_vectors, 0);
         assert!(summary.sampled_frames > 0);
@@ -2300,9 +2137,10 @@ mod tests {
 
         assert!(summary.sampled_frames > 0);
         assert_eq!(summary.ocr_chunks, summary.sampled_frames);
+        assert!(summary.text_vectors >= 1);
         assert_eq!(
-            summary.text_vectors,
-            summary.transcript_chunks + summary.ocr_chunks
+            retrieval_unit_count_for_item(&paths, "item-1"),
+            (summary.text_vectors + summary.image_vectors) as i64
         );
 
         let conn = sqlite::open(&paths).unwrap();
@@ -2337,7 +2175,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_video_item_marks_transcript_only_when_image_embedding_fails() {
+    async fn process_video_item_marks_visual_frames_display_only() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
         let videos = temp.path().join("videos");
@@ -2370,13 +2208,10 @@ mod tests {
 
         assert_eq!(status, "indexed");
         assert_eq!(metadata["transcript_index_status"], "indexed");
-        assert_eq!(metadata["visual_index_status"], "failed");
+        assert_eq!(metadata["visual_index_status"], "display_only");
         assert_eq!(metadata["visual_indexed_frames"], 0);
         assert!(metadata["visual_sampled_frames"].as_u64().unwrap() > 0);
-        assert!(metadata["visual_index_error"]
-            .as_str()
-            .unwrap()
-            .contains("Image token span mismatch"));
+        assert!(metadata["visual_index_error"].is_null());
     }
 
     #[tokio::test]
@@ -2460,22 +2295,12 @@ mod tests {
 
         assert_eq!(status, "indexed");
         assert_eq!(metadata["embedding_index_status"], "failed");
-        assert_eq!(metadata["visual_index_status"], "failed");
+        assert_eq!(metadata["visual_index_status"], "display_only");
         assert!(metadata["embedding_index_error"]
             .as_str()
             .unwrap()
             .contains("expected"));
-
-        let hits = cerul_search::search_fts_only(
-            &paths,
-            cerul_search::SearchRequest {
-                q: "red square introduction".to_string(),
-                limit: 3,
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
+        assert!(retrieval_unit_count_for_item(&paths, "item-1") > 0);
     }
 
     #[tokio::test]
@@ -2764,20 +2589,9 @@ mod tests {
             .unwrap();
         assert_eq!(indexed_items, 10);
 
-        let profile = vectors::ensure_active_embedding_profile(&paths).unwrap();
-        let collections = vectors::collection_names(&paths, &profile);
-        assert_eq!(
-            vectors::collection_point_count(&paths, &collections.text)
-                .await
-                .unwrap(),
-            5
-        );
-        assert_eq!(
-            vectors::collection_point_count(&paths, &collections.image)
-                .await
-                .unwrap(),
-            5
-        );
+        assert_eq!(retrieval_unit_count_for_item_prefix(&paths, "audio-"), 5);
+        assert_eq!(retrieval_unit_count_for_item_prefix(&paths, "image-"), 5);
+        assert_eq!(unified_point_count(&paths).await, 10);
     }
 
     fn insert_source_and_item(paths: &AppPaths, videos: &Path, video: &Path) {
@@ -2976,6 +2790,36 @@ mod tests {
             |row| row.get(0),
         )
         .unwrap()
+    }
+
+    fn retrieval_unit_count_for_item(paths: &AppPaths, item_id: &str) -> i64 {
+        let conn = sqlite::open(paths).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM retrieval_units WHERE item_id = ?1 AND index_version = ?2",
+            (item_id, cerul_storage::SEARCH_INDEX_VERSION),
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn retrieval_unit_count_for_item_prefix(paths: &AppPaths, item_prefix: &str) -> i64 {
+        let conn = sqlite::open(paths).unwrap();
+        let pattern = format!("{item_prefix}%");
+        conn.query_row(
+            "SELECT COUNT(*) FROM retrieval_units WHERE item_id LIKE ?1 AND index_version = ?2",
+            (pattern, cerul_storage::SEARCH_INDEX_VERSION),
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    async fn unified_point_count(paths: &AppPaths) -> usize {
+        let profile = vectors::ensure_active_embedding_profile(paths).unwrap();
+        let collection =
+            vectors::unified_collection_name(paths, &profile, cerul_storage::SEARCH_INDEX_VERSION);
+        vectors::collection_point_count(paths, &collection)
+            .await
+            .unwrap()
     }
 
     fn fake_vector(seed: usize) -> Vec<f32> {

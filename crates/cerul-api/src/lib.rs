@@ -737,8 +737,8 @@ async fn search_records(
                         retrieval_mode = %response.diagnostics.retrieval_mode,
                         vector_hits_count = response.diagnostics.vector_hits_count,
                         fts_hits_count = response.diagnostics.fts_hits_count,
-                        qdrant_text_points = ?response.diagnostics.qdrant_text_points,
-                        qdrant_image_points = ?response.diagnostics.qdrant_image_points,
+                        qdrant_collection = ?response.diagnostics.qdrant_collection,
+                        qdrant_point_count = ?response.diagnostics.qdrant_point_count,
                         search_ms = search_started.elapsed().as_millis(),
                         "API search completed"
                     );
@@ -795,13 +795,20 @@ async fn search_fts_fallback(
 struct SearchHealthDiagnostics {
     item_count: usize,
     indexed_item_count: usize,
+    search_index_version: i32,
+    retrieval_unit_count: usize,
+    unified_indexed_item_count: usize,
+    items_needing_rebuild: usize,
     chunk_count: usize,
     searchable_text_chunk_count: usize,
     image_chunk_count: usize,
     fts_row_count: usize,
+    retrieval_unit_fts_row_count: usize,
     orphan_job_count: usize,
     missing_raw_path_count: usize,
     embedding_profile_id: Option<String>,
+    qdrant_collection: Option<String>,
+    qdrant_point_count: Option<usize>,
     qdrant_text_collection: Option<String>,
     qdrant_image_collection: Option<String>,
     qdrant_text_points: Option<usize>,
@@ -821,24 +828,25 @@ async fn search_diagnostics(
 
 #[derive(Debug, Serialize)]
 struct SearchRebuildResponse {
-    fts_rebuilt: bool,
+    rebuild_queued_items: usize,
+    queued_jobs: usize,
     diagnostics: SearchHealthDiagnostics,
 }
 
 async fn rebuild_search_index(
     State(state): State<ApiState>,
 ) -> ApiResult<Json<SearchRebuildResponse>> {
-    let conn = cerul_storage::sqlite::open(&state.paths)?;
-    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')", [])?;
-    drop(conn);
+    let (rebuild_queued_items, queued_jobs) = queue_items_for_embedding_mode_rebuild(&state.paths)?;
     Ok(Json(SearchRebuildResponse {
-        fts_rebuilt: true,
+        rebuild_queued_items,
+        queued_jobs,
         diagnostics: search_health_diagnostics(&state.paths).await?,
     }))
 }
 
 async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHealthDiagnostics> {
     let conn = cerul_storage::sqlite::open(paths)?;
+    let search_index_version = cerul_storage::SEARCH_INDEX_VERSION;
     let item_count = count_query(&conn, "SELECT COUNT(*) FROM items")?;
     let indexed_item_count =
         count_query(&conn, "SELECT COUNT(*) FROM items WHERE status = 'indexed'")?;
@@ -852,6 +860,36 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         "SELECT COUNT(*) FROM chunks WHERE frame_path IS NOT NULL AND TRIM(frame_path) <> ''",
     )?;
     let fts_row_count = count_query(&conn, "SELECT COUNT(*) FROM chunks_fts")?;
+    let retrieval_unit_count = count_query(
+        &conn,
+        &format!(
+            "SELECT COUNT(*) FROM retrieval_units WHERE index_version = {search_index_version}"
+        ),
+    )?;
+    let retrieval_unit_fts_row_count =
+        count_query(&conn, "SELECT COUNT(*) FROM retrieval_units_fts")?;
+    let unified_indexed_item_count = count_query(
+        &conn,
+        &format!(
+            "SELECT COUNT(*) FROM items WHERE search_index_version = {search_index_version} AND search_index_status = 'indexed'"
+        ),
+    )?;
+    let items_needing_rebuild = count_query(
+        &conn,
+        &format!(
+            r#"
+        SELECT COUNT(*)
+        FROM items
+        WHERE status = 'indexed'
+          AND (
+            search_index_version IS NULL
+            OR search_index_version != {search_index_version}
+            OR search_index_status IS NULL
+            OR search_index_status != 'indexed'
+          )
+        "#
+        ),
+    )?;
     let orphan_job_count = count_query(
         &conn,
         "SELECT COUNT(*) FROM jobs AS j LEFT JOIN items AS i ON i.id = j.item_id WHERE i.id IS NULL",
@@ -862,13 +900,20 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
     let mut diagnostics = SearchHealthDiagnostics {
         item_count,
         indexed_item_count,
+        search_index_version: cerul_storage::SEARCH_INDEX_VERSION,
+        retrieval_unit_count,
+        unified_indexed_item_count,
+        items_needing_rebuild,
         chunk_count,
         searchable_text_chunk_count,
         image_chunk_count,
         fts_row_count,
+        retrieval_unit_fts_row_count,
         orphan_job_count,
         missing_raw_path_count,
         embedding_profile_id: None,
+        qdrant_collection: None,
+        qdrant_point_count: None,
         qdrant_text_collection: None,
         qdrant_image_collection: None,
         qdrant_text_points: None,
@@ -888,38 +933,30 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
             return Ok(diagnostics);
         }
     };
-    let collections = cerul_storage::vectors::collection_names(paths, &profile);
+    let collection = cerul_storage::vectors::unified_collection_name(
+        paths,
+        &profile,
+        cerul_storage::SEARCH_INDEX_VERSION,
+    );
     diagnostics.embedding_profile_id = Some(profile.id);
-    diagnostics.qdrant_text_collection = Some(collections.text.clone());
-    diagnostics.qdrant_image_collection = Some(collections.image.clone());
+    diagnostics.qdrant_collection = Some(collection.clone());
 
-    let text_points =
-        cerul_storage::vectors::collection_point_count(paths, &collections.text).await;
-    let image_points =
-        cerul_storage::vectors::collection_point_count(paths, &collections.image).await;
-    match text_points {
+    let unified_points = cerul_storage::vectors::collection_point_count(paths, &collection).await;
+    match unified_points {
         Ok(count) => {
+            diagnostics.qdrant_point_count = Some(count);
             diagnostics.qdrant_text_points = Some(count);
             diagnostics.embedded_text_chunk_count = Some(count);
-            diagnostics.text_embedding_gap_count =
-                Some(searchable_text_chunk_count.saturating_sub(count));
+            diagnostics.text_embedding_gap_count = Some(retrieval_unit_count.saturating_sub(count));
         }
         Err(error) => {
-            tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
+            tracing::warn!(%error, collection, "failed to count Qdrant unified points for search diagnostics");
             diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
         }
     }
-    match image_points {
-        Ok(count) => {
-            diagnostics.qdrant_image_points = Some(count);
-            diagnostics.embedded_image_chunk_count = Some(count);
-            diagnostics.image_embedding_gap_count = Some(image_chunk_count.saturating_sub(count));
-        }
-        Err(error) => {
-            tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
-            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
-        }
-    }
+    diagnostics.qdrant_image_points = Some(0);
+    diagnostics.embedded_image_chunk_count = Some(0);
+    diagnostics.image_embedding_gap_count = Some(0);
 
     Ok(diagnostics)
 }
@@ -4417,7 +4454,7 @@ const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
 ];
 const DEFERRED_EMBEDDING_REBUILD_MODE_SETTING: &str = "embedding_profile_rebuild_deferred_mode";
 const INDEXING_SCHEMA_VERSION_SETTING: &str = "indexing_schema_version";
-const INDEXING_SCHEMA_VERSION: i32 = 3;
+const INDEXING_SCHEMA_VERSION: i32 = 4;
 const INTERNAL_SETTING_KEYS: &[&str] = &[
     DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
     INDEXING_SCHEMA_VERSION_SETTING,

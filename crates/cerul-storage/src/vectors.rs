@@ -145,9 +145,15 @@ struct QdrantScoredPoint {
     payload: Option<HashMap<String, Value>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct QdrantRetrievedPoint {
+    payload: Option<HashMap<String, Value>>,
+    vector: Option<Value>,
+}
+
 pub async fn ensure_collections(paths: &AppPaths) -> anyhow::Result<()> {
     let profile = ensure_active_embedding_profile(paths)?;
-    ensure_collections_for_profile(paths, &profile).await
+    ensure_unified_collection_for_profile(paths, &profile, crate::SEARCH_INDEX_VERSION).await
 }
 
 pub fn shutdown_qdrant_sidecar() {
@@ -182,6 +188,17 @@ pub async fn ensure_collections_for_profile(
     Ok(())
 }
 
+pub async fn ensure_unified_collection_for_profile(
+    paths: &AppPaths,
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> anyhow::Result<()> {
+    ensure_qdrant_ready(paths).await?;
+    let collection = unified_collection_name(paths, profile, index_version);
+    ensure_collection(paths, &collection, profile).await?;
+    Ok(())
+}
+
 pub async fn replace_item_embeddings(
     paths: &AppPaths,
     item_id: &str,
@@ -207,6 +224,19 @@ pub async fn replace_item_embeddings_for_profile(
     Ok(())
 }
 
+pub async fn replace_item_unified_embeddings_for_profile(
+    paths: &AppPaths,
+    item_id: &str,
+    records: &[VectorRecord],
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> anyhow::Result<()> {
+    ensure_qdrant_ready(paths).await?;
+    let collection = unified_collection_name(paths, profile, index_version);
+    ensure_unified_collection_for_profile(paths, profile, index_version).await?;
+    replace_collection_item_embeddings(paths, &collection, item_id, records).await
+}
+
 pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
     ensure_qdrant_ready(paths).await?;
     let profiles = list_embedding_profiles(paths)?;
@@ -217,6 +247,10 @@ pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::
             if collection_exists(paths, &collection).await? {
                 delete_collection_item_embeddings(paths, &collection, item_id).await?;
             }
+        }
+        let unified = unified_collection_name(paths, &profile, crate::SEARCH_INDEX_VERSION);
+        if collection_exists(paths, &unified).await? {
+            delete_collection_item_embeddings(paths, &unified, item_id).await?;
         }
     }
 
@@ -241,6 +275,16 @@ pub async fn collection_point_count(paths: &AppPaths, collection: &str) -> anyho
 
 pub fn collection_names(paths: &AppPaths, profile: &EmbeddingProfile) -> VectorCollectionNames {
     VectorCollectionNames::for_profile_in_namespace(&profile.id, &collection_namespace(paths))
+}
+
+pub fn unified_collection_name(
+    paths: &AppPaths,
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> String {
+    let namespace = collection_namespace(paths);
+    let sanitized = sanitize_profile_id(&profile.id);
+    format!("{namespace}__retrieval_units_v{index_version}__{sanitized}")
 }
 
 pub async fn search_collection(
@@ -281,6 +325,49 @@ pub async fn search_collection(
             })
         })
         .collect())
+}
+
+pub async fn retrieve_collection_vectors(
+    paths: &AppPaths,
+    collection: &str,
+    chunk_ids: &[String],
+) -> anyhow::Result<HashMap<String, Vec<f32>>> {
+    ensure_qdrant_ready(paths).await?;
+    if chunk_ids.is_empty() || !collection_exists(paths, collection).await? {
+        return Ok(HashMap::new());
+    }
+
+    let ids = chunk_ids.iter().map(|id| point_id(id)).collect::<Vec<_>>();
+    let points: Vec<QdrantRetrievedPoint> = qdrant_post(
+        paths,
+        &format!("/collections/{collection}/points"),
+        None,
+        &json!({
+            "ids": ids,
+            "with_payload": true,
+            "with_vector": true
+        }),
+    )
+    .await?;
+
+    let mut vectors = HashMap::new();
+    for point in points {
+        let Some(payload) = point.payload else {
+            continue;
+        };
+        let Some(chunk_id) = payload
+            .get("chunk_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let Some(vector) = point.vector.and_then(parse_qdrant_vector) else {
+            continue;
+        };
+        vectors.insert(chunk_id, vector);
+    }
+    Ok(vectors)
 }
 
 async fn replace_collection_item_embeddings(
@@ -452,6 +539,18 @@ fn validate_collection_config(
     }
 
     Ok(())
+}
+
+fn parse_qdrant_vector(value: Value) -> Option<Vec<f32>> {
+    let values = if let Some(array) = value.as_array() {
+        array
+    } else {
+        value.as_object()?.values().next()?.as_array()?
+    };
+    values
+        .iter()
+        .map(|value| value.as_f64().map(|number| number as f32))
+        .collect()
 }
 
 async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {

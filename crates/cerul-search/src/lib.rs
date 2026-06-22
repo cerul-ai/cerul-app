@@ -24,14 +24,16 @@ pub struct SearchResult {
     pub match_score: f32,
     pub score: f32,
     pub similarity_score: Option<f32>,
+    #[serde(default)]
+    pub exact_match: bool,
     #[serde(skip)]
     source_mask: u8,
     /// Item title, joined in so the UI can label a result without a separate
     /// items fetch (which can be empty/stale and leave the row showing a raw id).
     pub item_title: Option<String>,
-    /// For transcript rows (which carry no frame of their own), the keyframe
-    /// chunk nearest this result's timestamp — i.e. what was on screen when the
-    /// line was spoken. `None` for visual rows (they use their own `frame_path`).
+    /// Keyframe/image chunk that should be used for the result thumbnail.
+    /// Transcript rows use the frame nearest their timestamp; visual rows point
+    /// at their representative frame chunk.
     pub nearest_frame_chunk_id: Option<String>,
 }
 
@@ -45,6 +47,10 @@ pub struct SearchDiagnostics {
     pub fts_hits_count: usize,
     pub embedding_profile_id: Option<String>,
     pub qdrant_collection: Option<String>,
+    pub qdrant_point_count: Option<usize>,
+    pub retrieval_unit_count: Option<usize>,
+    pub indexed_item_count: Option<usize>,
+    pub items_needing_rebuild: Option<usize>,
     pub qdrant_text_collection: Option<String>,
     pub qdrant_image_collection: Option<String>,
     pub qdrant_text_points: Option<usize>,
@@ -62,12 +68,14 @@ pub struct RawHit {
     pub chunk_id: String,
     pub score: f32,
     pub similarity_score: Option<f32>,
+    exact_match: bool,
     source_mask: u8,
 }
 
 const SOURCE_TEXT: u8 = 1 << 0;
 const SOURCE_TEXT_VECTOR: u8 = 1 << 1;
-const SOURCE_IMAGE_VECTOR: u8 = 1 << 2;
+const SOURCE_EXACT: u8 = 1 << 2;
+const PER_ITEM_CAP: usize = 3;
 
 pub fn crate_ready() -> bool {
     true
@@ -108,8 +116,7 @@ pub async fn search_with_paths_diagnostics(
         .pop()
         .ok_or_else(|| anyhow::anyhow!("embedder returned no query vector"))?;
 
-    // Qwen3-VL embeds text and images into one space, so the text query vector
-    // drives both the transcript and the frame indexes.
+    // The query vector searches the unified retrieval-unit collection.
     search_with_vectors_diagnostics(paths, req, query_vector.clone(), query_vector).await
 }
 
@@ -161,9 +168,10 @@ pub async fn search_fts_only_with_diagnostics(
     fallback_reason: Option<String>,
 ) -> anyhow::Result<SearchResponse> {
     let limit = req.limit.clamp(1, 50);
-    let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
+    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
+    let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit), &profile).await?;
     let fts_hits_count = hits.len();
-    let results = hydrate(paths, &hits)?;
+    let results = hydrate(paths, &hits, &req.q)?;
     let results = finalize_results(results, limit);
     Ok(SearchResponse {
         results,
@@ -175,10 +183,10 @@ pub async fn search_with_vectors(
     paths: &AppPaths,
     req: SearchRequest,
     text_query_vector: Vec<f32>,
-    image_query_vector: Vec<f32>,
+    _image_query_vector: Vec<f32>,
 ) -> anyhow::Result<Vec<SearchResult>> {
     Ok(
-        search_with_vectors_diagnostics(paths, req, text_query_vector, image_query_vector)
+        search_with_vectors_diagnostics(paths, req, text_query_vector, Vec::new())
             .await?
             .results,
     )
@@ -188,31 +196,25 @@ pub async fn search_with_vectors_diagnostics(
     paths: &AppPaths,
     req: SearchRequest,
     text_query_vector: Vec<f32>,
-    image_query_vector: Vec<f32>,
+    _image_query_vector: Vec<f32>,
 ) -> anyhow::Result<SearchResponse> {
     let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
-    search_with_vectors_for_profile_diagnostics(
-        paths,
-        req,
-        text_query_vector,
-        image_query_vector,
-        &profile,
-    )
-    .await
+    search_with_vectors_for_profile_diagnostics(paths, req, text_query_vector, Vec::new(), &profile)
+        .await
 }
 
 pub async fn search_with_vectors_for_profile(
     paths: &AppPaths,
     req: SearchRequest,
     text_query_vector: Vec<f32>,
-    image_query_vector: Vec<f32>,
+    _image_query_vector: Vec<f32>,
     profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<Vec<SearchResult>> {
     Ok(search_with_vectors_for_profile_diagnostics(
         paths,
         req,
         text_query_vector,
-        image_query_vector,
+        Vec::new(),
         profile,
     )
     .await?
@@ -223,7 +225,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     paths: &AppPaths,
     req: SearchRequest,
     text_query_vector: Vec<f32>,
-    image_query_vector: Vec<f32>,
+    _image_query_vector: Vec<f32>,
     profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<SearchResponse> {
     anyhow::ensure!(
@@ -232,60 +234,71 @@ pub async fn search_with_vectors_for_profile_diagnostics(
         text_query_vector.len(),
         profile.output_dimension
     );
-    anyhow::ensure!(
-        image_query_vector.len() == profile.output_dimension as usize,
-        "image query vector has {} dimensions, expected {}",
-        image_query_vector.len(),
-        profile.output_dimension
-    );
 
     let limit = req.limit.clamp(1, 50);
     let retrieval_limit = retrieval_limit(limit);
-    let collections = cerul_storage::vectors::collection_names(paths, profile);
-    let (bm25_hits, text_hits, image_hits) = tokio::try_join!(
-        sqlite_text_search(paths, &req.q, retrieval_limit),
+    let collection = cerul_storage::vectors::unified_collection_name(
+        paths,
+        profile,
+        cerul_storage::SEARCH_INDEX_VERSION,
+    );
+    let (lexical_hits, vector_hits) = tokio::try_join!(
+        sqlite_text_search(paths, &req.q, retrieval_limit, profile),
         qdrant_vector_search(
             paths,
-            &collections.text,
+            &collection,
             &text_query_vector,
             retrieval_limit,
             &profile.distance_metric
         ),
-        qdrant_vector_search(
-            paths,
-            &collections.image,
-            &image_query_vector,
-            retrieval_limit,
-            &profile.distance_metric
-        ),
     )?;
-    let fts_hits_count = bm25_hits.len();
-    let text_vector_hits_count = text_hits.len();
-    let image_vector_hits_count = image_hits.len();
-    let vector_hits_count = text_vector_hits_count + image_vector_hits_count;
-    let (qdrant_text_points, qdrant_image_points, fallback_reason) =
-        vector_health_hint(paths, &collections, vector_hits_count).await;
-    let merged = rrf_merge(vec![bm25_hits, text_hits, image_hits], 60);
-    let top_hits = merged.into_iter().take(retrieval_limit).collect::<Vec<_>>();
+    let fts_hits_count = lexical_hits.len();
+    let vector_hits_count = vector_hits.len();
+    let qdrant_point_count = cerul_storage::vectors::collection_point_count(paths, &collection)
+        .await
+        .ok();
+    let fallback_reason = if vector_hits_count == 0 {
+        match qdrant_point_count {
+            Some(0) => Some("unified_vector_index_empty".to_string()),
+            Some(_) => Some("no_unified_vector_hits".to_string()),
+            None => Some("qdrant_health_check_failed".to_string()),
+        }
+    } else {
+        None
+    };
+    let top_hits = merge_unified_hits(
+        paths,
+        &collection,
+        &text_query_vector,
+        &profile.distance_metric,
+        vector_hits,
+        lexical_hits,
+        retrieval_limit,
+    )
+    .await?;
 
-    let results = hydrate(paths, &top_hits)?;
+    let results = hydrate(paths, &top_hits, &req.q)?;
     let results = finalize_results(results, limit);
-    let retrieval_mode = retrieval_mode(vector_hits_count, fts_hits_count);
+    let retrieval_mode = retrieval_mode(vector_hits_count, fts_hits_count, qdrant_point_count);
     Ok(SearchResponse {
         results,
         diagnostics: SearchDiagnostics {
             retrieval_mode,
             fallback_reason,
             vector_hits_count,
-            text_vector_hits_count,
-            image_vector_hits_count,
+            text_vector_hits_count: vector_hits_count,
+            image_vector_hits_count: 0,
             fts_hits_count,
             embedding_profile_id: Some(profile.id.clone()),
-            qdrant_collection: Some(collections.text.clone()),
-            qdrant_text_collection: Some(collections.text),
-            qdrant_image_collection: Some(collections.image),
-            qdrant_text_points,
-            qdrant_image_points,
+            qdrant_collection: Some(collection.clone()),
+            qdrant_point_count,
+            retrieval_unit_count: cerul_storage::retrieval_unit_count(paths).ok(),
+            indexed_item_count: cerul_storage::indexed_item_count(paths).ok(),
+            items_needing_rebuild: cerul_storage::items_needing_rebuild_count(paths).ok(),
+            qdrant_text_collection: None,
+            qdrant_image_collection: None,
+            qdrant_text_points: qdrant_point_count,
+            qdrant_image_points: Some(0),
         },
     })
 }
@@ -307,6 +320,10 @@ impl SearchDiagnostics {
             fts_hits_count,
             embedding_profile_id: None,
             qdrant_collection: None,
+            qdrant_point_count: None,
+            retrieval_unit_count: None,
+            indexed_item_count: None,
+            items_needing_rebuild: None,
             qdrant_text_collection: None,
             qdrant_image_collection: None,
             qdrant_text_points: None,
@@ -315,127 +332,41 @@ impl SearchDiagnostics {
     }
 }
 
-fn retrieval_mode(vector_hits_count: usize, fts_hits_count: usize) -> String {
-    match (vector_hits_count > 0, fts_hits_count > 0) {
-        (true, true) => "hybrid",
-        (true, false) => "vector",
-        (false, true) => "fts",
-        (false, false) => "empty",
+fn retrieval_mode(
+    vector_hits_count: usize,
+    fts_hits_count: usize,
+    qdrant_point_count: Option<usize>,
+) -> String {
+    match (
+        vector_hits_count > 0,
+        fts_hits_count > 0,
+        qdrant_point_count,
+    ) {
+        (true, _, _) => "unified_vector",
+        (false, true, _) => "unified_vector",
+        (false, false, Some(0)) => "empty",
+        (false, false, _) => "empty",
     }
     .to_string()
-}
-
-async fn vector_health_hint(
-    paths: &AppPaths,
-    collections: &cerul_storage::vectors::VectorCollectionNames,
-    vector_hits_count: usize,
-) -> (Option<usize>, Option<usize>, Option<String>) {
-    if vector_hits_count > 0 {
-        return (None, None, None);
-    }
-
-    let text_points =
-        cerul_storage::vectors::collection_point_count(paths, &collections.text).await;
-    let image_points =
-        cerul_storage::vectors::collection_point_count(paths, &collections.image).await;
-
-    match (text_points, image_points) {
-        (Ok(text), Ok(image)) if text == 0 && image == 0 => (
-            Some(text),
-            Some(image),
-            Some("vector_index_empty".to_string()),
-        ),
-        (Ok(text), Ok(image)) => (Some(text), Some(image), Some("no_vector_hits".to_string())),
-        (text_result, image_result) => {
-            if let Err(error) = &text_result {
-                tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
-            }
-            if let Err(error) = &image_result {
-                tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
-            }
-            (
-                text_result.ok(),
-                image_result.ok(),
-                Some("qdrant_health_check_failed".to_string()),
-            )
-        }
-    }
 }
 
 fn retrieval_limit(limit: usize) -> usize {
     limit.saturating_mul(4).max(limit).max(1)
 }
 
-pub fn rrf_merge(sources: Vec<Vec<RawHit>>, k: usize) -> Vec<RawHit> {
-    let mut scores = HashMap::<String, f32>::new();
-    let mut similarity_scores = HashMap::<String, f32>::new();
-    let mut source_masks = HashMap::<String, u8>::new();
-
-    for (source_index, source) in sources.into_iter().enumerate() {
-        let source_mask = match source_index {
-            0 => SOURCE_TEXT,
-            1 => SOURCE_TEXT_VECTOR,
-            2 => SOURCE_IMAGE_VECTOR,
-            _ => 0,
-        };
-        let mut seen_in_source = HashSet::new();
-        for (rank, hit) in source.into_iter().enumerate() {
-            if !seen_in_source.insert(hit.chunk_id.clone()) {
-                continue;
-            }
-
-            let chunk_id = hit.chunk_id;
-            let effective_source_mask = if hit.source_mask == 0 {
-                source_mask
-            } else {
-                hit.source_mask | source_mask
-            };
-            if let Some(similarity_score) = hit.similarity_score {
-                similarity_scores
-                    .entry(chunk_id.clone())
-                    .and_modify(|current| {
-                        if similarity_score > *current {
-                            *current = similarity_score;
-                        }
-                    })
-                    .or_insert(similarity_score);
-            }
-            *source_masks.entry(chunk_id.clone()).or_default() |= effective_source_mask;
-            *scores.entry(chunk_id).or_default() += 1.0 / (k as f32 + rank as f32 + 1.0);
-        }
-    }
-
-    let mut hits = scores
-        .into_iter()
-        .map(|(chunk_id, score)| RawHit {
-            similarity_score: similarity_scores.remove(&chunk_id),
-            source_mask: source_masks.remove(&chunk_id).unwrap_or_default(),
-            chunk_id,
-            score,
-        })
-        .collect::<Vec<_>>();
-    hits.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
-    });
-    hits
-}
-
 async fn sqlite_text_search(
     paths: &AppPaths,
     query: &str,
     limit: usize,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<Vec<RawHit>> {
-    let mut hits = sqlite_fts_search(paths, query, limit).await?;
+    let mut hits = sqlite_fts_search(paths, query, limit, profile).await?;
     let mut seen = hits
         .iter()
         .map(|hit| hit.chunk_id.clone())
         .collect::<HashSet<_>>();
 
-    for hit in sqlite_literal_search(paths, query, limit).await? {
+    for hit in sqlite_literal_search(paths, query, limit, profile).await? {
         if seen.insert(hit.chunk_id.clone()) {
             hits.push(hit);
         }
@@ -451,6 +382,7 @@ async fn sqlite_fts_search(
     paths: &AppPaths,
     query: &str,
     limit: usize,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<Vec<RawHit>> {
     let Some(match_query) = fts_match_query(query) else {
         return Ok(Vec::new());
@@ -458,26 +390,37 @@ async fn sqlite_fts_search(
     let conn = cerul_storage::sqlite::open(paths)?;
     let mut stmt = conn.prepare(
         r#"
-        SELECT c.id, bm25(chunks_fts) AS rank_score
-        FROM chunks_fts
-        JOIN chunks c ON c.rowid = chunks_fts.rowid
-        JOIN items i ON i.id = c.item_id
-        WHERE chunks_fts MATCH ?1
+        SELECT u.id, bm25(retrieval_units_fts) AS rank_score
+        FROM retrieval_units_fts
+        JOIN retrieval_units u ON u.rowid = retrieval_units_fts.rowid
+        JOIN items i ON i.id = u.item_id
+        WHERE retrieval_units_fts MATCH ?1
           AND i.status != 'deleting'
+          AND u.embedding_profile_id = ?2
+          AND u.index_version = ?3
         ORDER BY rank_score
-        LIMIT ?2
+        LIMIT ?4
         "#,
     )?;
-    let rows = stmt.query_map((&match_query, limit as i64), |row| {
-        let chunk_id: String = row.get(0)?;
-        let rank_score: f64 = row.get(1)?;
-        Ok(RawHit {
-            chunk_id,
-            score: (-rank_score) as f32,
-            similarity_score: None,
-            source_mask: SOURCE_TEXT,
-        })
-    })?;
+    let rows = stmt.query_map(
+        (
+            &match_query,
+            profile.id.as_str(),
+            cerul_storage::SEARCH_INDEX_VERSION,
+            limit as i64,
+        ),
+        |row| {
+            let chunk_id: String = row.get(0)?;
+            let rank_score: f64 = row.get(1)?;
+            Ok(RawHit {
+                chunk_id,
+                score: (-rank_score) as f32,
+                similarity_score: None,
+                exact_match: false,
+                source_mask: SOURCE_TEXT,
+            })
+        },
+    )?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -486,42 +429,54 @@ async fn sqlite_literal_search(
     paths: &AppPaths,
     query: &str,
     limit: usize,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<Vec<RawHit>> {
     let Some(pattern) = sqlite_like_pattern(query) else {
         return Ok(Vec::new());
     };
+    let strong_exact = strong_exact_intent(query);
     let conn = cerul_storage::sqlite::open(paths)?;
     let mut stmt = conn.prepare(
         r#"
-        SELECT c.id
-        FROM chunks c
-        JOIN items i ON i.id = c.item_id
-        WHERE c.text IS NOT NULL
+        SELECT u.id
+        FROM retrieval_units u
+        JOIN items i ON i.id = u.item_id
+        WHERE u.content_text IS NOT NULL
           AND i.status != 'deleting'
-          AND c.chunk_type IN ('transcript', 'transcript_line', 'audio', 'ocr', 'understanding')
-          AND c.text LIKE ?1 ESCAPE '\'
+          AND u.embedding_profile_id = ?2
+          AND u.index_version = ?3
+          AND u.content_text LIKE ?1 ESCAPE '\'
         ORDER BY
-          CASE c.chunk_type
-            WHEN 'transcript_line' THEN 0
-            WHEN 'transcript' THEN 1
-            WHEN 'audio' THEN 2
-            WHEN 'ocr' THEN 3
+          CASE u.unit_kind
+            WHEN 'moment' THEN 0
+            WHEN 'summary' THEN 1
+            WHEN 'visual' THEN 2
+            WHEN 'image' THEN 3
             ELSE 4
           END,
-          COALESCE(c.start_sec, 9223372036854775807),
-          c.id
-        LIMIT ?2
+          COALESCE(u.start_sec, 9223372036854775807),
+          u.id
+        LIMIT ?4
         "#,
     )?;
-    let rows = stmt.query_map((&pattern, limit as i64), |row| {
-        let chunk_id: String = row.get(0)?;
-        Ok(RawHit {
-            chunk_id,
-            score: 0.01,
-            similarity_score: None,
-            source_mask: SOURCE_TEXT,
-        })
-    })?;
+    let rows = stmt.query_map(
+        (
+            &pattern,
+            profile.id.as_str(),
+            cerul_storage::SEARCH_INDEX_VERSION,
+            limit as i64,
+        ),
+        |row| {
+            let chunk_id: String = row.get(0)?;
+            Ok(RawHit {
+                chunk_id,
+                score: 0.01,
+                similarity_score: None,
+                exact_match: strong_exact,
+                source_mask: SOURCE_TEXT | if strong_exact { SOURCE_EXACT } else { 0 },
+            })
+        },
+    )?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -539,11 +494,124 @@ async fn qdrant_vector_search(
         .into_iter()
         .map(|hit| RawHit {
             chunk_id: hit.chunk_id,
-            score: 0.0,
+            score: similarity_from_qdrant_score(hit.score, distance_metric),
             similarity_score: Some(similarity_from_qdrant_score(hit.score, distance_metric)),
-            source_mask: 0,
+            exact_match: false,
+            source_mask: SOURCE_TEXT_VECTOR,
         })
         .collect())
+}
+
+async fn merge_unified_hits(
+    paths: &AppPaths,
+    collection: &str,
+    query_vector: &[f32],
+    distance_metric: &str,
+    vector_hits: Vec<RawHit>,
+    lexical_hits: Vec<RawHit>,
+    limit: usize,
+) -> anyhow::Result<Vec<RawHit>> {
+    let mut candidates = HashMap::<String, RawHit>::new();
+    for hit in vector_hits {
+        candidates.insert(hit.chunk_id.clone(), hit);
+    }
+
+    let lexical_only_ids = lexical_hits
+        .iter()
+        .filter(|hit| !candidates.contains_key(&hit.chunk_id))
+        .map(|hit| hit.chunk_id.clone())
+        .collect::<Vec<_>>();
+    let lexical_vectors =
+        cerul_storage::vectors::retrieve_collection_vectors(paths, collection, &lexical_only_ids)
+            .await
+            .unwrap_or_default();
+
+    for mut hit in lexical_hits {
+        if let Some(existing) = candidates.get_mut(&hit.chunk_id) {
+            existing.source_mask |= hit.source_mask;
+            existing.exact_match |= hit.exact_match;
+            continue;
+        }
+        if let Some(vector) = lexical_vectors.get(&hit.chunk_id) {
+            let score = vector_similarity(query_vector, vector, distance_metric);
+            hit.score = score;
+            hit.similarity_score = Some(score);
+        } else if hit.exact_match {
+            hit.score = 0.0001;
+        } else {
+            hit.score = 0.0;
+        }
+        candidates.insert(hit.chunk_id.clone(), hit);
+    }
+
+    let mut hits = candidates.into_values().collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .exact_match
+            .cmp(&left.exact_match)
+            .then_with(|| {
+                boosted_score(right)
+                    .partial_cmp(&boosted_score(left))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+    hits.truncate(limit);
+    Ok(hits)
+}
+
+fn boosted_score(hit: &RawHit) -> f32 {
+    let lexical_boost = if hit.source_mask & SOURCE_TEXT != 0 {
+        if hit.exact_match {
+            0.25
+        } else {
+            0.03
+        }
+    } else {
+        0.0
+    };
+    (hit.score + lexical_boost).clamp(0.0, 1.0)
+}
+
+fn vector_similarity(query_vector: &[f32], vector: &[f32], distance_metric: &str) -> f32 {
+    if query_vector.len() != vector.len() || query_vector.is_empty() {
+        return 0.0;
+    }
+    match distance_metric.to_ascii_lowercase().as_str() {
+        "dot" | "ip" => query_vector
+            .iter()
+            .zip(vector)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            .clamp(0.0, 1.0),
+        "euclid" | "euclidean" | "l2" => {
+            let distance = query_vector
+                .iter()
+                .zip(vector)
+                .map(|(left, right)| (left - right).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            (1.0 / (1.0 + distance)).clamp(0.0, 1.0)
+        }
+        _ => {
+            let dot = query_vector
+                .iter()
+                .zip(vector)
+                .map(|(left, right)| left * right)
+                .sum::<f32>();
+            let left_norm = query_vector
+                .iter()
+                .map(|value| value * value)
+                .sum::<f32>()
+                .sqrt();
+            let right_norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            if left_norm == 0.0 || right_norm == 0.0 {
+                0.0
+            } else {
+                (dot / (left_norm * right_norm)).clamp(0.0, 1.0)
+            }
+        }
+    }
 }
 
 fn similarity_from_qdrant_score(score: f32, distance_metric: &str) -> f32 {
@@ -559,38 +627,63 @@ fn similarity_from_qdrant_score(score: f32, distance_metric: &str) -> f32 {
     }
 }
 
-fn hydrate(paths: &AppPaths, hits: &[RawHit]) -> anyhow::Result<Vec<SearchResult>> {
+fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec<SearchResult>> {
     if hits.is_empty() {
         return Ok(Vec::new());
     }
     let conn = cerul_storage::sqlite::open(paths)?;
-    let chunks = load_chunks_for_hits(&conn, hits)?;
+    let units = load_units_for_hits(&conn, hits)?;
     let mut results = Vec::with_capacity(hits.len());
 
     for hit in hits {
-        let Some(chunk) = chunks.get(&hit.chunk_id) else {
+        let Some(unit) = units.get(&hit.chunk_id) else {
             continue;
         };
-        let snippet = chunk
-            .text
-            .clone()
-            .filter(|text| !text.trim().is_empty())
-            .unwrap_or_else(|| fallback_snippet(&chunk.chunk_type, chunk.start_sec));
+        let snippet = best_snippet(unit);
+        let sub_unit = cerul_storage::best_sub_unit_for_query(
+            paths,
+            &unit.item_id,
+            unit.start_sec,
+            unit.end_sec,
+            query,
+        )
+        .ok()
+        .flatten();
+        let (playback_chunk_id, start_sec) = match sub_unit {
+            Some((chunk_id, start)) => (chunk_id, Some(start)),
+            None => (
+                unit.representative_chunk_id
+                    .clone()
+                    .unwrap_or_else(|| unit.id.clone()),
+                unit.start_sec,
+            ),
+        };
+        let nearest_frame_chunk_id = if unit.representative_frame_path.is_some()
+            && unit
+                .representative_chunk_id
+                .as_deref()
+                .is_some_and(|id| id.contains(":keyframe:") || id.contains(":image:"))
+        {
+            unit.representative_chunk_id.clone()
+        } else {
+            None
+        };
 
         results.push(SearchResult {
-            chunk_id: chunk.id.clone(),
-            item_id: chunk.item_id.clone(),
-            chunk_type: chunk.chunk_type.clone(),
-            start_sec: chunk.start_sec,
-            end_sec: chunk.end_sec,
+            chunk_id: playback_chunk_id,
+            item_id: unit.item_id.clone(),
+            chunk_type: unit.unit_kind.clone(),
+            start_sec,
+            end_sec: unit.end_sec,
             snippet,
-            frame_path: chunk.frame_path.clone(),
+            frame_path: None,
             match_score: 0.0,
             score: hit.score,
             similarity_score: hit.similarity_score,
+            exact_match: hit.exact_match,
             source_mask: hit.source_mask,
-            item_title: chunk.item_title.clone(),
-            nearest_frame_chunk_id: None,
+            item_title: unit.item_title.clone(),
+            nearest_frame_chunk_id,
         });
     }
 
@@ -606,52 +699,46 @@ fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResul
 
 fn apply_match_scores(results: &mut [SearchResult]) {
     for result in results {
-        result.match_score = calibrated_match_score(result.score, result.source_mask);
+        result.match_score =
+            unified_match_score(result.score, result.exact_match, result.source_mask);
     }
 }
 
-fn calibrated_match_score(score: f32, source_mask: u8) -> f32 {
-    if !score.is_finite() || score <= 0.0 {
-        return 0.0;
+fn unified_match_score(score: f32, exact_match: bool, source_mask: u8) -> f32 {
+    if exact_match {
+        return score.max(0.92).min(0.98);
     }
-
-    // Keep this user-facing score deliberately conservative:
-    // - one channel tops out below 80%
-    // - two independent channels can reach the high 80s
-    // - only three-channel evidence can enter the low/mid 90s
-    // 97-100 is intentionally reserved for a future stricter verifier.
-    let channel_count = source_mask.count_ones().clamp(1, 3) as f32;
-    const RRF_K: f32 = 60.0;
-    let ideal_score = channel_count / (RRF_K + 1.0);
-    let strength = (score / ideal_score).clamp(0.0, 1.0).powf(2.0);
-
-    let (floor, ceiling) = match channel_count as u8 {
-        1 => (0.30, 0.78),
-        2 => (0.55, 0.89),
-        _ => (0.70, 0.96),
+    let lexical_boost = if source_mask & SOURCE_TEXT != 0 {
+        0.03
+    } else {
+        0.0
     };
-
-    floor + (ceiling - floor) * strength
+    (score + lexical_boost).clamp(0.0, 0.91)
 }
 
 #[derive(Debug, Clone)]
-struct HydratedChunk {
+struct HydratedUnit {
     id: String,
     item_id: String,
-    chunk_type: String,
+    unit_kind: String,
     start_sec: Option<f64>,
     end_sec: Option<f64>,
-    text: Option<String>,
-    frame_path: Option<String>,
+    content_text: String,
+    transcript_text: Option<String>,
+    ocr_text: Option<String>,
+    visual_text: Option<String>,
+    summary_text: Option<String>,
+    representative_chunk_id: Option<String>,
+    representative_frame_path: Option<String>,
     item_title: Option<String>,
 }
 
-fn load_chunks_for_hits(
+fn load_units_for_hits(
     conn: &rusqlite::Connection,
     hits: &[RawHit],
-) -> anyhow::Result<HashMap<String, HydratedChunk>> {
+) -> anyhow::Result<HashMap<String, HydratedUnit>> {
     let mut seen = HashSet::new();
-    let chunk_ids = hits
+    let unit_ids = hits
         .iter()
         .filter_map(|hit| {
             if seen.insert(hit.chunk_id.as_str()) {
@@ -661,50 +748,79 @@ fn load_chunks_for_hits(
             }
         })
         .collect::<Vec<_>>();
-    if chunk_ids.is_empty() {
+    if unit_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", chunk_ids.len())
+    let placeholders = std::iter::repeat_n("?", unit_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
         r#"
         SELECT
-            c.id,
-            c.item_id,
-            c.chunk_type,
-            c.start_sec,
-            c.end_sec,
-            c.text,
-            c.frame_path,
+            u.id,
+            u.item_id,
+            u.unit_kind,
+            u.start_sec,
+            u.end_sec,
+            u.content_text,
+            u.transcript_text,
+            u.ocr_text,
+            u.visual_text,
+            u.summary_text,
+            u.representative_chunk_id,
+            u.representative_frame_path,
             i.title
-        FROM chunks c
-        JOIN items i ON i.id = c.item_id
-        WHERE c.id IN ({placeholders})
+        FROM retrieval_units u
+        JOIN items i ON i.id = u.item_id
+        WHERE u.id IN ({placeholders})
           AND i.status != 'deleting'
         "#,
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
-        Ok(HydratedChunk {
+    let rows = stmt.query_map(rusqlite::params_from_iter(unit_ids.iter()), |row| {
+        Ok(HydratedUnit {
             id: row.get(0)?,
             item_id: row.get(1)?,
-            chunk_type: row.get(2)?,
+            unit_kind: row.get(2)?,
             start_sec: row.get(3)?,
             end_sec: row.get(4)?,
-            text: row.get(5)?,
-            frame_path: row.get(6)?,
-            item_title: row.get(7)?,
+            content_text: row.get(5)?,
+            transcript_text: row.get(6)?,
+            ocr_text: row.get(7)?,
+            visual_text: row.get(8)?,
+            summary_text: row.get(9)?,
+            representative_chunk_id: row.get(10)?,
+            representative_frame_path: row.get(11)?,
+            item_title: row.get(12)?,
         })
     })?;
 
-    let mut chunks = HashMap::with_capacity(chunk_ids.len());
-    for chunk in rows {
-        let chunk = chunk?;
-        chunks.insert(chunk.id.clone(), chunk);
+    let mut units = HashMap::with_capacity(unit_ids.len());
+    for unit in rows {
+        let unit = unit?;
+        units.insert(unit.id.clone(), unit);
     }
-    Ok(chunks)
+    Ok(units)
+}
+
+fn best_snippet(unit: &HydratedUnit) -> String {
+    for text in [
+        unit.transcript_text.as_deref(),
+        unit.ocr_text.as_deref(),
+        unit.visual_text.as_deref(),
+        unit.summary_text.as_deref(),
+        Some(unit.content_text.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return trimmed.chars().take(320).collect();
+        }
+    }
+    fallback_snippet(&unit.unit_kind, unit.start_sec)
 }
 
 fn attach_nearest_frame_chunk_ids(
@@ -814,14 +930,24 @@ fn format_timestamp(seconds: f64) -> String {
 
 fn dedupe_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
     let mut kept = Vec::with_capacity(limit.min(results.len()));
+    let mut per_item_counts = HashMap::<String, usize>::new();
 
     for result in results {
+        if per_item_counts
+            .get(&result.item_id)
+            .copied()
+            .unwrap_or_default()
+            >= PER_ITEM_CAP
+        {
+            continue;
+        }
         if kept
             .iter()
             .any(|existing| is_near_duplicate(existing, &result))
         {
             continue;
         }
+        *per_item_counts.entry(result.item_id.clone()).or_default() += 1;
         kept.push(result);
         if kept.len() >= limit {
             break;
@@ -884,50 +1010,35 @@ fn sqlite_like_pattern(query: &str) -> Option<String> {
     Some(escaped)
 }
 
+fn strong_exact_intent(query: &str) -> bool {
+    let trimmed = query.trim();
+    if trimmed.len() < 2 {
+        return false;
+    }
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() > 2 {
+        return true;
+    }
+    let alnum_chars = trimmed.chars().filter(|ch| ch.is_alphanumeric()).count();
+    let has_model_like_char = trimmed
+        .chars()
+        .any(|ch| matches!(ch, '-' | '_' | '/' | '.' | '#') || ch.is_ascii_digit());
+    let has_cjk = trimmed
+        .chars()
+        .any(|ch| matches!(ch as u32, 0x4E00..=0x9FFF));
+    let token_count = trimmed
+        .split_whitespace()
+        .filter(|term| !term.is_empty())
+        .count();
+
+    has_model_like_char || alnum_chars >= 8 || (has_cjk && alnum_chars >= 4) || token_count >= 2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cerul_storage::{sqlite, StorageImageChunk, StorageTranscriptChunk};
+    use cerul_storage::vectors::{EmbeddingProfile, VectorRecord};
+    use cerul_storage::{sqlite, StorageImageChunk, StorageRetrievalUnit, StorageTranscriptChunk};
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn rrf_synthetic() {
-        let merged = rrf_merge(
-            vec![
-                vec![
-                    RawHit {
-                        chunk_id: "shared".to_string(),
-                        score: 0.0,
-                        similarity_score: Some(0.91),
-                        source_mask: 0,
-                    },
-                    RawHit {
-                        chunk_id: "single".to_string(),
-                        score: 0.0,
-                        similarity_score: Some(0.74),
-                        source_mask: 0,
-                    },
-                ],
-                vec![RawHit {
-                    chunk_id: "shared".to_string(),
-                    score: 0.0,
-                    similarity_score: Some(0.87),
-                    source_mask: 0,
-                }],
-                vec![RawHit {
-                    chunk_id: "shared".to_string(),
-                    score: 0.0,
-                    similarity_score: None,
-                    source_mask: 0,
-                }],
-            ],
-            60,
-        );
-
-        assert_eq!(merged.first().unwrap().chunk_id, "shared");
-        assert!(merged[0].score > merged[1].score);
-        assert_eq!(merged[0].similarity_score, Some(0.91));
-    }
 
     #[test]
     fn dedupe_results_collapses_adjacent_item_hits() {
@@ -950,44 +1061,29 @@ mod tests {
     }
 
     #[test]
-    fn match_score_calibrates_final_fused_score_conservatively() {
-        let results = vec![
-            result("chunk-a", "item-1", "transcript", Some(10.0), 0.04),
-            result("chunk-b", "item-2", "keyframe", Some(20.0), 0.01),
-            result("chunk-c", "item-3", "transcript", Some(30.0), 0.0),
-        ];
+    fn match_score_uses_unified_scores_and_exact_floor() {
+        let mut semantic = result("chunk-a", "item-1", "moment", Some(10.0), 0.97);
+        semantic.source_mask = SOURCE_TEXT_VECTOR;
+        let mut lexical = result("chunk-b", "item-2", "moment", Some(20.0), 0.40);
+        lexical.source_mask = SOURCE_TEXT;
+        let mut exact = result("chunk-c", "item-3", "moment", Some(30.0), 0.01);
+        exact.source_mask = SOURCE_TEXT | SOURCE_EXACT;
+        exact.exact_match = true;
 
-        let scored = finalize_results(results, 10);
+        let scored = finalize_results(vec![semantic, lexical, exact], 10);
 
-        assert_eq!(
-            scored
-                .iter()
-                .map(|result| result.chunk_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["chunk-a", "chunk-b", "chunk-c"]
-        );
-        assert!((scored[0].match_score - 0.78).abs() < 0.001);
-        assert!(scored[1].match_score > 0.47 && scored[1].match_score < 0.49);
-        assert_eq!(scored[2].match_score, 0.0);
+        assert!((scored[0].match_score - 0.91).abs() < 0.001);
+        assert!((scored[1].match_score - 0.43).abs() < 0.001);
+        assert!((scored[2].match_score - 0.92).abs() < 0.001);
     }
 
     #[test]
-    fn match_score_uses_channel_tiers() {
-        let top_rank = 1.0 / 61.0;
-
-        assert!((calibrated_match_score(top_rank, SOURCE_TEXT) - 0.78).abs() < 0.001);
-        assert!(
-            (calibrated_match_score(top_rank * 2.0, SOURCE_TEXT | SOURCE_TEXT_VECTOR) - 0.89).abs()
-                < 0.001
-        );
-        assert!(
-            (calibrated_match_score(
-                top_rank * 3.0,
-                SOURCE_TEXT | SOURCE_TEXT_VECTOR | SOURCE_IMAGE_VECTOR
-            ) - 0.96)
-                .abs()
-                < 0.001
-        );
+    fn strong_exact_intent_is_bounded() {
+        assert!(strong_exact_intent("\"short\""));
+        assert!(strong_exact_intent("PX-1000"));
+        assert!(strong_exact_intent("地下室光源"));
+        assert!(!strong_exact_intent("地下室"));
+        assert!(!strong_exact_intent("ai"));
     }
 
     #[tokio::test]
@@ -1007,16 +1103,14 @@ mod tests {
                 text: "unrelated transcript text".to_string(),
             },
         ];
-        cerul_storage::write_video_chunks(
-            &paths,
-            "item-1",
-            &chunks,
-            &[],
-            &[fake_vector(0), fake_vector(1)],
-            &[],
-        )
-        .await
-        .unwrap();
+        index_video_units(&paths, "item-1", &chunks, |unit| {
+            if unit.content_text.contains("needle phrase") {
+                fake_vector(0)
+            } else {
+                fake_vector(1)
+            }
+        })
+        .await;
 
         let results = search_with_vector(
             &paths,
@@ -1056,15 +1150,29 @@ mod tests {
             [],
         )
         .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let units = vec![manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(4.0),
+            Some(9.0),
+            "deleted item should not appear in search",
+            Some("item-1:transcript:000000"),
+            &profile,
+        )];
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
 
         let results = hydrate(
             &paths,
             &[RawHit {
-                chunk_id: "item-1:transcript:000000".to_string(),
+                chunk_id: "item-1:unit:v2:000000".to_string(),
                 score: 1.0,
                 similarity_score: Some(1.0),
+                exact_match: false,
                 source_mask: SOURCE_TEXT,
             }],
+            "deleted",
         )
         .unwrap();
 
@@ -1081,9 +1189,7 @@ mod tests {
             end: 9.0,
             text: "fallback search should still find exact transcript text".to_string(),
         }];
-        cerul_storage::write_video_chunks(&paths, "item-1", &chunks, &[], &[fake_vector(0)], &[])
-            .await
-            .unwrap();
+        write_video_chunks_and_units(&paths, "item-1", &chunks);
 
         let results = search_with_paths(
             &paths,
@@ -1110,9 +1216,7 @@ mod tests {
             end: 9.0,
             text: "fallback search should still report diagnostics".to_string(),
         }];
-        cerul_storage::write_video_chunks(&paths, "item-1", &chunks, &[], &[fake_vector(0)], &[])
-            .await
-            .unwrap();
+        write_video_chunks_and_units(&paths, "item-1", &chunks);
 
         let response = search_fts_only_with_diagnostics(
             &paths,
@@ -1140,45 +1244,50 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
-        let chunks = vec![
-            StorageTranscriptChunk {
-                start: 1.0,
-                end: 2.0,
-                text: "first chunk".to_string(),
-            },
-            StorageTranscriptChunk {
-                start: 3.0,
-                end: 4.0,
-                text: "second chunk".to_string(),
-            },
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let units = vec![
+            manual_unit(
+                "item-1:unit:v2:000000",
+                "item-1",
+                0,
+                Some(1.0),
+                Some(2.0),
+                "first chunk",
+                Some("item-1:transcript:000000"),
+                &profile,
+            ),
+            manual_unit(
+                "item-1:unit:v2:000001",
+                "item-1",
+                1,
+                Some(3.0),
+                Some(4.0),
+                "second chunk",
+                Some("item-1:transcript:000001"),
+                &profile,
+            ),
         ];
-        cerul_storage::write_video_chunks(
-            &paths,
-            "item-1",
-            &chunks,
-            &[],
-            &[fake_vector(0), fake_vector(1)],
-            &[],
-        )
-        .await
-        .unwrap();
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
 
         let results = hydrate(
             &paths,
             &[
                 RawHit {
-                    chunk_id: "item-1:transcript:000001".to_string(),
+                    chunk_id: "item-1:unit:v2:000001".to_string(),
                     score: 0.9,
                     similarity_score: Some(0.9),
+                    exact_match: false,
                     source_mask: SOURCE_TEXT,
                 },
                 RawHit {
-                    chunk_id: "item-1:transcript:000000".to_string(),
+                    chunk_id: "item-1:unit:v2:000000".to_string(),
                     score: 0.8,
                     similarity_score: Some(0.8),
+                    exact_match: false,
                     source_mask: SOURCE_TEXT,
                 },
             ],
+            "chunk",
         )
         .unwrap();
 
@@ -1203,11 +1312,10 @@ mod tests {
             end: 12.0,
             text: "所有光源只能出现在地下室".to_string(),
         }];
-        cerul_storage::write_video_chunks(&paths, "item-1", &chunks, &[], &[fake_vector(0)], &[])
-            .await
-            .unwrap();
+        write_video_chunks_and_units(&paths, "item-1", &chunks);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
 
-        assert!(sqlite_fts_search(&paths, "地下室", 5)
+        assert!(sqlite_fts_search(&paths, "地下室", 5, &profile)
             .await
             .unwrap()
             .is_empty());
@@ -1228,26 +1336,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_with_vectors_uses_separate_image_query_vector() {
+    async fn search_with_vectors_uses_unified_query_vector() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        insert_item(&paths);
+        insert_item_with_type(&paths, "item-1", "image", "folder_image", "Sample image");
         let frames = temp.path().join("frames");
         std::fs::create_dir(&frames).unwrap();
 
-        cerul_storage::write_media_chunks(
+        index_image_units(
             &paths,
             "item-1",
-            &[],
             &[
                 StorageImageChunk::keyframe(frames.join("red.jpg")),
                 StorageImageChunk::keyframe(frames.join("blue.jpg")),
             ],
-            &[],
-            &[fake_vector(20), fake_vector(21)],
+            |unit| {
+                if unit.representative_chunk_id.as_deref() == Some("item-1:keyframe:000001") {
+                    fake_vector(21)
+                } else {
+                    fake_vector(20)
+                }
+            },
         )
-        .await
-        .unwrap();
+        .await;
 
         let results = search_with_vectors(
             &paths,
@@ -1255,43 +1366,45 @@ mod tests {
                 q: "not in transcript".to_string(),
                 limit: 1,
             },
-            fake_vector(0),
             fake_vector(21),
+            fake_vector(20),
         )
         .await
         .unwrap();
 
-        assert_eq!(results.first().unwrap().chunk_id, "item-1:keyframe:000001");
-        assert!(results
-            .first()
-            .unwrap()
-            .frame_path
-            .as_deref()
-            .unwrap()
-            .ends_with("blue.jpg"));
+        let first = results.first().unwrap();
+        assert_eq!(first.chunk_id, "item-1:keyframe:000001");
+        assert_eq!(
+            first.nearest_frame_chunk_id.as_deref(),
+            Some("item-1:keyframe:000001")
+        );
+        assert_eq!(first.frame_path, None);
     }
 
     #[tokio::test]
     async fn vector_search_reports_search_diagnostics() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        insert_item(&paths);
+        insert_item_with_type(&paths, "item-1", "image", "folder_image", "Sample image");
         let frames = temp.path().join("frames");
         std::fs::create_dir(&frames).unwrap();
 
-        cerul_storage::write_media_chunks(
+        index_image_units(
             &paths,
             "item-1",
-            &[],
             &[
                 StorageImageChunk::keyframe(frames.join("red.jpg")),
                 StorageImageChunk::keyframe(frames.join("blue.jpg")),
             ],
-            &[],
-            &[fake_vector(20), fake_vector(21)],
+            |unit| {
+                if unit.representative_chunk_id.as_deref() == Some("item-1:keyframe:000001") {
+                    fake_vector(21)
+                } else {
+                    fake_vector(20)
+                }
+            },
         )
-        .await
-        .unwrap();
+        .await;
 
         let response = search_with_vectors_diagnostics(
             &paths,
@@ -1299,22 +1412,24 @@ mod tests {
                 q: "not in transcript".to_string(),
                 limit: 1,
             },
-            fake_vector(0),
             fake_vector(21),
+            fake_vector(0),
         )
         .await
         .unwrap();
 
-        assert_eq!(response.diagnostics.retrieval_mode, "vector");
+        assert_eq!(response.diagnostics.retrieval_mode, "unified_vector");
         assert!(response.diagnostics.vector_hits_count >= 1);
         assert_eq!(response.diagnostics.fts_hits_count, 0);
         assert!(response.diagnostics.embedding_profile_id.is_some());
         assert!(response
             .diagnostics
-            .qdrant_text_collection
+            .qdrant_collection
             .as_deref()
             .unwrap()
-            .contains("text_chunks"));
+            .contains("retrieval_units"));
+        assert_eq!(response.diagnostics.qdrant_text_collection, None);
+        assert_eq!(response.diagnostics.qdrant_image_points, Some(0));
         assert_eq!(response.results[0].chunk_id, "item-1:keyframe:000001");
     }
 
@@ -1322,23 +1437,26 @@ mod tests {
     async fn vector_search_uses_profile_distance_metric() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        insert_item(&paths);
+        insert_item_with_type(&paths, "item-1", "image", "folder_image", "Sample image");
         let frames = temp.path().join("frames");
         std::fs::create_dir(&frames).unwrap();
 
-        cerul_storage::write_media_chunks(
+        index_image_units(
             &paths,
             "item-1",
-            &[],
             &[
                 StorageImageChunk::keyframe(frames.join("same-direction.jpg")),
                 StorageImageChunk::keyframe(frames.join("orthogonal.jpg")),
             ],
-            &[],
-            &[scaled_vector(0, 10.0), fake_vector(1)],
+            |unit| {
+                if unit.representative_chunk_id.as_deref() == Some("item-1:keyframe:000000") {
+                    scaled_vector(0, 10.0)
+                } else {
+                    fake_vector(1)
+                }
+            },
         )
-        .await
-        .unwrap();
+        .await;
 
         let results = search_with_vectors(
             &paths,
@@ -1355,11 +1473,10 @@ mod tests {
         let first = results.first().unwrap();
         assert_eq!(first.chunk_id, "item-1:keyframe:000000");
         assert!(first.similarity_score.unwrap() > 0.99);
-        assert!(first
-            .frame_path
-            .as_deref()
-            .unwrap()
-            .ends_with("same-direction.jpg"));
+        assert_eq!(
+            first.nearest_frame_chunk_id.as_deref(),
+            Some("item-1:keyframe:000000")
+        );
     }
 
     #[tokio::test]
@@ -1424,17 +1541,156 @@ mod tests {
     }
 
     fn insert_item(paths: &AppPaths) {
+        insert_item_with_type(paths, "item-1", "video", "folder_video", "Sample");
+    }
+
+    fn insert_item_with_type(
+        paths: &AppPaths,
+        item_id: &str,
+        content_type: &str,
+        source_type: &str,
+        title: &str,
+    ) {
         let conn = sqlite::open(paths).unwrap();
         conn.execute(
-            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
-            [],
+            "INSERT OR IGNORE INTO sources (id, type, config, status) VALUES ('source-1', ?1, '{}', 'active')",
+            [source_type],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO items (id, source_id, content_type, status, title) VALUES ('item-1', 'source-1', 'video', 'indexed', 'Sample')",
-            [],
+            "INSERT INTO items (id, source_id, content_type, status, title) VALUES (?1, 'source-1', ?2, 'indexed', ?3)",
+            (item_id, content_type, title),
         )
         .unwrap();
+    }
+
+    fn write_video_chunks_and_units(
+        paths: &AppPaths,
+        item_id: &str,
+        chunks: &[StorageTranscriptChunk],
+    ) -> Vec<StorageRetrievalUnit> {
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            paths,
+            item_id,
+            chunks,
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        rebuild_units(paths, item_id).1
+    }
+
+    async fn index_video_units<F>(
+        paths: &AppPaths,
+        item_id: &str,
+        chunks: &[StorageTranscriptChunk],
+        vector_for_unit: F,
+    ) -> Vec<StorageRetrievalUnit>
+    where
+        F: Fn(&StorageRetrievalUnit) -> Vec<f32>,
+    {
+        write_video_chunks_and_units(paths, item_id, chunks);
+        let (profile, units) = rebuild_units(paths, item_id);
+        write_unified_vectors(paths, item_id, &profile, &units, vector_for_unit).await;
+        units
+    }
+
+    async fn index_image_units<F>(
+        paths: &AppPaths,
+        item_id: &str,
+        images: &[StorageImageChunk],
+        vector_for_unit: F,
+    ) -> Vec<StorageRetrievalUnit>
+    where
+        F: Fn(&StorageRetrievalUnit) -> Vec<f32>,
+    {
+        cerul_storage::write_media_sqlite_chunks(paths, item_id, &[], images).unwrap();
+        let (profile, units) = rebuild_units(paths, item_id);
+        write_unified_vectors(paths, item_id, &profile, &units, vector_for_unit).await;
+        units
+    }
+
+    fn rebuild_units(
+        paths: &AppPaths,
+        item_id: &str,
+    ) -> (EmbeddingProfile, Vec<StorageRetrievalUnit>) {
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+        let units =
+            cerul_storage::rebuild_item_retrieval_units(paths, item_id, &profile.id).unwrap();
+        assert!(!units.is_empty(), "expected retrieval units for {item_id}");
+        (profile, units)
+    }
+
+    async fn write_unified_vectors<F>(
+        paths: &AppPaths,
+        item_id: &str,
+        profile: &EmbeddingProfile,
+        units: &[StorageRetrievalUnit],
+        vector_for_unit: F,
+    ) where
+        F: Fn(&StorageRetrievalUnit) -> Vec<f32>,
+    {
+        let records = units
+            .iter()
+            .map(|unit| {
+                VectorRecord::new_for_dimensions(
+                    unit.id.clone(),
+                    item_id.to_string(),
+                    vector_for_unit(unit),
+                    profile.output_dimension,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+            paths,
+            item_id,
+            &records,
+            profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        cerul_storage::set_item_search_index_status(
+            paths,
+            item_id,
+            "indexed",
+            None,
+            units.len(),
+            records.len(),
+        )
+        .unwrap();
+    }
+
+    fn manual_unit(
+        id: &str,
+        item_id: &str,
+        unit_index: i64,
+        start_sec: Option<f64>,
+        end_sec: Option<f64>,
+        text: &str,
+        representative_chunk_id: Option<&str>,
+        profile: &EmbeddingProfile,
+    ) -> StorageRetrievalUnit {
+        StorageRetrievalUnit {
+            id: id.to_string(),
+            item_id: item_id.to_string(),
+            unit_index,
+            unit_kind: "moment".to_string(),
+            start_sec,
+            end_sec,
+            content_text: format!("Transcript: {text}"),
+            transcript_text: Some(text.to_string()),
+            ocr_text: None,
+            visual_text: None,
+            summary_text: None,
+            representative_chunk_id: representative_chunk_id.map(ToOwned::to_owned),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id.clone(),
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        }
     }
 
     async fn seed_latency_library(paths: &AppPaths, item_count: usize, topic_count: usize) {
@@ -1467,16 +1723,7 @@ mod tests {
                     "latency-topic-{topic:02} retrieval phrase for indexed video {item_index:03}"
                 ),
             }];
-            cerul_storage::write_video_chunks(
-                paths,
-                &item_id,
-                &chunks,
-                &[],
-                &[fake_vector(topic)],
-                &[],
-            )
-            .await
-            .unwrap();
+            index_video_units(paths, &item_id, &chunks, |_| fake_vector(topic)).await;
         }
     }
 
@@ -1514,6 +1761,7 @@ mod tests {
             match_score: 0.0,
             score,
             similarity_score: None,
+            exact_match: false,
             source_mask: SOURCE_TEXT,
             item_title: None,
             nearest_frame_chunk_id: None,

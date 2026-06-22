@@ -257,13 +257,21 @@ export type SearchResultRecord = {
   match_score?: number | null;
   score: number;
   similarity_score: number | null;
+  exact_match?: boolean;
   // Optional: older backends omit these, so treat them as possibly undefined.
   item_title?: string | null;
   nearest_frame_chunk_id?: string | null;
 };
 
 export type SearchDiagnostics = {
-  retrieval_mode: "hybrid" | "vector" | "fts" | "fts_fallback" | "empty" | string;
+  retrieval_mode:
+    | "unified_vector"
+    | "hybrid"
+    | "vector"
+    | "fts"
+    | "fts_fallback"
+    | "empty"
+    | string;
   fallback_reason: string | null;
   vector_hits_count: number;
   text_vector_hits_count: number;
@@ -271,10 +279,14 @@ export type SearchDiagnostics = {
   fts_hits_count: number;
   embedding_profile_id: string | null;
   qdrant_collection: string | null;
+  qdrant_point_count: number | null;
   qdrant_text_collection: string | null;
   qdrant_image_collection: string | null;
   qdrant_text_points: number | null;
   qdrant_image_points: number | null;
+  retrieval_unit_count?: number;
+  indexed_item_count?: number;
+  items_needing_rebuild?: number;
 };
 
 export type SearchResponseRecord = {
@@ -285,13 +297,20 @@ export type SearchResponseRecord = {
 export type SearchHealthDiagnostics = {
   item_count: number;
   indexed_item_count: number;
+  search_index_version: number;
+  retrieval_unit_count: number;
+  unified_indexed_item_count: number;
+  items_needing_rebuild: number;
   chunk_count: number;
   searchable_text_chunk_count: number;
   image_chunk_count: number;
   fts_row_count: number;
+  retrieval_unit_fts_row_count: number;
   orphan_job_count: number;
   missing_raw_path_count: number;
   embedding_profile_id: string | null;
+  qdrant_collection: string | null;
+  qdrant_point_count: number | null;
   qdrant_text_collection: string | null;
   qdrant_image_collection: string | null;
   qdrant_text_points: number | null;
@@ -304,7 +323,8 @@ export type SearchHealthDiagnostics = {
 };
 
 export type SearchRebuildResponse = {
-  fts_rebuilt: boolean;
+  rebuild_queued_items: number;
+  queued_jobs: number;
   diagnostics: SearchHealthDiagnostics;
 };
 
