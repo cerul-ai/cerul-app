@@ -560,6 +560,7 @@ fn write_completed_record(
         ),
     )?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
+    crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id)?;
     read_understanding_record(paths, item_id)
 }
 
@@ -1172,5 +1173,76 @@ mod tests {
         assert_eq!(record.item_id, "item-1");
         assert_eq!(record.status, STATUS_NOT_STARTED);
         assert!(record.chapters.is_empty());
+    }
+
+    #[test]
+    fn write_completed_record_refreshes_retrieval_units_and_queues_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, source_id, content_type, title, status, metadata) VALUES ('item-1', 'source-1', 'video', 'Demo video', 'indexed', '{}')",
+            [],
+        )
+        .unwrap();
+
+        let record = write_completed_record(
+            &paths,
+            "item-1",
+            "provider-1",
+            "model-1",
+            json!({
+                "summary": "A checkout flow highlights code XR-42.",
+                "chapters": [],
+                "events": [{
+                    "start_sec": 4.0,
+                    "end_sec": 8.0,
+                    "caption": "The checkout screen appears.",
+                    "visual": "Visible code XR-42 is shown.",
+                    "audio": "",
+                    "actions": [],
+                    "entities": ["XR-42"],
+                    "confidence": 0.9
+                }],
+                "topics": ["checkout"],
+                "searchable_text": "checkout visible code XR-42"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(record.status, STATUS_COMPLETED);
+        let retrieval_text: String = conn
+            .query_row(
+                "SELECT content_text FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(retrieval_text.contains("XR-42"));
+        let item_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(item_index_state, ("pending".to_string(), 2, 0));
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 1);
     }
 }

@@ -311,7 +311,13 @@ fn build_timed_units(
         .filter(|chunk| matches!(chunk.chunk_type.as_str(), "keyframe" | "image"))
         .collect::<Vec<_>>();
     let frame_times = frame_times_by_path(&frame_chunks);
-    let windows = windows_for_item(&transcript_chunks, &understanding_chunks);
+    let windows = windows_for_item(
+        &transcript_chunks,
+        &understanding_chunks,
+        &ocr_chunks,
+        &frame_chunks,
+        &frame_times,
+    );
     let source_label = source_label(item);
     let mut units = Vec::new();
 
@@ -430,6 +436,9 @@ fn build_image_units(
 fn windows_for_item(
     transcript_chunks: &[&ChunkInfo],
     understanding_chunks: &[&ChunkInfo],
+    ocr_chunks: &[&ChunkInfo],
+    frame_chunks: &[&ChunkInfo],
+    frame_times: &HashMap<String, f64>,
 ) -> Vec<Window> {
     let understanding_windows = understanding_chunks
         .iter()
@@ -459,7 +468,7 @@ fn windows_for_item(
         .filter_map(|chunk| chunk.end_sec.or(chunk.start_sec))
         .collect::<Vec<_>>();
     let Some(first_start) = starts.iter().copied().reduce(f64::min) else {
-        return Vec::new();
+        return visual_only_windows(ocr_chunks, frame_chunks, frame_times);
     };
     let last_end = ends
         .iter()
@@ -481,6 +490,63 @@ fn windows_for_item(
         }
         start += WINDOW_STEP_SEC;
     }
+    windows
+}
+
+fn visual_only_windows(
+    ocr_chunks: &[&ChunkInfo],
+    frame_chunks: &[&ChunkInfo],
+    frame_times: &HashMap<String, f64>,
+) -> Vec<Window> {
+    let mut windows = frame_chunks
+        .iter()
+        .map(|chunk| {
+            let start = chunk.start_sec.or_else(|| {
+                chunk
+                    .frame_path
+                    .as_ref()
+                    .and_then(|path| frame_times.get(path).copied())
+            });
+            let end = chunk
+                .end_sec
+                .or_else(|| start.map(|value| value + WINDOW_SEC));
+            Window {
+                start_sec: start,
+                end_sec: end,
+                visual_text: None,
+                summary_text: None,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if windows.is_empty() {
+        windows = ocr_chunks
+            .iter()
+            .map(|chunk| Window {
+                start_sec: chunk.start_sec.or_else(|| {
+                    chunk
+                        .frame_path
+                        .as_ref()
+                        .and_then(|path| frame_times.get(path).copied())
+                }),
+                end_sec: chunk
+                    .end_sec
+                    .or_else(|| chunk.start_sec.map(|value| value + WINDOW_SEC)),
+                visual_text: None,
+                summary_text: None,
+            })
+            .collect();
+    }
+
+    if windows.is_empty() && !ocr_chunks.is_empty() {
+        windows.push(Window {
+            start_sec: None,
+            end_sec: None,
+            visual_text: None,
+            summary_text: None,
+        });
+    }
+
     windows
 }
 
@@ -612,6 +678,9 @@ fn overlaps(
     right_end: Option<f64>,
 ) -> bool {
     match (left_start, left_end, right_start, right_end) {
+        (Some(ls), Some(le), Some(rs), Some(re)) if (le - ls).abs() < f64::EPSILON => {
+            ls >= rs && ls <= re
+        }
         (Some(ls), Some(le), Some(rs), Some(re)) => ls < re && le > rs,
         (Some(ls), None, Some(rs), Some(re)) => ls >= rs && ls <= re,
         (Some(ls), Some(le), Some(rs), None) => le >= rs && ls <= rs,
@@ -869,7 +938,7 @@ pub fn item_has_retrieval_units(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sqlite, StorageTranscriptChunk};
+    use crate::{sqlite, StorageImageChunk, StorageOcrChunk, StorageTranscriptChunk};
 
     fn seed_item(paths: &AppPaths) {
         let conn = sqlite::open(paths).unwrap();
@@ -918,5 +987,36 @@ mod tests {
         assert!(units[0].content_text.contains("embeddings"));
         assert!(units[0].content_text.contains("search"));
         assert_eq!(retrieval_unit_count(&paths).unwrap(), 1);
+    }
+
+    #[test]
+    fn build_units_preserves_ocr_for_visual_only_video() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let frame_path = temp.path().join("checkout-frame.jpg");
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[],
+            &[],
+            &[StorageOcrChunk::frame(
+                frame_path.clone(),
+                "visible checkout code XR-42",
+            )],
+            &[StorageImageChunk::keyframe_at(frame_path, 5.0, 10.0)],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(
+            units[0].ocr_text.as_deref(),
+            Some("visible checkout code XR-42")
+        );
+        assert!(units[0]
+            .content_text
+            .contains("On-screen text: visible checkout code XR-42"));
     }
 }

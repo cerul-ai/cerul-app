@@ -3581,6 +3581,42 @@ fn enqueue_embedding_rebuild_job(
     Ok(true)
 }
 
+pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
+    paths: &AppPaths,
+    item_id: &str,
+) -> anyhow::Result<bool> {
+    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
+    let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, &profile.id)?;
+
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+    let content_type: String = tx.query_row(
+        "SELECT content_type FROM items WHERE id = ?1",
+        [item_id],
+        |row| row.get(0),
+    )?;
+    let content_type = parse_content_type(&content_type)?;
+    tx.execute(
+        r#"
+        UPDATE items
+        SET search_index_version = ?2,
+            search_index_status = 'pending',
+            search_index_error = NULL,
+            search_index_unit_count = ?3,
+            search_index_vector_count = 0
+        WHERE id = ?1
+        "#,
+        (
+            item_id,
+            cerul_storage::SEARCH_INDEX_VERSION,
+            units.len() as i64,
+        ),
+    )?;
+    let queued_job = enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)?;
+    tx.commit()?;
+    Ok(queued_job)
+}
+
 fn set_source_status(paths: &AppPaths, id: &str, status: &str) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
     let updated = conn.execute("UPDATE sources SET status = ?1 WHERE id = ?2", (status, id))?;
