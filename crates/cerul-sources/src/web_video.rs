@@ -15,7 +15,7 @@ use tokio::{
 
 use crate::{
     url_policy::validate_external_http_url,
-    youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem},
+    youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem, YtdlpAccess},
     FetchProgress, SourcePlugin,
 };
 
@@ -30,6 +30,7 @@ pub struct WebVideo {
     cache_dir: PathBuf,
     command_timeout: Option<Duration>,
     clip_duration_sec: Option<u64>,
+    access: YtdlpAccess,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +140,7 @@ impl WebVideo {
             .get("clip_duration_sec")
             .and_then(|value| value.as_u64())
             .filter(|value| *value > 0);
+        let access = YtdlpAccess::from_config(&config);
 
         Ok(Self {
             source_url,
@@ -148,6 +150,7 @@ impl WebVideo {
             cache_dir,
             command_timeout,
             clip_duration_sec,
+            access,
         })
     }
 
@@ -170,6 +173,7 @@ impl WebVideo {
     async fn discover_single(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        self.access.apply_to_command(&mut command);
         command
             .arg("--")
             .arg(&self.classified.canonical_url)
@@ -191,6 +195,7 @@ impl WebVideo {
     async fn discover_author(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--flat-playlist", "--dump-json"]);
+        self.access.apply_to_command(&mut command);
         if let Some(max_videos) = self.max_videos {
             command.arg("--playlist-end").arg(max_videos.to_string());
         }
@@ -418,6 +423,7 @@ impl SourcePlugin for WebVideo {
             "--progress-template",
             "download:CERUL_PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s %(progress.eta)s %(progress.speed)s",
         ]);
+        self.access.apply_to_command(&mut command);
         if let Some(duration_sec) = self.clip_duration_sec {
             command
                 .arg("--download-sections")

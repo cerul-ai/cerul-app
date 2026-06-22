@@ -68,14 +68,15 @@ export function sourceError(record: api.SourceRecord, status: SourceStatus) {
 
 export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: TFunction): Source {
   const type = sourceType(record.type);
-  const itemsForSource = allItems.filter((item) => item.sourceId === record.id).length;
+  const itemsForSource = allItems.filter((item) => item.sourceId === record.id);
   const status = sourceStatus(record.status);
   return {
     id: record.id,
     type,
     name: sourceName(record),
     status,
-    items: itemsForSource,
+    items: itemsForSource.length,
+    failedItems: itemsForSource.filter((item) => item.status === "failed").length,
     lastPolled: formatUnixTime(record.last_poll_at, t),
     error: sourceError(record, status),
   };

@@ -14,7 +14,7 @@ use cerul_storage::{
     AppPaths, StorageImageChunk, StorageOcrChunk, StorageTranscriptChunk, StorageTranscriptLine,
     StorageWriteSummary,
 };
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
@@ -24,6 +24,9 @@ use crate::{
 
 const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
+const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
+const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
+const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
 
 pub trait Transcriber: Send + Sync {
     fn prepare_transcription(&self) -> anyhow::Result<()> {
@@ -1734,7 +1737,80 @@ fn source_config_with_app_cache(
                 .into_owned(),
         )
     });
+    apply_ytdlp_access_settings(paths, source_type, &mut object);
     serde_json::Value::Object(object)
+}
+
+fn apply_ytdlp_access_settings(
+    paths: &AppPaths,
+    source_type: &str,
+    object: &mut Map<String, Value>,
+) {
+    if !matches!(source_type, "youtube" | "web_video") || has_source_cookie_config(object) {
+        return;
+    }
+
+    let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
+        .unwrap_or_else(|| "off".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match mode.as_str() {
+        "browser" => {
+            let browser = setting_string(paths, WEB_VIDEO_COOKIE_BROWSER_SETTING)
+                .unwrap_or_else(|| "chrome".to_string());
+            let browser = browser.trim();
+            if !browser.is_empty() {
+                object.insert(
+                    "cookies_from_browser".to_string(),
+                    Value::String(browser.to_string()),
+                );
+            }
+        }
+        "file" => {
+            if let Some(path) = setting_string(paths, WEB_VIDEO_COOKIES_PATH_SETTING) {
+                let path = path.trim();
+                if !path.is_empty() {
+                    object.insert("cookies_path".to_string(), Value::String(path.to_string()));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn has_source_cookie_config(object: &Map<String, Value>) -> bool {
+    [
+        "cookies_from_browser",
+        "cookie_browser",
+        "ytdlp_cookies_from_browser",
+        "ytdlp_cookie_browser",
+        "cookies_path",
+        "cookies_file",
+        "ytdlp_cookies_path",
+        "ytdlp_cookies_file",
+    ]
+    .iter()
+    .any(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn setting_string(paths: &AppPaths, key: &str) -> Option<String> {
+    let conn = cerul_storage::sqlite::open(paths).ok()?;
+    let raw: String = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .ok()?;
+    match serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| Value::String(raw)) {
+        Value::String(value) => Some(value),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn read_exif_metadata(path: &Path) -> anyhow::Result<serde_json::Value> {
@@ -1960,6 +2036,34 @@ mod tests {
 
             assert_eq!(config["cache_dir"].as_str(), Some(expected.as_str()));
         }
+    }
+
+    #[test]
+    fn web_video_source_config_uses_browser_cookies_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES
+              ('web_video_cookie_mode', '"browser"', strftime('%s','now')),
+              ('web_video_cookie_browser', '"chrome:Default"', strftime('%s','now'))
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let config = source_config_with_app_cache(
+            &paths,
+            "web_video",
+            serde_json::json!({ "url": "https://www.youtube.com/watch?v=abc123" }),
+        );
+
+        assert_eq!(
+            config["cookies_from_browser"].as_str(),
+            Some("chrome:Default")
+        );
     }
 
     #[test]
