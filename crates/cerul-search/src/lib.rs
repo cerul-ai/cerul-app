@@ -673,8 +673,11 @@ async fn merge_unified_hits(
             existing.exact_match |= hit.exact_match;
             continue;
         }
-        if let Some(vector) = lexical_vectors.get(&hit.chunk_id) {
-            let score = vector_similarity(query_vector, vector, distance_metric);
+        if let Some(vectors) = lexical_vectors.get(&hit.chunk_id) {
+            let score = vectors
+                .iter()
+                .map(|vector| vector_similarity(query_vector, vector, distance_metric))
+                .fold(0.0, f32::max);
             hit.score = score;
             hit.similarity_score = Some(score);
         } else if hit.exact_match {
@@ -2240,14 +2243,23 @@ mod tests {
             &profile,
             cerul_storage::SEARCH_INDEX_VERSION,
         );
-        let records = [VectorRecord::new_for_dimensions_with_point_key(
-            format!("{unit_id}:image"),
-            unit_id.to_string(),
-            "item-1".to_string(),
-            fake_vector(44),
-            profile.output_dimension,
-        )
-        .unwrap()];
+        let records = [
+            VectorRecord::new_for_dimensions(
+                unit_id.to_string(),
+                "item-1".to_string(),
+                fake_vector(10),
+                profile.output_dimension,
+            )
+            .unwrap(),
+            VectorRecord::new_for_dimensions_with_point_key(
+                format!("{unit_id}:image"),
+                unit_id.to_string(),
+                "item-1".to_string(),
+                fake_vector(44),
+                profile.output_dimension,
+            )
+            .unwrap(),
+        ];
         cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
             &paths,
             "item-1",
@@ -2257,6 +2269,14 @@ mod tests {
         )
         .await
         .unwrap();
+        let vectors = cerul_storage::vectors::retrieve_collection_vectors(
+            &paths,
+            &collection,
+            &[unit_id.to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(vectors.get(unit_id).map(Vec::len), Some(2));
 
         let hits = merge_unified_hits(
             &paths,

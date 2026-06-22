@@ -349,7 +349,7 @@ pub async fn retrieve_collection_vectors(
     paths: &AppPaths,
     collection: &str,
     chunk_ids: &[String],
-) -> anyhow::Result<HashMap<String, Vec<f32>>> {
+) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
     ensure_qdrant_ready(paths).await?;
     if chunk_ids.is_empty() || !collection_exists(paths, collection).await? {
         return Ok(HashMap::new());
@@ -392,7 +392,10 @@ pub async fn retrieve_collection_vectors(
         let Some(vector) = point.vector.and_then(parse_qdrant_vector) else {
             continue;
         };
-        vectors.insert(chunk_id, vector);
+        vectors
+            .entry(chunk_id)
+            .or_insert_with(Vec::new)
+            .push(vector);
     }
     Ok(vectors)
 }

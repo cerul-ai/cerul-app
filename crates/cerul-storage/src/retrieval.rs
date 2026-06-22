@@ -36,7 +36,12 @@ pub struct StorageRetrievalUnit {
 
 impl StorageRetrievalUnit {
     pub fn uses_image_embedding(&self) -> bool {
-        self.unit_kind == "image" && self.representative_frame_path.is_some()
+        self.representative_frame_path.is_some()
+            && (self.unit_kind == "image"
+                || (self.transcript_text.is_none()
+                    && self.ocr_text.is_none()
+                    && self.visual_text.is_none()
+                    && self.summary_text.is_none()))
     }
 
     pub fn has_image_embedding_source(&self) -> bool {
@@ -384,6 +389,37 @@ fn build_timed_units(
         });
     }
 
+    let mut next_index = units.len();
+    for chunk in frame_chunks {
+        let covered_by_timed_unit = units
+            .iter()
+            .filter(|unit| {
+                unit.transcript_text.is_some()
+                    || unit.ocr_text.is_some()
+                    || unit.visual_text.is_some()
+                    || unit.summary_text.is_some()
+            })
+            .any(|unit| {
+                overlaps(
+                    chunk_effective_start(chunk, &frame_times),
+                    chunk_effective_end(chunk, &frame_times),
+                    unit.start_sec,
+                    unit.end_sec,
+                )
+            });
+        if covered_by_timed_unit {
+            continue;
+        }
+        units.push(image_unit(
+            item,
+            source_label.as_deref(),
+            chunk,
+            next_index,
+            embedding_profile_id,
+        ));
+        next_index += 1;
+    }
+
     units
 }
 
@@ -398,37 +434,53 @@ fn build_image_units(
         .filter(|chunk| matches!(chunk.chunk_type.as_str(), "image" | "keyframe"))
         .enumerate()
         .map(|(index, chunk)| {
-            let summary_text = exif_summary(&chunk.metadata);
-            let content_text = content_text(
+            image_unit(
                 item,
                 source_label.as_deref(),
-                chunk.start_sec,
-                chunk.end_sec,
-                None,
-                None,
-                None,
-                summary_text.as_deref(),
-            );
-            StorageRetrievalUnit {
-                id: retrieval_unit_id(&item.id, index),
-                item_id: item.id.clone(),
-                unit_index: index as i64,
-                unit_kind: "image".to_string(),
-                start_sec: chunk.start_sec,
-                end_sec: chunk.end_sec,
-                content_text,
-                transcript_text: None,
-                ocr_text: None,
-                visual_text: None,
-                summary_text,
-                representative_chunk_id: Some(chunk.id.clone()),
-                representative_frame_path: chunk.frame_path.clone(),
-                embedding_profile_id: embedding_profile_id.to_string(),
-                index_version: SEARCH_INDEX_VERSION,
-                metadata: serde_json::json!({ "window": "image" }),
-            }
+                chunk,
+                index,
+                embedding_profile_id,
+            )
         })
         .collect()
+}
+
+fn image_unit(
+    item: &ItemInfo,
+    source_label: Option<&str>,
+    chunk: &ChunkInfo,
+    index: usize,
+    embedding_profile_id: &str,
+) -> StorageRetrievalUnit {
+    let summary_text = exif_summary(&chunk.metadata);
+    let content_text = content_text(
+        item,
+        source_label,
+        chunk.start_sec,
+        chunk.end_sec,
+        None,
+        None,
+        None,
+        summary_text.as_deref(),
+    );
+    StorageRetrievalUnit {
+        id: retrieval_unit_id(&item.id, index),
+        item_id: item.id.clone(),
+        unit_index: index as i64,
+        unit_kind: "image".to_string(),
+        start_sec: chunk.start_sec,
+        end_sec: chunk.end_sec,
+        content_text,
+        transcript_text: None,
+        ocr_text: None,
+        visual_text: None,
+        summary_text,
+        representative_chunk_id: Some(chunk.id.clone()),
+        representative_frame_path: chunk.frame_path.clone(),
+        embedding_profile_id: embedding_profile_id.to_string(),
+        index_version: SEARCH_INDEX_VERSION,
+        metadata: serde_json::json!({ "window": "image" }),
+    }
 }
 
 fn windows_for_item(
@@ -1225,6 +1277,42 @@ mod tests {
             units[0].representative_chunk_id.as_deref(),
             Some("item-1:understanding:event:0000")
         );
+    }
+
+    #[test]
+    fn build_units_preserves_frame_only_windows_in_mixed_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let silent_frame = temp.path().join("silent-frame.jpg");
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 0.0,
+                end: 10.0,
+                text: "spoken introduction".to_string(),
+            }],
+            &[],
+            &[],
+            &[StorageImageChunk::keyframe_at(
+                silent_frame.clone(),
+                100.0,
+                105.0,
+            )],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert!(units.iter().any(|unit| unit.transcript_text.is_some()));
+        assert!(units.iter().any(|unit| {
+            unit.transcript_text.is_none()
+                && unit.ocr_text.is_none()
+                && unit.visual_text.is_none()
+                && unit.representative_frame_path.as_deref()
+                    == Some(silent_frame.to_string_lossy().as_ref())
+        }));
     }
 
     #[test]

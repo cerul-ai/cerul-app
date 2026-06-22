@@ -591,12 +591,7 @@ fn write_status_record(
         "#,
         (item_id, provider_id, model_id, status, error),
     )?;
-    if status == STATUS_RUNNING {
-        replace_understanding_chunks(paths, item_id, &json!({}), None)?;
-        crate::refresh_item_retrieval_units_after_understanding_update(
-            paths, item_id, true, false, false,
-        )?;
-    } else if status == STATUS_FAILED {
+    if status == STATUS_FAILED {
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
         crate::refresh_item_retrieval_units_after_understanding_update(
             paths, item_id, false, false, true,
@@ -1360,7 +1355,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(item_index_state, ("pending".to_string(), 1, 3));
+        assert_eq!(item_index_state, ("indexed".to_string(), 1, 3));
         let remaining_understanding_chunks: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
@@ -1368,7 +1363,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(remaining_understanding_chunks, 0);
+        assert_eq!(remaining_understanding_chunks, 1);
         let queued_jobs: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
