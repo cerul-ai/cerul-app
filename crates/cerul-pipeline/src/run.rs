@@ -842,12 +842,19 @@ impl VideoPipeline {
                     );
                 }
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                let searchable_units =
+                    cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
+                let (search_status, search_error) = if searchable_units > 0 {
+                    ("indexed", None)
+                } else {
+                    ("failed", Some(message.as_str()))
+                };
                 cerul_storage::set_item_search_index_status(
                     &self.paths,
                     item_id,
-                    "failed",
-                    Some(&message),
-                    0,
+                    search_status,
+                    search_error,
+                    searchable_units,
                     0,
                 )?;
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
@@ -2326,11 +2333,29 @@ mod tests {
         assert_eq!(summary.image_chunks, 1);
         assert_eq!(summary.image_vectors, 0);
         let conn = sqlite::open(&paths).unwrap();
-        let (status, metadata): (String, String) = conn
+        let (status, metadata, search_index_status, search_index_unit_count, search_index_vector_count): (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+        ) = conn
             .query_row(
-                "SELECT status, metadata FROM items WHERE id = 'image-1'",
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'image-1'
+                "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .unwrap();
         let image_chunks: i64 = conn
@@ -2344,6 +2369,9 @@ mod tests {
 
         assert_eq!(status, "indexed");
         assert_eq!(image_chunks, 1);
+        assert_eq!(search_index_status, "indexed");
+        assert_eq!(search_index_unit_count, 1);
+        assert_eq!(search_index_vector_count, 0);
         assert_eq!(metadata["embedding_index_status"], "failed");
         assert!(metadata["embedding_index_error"]
             .as_str()
@@ -2363,6 +2391,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(failed_image_usage, 1);
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "photo".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.item_id.as_str()),
+            Some("image-1")
+        );
     }
 
     #[tokio::test]
@@ -2431,11 +2473,29 @@ mod tests {
         assert_eq!(summary.image_vectors, 0);
 
         let conn = sqlite::open(&paths).unwrap();
-        let (status, metadata): (String, String) = conn
+        let (status, metadata, search_index_status, search_index_unit_count, search_index_vector_count): (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+        ) = conn
             .query_row(
-                "SELECT status, metadata FROM items WHERE id = 'image-1'",
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'image-1'
+                "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .unwrap();
         let image_chunks: i64 = conn
@@ -2449,11 +2509,28 @@ mod tests {
 
         assert_eq!(status, "indexed");
         assert_eq!(image_chunks, 1);
+        assert_eq!(search_index_status, "indexed");
+        assert_eq!(search_index_unit_count, 1);
+        assert_eq!(search_index_vector_count, 0);
         assert_eq!(metadata["embedding_index_status"], "failed");
         assert!(metadata["embedding_index_error"]
             .as_str()
             .unwrap()
             .contains("expected"));
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "photo".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.item_id.as_str()),
+            Some("image-1")
+        );
     }
 
     #[tokio::test]

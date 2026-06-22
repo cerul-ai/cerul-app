@@ -897,6 +897,22 @@ pub fn retrieval_unit_count(paths: &AppPaths) -> anyhow::Result<usize> {
     )
 }
 
+pub fn item_retrieval_unit_count(paths: &AppPaths, item_id: &str) -> anyhow::Result<usize> {
+    let conn = sqlite::open(paths)?;
+    conn.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM retrieval_units
+        WHERE item_id = ?1
+          AND index_version = ?2
+        "#,
+        params![item_id, SEARCH_INDEX_VERSION],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value.max(0) as usize)
+    .map_err(Into::into)
+}
+
 pub fn indexed_item_count(paths: &AppPaths) -> anyhow::Result<usize> {
     let conn = sqlite::open(paths)?;
     count_query(

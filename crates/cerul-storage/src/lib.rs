@@ -24,9 +24,9 @@ pub use items::{
 pub use paths::AppPaths;
 pub use retrieval::{
     best_sub_unit_for_query, best_visual_sub_unit_for_query, clear_item_search_index,
-    indexed_item_count, item_has_retrieval_units, items_needing_rebuild_count,
-    rebuild_item_retrieval_units, replace_item_retrieval_units, retrieval_unit_count,
-    set_item_search_index_status, StorageRetrievalUnit, SEARCH_INDEX_VERSION,
+    indexed_item_count, item_has_retrieval_units, item_retrieval_unit_count,
+    items_needing_rebuild_count, rebuild_item_retrieval_units, replace_item_retrieval_units,
+    retrieval_unit_count, set_item_search_index_status, StorageRetrievalUnit, SEARCH_INDEX_VERSION,
 };
 pub use usage::{
     list_usage_events, record_usage_event, usage_summary, usage_totals_by_item,
