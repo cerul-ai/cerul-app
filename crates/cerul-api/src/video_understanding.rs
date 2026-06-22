@@ -560,6 +560,9 @@ fn write_completed_record(
         ),
     )?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
+    crate::refresh_item_retrieval_units_after_understanding_update(
+        paths, item_id, false, true, true,
+    )?;
     read_understanding_record(paths, item_id)
 }
 
@@ -588,8 +591,11 @@ fn write_status_record(
         "#,
         (item_id, provider_id, model_id, status, error),
     )?;
-    if status == STATUS_RUNNING || status == STATUS_FAILED {
+    if status == STATUS_FAILED {
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
+        crate::refresh_item_retrieval_units_after_understanding_update(
+            paths, item_id, false, false, true,
+        )?;
     }
     read_understanding_record(paths, item_id)
 }
@@ -1172,5 +1178,199 @@ mod tests {
         assert_eq!(record.item_id, "item-1");
         assert_eq!(record.status, STATUS_NOT_STARTED);
         assert!(record.chapters.is_empty());
+    }
+
+    #[test]
+    fn write_completed_record_refreshes_retrieval_units_and_queues_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, source_id, content_type, title, status, metadata) VALUES ('item-1', 'source-1', 'video', 'Demo video', 'indexed', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, item_id, job_type, status, progress) VALUES ('job-running', 'item-1', 'index_video', 'running', 0.5)",
+            [],
+        )
+        .unwrap();
+
+        let record = write_completed_record(
+            &paths,
+            "item-1",
+            "provider-1",
+            "model-1",
+            json!({
+                "summary": "A checkout flow highlights code XR-42.",
+                "chapters": [],
+                "events": [{
+                    "start_sec": 4.0,
+                    "end_sec": 8.0,
+                    "caption": "The checkout screen appears.",
+                    "visual": "Visible code XR-42 is shown.",
+                    "audio": "",
+                    "actions": [],
+                    "entities": ["XR-42"],
+                    "confidence": 0.9
+                }],
+                "topics": ["checkout"],
+                "searchable_text": "checkout visible code XR-42"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(record.status, STATUS_COMPLETED);
+        let retrieval_text: String = conn
+            .query_row(
+                "SELECT content_text FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(retrieval_text.contains("XR-42"));
+        let item_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(item_index_state, ("pending".to_string(), 2, 0));
+        let (running_jobs, queued_jobs): (i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT
+                  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END)
+                FROM jobs
+                WHERE item_id = 'item-1'
+                  AND job_type = 'index_video'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(running_jobs, 1);
+        assert_eq!(queued_jobs, 1);
+
+        write_status_record(
+            &paths,
+            "item-1",
+            Some("provider-1"),
+            Some("model-1"),
+            STATUS_FAILED,
+            Some("analysis failed"),
+        )
+        .unwrap();
+
+        let remaining_understanding_chunks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let remaining_retrieval_units: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_understanding_chunks, 0);
+        assert_eq!(remaining_retrieval_units, 0);
+    }
+
+    #[test]
+    fn write_running_record_preserves_existing_search_vectors() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (
+                id, source_id, content_type, title, status, metadata,
+                search_index_version, search_index_status, search_index_unit_count, search_index_vector_count
+            )
+            VALUES ('item-1', 'source-1', 'video', 'Demo video', 'indexed', '{}', ?1, 'indexed', 1, 3)
+            "#,
+            [cerul_storage::SEARCH_INDEX_VERSION],
+        )
+        .unwrap();
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "existing transcript remains searchable".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES ('item-1:understanding:event:0000', 'item-1', 'understanding', 1, 2, 'old visual summary', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+
+        write_status_record(
+            &paths,
+            "item-1",
+            Some("provider-1"),
+            Some("model-1"),
+            STATUS_RUNNING,
+            None,
+        )
+        .unwrap();
+
+        let item_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(item_index_state, ("indexed".to_string(), 1, 3));
+        let remaining_understanding_chunks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_understanding_chunks, 1);
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 0);
     }
 }

@@ -737,8 +737,8 @@ async fn search_records(
                         retrieval_mode = %response.diagnostics.retrieval_mode,
                         vector_hits_count = response.diagnostics.vector_hits_count,
                         fts_hits_count = response.diagnostics.fts_hits_count,
-                        qdrant_text_points = ?response.diagnostics.qdrant_text_points,
-                        qdrant_image_points = ?response.diagnostics.qdrant_image_points,
+                        qdrant_collection = ?response.diagnostics.qdrant_collection,
+                        qdrant_point_count = ?response.diagnostics.qdrant_point_count,
                         search_ms = search_started.elapsed().as_millis(),
                         "API search completed"
                     );
@@ -795,13 +795,20 @@ async fn search_fts_fallback(
 struct SearchHealthDiagnostics {
     item_count: usize,
     indexed_item_count: usize,
+    search_index_version: i32,
+    retrieval_unit_count: usize,
+    unified_indexed_item_count: usize,
+    items_needing_rebuild: usize,
     chunk_count: usize,
     searchable_text_chunk_count: usize,
     image_chunk_count: usize,
     fts_row_count: usize,
+    retrieval_unit_fts_row_count: usize,
     orphan_job_count: usize,
     missing_raw_path_count: usize,
     embedding_profile_id: Option<String>,
+    qdrant_collection: Option<String>,
+    qdrant_point_count: Option<usize>,
     qdrant_text_collection: Option<String>,
     qdrant_image_collection: Option<String>,
     qdrant_text_points: Option<usize>,
@@ -821,24 +828,25 @@ async fn search_diagnostics(
 
 #[derive(Debug, Serialize)]
 struct SearchRebuildResponse {
-    fts_rebuilt: bool,
+    rebuild_queued_items: usize,
+    queued_jobs: usize,
     diagnostics: SearchHealthDiagnostics,
 }
 
 async fn rebuild_search_index(
     State(state): State<ApiState>,
 ) -> ApiResult<Json<SearchRebuildResponse>> {
-    let conn = cerul_storage::sqlite::open(&state.paths)?;
-    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')", [])?;
-    drop(conn);
+    let (rebuild_queued_items, queued_jobs) = queue_items_for_embedding_mode_rebuild(&state.paths)?;
     Ok(Json(SearchRebuildResponse {
-        fts_rebuilt: true,
+        rebuild_queued_items,
+        queued_jobs,
         diagnostics: search_health_diagnostics(&state.paths).await?,
     }))
 }
 
 async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHealthDiagnostics> {
     let conn = cerul_storage::sqlite::open(paths)?;
+    let search_index_version = cerul_storage::SEARCH_INDEX_VERSION;
     let item_count = count_query(&conn, "SELECT COUNT(*) FROM items")?;
     let indexed_item_count =
         count_query(&conn, "SELECT COUNT(*) FROM items WHERE status = 'indexed'")?;
@@ -852,6 +860,36 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         "SELECT COUNT(*) FROM chunks WHERE frame_path IS NOT NULL AND TRIM(frame_path) <> ''",
     )?;
     let fts_row_count = count_query(&conn, "SELECT COUNT(*) FROM chunks_fts")?;
+    let retrieval_unit_count = count_query(
+        &conn,
+        &format!(
+            "SELECT COUNT(*) FROM retrieval_units WHERE index_version = {search_index_version}"
+        ),
+    )?;
+    let retrieval_unit_fts_row_count =
+        count_query(&conn, "SELECT COUNT(*) FROM retrieval_units_fts")?;
+    let unified_indexed_item_count = count_query(
+        &conn,
+        &format!(
+            "SELECT COUNT(*) FROM items WHERE search_index_version = {search_index_version} AND search_index_status = 'indexed'"
+        ),
+    )?;
+    let items_needing_rebuild = count_query(
+        &conn,
+        &format!(
+            r#"
+        SELECT COUNT(*)
+        FROM items
+        WHERE status = 'indexed'
+          AND (
+            search_index_version IS NULL
+            OR search_index_version != {search_index_version}
+            OR search_index_status IS NULL
+            OR search_index_status != 'indexed'
+          )
+        "#
+        ),
+    )?;
     let orphan_job_count = count_query(
         &conn,
         "SELECT COUNT(*) FROM jobs AS j LEFT JOIN items AS i ON i.id = j.item_id WHERE i.id IS NULL",
@@ -862,13 +900,20 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
     let mut diagnostics = SearchHealthDiagnostics {
         item_count,
         indexed_item_count,
+        search_index_version: cerul_storage::SEARCH_INDEX_VERSION,
+        retrieval_unit_count,
+        unified_indexed_item_count,
+        items_needing_rebuild,
         chunk_count,
         searchable_text_chunk_count,
         image_chunk_count,
         fts_row_count,
+        retrieval_unit_fts_row_count,
         orphan_job_count,
         missing_raw_path_count,
         embedding_profile_id: None,
+        qdrant_collection: None,
+        qdrant_point_count: None,
         qdrant_text_collection: None,
         qdrant_image_collection: None,
         qdrant_text_points: None,
@@ -888,38 +933,30 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
             return Ok(diagnostics);
         }
     };
-    let collections = cerul_storage::vectors::collection_names(paths, &profile);
+    let collection = cerul_storage::vectors::unified_collection_name(
+        paths,
+        &profile,
+        cerul_storage::SEARCH_INDEX_VERSION,
+    );
     diagnostics.embedding_profile_id = Some(profile.id);
-    diagnostics.qdrant_text_collection = Some(collections.text.clone());
-    diagnostics.qdrant_image_collection = Some(collections.image.clone());
+    diagnostics.qdrant_collection = Some(collection.clone());
 
-    let text_points =
-        cerul_storage::vectors::collection_point_count(paths, &collections.text).await;
-    let image_points =
-        cerul_storage::vectors::collection_point_count(paths, &collections.image).await;
-    match text_points {
+    let unified_points = cerul_storage::vectors::collection_point_count(paths, &collection).await;
+    match unified_points {
         Ok(count) => {
+            diagnostics.qdrant_point_count = Some(count);
             diagnostics.qdrant_text_points = Some(count);
             diagnostics.embedded_text_chunk_count = Some(count);
-            diagnostics.text_embedding_gap_count =
-                Some(searchable_text_chunk_count.saturating_sub(count));
+            diagnostics.text_embedding_gap_count = Some(retrieval_unit_count.saturating_sub(count));
         }
         Err(error) => {
-            tracing::warn!(%error, collection = %collections.text, "failed to count Qdrant text points for search diagnostics");
+            tracing::warn!(%error, collection, "failed to count Qdrant unified points for search diagnostics");
             diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
         }
     }
-    match image_points {
-        Ok(count) => {
-            diagnostics.qdrant_image_points = Some(count);
-            diagnostics.embedded_image_chunk_count = Some(count);
-            diagnostics.image_embedding_gap_count = Some(image_chunk_count.saturating_sub(count));
-        }
-        Err(error) => {
-            tracing::warn!(%error, collection = %collections.image, "failed to count Qdrant image points for search diagnostics");
-            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
-        }
-    }
+    diagnostics.qdrant_image_points = Some(0);
+    diagnostics.embedded_image_chunk_count = Some(0);
+    diagnostics.image_embedding_gap_count = Some(0);
 
     Ok(diagnostics)
 }
@@ -1739,8 +1776,7 @@ async fn retry_failed_source_items(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let mut conn = cerul_storage::sqlite::open(&state.paths)?;
-    let tx = conn.transaction()?;
-    let source_exists: Option<String> = tx
+    let source_exists: Option<String> = conn
         .query_row(
             "SELECT id FROM sources WHERE id = ?1",
             [id.as_str()],
@@ -1751,7 +1787,7 @@ async fn retry_failed_source_items(
         return Err(ApiError::not_found(format!("source not found: {id}")));
     }
     let failed_items = {
-        let mut stmt = tx.prepare(
+        let mut stmt = conn.prepare(
             r#"
             SELECT id, content_type
             FROM items
@@ -1766,6 +1802,11 @@ async fn retry_failed_source_items(
         rows.collect::<Result<Vec<_>, _>>()?
     };
 
+    for (item_id, _) in &failed_items {
+        delete_item_embeddings_best_effort_async(&state.paths, item_id).await;
+    }
+
+    let tx = conn.transaction()?;
     let mut queued_jobs = 0usize;
     for (item_id, content_type) in &failed_items {
         let content_type = parse_content_type(content_type)?;
@@ -1785,6 +1826,11 @@ async fn retry_failed_source_items(
             "DELETE FROM item_understandings WHERE item_id = ?1",
             [item_id.as_str()],
         )?;
+        tx.execute(
+            "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
+            [item_id.as_str()],
+        )?;
+        clear_item_unified_search_index_with_tx(&tx, item_id)?;
         if enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)? {
             queued_jobs += 1;
         }
@@ -2296,6 +2342,11 @@ async fn reindex_item(
         "DELETE FROM item_understandings WHERE item_id = ?1",
         [id.as_str()],
     )?;
+    tx.execute(
+        "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
+        [id.as_str()],
+    )?;
+    clear_item_unified_search_index_with_tx(&tx, &id)?;
     let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type, true)?;
     tx.commit()?;
 
@@ -3544,6 +3595,146 @@ fn enqueue_embedding_rebuild_job(
     Ok(true)
 }
 
+fn clear_item_unified_search_index_with_tx(
+    tx: &Transaction<'_>,
+    item_id: &str,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "DELETE FROM retrieval_units WHERE item_id = ?1 AND index_version = ?2",
+        (item_id, cerul_storage::SEARCH_INDEX_VERSION),
+    )?;
+    tx.execute(
+        r#"
+        UPDATE items
+        SET search_index_version = ?2,
+            search_index_status = 'pending',
+            search_index_error = NULL,
+            search_index_unit_count = 0,
+            search_index_vector_count = 0
+        WHERE id = ?1
+        "#,
+        (item_id, cerul_storage::SEARCH_INDEX_VERSION),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
+    paths: &AppPaths,
+    item_id: &str,
+    dedupe_running: bool,
+    delete_embeddings: bool,
+    queue_rebuild: bool,
+) -> anyhow::Result<bool> {
+    if delete_embeddings {
+        delete_item_embeddings_best_effort(paths, item_id);
+    }
+    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
+    let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, &profile.id)?;
+
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+    let queued_job = if queue_rebuild {
+        let content_type: String = tx.query_row(
+            "SELECT content_type FROM items WHERE id = ?1",
+            [item_id],
+            |row| row.get(0),
+        )?;
+        let content_type = parse_content_type(&content_type)?;
+        let vector_count = if delete_embeddings {
+            0
+        } else {
+            tx.query_row(
+                "SELECT COALESCE(search_index_vector_count, 0) FROM items WHERE id = ?1",
+                [item_id],
+                |row| row.get::<_, i64>(0),
+            )?
+            .max(0)
+        };
+        tx.execute(
+            r#"
+            UPDATE items
+            SET search_index_version = ?2,
+                search_index_status = 'pending',
+                search_index_error = NULL,
+                search_index_unit_count = ?3,
+                search_index_vector_count = ?4
+            WHERE id = ?1
+            "#,
+            (
+                item_id,
+                cerul_storage::SEARCH_INDEX_VERSION,
+                units.len() as i64,
+                vector_count,
+            ),
+        )?;
+        enqueue_embedding_rebuild_job(&tx, item_id, content_type, dedupe_running)?
+    } else {
+        let vector_count = tx
+            .query_row(
+                "SELECT COALESCE(search_index_vector_count, 0) FROM items WHERE id = ?1",
+                [item_id],
+                |row| row.get::<_, i64>(0),
+            )?
+            .max(0);
+        tx.execute(
+            r#"
+            UPDATE items
+            SET search_index_version = ?2,
+                search_index_status = 'pending',
+                search_index_error = NULL,
+                search_index_unit_count = ?3,
+                search_index_vector_count = ?4
+            WHERE id = ?1
+            "#,
+            (
+                item_id,
+                cerul_storage::SEARCH_INDEX_VERSION,
+                units.len() as i64,
+                vector_count,
+            ),
+        )?;
+        false
+    };
+    tx.commit()?;
+    Ok(queued_job)
+}
+
+fn delete_item_embeddings_best_effort(paths: &AppPaths, item_id: &str) {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => {
+            if let Err(error) = runtime.block_on(cerul_storage::vectors::delete_item_embeddings(
+                paths, item_id,
+            )) {
+                tracing::warn!(
+                    item_id,
+                    %error,
+                    "failed to delete stale item vectors before retrieval refresh"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                item_id,
+                %error,
+                "failed to create runtime for stale vector cleanup"
+            );
+        }
+    }
+}
+
+async fn delete_item_embeddings_best_effort_async(paths: &AppPaths, item_id: &str) {
+    if let Err(error) = cerul_storage::vectors::delete_item_embeddings(paths, item_id).await {
+        tracing::warn!(
+            item_id,
+            %error,
+            "failed to delete stale item vectors before retrieval refresh"
+        );
+    }
+}
+
 fn set_source_status(paths: &AppPaths, id: &str, status: &str) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
     let updated = conn.execute("UPDATE sources SET status = ?1 WHERE id = ?2", (status, id))?;
@@ -3604,6 +3795,7 @@ fn upsert_discovered_item(
                 "DELETE FROM chunks WHERE item_id = ?1",
                 [existing.id.as_str()],
             )?;
+            clear_item_unified_search_index_with_tx(tx, &existing.id)?;
         }
         tx.execute(
             r#"
@@ -4417,7 +4609,7 @@ const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
 ];
 const DEFERRED_EMBEDDING_REBUILD_MODE_SETTING: &str = "embedding_profile_rebuild_deferred_mode";
 const INDEXING_SCHEMA_VERSION_SETTING: &str = "indexing_schema_version";
-const INDEXING_SCHEMA_VERSION: i32 = 3;
+const INDEXING_SCHEMA_VERSION: i32 = 4;
 const INTERNAL_SETTING_KEYS: &[&str] = &[
     DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
     INDEXING_SCHEMA_VERSION_SETTING,
@@ -4522,7 +4714,41 @@ mod tests {
                 [],
             )
             .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, text, metadata)
+                VALUES ('item-1:understanding:summary', 'item-1', 'understanding', 'old understanding text', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
         }
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        cerul_storage::replace_item_retrieval_units(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageRetrievalUnit {
+                id: "item-1:unit:v2:000000".to_string(),
+                item_id: "item-1".to_string(),
+                unit_index: 0,
+                unit_kind: "summary".to_string(),
+                start_sec: None,
+                end_sec: None,
+                content_text: "old understanding text".to_string(),
+                transcript_text: None,
+                ocr_text: None,
+                visual_text: None,
+                summary_text: Some("old understanding text".to_string()),
+                representative_chunk_id: Some("item-1:understanding:summary".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id,
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        )
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 1)
+            .unwrap();
 
         let app = router_with_paths(paths.clone());
         let response = app
@@ -4560,6 +4786,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(understanding_count, 0);
+        let understanding_chunk_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(understanding_chunk_count, 0);
+        let retrieval_unit_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let search_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(retrieval_unit_count, 0);
+        assert_eq!(search_index_state, ("pending".to_string(), 0, 0));
 
         let queued_jobs: i64 = conn
             .query_row(
@@ -5622,12 +5876,40 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
-                VALUES ('chunk-1', 'item-1', 'transcript', 0, 5, 'hello', '{}')
+                VALUES
+                    ('chunk-1', 'item-1', 'transcript', 0, 5, 'hello', '{}'),
+                    ('item-1:understanding:summary', 'item-1', 'understanding', NULL, NULL, 'old understanding text', '{}')
                 "#,
                 [],
             )
             .unwrap();
         }
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        cerul_storage::replace_item_retrieval_units(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageRetrievalUnit {
+                id: "item-1:unit:v2:000000".to_string(),
+                item_id: "item-1".to_string(),
+                unit_index: 0,
+                unit_kind: "summary".to_string(),
+                start_sec: None,
+                end_sec: None,
+                content_text: "old understanding text".to_string(),
+                transcript_text: None,
+                ocr_text: None,
+                visual_text: None,
+                summary_text: Some("old understanding text".to_string()),
+                representative_chunk_id: Some("item-1:understanding:summary".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id,
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        )
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 1)
+            .unwrap();
         seed_indexing_schema_version(&paths);
         let app = router_with_paths(paths.clone());
 
@@ -5666,6 +5948,34 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(jobs, 1);
+            let understanding_chunks: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let retrieval_units: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let search_index_state: (String, i64, i64) = conn
+                .query_row(
+                    r#"
+                    SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                    FROM items
+                    WHERE id = 'item-1'
+                    "#,
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(understanding_chunks, 0);
+            assert_eq!(retrieval_units, 0);
+            assert_eq!(search_index_state, ("pending".to_string(), 0, 0));
         }
 
         let delete = app
@@ -5988,6 +6298,32 @@ mod tests {
             )
             .unwrap();
         }
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        cerul_storage::replace_item_retrieval_units(
+            &paths,
+            "item-existing",
+            &[cerul_storage::StorageRetrievalUnit {
+                id: "item-existing:unit:v2:000000".to_string(),
+                item_id: "item-existing".to_string(),
+                unit_index: 0,
+                unit_kind: "moment".to_string(),
+                start_sec: Some(0.0),
+                end_sec: Some(5.0),
+                content_text: "Transcript: old searchable text".to_string(),
+                transcript_text: Some("old searchable text".to_string()),
+                ocr_text: None,
+                visual_text: None,
+                summary_text: None,
+                representative_chunk_id: Some("chunk-old".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id,
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        )
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-existing", "indexed", None, 1, 1)
+            .unwrap();
 
         let mut conn = cerul_storage::sqlite::open(&paths).unwrap();
         let tx = conn.transaction().unwrap();
@@ -6028,6 +6364,29 @@ mod tests {
             ("new-signature".to_string(), "discovered".to_string(), None)
         );
         assert_eq!(chunks, 0, "old chunks should not remain searchable");
+        let retrieval_units: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let search_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-existing'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            retrieval_units, 0,
+            "old retrieval units should not remain searchable"
+        );
+        assert_eq!(search_index_state, ("pending".to_string(), 0, 0));
         assert!(
             queued,
             "changed raw_path signature should queue a fresh index job"

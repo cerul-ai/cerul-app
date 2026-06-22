@@ -3118,6 +3118,8 @@ function searchDiagnosticsSummary(diagnostics: api.SearchDiagnostics, t: TFuncti
 
 function searchRetrievalModeLabel(mode: string, t: TFunction) {
   switch (mode) {
+    case "unified_vector":
+      return t("results.diagnostics.mode.unifiedVector");
     case "hybrid":
       return t("results.diagnostics.mode.hybrid");
     case "vector":
@@ -3145,9 +3147,13 @@ function searchFallbackReasonLabel(reason: string, t: TFunction) {
     case "vector_search_failed":
       return t("results.diagnostics.reason.vectorSearchFailed");
     case "vector_index_empty":
+    case "unified_vector_index_empty":
       return t("results.diagnostics.reason.vectorIndexEmpty");
     case "no_vector_hits":
+    case "no_unified_vector_hits":
       return t("results.diagnostics.reason.noVectorHits");
+    case "search_index_rebuilding_legacy_fts":
+      return t("results.diagnostics.reason.searchIndexRebuildingLegacyFts");
     case "qdrant_health_check_failed":
       return t("results.diagnostics.reason.qdrantHealthCheckFailed");
     default:
@@ -3158,10 +3164,11 @@ function searchFallbackReasonLabel(reason: string, t: TFunction) {
 function searchDiagnosticsTitle(diagnostics: api.SearchDiagnostics) {
   return [
     `profile=${diagnostics.embedding_profile_id ?? "-"}`,
-    `text_collection=${diagnostics.qdrant_text_collection ?? "-"}`,
-    `image_collection=${diagnostics.qdrant_image_collection ?? "-"}`,
-    `text_points=${diagnostics.qdrant_text_points ?? "-"}`,
-    `image_points=${diagnostics.qdrant_image_points ?? "-"}`,
+    `collection=${diagnostics.qdrant_collection ?? "-"}`,
+    `points=${diagnostics.qdrant_point_count ?? "-"}`,
+    `units=${diagnostics.retrieval_unit_count ?? "-"}`,
+    `indexed_items=${diagnostics.indexed_item_count ?? "-"}`,
+    `needs_rebuild=${diagnostics.items_needing_rebuild ?? "-"}`,
   ].join(" ");
 }
 

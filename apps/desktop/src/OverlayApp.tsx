@@ -27,7 +27,7 @@ type SearchState = "idle" | "loading" | "ready" | "error";
 type OverlayMode = "search" | "ask";
 
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
-const searchDebounceMs = 180;
+const searchDebounceMs = 100;
 const overlayRetainQueryMs = 30_000;
 const defaultHotkeyLabel = "Alt Space";
 
@@ -798,10 +798,8 @@ function mapOverlayResult(
   const item = items.find((candidate) => candidate.id === record.item_id);
   const source = item ? sources.find((candidate) => candidate.id === item.source_id) : undefined;
 
-  // Visual chunks carry their own keyframe (`frame_path`) — show that exact
-  // frame. Transcript chunks have no frame of their own, so prefer the keyframe
-  // nearest the spoken moment (`nearest_frame_chunk_id`), then the item's poster
-  // keyframe, before giving up to a generic glyph.
+  // New search results provide a representative frame chunk id. Keep the direct
+  // frame_path branch for older local cores during development.
   const thumbnailUrl = record.frame_path
     ? api.chunkFrameUrl(record.chunk_id)
     : record.nearest_frame_chunk_id
