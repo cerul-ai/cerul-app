@@ -1051,28 +1051,69 @@ impl SnippetField {
     fn prefers_visual_playback(self) -> bool {
         matches!(self, Self::Ocr | Self::Visual)
     }
+
+    fn snippet_tiebreak_priority(self) -> usize {
+        match self {
+            Self::Ocr => 4,
+            Self::Visual => 3,
+            Self::Summary => 2,
+            Self::Transcript => 1,
+            Self::Content => 0,
+        }
+    }
 }
 
 fn best_snippet(unit: &HydratedUnit, query: &str) -> (String, Option<SnippetField>) {
-    let fields = [
+    let structured_fields = [
         (SnippetField::Transcript, unit.transcript_text.as_deref()),
         (SnippetField::Ocr, unit.ocr_text.as_deref()),
         (SnippetField::Visual, unit.visual_text.as_deref()),
         (SnippetField::Summary, unit.summary_text.as_deref()),
-        (SnippetField::Content, Some(unit.content_text.as_str())),
     ];
 
-    for (field, text) in fields.iter().copied() {
+    let pattern = literal_pattern_for_terms(query);
+    let terms = literal_terms_for_query(query);
+    let mut best_match = None::<(SnippetField, &str, usize)>;
+    for (field, text) in structured_fields.iter().copied() {
         let Some(text) = text else {
             continue;
         };
         let trimmed = text.trim();
-        if !trimmed.is_empty() && text_matches_query(trimmed, query) {
-            return (trimmed.chars().take(320).collect(), Some(field));
+        if trimmed.is_empty() {
+            continue;
+        }
+        let score = query_text_score(trimmed, pattern.as_deref(), &terms);
+        if score > 0
+            && best_match
+                .as_ref()
+                .is_none_or(|(best_field, _, best_score)| {
+                    score > *best_score
+                        || (score == *best_score
+                            && terms.len() > 1
+                            && field.snippet_tiebreak_priority()
+                                > best_field.snippet_tiebreak_priority())
+                })
+        {
+            best_match = Some((field, trimmed, score));
         }
     }
 
-    for (_, text) in fields.iter().copied() {
+    if let Some((field, text, _)) = best_match {
+        return (text.chars().take(320).collect(), Some(field));
+    }
+
+    let content = unit.content_text.trim();
+    if !content.is_empty() {
+        let score = query_text_score(content, pattern.as_deref(), &terms);
+        if score > 0 {
+            return (
+                content.chars().take(320).collect(),
+                Some(SnippetField::Content),
+            );
+        }
+    }
+
+    for (_, text) in structured_fields.iter().copied() {
         let Some(text) = text else {
             continue;
         };
@@ -1081,22 +1122,57 @@ fn best_snippet(unit: &HydratedUnit, query: &str) -> (String, Option<SnippetFiel
             return (trimmed.chars().take(320).collect(), None);
         }
     }
+    if !unit.content_text.trim().is_empty() {
+        return (unit.content_text.trim().chars().take(320).collect(), None);
+    }
     (fallback_snippet(&unit.unit_kind, unit.start_sec), None)
 }
 
-fn text_matches_query(text: &str, query: &str) -> bool {
-    let normalized_text = text.to_lowercase();
-    let normalized_query = query.trim().trim_matches('"').to_lowercase();
-    if normalized_query.is_empty() {
-        return false;
+fn literal_pattern_for_terms(query: &str) -> Option<String> {
+    let trimmed = query.trim().trim_matches('"').to_lowercase();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
     }
-    if normalized_text.contains(&normalized_query) {
-        return true;
-    }
-    normalized_query
+}
+
+fn literal_terms_for_query(query: &str) -> Vec<String> {
+    query
+        .trim()
+        .trim_matches('"')
+        .to_lowercase()
         .split_whitespace()
         .filter(|term| !term.is_empty())
-        .any(|term| normalized_text.contains(term))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn query_text_score(text: &str, pattern: Option<&str>, terms: &[String]) -> usize {
+    let normalized = text.to_lowercase();
+    let term_weight_sum = terms
+        .iter()
+        .map(|term| query_term_weight(term))
+        .sum::<usize>();
+    let exact_score = pattern
+        .filter(|pattern| normalized.contains(*pattern))
+        .map_or(0, |_| term_weight_sum.max(1) + 1);
+    let term_score = terms
+        .iter()
+        .filter(|term| normalized.contains(term.as_str()))
+        .map(|term| query_term_weight(term))
+        .sum();
+    exact_score.max(term_score)
+}
+
+fn query_term_weight(term: &str) -> usize {
+    if term.chars().any(|ch| ch.is_ascii_digit()) {
+        4
+    } else if term.chars().any(|ch| !ch.is_alphanumeric()) {
+        3
+    } else {
+        1
+    }
 }
 
 fn chunk_type_for_id(
@@ -1689,6 +1765,79 @@ mod tests {
         assert_eq!(results[0].snippet, "checkout display shows XR-42");
         assert_eq!(results[0].chunk_id, "item-1:ocr:000000");
         assert_eq!(results[0].chunk_type, "ocr");
+    }
+
+    #[test]
+    fn hydrate_prefers_visual_partial_match_and_uses_ocr_frame_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let frame_path = temp
+            .path()
+            .join("frame_000034.jpg")
+            .to_string_lossy()
+            .into_owned();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES ('item-1:transcript:000000', 'item-1', 'transcript', 20, 50, 'checkout flow narration only', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+            VALUES ('item-1:keyframe:000034', 'item-1', 'keyframe', 34, 44, ?1, '{}')
+            "#,
+            [frame_path.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, text, frame_path, metadata)
+            VALUES ('item-1:ocr:000034', 'item-1', 'ocr', 'XR-42 appears on the display', ?1, '{}')
+            "#,
+            [frame_path.as_str()],
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let mut unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(20.0),
+            Some(50.0),
+            "checkout flow narration only",
+            Some("item-1:transcript:000000"),
+            &profile,
+        );
+        unit.ocr_text = Some("XR-42 appears on the display".to_string());
+        unit.content_text = "Transcript: checkout flow narration only\nOn-screen text: XR-42 appears on the display".to_string();
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+
+        let results = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 1.0,
+                similarity_score: None,
+                exact_match: false,
+                source_mask: SOURCE_TEXT,
+            }],
+            "checkout XR-42",
+        )
+        .unwrap();
+
+        assert_eq!(results[0].snippet, "XR-42 appears on the display");
+        assert_eq!(results[0].chunk_id, "item-1:ocr:000034");
+        assert_eq!(results[0].chunk_type, "ocr");
+        assert_eq!(results[0].start_sec, Some(34.0));
+        assert_eq!(
+            results[0].nearest_frame_chunk_id.as_deref(),
+            Some("item-1:keyframe:000034")
+        );
     }
 
     #[tokio::test]

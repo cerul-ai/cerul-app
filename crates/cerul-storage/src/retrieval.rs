@@ -45,7 +45,6 @@ struct ItemInfo {
     id: String,
     title: Option<String>,
     content_type: String,
-    raw_path: Option<String>,
     source_type: String,
     source_config: Value,
 }
@@ -217,20 +216,19 @@ fn build_item_retrieval_units_with_conn(
 fn load_item(conn: &rusqlite::Connection, item_id: &str) -> anyhow::Result<ItemInfo> {
     conn.query_row(
         r#"
-        SELECT i.id, i.title, i.content_type, i.raw_path, s.type, s.config
+        SELECT i.id, i.title, i.content_type, s.type, s.config
         FROM items i
         JOIN sources s ON s.id = i.source_id
         WHERE i.id = ?1
         "#,
         [item_id],
         |row| {
-            let source_config: String = row.get(5)?;
+            let source_config: String = row.get(4)?;
             Ok(ItemInfo {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 content_type: row.get(2)?,
-                raw_path: row.get(3)?,
-                source_type: row.get(4)?,
+                source_type: row.get(3)?,
                 source_config: serde_json::from_str(&source_config).unwrap_or(Value::Null),
             })
         },
@@ -451,14 +449,35 @@ fn windows_for_item(
         })
         .collect::<Vec<_>>();
 
-    let starts = transcript_chunks
+    let mut starts = transcript_chunks
         .iter()
         .filter_map(|chunk| chunk.start_sec)
         .collect::<Vec<_>>();
-    let ends = transcript_chunks
+    starts.extend(
+        ocr_chunks
+            .iter()
+            .filter_map(|chunk| chunk_effective_start(chunk, frame_times)),
+    );
+    starts.extend(
+        frame_chunks
+            .iter()
+            .filter_map(|chunk| chunk_effective_start(chunk, frame_times)),
+    );
+
+    let mut ends = transcript_chunks
         .iter()
         .filter_map(|chunk| chunk.end_sec.or(chunk.start_sec))
         .collect::<Vec<_>>();
+    ends.extend(
+        ocr_chunks
+            .iter()
+            .filter_map(|chunk| chunk_effective_end(chunk, frame_times)),
+    );
+    ends.extend(
+        frame_chunks
+            .iter()
+            .filter_map(|chunk| chunk_effective_end(chunk, frame_times)),
+    );
     let Some(first_start) = starts.iter().copied().reduce(f64::min) else {
         if windows.is_empty() {
             return visual_only_windows(ocr_chunks, frame_chunks, frame_times);
@@ -495,12 +514,7 @@ fn visual_only_windows(
     let mut windows = frame_chunks
         .iter()
         .map(|chunk| {
-            let start = chunk.start_sec.or_else(|| {
-                chunk
-                    .frame_path
-                    .as_ref()
-                    .and_then(|path| frame_times.get(path).copied())
-            });
+            let start = chunk_effective_start(chunk, frame_times);
             let end = chunk
                 .end_sec
                 .or_else(|| start.map(|value| value + WINDOW_SEC));
@@ -517,15 +531,10 @@ fn visual_only_windows(
         windows = ocr_chunks
             .iter()
             .map(|chunk| Window {
-                start_sec: chunk.start_sec.or_else(|| {
-                    chunk
-                        .frame_path
-                        .as_ref()
-                        .and_then(|path| frame_times.get(path).copied())
+                start_sec: chunk_effective_start(chunk, frame_times),
+                end_sec: chunk_effective_end(chunk, frame_times).or_else(|| {
+                    chunk_effective_start(chunk, frame_times).map(|value| value + WINDOW_SEC)
                 }),
-                end_sec: chunk
-                    .end_sec
-                    .or_else(|| chunk.start_sec.map(|value| value + WINDOW_SEC)),
                 visual_text: None,
                 summary_text: None,
             })
@@ -571,24 +580,19 @@ fn collect_ocr_text_in_window(
 ) -> Option<String> {
     let mut text = String::new();
     for chunk in chunks {
-        let effective_time = chunk.start_sec.or_else(|| {
-            chunk
-                .frame_path
-                .as_ref()
-                .and_then(|path| frame_times.get(path))
-                .copied()
-        });
-        if effective_time.is_some()
+        let effective_start = chunk_effective_start(chunk, frame_times);
+        let effective_end = chunk_effective_end(chunk, frame_times);
+        if effective_start.is_some()
             && !overlaps(
-                effective_time,
-                effective_time,
+                effective_start,
+                effective_end,
                 window.start_sec,
                 window.end_sec,
             )
         {
             continue;
         }
-        if effective_time.is_none() && window.start_sec.is_some_and(|start| start > 0.0) {
+        if effective_start.is_none() && window.start_sec.is_some_and(|start| start > 0.0) {
             continue;
         }
         append_text(&mut text, chunk.text.as_deref(), budget);
@@ -622,17 +626,12 @@ fn representative_chunk(
             ocr_chunks
                 .iter()
                 .find(|chunk| {
-                    let effective_time = chunk.start_sec.or_else(|| {
-                        chunk
-                            .frame_path
-                            .as_ref()
-                            .and_then(|path| frame_times.get(path))
-                            .copied()
-                    });
-                    effective_time.is_none()
+                    let effective_start = chunk_effective_start(chunk, frame_times);
+                    let effective_end = chunk_effective_end(chunk, frame_times);
+                    effective_start.is_none()
                         || overlaps(
-                            effective_time,
-                            effective_time,
+                            effective_start,
+                            effective_end,
                             window.start_sec,
                             window.end_sec,
                         )
@@ -656,6 +655,22 @@ fn nearest_frame<'a>(frame_chunks: &'a [&ChunkInfo], target: Option<f64>) -> Opt
         })
         .copied()
         .or_else(|| frame_chunks.first().copied())
+}
+
+fn chunk_effective_start(chunk: &ChunkInfo, frame_times: &HashMap<String, f64>) -> Option<f64> {
+    chunk.start_sec.or_else(|| {
+        chunk
+            .frame_path
+            .as_ref()
+            .and_then(|path| frame_times.get(path))
+            .copied()
+    })
+}
+
+fn chunk_effective_end(chunk: &ChunkInfo, frame_times: &HashMap<String, f64>) -> Option<f64> {
+    chunk
+        .end_sec
+        .or_else(|| chunk_effective_start(chunk, frame_times))
 }
 
 fn frame_times_by_path(frame_chunks: &[&ChunkInfo]) -> HashMap<String, f64> {
@@ -705,14 +720,6 @@ fn content_text(
     if let Some(source) = source_label.map(str::trim).filter(|text| !text.is_empty()) {
         parts.push(format!("Source: {}", limit_text(source, 300)));
     }
-    if let Some(raw_path) = item
-        .raw_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        parts.push(format!("Path: {}", limit_text(raw_path, 240)));
-    }
     if start_sec.is_some() || end_sec.is_some() {
         parts.push(format!(
             "Time: {}-{}",
@@ -740,7 +747,7 @@ fn content_text(
 }
 
 fn source_label(item: &ItemInfo) -> Option<String> {
-    for key in ["title", "name", "url", "path", "feed_url", "channel_url"] {
+    for key in ["title", "name", "url", "feed_url", "channel_url"] {
         if let Some(value) = item.source_config.get(key).and_then(Value::as_str) {
             if !value.trim().is_empty() {
                 return Some(value.trim().to_string());
@@ -890,7 +897,7 @@ pub fn best_sub_unit_for_query(
             fallback = Some((id.clone(), start));
         }
         if let Some(text) = text.as_deref() {
-            let score = spoken_query_score(text, pattern.as_deref(), &terms);
+            let score = query_text_score(text, pattern.as_deref(), &terms);
             if score > 0
                 && best_match
                     .as_ref()
@@ -913,44 +920,94 @@ pub fn best_visual_sub_unit_for_query(
     end_sec: Option<f64>,
     query: &str,
 ) -> anyhow::Result<Option<(String, Option<f64>)>> {
-    let Some(pattern) = literal_pattern_for_terms(query) else {
+    let pattern = literal_pattern_for_terms(query);
+    let terms = literal_terms_for_query(query);
+    if pattern.is_none() && terms.is_empty() {
         return Ok(None);
     };
     let conn = sqlite::open(paths)?;
+    let frame_times = load_frame_times_for_item(&conn, item_id)?;
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, start_sec, text
+        SELECT id, start_sec, end_sec, text, frame_path
         FROM chunks
         WHERE item_id = ?1
           AND chunk_type IN ('ocr', 'understanding')
           AND text IS NOT NULL
           AND TRIM(text) <> ''
-          AND (?2 IS NULL OR start_sec IS NULL OR COALESCE(end_sec, start_sec) >= ?2)
-          AND (?3 IS NULL OR start_sec IS NULL OR start_sec <= ?3)
         ORDER BY
           CASE chunk_type WHEN 'ocr' THEN 0 ELSE 1 END,
           COALESCE(start_sec, 9223372036854775807),
           id
         "#,
     )?;
-    let rows = stmt.query_map(params![item_id, start_sec, end_sec], |row| {
+    let rows = stmt.query_map(params![item_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<f64>>(1)?,
-            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<f64>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
         ))
     })?;
 
+    let mut best_match = None::<(String, Option<f64>, usize)>;
     for row in rows {
-        let (id, start, text) = row?;
-        if text
-            .as_deref()
-            .is_some_and(|text| text.to_lowercase().contains(&pattern))
+        let (id, chunk_start, chunk_end, text, frame_path) = row?;
+        let effective_start = chunk_start.or_else(|| {
+            frame_path
+                .as_deref()
+                .and_then(|path| frame_times.get(path).copied())
+        });
+        let effective_end = chunk_end.or(effective_start);
+        if effective_start.is_some()
+            && !overlaps(effective_start, effective_end, start_sec, end_sec)
         {
-            return Ok(Some((id, start)));
+            continue;
+        }
+        let Some(text) = text.as_deref() else {
+            continue;
+        };
+        let score = query_text_score(text, pattern.as_deref(), &terms);
+        if score > 0
+            && best_match
+                .as_ref()
+                .is_none_or(|(_, _, best_score)| score > *best_score)
+        {
+            best_match = Some((id, effective_start, score));
         }
     }
+    if let Some((id, start, _)) = best_match {
+        return Ok(Some((id, start)));
+    }
     Ok(None)
+}
+
+fn load_frame_times_for_item(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+) -> anyhow::Result<HashMap<String, f64>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT frame_path, start_sec
+        FROM chunks
+        WHERE item_id = ?1
+          AND chunk_type IN ('keyframe', 'image')
+          AND frame_path IS NOT NULL
+          AND start_sec IS NOT NULL
+        ORDER BY start_sec, id
+        "#,
+    )?;
+    let rows = stmt.query_map([item_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+    })?;
+
+    let mut frame_times = HashMap::new();
+    for row in rows {
+        let (frame_path, start_sec) = row?;
+        frame_times.entry(frame_path).or_insert(start_sec);
+    }
+    Ok(frame_times)
 }
 
 fn literal_pattern_for_terms(query: &str) -> Option<String> {
@@ -973,16 +1030,31 @@ fn literal_terms_for_query(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn spoken_query_score(text: &str, pattern: Option<&str>, terms: &[String]) -> usize {
+fn query_text_score(text: &str, pattern: Option<&str>, terms: &[String]) -> usize {
     let normalized = text.to_lowercase();
+    let term_weight_sum = terms
+        .iter()
+        .map(|term| query_term_weight(term))
+        .sum::<usize>();
     let exact_score = pattern
         .filter(|pattern| normalized.contains(*pattern))
-        .map_or(0, |_| terms.len().max(1) + 1);
+        .map_or(0, |_| term_weight_sum.max(1) + 1);
     let term_score = terms
         .iter()
         .filter(|term| normalized.contains(term.as_str()))
-        .count();
+        .map(|term| query_term_weight(term))
+        .sum();
     exact_score.max(term_score)
+}
+
+fn query_term_weight(term: &str) -> usize {
+    if term.chars().any(|ch| ch.is_ascii_digit()) {
+        4
+    } else if term.chars().any(|ch| !ch.is_alphanumeric()) {
+        3
+    } else {
+        1
+    }
 }
 
 pub fn item_has_retrieval_units(
@@ -1176,6 +1248,90 @@ mod tests {
         assert!(units[0]
             .content_text
             .contains("On-screen text: visible checkout code XR-42"));
+    }
+
+    #[test]
+    fn build_units_includes_ocr_outside_transcript_span() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let frame_path = temp.path().join("early-checkout-frame.jpg");
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 60.0,
+                end: 90.0,
+                text: "late spoken checkout narration".to_string(),
+            }],
+            &[],
+            &[StorageOcrChunk::frame(
+                frame_path.clone(),
+                "early silent code XR-42",
+            )],
+            &[StorageImageChunk::keyframe_at(frame_path, 5.0, 10.0)],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        let early_ocr_unit = units
+            .iter()
+            .find(|unit| {
+                unit.ocr_text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("XR-42"))
+            })
+            .expect("early OCR should be copied into a retrieval unit");
+        assert!(early_ocr_unit.start_sec.is_some_and(|start| start <= 5.0));
+        assert!(units.iter().any(|unit| {
+            unit.transcript_text
+                .as_deref()
+                .is_some_and(|text| text.contains("late spoken checkout"))
+        }));
+    }
+
+    #[test]
+    fn content_text_omits_local_file_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO sources (id, type, config, status)
+            VALUES ('source-1', 'folder_video', '{"path":"/Users/alice/Videos"}', 'active')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (id, source_id, content_type, title, raw_path, status, metadata)
+            VALUES ('item-1', 'source-1', 'video', 'Private clip', '/Users/alice/Videos/clip.mp4', 'indexed', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 0.0,
+                end: 5.0,
+                text: "searchable spoken text".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert!(!units[0].content_text.contains("/Users/alice"));
+        assert!(!units[0].content_text.contains("clip.mp4"));
+        assert!(!units[0].content_text.contains("Path:"));
     }
 
     #[test]

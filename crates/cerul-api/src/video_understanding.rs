@@ -560,7 +560,7 @@ fn write_completed_record(
         ),
     )?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
-    crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id)?;
+    crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id, false)?;
     read_understanding_record(paths, item_id)
 }
 
@@ -591,7 +591,7 @@ fn write_status_record(
     )?;
     if status == STATUS_RUNNING || status == STATUS_FAILED {
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
-        crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id)?;
+        crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id, true)?;
     }
     read_understanding_record(paths, item_id)
 }
@@ -1191,6 +1191,11 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, item_id, job_type, status, progress) VALUES ('job-running', 'item-1', 'index_video', 'running', 0.5)",
+            [],
+        )
+        .unwrap();
 
         let record = write_completed_record(
             &paths,
@@ -1237,13 +1242,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item_index_state, ("pending".to_string(), 2, 0));
-        let queued_jobs: i64 = conn
+        let (running_jobs, queued_jobs): (i64, i64) = conn
             .query_row(
-                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                r#"
+                SELECT
+                  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END)
+                FROM jobs
+                WHERE item_id = 'item-1'
+                  AND job_type = 'index_video'
+                "#,
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
+        assert_eq!(running_jobs, 1);
         assert_eq!(queued_jobs, 1);
 
         write_status_record(

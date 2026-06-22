@@ -3592,6 +3592,7 @@ fn enqueue_embedding_rebuild_job(
 pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     paths: &AppPaths,
     item_id: &str,
+    dedupe_running: bool,
 ) -> anyhow::Result<bool> {
     delete_item_embeddings_best_effort(paths, item_id);
     let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
@@ -3621,7 +3622,7 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
             units.len() as i64,
         ),
     )?;
-    let queued_job = enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)?;
+    let queued_job = enqueue_embedding_rebuild_job(&tx, item_id, content_type, dedupe_running)?;
     tx.commit()?;
     Ok(queued_job)
 }
