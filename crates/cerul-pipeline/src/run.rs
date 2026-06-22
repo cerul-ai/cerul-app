@@ -950,7 +950,7 @@ impl VideoPipeline {
             .iter()
             .map(|unit| unit.content_text.clone())
             .collect::<Vec<_>>();
-        let text_vectors = self
+        let text_vectors = match self
             .embed_texts_with_progress(
                 item_id,
                 "embedding_units",
@@ -959,22 +959,43 @@ impl VideoPipeline {
                 "Embedding searchable moments",
                 &text_inputs,
             )
-            .await?;
-        if !text_inputs.is_empty() {
-            self.record_embedding_text_usage(
-                item_id,
-                estimate_text_tokens(&text_inputs),
-                text_inputs.len(),
-                "succeeded",
-                json!({ "source": "indexing", "index": "retrieval_units" }),
-            );
-        }
+            .await
+        {
+            Ok(vectors) => {
+                if !text_inputs.is_empty() {
+                    self.record_embedding_text_usage(
+                        item_id,
+                        estimate_text_tokens(&text_inputs),
+                        text_inputs.len(),
+                        "succeeded",
+                        json!({ "source": "indexing", "index": "retrieval_units" }),
+                    );
+                }
+                vectors
+            }
+            Err(error) => {
+                if !text_inputs.is_empty() {
+                    self.record_embedding_text_usage(
+                        item_id,
+                        estimate_text_tokens(&text_inputs),
+                        text_inputs.len(),
+                        "failed",
+                        json!({
+                            "source": "indexing",
+                            "index": "retrieval_units",
+                            "error": error.to_string()
+                        }),
+                    );
+                }
+                return Err(error);
+            }
+        };
 
         let image_paths = image_units
             .iter()
             .filter_map(|unit| unit.representative_frame_path.as_ref().map(PathBuf::from))
             .collect::<Vec<_>>();
-        let image_vectors = self
+        let image_vectors = match self
             .embed_images_with_progress(
                 item_id,
                 "embedding_unit_images",
@@ -983,29 +1004,44 @@ impl VideoPipeline {
                 "Embedding visual moments",
                 &image_paths,
             )
-            .await;
-        if let Err(error) = &image_vectors {
-            if !image_paths.is_empty() && !text_vectors.is_empty() {
-                tracing::warn!(
-                    item_id,
-                    %error,
-                    "visual retrieval embedding failed; keeping text retrieval vectors"
-                );
+            .await
+        {
+            Ok(vectors) => {
+                if !vectors.is_empty() {
+                    self.record_embedding_image_usage(
+                        item_id,
+                        vectors.len(),
+                        "succeeded",
+                        json!({ "source": "indexing", "index": "retrieval_units" }),
+                    );
+                }
+                vectors
             }
-        }
-        let image_vectors = match image_vectors {
-            Ok(vectors) => vectors,
-            Err(_error) if !image_paths.is_empty() && !text_vectors.is_empty() => Vec::new(),
-            Err(error) => return Err(error),
+            Err(error) => {
+                if !image_paths.is_empty() {
+                    self.record_embedding_image_usage(
+                        item_id,
+                        image_paths.len(),
+                        "failed",
+                        json!({
+                            "source": "indexing",
+                            "index": "retrieval_units",
+                            "error": error.to_string()
+                        }),
+                    );
+                }
+                if !image_paths.is_empty() && !text_vectors.is_empty() {
+                    tracing::warn!(
+                        item_id,
+                        %error,
+                        "visual retrieval embedding failed; keeping text retrieval vectors"
+                    );
+                    Vec::new()
+                } else {
+                    return Err(error);
+                }
+            }
         };
-        if !image_vectors.is_empty() {
-            self.record_embedding_image_usage(
-                item_id,
-                image_vectors.len(),
-                "succeeded",
-                json!({ "source": "indexing", "index": "retrieval_units" }),
-            );
-        }
 
         anyhow::ensure!(
             text_vectors.len() == text_units.len(),
@@ -1846,6 +1882,10 @@ mod tests {
         fn embed_images(&self, _paths: &[PathBuf]) -> anyhow::Result<Vec<Vec<f32>>> {
             anyhow::bail!("Image token span mismatch: prompt has 496, preprocessor expects 880")
         }
+
+        fn inference_provider(&self) -> Option<InferenceProviderInfo> {
+            Some(fake_embedding_provider_info())
+        }
     }
 
     struct FailingTextEmbedder;
@@ -1857,6 +1897,10 @@ mod tests {
 
         fn embed_images(&self, _paths: &[PathBuf]) -> anyhow::Result<Vec<Vec<f32>>> {
             unreachable!("image embedding should not run after text embedding failure")
+        }
+
+        fn inference_provider(&self) -> Option<InferenceProviderInfo> {
+            Some(fake_embedding_provider_info())
         }
     }
 
@@ -2244,6 +2288,20 @@ mod tests {
         assert_eq!(metadata["visual_indexed_frames"], 0);
         assert!(metadata["visual_sampled_frames"].as_u64().unwrap() > 0);
         assert!(metadata["visual_index_error"].is_null());
+        let failed_image_usage: i64 = conn
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM inference_usage_events
+                WHERE item_id = 'item-1'
+                  AND capability = 'embedding_image'
+                  AND status = 'failed'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed_image_usage, 1);
     }
 
     #[tokio::test]
@@ -2290,6 +2348,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Image token span mismatch"));
+        let failed_image_usage: i64 = conn
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM inference_usage_events
+                WHERE item_id = 'image-1'
+                  AND capability = 'embedding_image'
+                  AND status = 'failed'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed_image_usage, 1);
     }
 
     #[tokio::test]
@@ -2421,6 +2493,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Gemini Embedding 2 quota exceeded"));
+        let failed_text_usage: i64 = conn
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM inference_usage_events
+                WHERE item_id = 'item-1'
+                  AND capability = 'embedding_text'
+                  AND status = 'failed'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed_text_usage, 1);
 
         let hits = cerul_search::search_fts_only(
             &paths,
@@ -2860,6 +2946,16 @@ mod tests {
         let index = seed % vector.len();
         vector[index] = 1.0;
         vector
+    }
+
+    fn fake_embedding_provider_info() -> InferenceProviderInfo {
+        InferenceProviderInfo {
+            provider_mode: "remote".to_string(),
+            provider_id: Some("test-embedding-provider".to_string()),
+            provider_type: Some("gemini".to_string()),
+            model_id: Some("gemini-embedding-2".to_string()),
+            base_url: None,
+        }
     }
 
     fn bad_dimension_profile(paths: &AppPaths) -> cerul_storage::vectors::EmbeddingProfile {

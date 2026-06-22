@@ -425,7 +425,9 @@ async fn sqlite_fts_search(
         JOIN retrieval_units u ON u.rowid = retrieval_units_fts.rowid
         JOIN items i ON i.id = u.item_id
         WHERE retrieval_units_fts MATCH ?1
-          AND i.status != 'deleting'
+          AND i.status = 'indexed'
+          AND i.search_index_status = 'indexed'
+          AND i.search_index_version = u.index_version
           AND u.index_version = ?2
         ORDER BY rank_score
         LIMIT ?3
@@ -469,7 +471,9 @@ async fn sqlite_literal_search(
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
         WHERE u.content_text IS NOT NULL
-          AND i.status != 'deleting'
+          AND i.status = 'indexed'
+          AND i.search_index_status = 'indexed'
+          AND i.search_index_version = u.index_version
           AND u.index_version = ?2
           AND u.content_text LIKE ?1 ESCAPE '\'
         ORDER BY
@@ -1021,7 +1025,9 @@ fn load_units_for_hits(
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
         WHERE u.id IN ({placeholders})
-          AND i.status != 'deleting'
+          AND i.status = 'indexed'
+          AND i.search_index_status = 'indexed'
+          AND i.search_index_version = u.index_version
         "#,
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -1569,6 +1575,7 @@ mod tests {
             &profile,
         )];
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        mark_item_search_indexed(&paths, "item-1", units.len());
 
         let results = hydrate(
             &paths,
@@ -1675,6 +1682,7 @@ mod tests {
             ),
         ];
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        mark_item_search_indexed(&paths, "item-1", units.len());
 
         let results = hydrate(
             &paths,
@@ -1735,6 +1743,7 @@ mod tests {
             &profile,
         )];
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        mark_item_search_indexed(&paths, "item-1", units.len());
 
         let results = hydrate(
             &paths,
@@ -1790,6 +1799,7 @@ mod tests {
         unit.content_text =
             "Transcript: spoken text that does not include the visible code\nOn-screen text: checkout display shows XR-42".to_string();
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
 
         let results = hydrate(
             &paths,
@@ -1858,6 +1868,7 @@ mod tests {
         unit.ocr_text = Some("XR-42 appears on the display".to_string());
         unit.content_text = "Transcript: checkout flow narration only\nOn-screen text: XR-42 appears on the display".to_string();
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
 
         let results = hydrate(
             &paths,
@@ -1971,6 +1982,7 @@ mod tests {
             &profile,
         )];
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        mark_item_search_indexed(&paths, "item-1", units.len());
         cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
             &paths,
             "item-2",
@@ -2027,6 +2039,7 @@ mod tests {
         );
         unit.embedding_profile_id = "old-profile-before-switch".to_string();
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
 
         let hits = sqlite_text_search(&paths, "old profile", 5).await.unwrap();
 
@@ -2034,6 +2047,46 @@ mod tests {
             hits.first().map(|hit| hit.chunk_id.as_str()),
             Some("item-1:unit:v2:000000")
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_text_search_hides_unindexed_retrieval_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(2.0),
+            Some(8.0),
+            "stale pending phrase",
+            None,
+            &profile,
+        );
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "pending", None, 1, 1)
+            .unwrap();
+
+        let hits = sqlite_text_search(&paths, "stale pending phrase", 5)
+            .await
+            .unwrap();
+        let hydrated = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 1.0,
+                similarity_score: Some(1.0),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            }],
+            "stale",
+        )
+        .unwrap();
+
+        assert!(hits.is_empty());
+        assert!(hydrated.is_empty());
     }
 
     #[tokio::test]
@@ -2261,6 +2314,13 @@ mod tests {
         conn.execute(
             "INSERT INTO items (id, source_id, content_type, status, title) VALUES (?1, 'source-1', ?2, 'indexed', ?3)",
             (item_id, content_type, title),
+        )
+        .unwrap();
+    }
+
+    fn mark_item_search_indexed(paths: &AppPaths, item_id: &str, unit_count: usize) {
+        cerul_storage::set_item_search_index_status(
+            paths, item_id, "indexed", None, unit_count, unit_count,
         )
         .unwrap();
     }

@@ -560,7 +560,9 @@ fn write_completed_record(
         ),
     )?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
-    crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id, false, true)?;
+    crate::refresh_item_retrieval_units_after_understanding_update(
+        paths, item_id, false, true, true,
+    )?;
     read_understanding_record(paths, item_id)
 }
 
@@ -589,10 +591,15 @@ fn write_status_record(
         "#,
         (item_id, provider_id, model_id, status, error),
     )?;
-    if status == STATUS_RUNNING || status == STATUS_FAILED {
+    if status == STATUS_RUNNING {
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
         crate::refresh_item_retrieval_units_after_understanding_update(
-            paths, item_id, true, false,
+            paths, item_id, true, false, false,
+        )?;
+    } else if status == STATUS_FAILED {
+        replace_understanding_chunks(paths, item_id, &json!({}), None)?;
+        crate::refresh_item_retrieval_units_after_understanding_update(
+            paths, item_id, false, false, true,
         )?;
     }
     read_understanding_record(paths, item_id)
@@ -1362,5 +1369,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining_understanding_chunks, 0);
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 0);
     }
 }
