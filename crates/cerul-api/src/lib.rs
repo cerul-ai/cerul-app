@@ -3593,8 +3593,11 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     paths: &AppPaths,
     item_id: &str,
     dedupe_running: bool,
+    delete_embeddings: bool,
 ) -> anyhow::Result<bool> {
-    delete_item_embeddings_best_effort(paths, item_id);
+    if delete_embeddings {
+        delete_item_embeddings_best_effort(paths, item_id);
+    }
     let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
     let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, &profile.id)?;
 
@@ -3606,6 +3609,16 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
         |row| row.get(0),
     )?;
     let content_type = parse_content_type(&content_type)?;
+    let vector_count = if delete_embeddings {
+        0
+    } else {
+        tx.query_row(
+            "SELECT COALESCE(search_index_vector_count, 0) FROM items WHERE id = ?1",
+            [item_id],
+            |row| row.get::<_, i64>(0),
+        )?
+        .max(0)
+    };
     tx.execute(
         r#"
         UPDATE items
@@ -3613,13 +3626,14 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
             search_index_status = 'pending',
             search_index_error = NULL,
             search_index_unit_count = ?3,
-            search_index_vector_count = 0
+            search_index_vector_count = ?4
         WHERE id = ?1
         "#,
         (
             item_id,
             cerul_storage::SEARCH_INDEX_VERSION,
             units.len() as i64,
+            vector_count,
         ),
     )?;
     let queued_job = enqueue_embedding_rebuild_job(&tx, item_id, content_type, dedupe_running)?;

@@ -943,7 +943,7 @@ impl VideoPipeline {
             .collect::<Vec<_>>();
         let image_units = units
             .iter()
-            .filter(|unit| unit.uses_image_embedding())
+            .filter(|unit| unit.has_image_embedding_source())
             .collect::<Vec<_>>();
 
         let text_inputs = text_units
@@ -980,14 +980,28 @@ impl VideoPipeline {
                 "embedding_unit_images",
                 base + span * 0.75,
                 span * 0.25,
-                "Embedding image-only moments",
+                "Embedding visual moments",
                 &image_paths,
             )
-            .await?;
-        if !image_paths.is_empty() {
+            .await;
+        if let Err(error) = &image_vectors {
+            if !image_paths.is_empty() && !text_vectors.is_empty() {
+                tracing::warn!(
+                    item_id,
+                    %error,
+                    "visual retrieval embedding failed; keeping text retrieval vectors"
+                );
+            }
+        }
+        let image_vectors = match image_vectors {
+            Ok(vectors) => vectors,
+            Err(_error) if !image_paths.is_empty() && !text_vectors.is_empty() => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        if !image_vectors.is_empty() {
             self.record_embedding_image_usage(
                 item_id,
-                image_paths.len(),
+                image_vectors.len(),
                 "succeeded",
                 json!({ "source": "indexing", "index": "retrieval_units" }),
             );
@@ -999,12 +1013,14 @@ impl VideoPipeline {
             text_units.len(),
             text_vectors.len()
         );
-        anyhow::ensure!(
-            image_vectors.len() == image_units.len(),
-            "retrieval image unit count ({}) does not match vector count ({})",
-            image_units.len(),
-            image_vectors.len()
-        );
+        if !image_vectors.is_empty() {
+            anyhow::ensure!(
+                image_vectors.len() == image_units.len(),
+                "retrieval image unit count ({}) does not match vector count ({})",
+                image_units.len(),
+                image_vectors.len()
+            );
+        }
 
         let mut records = Vec::with_capacity(text_vectors.len() + image_vectors.len());
         for (unit, vector) in text_units.into_iter().zip(text_vectors.iter()) {
@@ -1016,12 +1032,15 @@ impl VideoPipeline {
             )?);
         }
         for (unit, vector) in image_units.into_iter().zip(image_vectors.iter()) {
-            records.push(cerul_storage::vectors::VectorRecord::new_for_dimensions(
-                unit.id.clone(),
-                unit.item_id.clone(),
-                vector.clone(),
-                profile.output_dimension,
-            )?);
+            records.push(
+                cerul_storage::vectors::VectorRecord::new_for_dimensions_with_point_key(
+                    format!("{}:image", unit.id),
+                    unit.id.clone(),
+                    unit.item_id.clone(),
+                    vector.clone(),
+                    profile.output_dimension,
+                )?,
+            );
         }
 
         cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
@@ -2004,7 +2023,7 @@ mod tests {
         assert_eq!(summary.transcript_chunks, 1);
         assert_eq!(summary.text_vectors, 1);
         assert!(summary.sampled_frames > 0);
-        assert_eq!(summary.image_vectors, 0);
+        assert_eq!(summary.image_vectors, 1);
         assert!(!summary.audio_path.exists());
 
         let conn = sqlite::open(&paths).unwrap();
@@ -2045,7 +2064,7 @@ mod tests {
 
         assert_eq!(
             retrieval_unit_count_for_item(&paths, "item-1"),
-            (summary.text_vectors + summary.image_vectors) as i64
+            summary.text_vectors as i64
         );
         assert_eq!(
             unified_point_count(&paths).await,
@@ -2149,9 +2168,10 @@ mod tests {
         assert!(summary.sampled_frames > 0);
         assert_eq!(summary.ocr_chunks, summary.sampled_frames);
         assert!(summary.text_vectors >= 1);
+        assert!(summary.image_vectors >= 1);
         assert_eq!(
             retrieval_unit_count_for_item(&paths, "item-1"),
-            (summary.text_vectors + summary.image_vectors) as i64
+            summary.text_vectors as i64
         );
 
         let conn = sqlite::open(&paths).unwrap();
@@ -2204,6 +2224,7 @@ mod tests {
         let summary = pipeline.process_video_item("item-1").await.unwrap();
 
         assert_eq!(summary.transcript_chunks, 1);
+        assert_eq!(summary.text_vectors, 1);
         assert!(summary.sampled_frames > 0);
         assert_eq!(summary.image_vectors, 0);
 
@@ -2520,7 +2541,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(transcript_count as usize, summary.transcript_chunks);
-        assert_eq!(keyframe_count as usize, summary.image_vectors);
+        assert!(summary.image_vectors > 0);
+        assert!(summary.image_vectors <= keyframe_count as usize);
         assert_eq!(ocr_count as usize, summary.ocr_chunks);
 
         println!(

@@ -80,6 +80,7 @@ impl VectorCollectionNames {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorRecord {
+    pub point_key: String,
     pub chunk_id: String,
     pub item_id: String,
     pub vector: Vec<f32>,
@@ -96,6 +97,22 @@ impl VectorRecord {
         vector: Vec<f32>,
         expected_dimensions: i32,
     ) -> anyhow::Result<Self> {
+        Self::new_for_dimensions_with_point_key(
+            chunk_id.clone(),
+            chunk_id,
+            item_id,
+            vector,
+            expected_dimensions,
+        )
+    }
+
+    pub fn new_for_dimensions_with_point_key(
+        point_key: String,
+        chunk_id: String,
+        item_id: String,
+        vector: Vec<f32>,
+        expected_dimensions: i32,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             vector.len() == expected_dimensions as usize,
             "vector for chunk {chunk_id} has {} dimensions, expected {expected_dimensions}",
@@ -103,6 +120,7 @@ impl VectorRecord {
         );
 
         Ok(Self {
+            point_key,
             chunk_id,
             item_id,
             vector,
@@ -387,7 +405,7 @@ async fn replace_collection_item_embeddings(
             .iter()
             .map(|record| {
                 json!({
-                    "id": point_id(&record.chunk_id),
+                    "id": point_id(&record.point_key),
                     "vector": record.vector,
                     "payload": {
                         "chunk_id": record.chunk_id,

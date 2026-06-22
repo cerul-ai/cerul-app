@@ -644,7 +644,7 @@ async fn merge_unified_hits(
 ) -> anyhow::Result<Vec<RawHit>> {
     let mut candidates = HashMap::<String, RawHit>::new();
     for hit in vector_hits {
-        candidates.insert(hit.chunk_id.clone(), hit);
+        merge_candidate_hit(&mut candidates, hit);
     }
 
     let lexical_only_ids = lexical_hits
@@ -672,7 +672,7 @@ async fn merge_unified_hits(
         } else {
             hit.score = 0.0;
         }
-        candidates.insert(hit.chunk_id.clone(), hit);
+        merge_candidate_hit(&mut candidates, hit);
     }
 
     let mut hits = candidates.into_values().collect::<Vec<_>>();
@@ -689,6 +689,19 @@ async fn merge_unified_hits(
     });
     hits.truncate(limit);
     Ok(hits)
+}
+
+fn merge_candidate_hit(candidates: &mut HashMap<String, RawHit>, hit: RawHit) {
+    if let Some(existing) = candidates.get_mut(&hit.chunk_id) {
+        existing.source_mask |= hit.source_mask;
+        existing.exact_match |= hit.exact_match;
+        if boosted_score(&hit) > boosted_score(existing) {
+            existing.score = hit.score;
+            existing.similarity_score = hit.similarity_score;
+        }
+        return;
+    }
+    candidates.insert(hit.chunk_id.clone(), hit);
 }
 
 fn boosted_score(hit: &RawHit) -> f32 {
@@ -1440,6 +1453,35 @@ mod tests {
         assert!((scored[0].match_score - 0.91).abs() < 0.001);
         assert!((scored[1].match_score - 0.43).abs() < 0.001);
         assert!((scored[2].match_score - 0.92).abs() < 0.001);
+    }
+
+    #[test]
+    fn merge_candidate_hit_keeps_best_duplicate_vector_score() {
+        let mut candidates = HashMap::new();
+        merge_candidate_hit(
+            &mut candidates,
+            RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 0.82,
+                similarity_score: Some(0.82),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            },
+        );
+        merge_candidate_hit(
+            &mut candidates,
+            RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 0.41,
+                similarity_score: Some(0.41),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            },
+        );
+
+        let hit = candidates.get("item-1:unit:v2:000000").unwrap();
+        assert_eq!(hit.score, 0.82);
+        assert_eq!(hit.similarity_score, Some(0.82));
     }
 
     #[test]

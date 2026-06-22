@@ -38,6 +38,10 @@ impl StorageRetrievalUnit {
     pub fn uses_image_embedding(&self) -> bool {
         self.unit_kind == "image" && self.representative_frame_path.is_some()
     }
+
+    pub fn has_image_embedding_source(&self) -> bool {
+        self.representative_frame_path.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -873,7 +877,7 @@ pub fn best_sub_unit_for_query(
         WHERE item_id = ?1
           AND chunk_type IN ('transcript_line', 'transcript', 'audio')
           AND start_sec IS NOT NULL
-          AND (?2 IS NULL OR start_sec >= ?2)
+          AND (?2 IS NULL OR COALESCE(end_sec, start_sec) >= ?2)
           AND (?3 IS NULL OR start_sec <= ?3)
         ORDER BY
           CASE chunk_type WHEN 'transcript_line' THEN 0 ELSE 1 END,
@@ -1216,6 +1220,41 @@ mod tests {
                 .unwrap();
 
         assert_eq!(sub_unit.0, "item-1:transcript-line:000001");
+        assert_eq!(sub_unit.1, 20.0);
+    }
+
+    #[test]
+    fn best_sub_unit_includes_chunks_overlapping_window_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[],
+            &[
+                StorageTranscriptChunk {
+                    start: 20.0,
+                    end: 32.0,
+                    text: "checkout phrase starts before the window".to_string(),
+                },
+                StorageTranscriptChunk {
+                    start: 35.0,
+                    end: 40.0,
+                    text: "later fallback line".to_string(),
+                },
+            ],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        let sub_unit =
+            best_sub_unit_for_query(&paths, "item-1", Some(25.0), Some(55.0), "checkout")
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(sub_unit.0, "item-1:transcript-line:000000");
         assert_eq!(sub_unit.1, 20.0);
     }
 
