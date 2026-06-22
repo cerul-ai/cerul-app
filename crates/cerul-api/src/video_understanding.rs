@@ -591,6 +591,7 @@ fn write_status_record(
     )?;
     if status == STATUS_RUNNING || status == STATUS_FAILED {
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
+        crate::refresh_item_retrieval_units_after_understanding_update(paths, item_id)?;
     }
     read_understanding_record(paths, item_id)
 }
@@ -1244,5 +1245,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(queued_jobs, 1);
+
+        write_status_record(
+            &paths,
+            "item-1",
+            Some("provider-1"),
+            Some("model-1"),
+            STATUS_FAILED,
+            Some("analysis failed"),
+        )
+        .unwrap();
+
+        let remaining_understanding_chunks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'understanding'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let remaining_retrieval_units: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_understanding_chunks, 0);
+        assert_eq!(remaining_retrieval_units, 0);
     }
 }

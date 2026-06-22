@@ -857,6 +857,7 @@ pub fn best_sub_unit_for_query(
     query: &str,
 ) -> anyhow::Result<Option<(String, f64)>> {
     let pattern = literal_pattern_for_terms(query);
+    let terms = literal_terms_for_query(query);
     let conn = sqlite::open(paths)?;
     let mut stmt = conn.prepare(
         r#"
@@ -882,16 +883,25 @@ pub fn best_sub_unit_for_query(
     })?;
 
     let mut fallback = None;
+    let mut best_match = None::<(String, f64, usize)>;
     for row in rows {
         let (id, start, text) = row?;
         if fallback.is_none() {
             fallback = Some((id.clone(), start));
         }
-        if let (Some(pattern), Some(text)) = (&pattern, text.as_deref()) {
-            if text.to_lowercase().contains(pattern) {
-                return Ok(Some((id, start)));
+        if let Some(text) = text.as_deref() {
+            let score = spoken_query_score(text, pattern.as_deref(), &terms);
+            if score > 0
+                && best_match
+                    .as_ref()
+                    .is_none_or(|(_, _, best_score)| score > *best_score)
+            {
+                best_match = Some((id, start, score));
             }
         }
+    }
+    if let Some((id, start, _)) = best_match {
+        return Ok(Some((id, start)));
     }
     Ok(fallback)
 }
@@ -950,6 +960,29 @@ fn literal_pattern_for_terms(query: &str) -> Option<String> {
     } else {
         Some(trimmed)
     }
+}
+
+fn literal_terms_for_query(query: &str) -> Vec<String> {
+    query
+        .trim()
+        .trim_matches('"')
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|term| !term.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn spoken_query_score(text: &str, pattern: Option<&str>, terms: &[String]) -> usize {
+    let normalized = text.to_lowercase();
+    let exact_score = pattern
+        .filter(|pattern| normalized.contains(*pattern))
+        .map_or(0, |_| terms.len().max(1) + 1);
+    let term_score = terms
+        .iter()
+        .filter(|term| normalized.contains(term.as_str()))
+        .count();
+    exact_score.max(term_score)
 }
 
 pub fn item_has_retrieval_units(
@@ -1077,6 +1110,41 @@ mod tests {
                     .as_deref()
                     .is_some_and(|text| text.contains("late spoken phrase"))
         }));
+    }
+
+    #[test]
+    fn best_sub_unit_scores_query_terms_before_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[],
+            &[
+                StorageTranscriptChunk {
+                    start: 1.0,
+                    end: 2.0,
+                    text: "database overview".to_string(),
+                },
+                StorageTranscriptChunk {
+                    start: 20.0,
+                    end: 21.0,
+                    text: "database settings open the config panel".to_string(),
+                },
+            ],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        let sub_unit =
+            best_sub_unit_for_query(&paths, "item-1", Some(0.0), Some(30.0), "database config")
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(sub_unit.0, "item-1:transcript-line:000001");
+        assert_eq!(sub_unit.1, 20.0);
     }
 
     #[test]

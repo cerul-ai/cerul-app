@@ -3593,6 +3593,7 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     paths: &AppPaths,
     item_id: &str,
 ) -> anyhow::Result<bool> {
+    delete_item_embeddings_best_effort(paths, item_id);
     let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
     let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, &profile.id)?;
 
@@ -3623,6 +3624,32 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     let queued_job = enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)?;
     tx.commit()?;
     Ok(queued_job)
+}
+
+fn delete_item_embeddings_best_effort(paths: &AppPaths, item_id: &str) {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => {
+            if let Err(error) = runtime.block_on(cerul_storage::vectors::delete_item_embeddings(
+                paths, item_id,
+            )) {
+                tracing::warn!(
+                    item_id,
+                    %error,
+                    "failed to delete stale item vectors before retrieval refresh"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                item_id,
+                %error,
+                "failed to create runtime for stale vector cleanup"
+            );
+        }
+    }
 }
 
 fn set_source_status(paths: &AppPaths, id: &str, status: &str) -> anyhow::Result<()> {

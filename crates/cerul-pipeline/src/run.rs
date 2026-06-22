@@ -832,6 +832,15 @@ impl VideoPipeline {
                     item_id,
                     "image unified retrieval index write failed; keeping image chunk indexed without vectors"
                 );
+                if let Err(delete_error) =
+                    cerul_storage::vectors::delete_item_embeddings(&self.paths, item_id).await
+                {
+                    tracing::warn!(
+                        error = %delete_error,
+                        item_id,
+                        "failed to delete stale image vectors after retrieval index write failure"
+                    );
+                }
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
                 cerul_storage::set_item_search_index_status(
                     &self.paths,
