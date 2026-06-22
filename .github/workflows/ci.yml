@@ -27,7 +27,7 @@ jobs:
     name: Build and smoke
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - name: Decide CI depth
@@ -153,7 +153,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
         with:
           version: 9.15.9
@@ -182,7 +182,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Cache signed MLX runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: apps/electron-shell/mlx-runtime
           key: mlx-runtime-signed-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mlx-sidecar/runtime-lock.txt', 'scripts/build-mlx-runtime.sh', 'apps/electron-shell/scripts/sign-mlx-runtime.cjs', 'apps/electron-shell/entitlements/entitlements.mlx-runtime.plist') }}
@@ -250,7 +250,7 @@ jobs:
           fi
           scripts/smoke-macos-signing.sh "${args[@]}"
       - name: Save same-SHA macOS update prebuild
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         continue-on-error: true
         with:
           path: |

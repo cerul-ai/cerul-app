@@ -29,11 +29,11 @@ jobs:
     name: Build macOS update assets
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Restore same-SHA macOS update prebuild
         id: prebuilt-update
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             target/electron/*.zip
@@ -93,7 +93,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Cache signed MLX runtime
         if: steps.prebuilt-update.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: apps/electron-shell/mlx-runtime
           key: mlx-runtime-signed-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mlx-sidecar/runtime-lock.txt', 'scripts/build-mlx-runtime.sh', 'apps/electron-shell/scripts/sign-mlx-runtime.cjs', 'apps/electron-shell/entitlements/entitlements.mlx-runtime.plist') }}
@@ -311,7 +311,7 @@ jobs:
     needs: macos-update-assets
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
         with:
           version: 9.15.9
@@ -576,7 +576,7 @@ jobs:
     continue-on-error: true
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history + tags so we can diff the commit range
       - name: Generate AI release notes (GitHub / Discord / Tweet)
