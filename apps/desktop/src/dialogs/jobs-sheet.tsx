@@ -111,6 +111,7 @@ export function JobsSheet({
     const step = jobStepInfo(job);
     const stepElapsed = jobStepElapsedSeconds(job, stepStarts, now);
     const elapsed = jobElapsedSeconds(job, now);
+    const fixSection = job.error_info?.settings_section?.trim() || null;
     const meta = [
       step ? t("jobs.step", { current: step.current, total: step.total }) : null,
       stepElapsed !== null ? t("jobs.stepElapsed", { duration: formatClock(stepElapsed) }) : null,
@@ -174,11 +175,11 @@ export function JobsSheet({
                     {t("jobs.viewSources")}
                   </button>
                 ) : null
-              ) : job.error_info.code === "unknown_processing_error" ? null : (
+              ) : job.error_info.code === "unknown_processing_error" || !fixSection ? null : (
                 <button
                   type="button"
                   className="btn btn-primary sm"
-                  onClick={() => onOpenSettingsFix(job.error_info?.settings_section ?? "Models")}
+                  onClick={() => onOpenSettingsFix(fixSection)}
                 >
                   {t("jobs.fixSettings")}
                 </button>
