@@ -351,6 +351,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/sources/:id", delete(remove_source))
         .route("/sources/:id/pause", post(pause_source))
         .route("/sources/:id/resume", post(resume_source))
+        .route("/sources/:id/retry-failed", post(retry_failed_source_items))
         .route("/moments", get(list_moments).post(create_moment))
         .route("/moments/:id", delete(remove_moment))
         .route("/entities", get(list_entities))
@@ -1446,7 +1447,10 @@ pub async fn add_source_to_paths(
     req: AddSourceRequest,
 ) -> anyhow::Result<AddSourceSummary> {
     let id = new_id("source");
-    let plugin = cerul_sources::build(&req.source_type, req.config.clone())?;
+    let plugin = cerul_sources::build(
+        &req.source_type,
+        source_config_with_web_access_settings(paths, &req.source_type, req.config.clone()),
+    )?;
     let content_type = primary_content_type(&*plugin)?;
     let discovered_items = plugin.discover().await?;
     let config = req.config.to_string();
@@ -1521,7 +1525,10 @@ async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> an
         return Ok(());
     }
 
-    let plugin = cerul_sources::build(&source.source_type, source.config.clone())?;
+    let plugin = cerul_sources::build(
+        &source.source_type,
+        source_config_with_web_access_settings(paths, &source.source_type, source.config.clone()),
+    )?;
     let content_type = primary_content_type(&*plugin)?;
     let discovered_items = plugin.discover().await?;
     let mut conn = cerul_storage::sqlite::open(paths)?;
@@ -1560,6 +1567,82 @@ async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> an
         "source discovery completed"
     );
     Ok(())
+}
+
+const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
+const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
+const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
+
+fn source_config_with_web_access_settings(
+    paths: &AppPaths,
+    source_type: &str,
+    config: Value,
+) -> Value {
+    if !matches!(source_type, "youtube" | "web_video") {
+        return config;
+    }
+    let mut object = match config {
+        Value::Object(object) => object,
+        other => return other,
+    };
+    if has_source_cookie_config(&object) {
+        return Value::Object(object);
+    }
+
+    let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "off".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match mode.as_str() {
+        "browser" => {
+            let browser = setting_string(paths, WEB_VIDEO_COOKIE_BROWSER_SETTING)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "chrome".to_string());
+            let browser = browser.trim();
+            if !browser.is_empty() {
+                object.insert(
+                    "cookies_from_browser".to_string(),
+                    Value::String(browser.to_string()),
+                );
+            }
+        }
+        "file" => {
+            if let Some(path) = setting_string(paths, WEB_VIDEO_COOKIES_PATH_SETTING)
+                .ok()
+                .flatten()
+            {
+                let path = path.trim();
+                if !path.is_empty() {
+                    object.insert("cookies_path".to_string(), Value::String(path.to_string()));
+                }
+            }
+        }
+        _ => {}
+    }
+    Value::Object(object)
+}
+
+fn has_source_cookie_config(object: &serde_json::Map<String, Value>) -> bool {
+    [
+        "cookies_from_browser",
+        "cookie_browser",
+        "ytdlp_cookies_from_browser",
+        "ytdlp_cookie_browser",
+        "cookies_path",
+        "cookies_file",
+        "ytdlp_cookies_path",
+        "ytdlp_cookies_file",
+    ]
+    .iter()
+    .any(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 fn persist_discovered_items(
@@ -1649,6 +1732,71 @@ async fn resume_source(
 ) -> ApiResult<Json<Value>> {
     set_source_status(&state.paths, &id, "active")?;
     Ok(Json(json!({ "status": "active", "id": id })))
+}
+
+async fn retry_failed_source_items(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let mut conn = cerul_storage::sqlite::open(&state.paths)?;
+    let tx = conn.transaction()?;
+    let source_exists: Option<String> = tx
+        .query_row(
+            "SELECT id FROM sources WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if source_exists.is_none() {
+        return Err(ApiError::not_found(format!("source not found: {id}")));
+    }
+    let failed_items = {
+        let mut stmt = tx.prepare(
+            r#"
+            SELECT id, content_type
+            FROM items
+            WHERE source_id = ?1
+              AND status = 'failed'
+            ORDER BY title COLLATE NOCASE, id ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([id.as_str()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut queued_jobs = 0usize;
+    for (item_id, content_type) in &failed_items {
+        let content_type = parse_content_type(content_type)?;
+        tx.execute(
+            r#"
+            UPDATE items
+            SET status = CASE
+                    WHEN indexed_at IS NOT NULL THEN 'indexed'
+                    ELSE 'discovered'
+                END,
+                error = NULL
+            WHERE id = ?1
+            "#,
+            [item_id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM item_understandings WHERE item_id = ?1",
+            [item_id.as_str()],
+        )?;
+        if enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)? {
+            queued_jobs += 1;
+        }
+    }
+    tx.commit()?;
+
+    Ok(Json(json!({
+        "status": if queued_jobs > 0 { "queued" } else { "nothing_to_retry" },
+        "id": id,
+        "items": failed_items.len(),
+        "queued_jobs": queued_jobs
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2719,7 +2867,44 @@ fn weekly_review_for_paths(paths: &AppPaths) -> anyhow::Result<WeeklyReviewRespo
 fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
     let normalized = message.to_ascii_lowercase();
     let capability = capability_for_job_type(job_type).to_string();
-    let (code, friendly) = if normalized.contains("api key")
+    let (code, friendly, settings_section) = if normalized.contains("sign in to confirm")
+        && (normalized.contains("not a bot") || normalized.contains("cookies"))
+    {
+        (
+            "browser_cookies_required",
+            "该视频平台要求登录验证。连接浏览器登录状态后重试失败视频。".to_string(),
+            "Indexing",
+        )
+    } else if normalized.contains("members-only")
+        || normalized.contains("available to this channel's members")
+        || normalized.contains("channel's members")
+    {
+        (
+            "members_only",
+            "这是会员专享视频。只有连接的浏览器账号具备会员权限时才能下载。".to_string(),
+            "Indexing",
+        )
+    } else if normalized.contains("http error 403") || normalized.contains("403: forbidden") {
+        (
+            "download_forbidden",
+            "平台拒绝下载请求。连接浏览器登录状态，稍后再重试失败视频。".to_string(),
+            "Indexing",
+        )
+    } else if normalized.contains("this video is not available")
+        || normalized.contains("video unavailable")
+    {
+        (
+            "video_unavailable",
+            "该视频已不可用或对当前地区不可见。".to_string(),
+            "",
+        )
+    } else if normalized.contains("no supported javascript runtime") {
+        (
+            "downloader_runtime_missing",
+            "下载器缺少 YouTube 需要的 JavaScript 运行时，部分视频可能无法下载。".to_string(),
+            "Indexing",
+        )
+    } else if normalized.contains("api key")
         || normalized.contains("missing key")
         || normalized.contains("no key")
         || normalized.contains("unauthorized")
@@ -2728,6 +2913,7 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "missing_api_key",
             format!("{capability} 连接缺少可用 API 密钥。"),
+            "Models",
         )
     } else if normalized.contains("model")
         && (normalized.contains("not found")
@@ -2738,11 +2924,13 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "model_not_found",
             format!("{capability} 当前选择的模型不可用，请换一个模型或连接。"),
+            "Models",
         )
     } else if normalized.contains("ffmpeg") {
         (
             "ffmpeg_unavailable",
             "本机视频处理运行时不可用，需要修复本地工具链。".to_string(),
+            "Models",
         )
     } else if normalized.contains("yt-dlp")
         || normalized.contains("video unavailable")
@@ -2752,6 +2940,7 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "source_unavailable",
             "来源暂时不可访问，可能是私有、地区限制或下载器失效。".to_string(),
+            "Sources",
         )
     } else if normalized.trim().is_empty() {
         return None;
@@ -2759,13 +2948,14 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "unknown_processing_error",
             format!("{capability} 处理失败，需要查看技术详情。"),
+            "",
         )
     };
 
     Some(JobErrorInfo {
         code: code.to_string(),
         capability,
-        settings_section: "Models".to_string(),
+        settings_section: settings_section.to_string(),
         message: friendly,
     })
 }
@@ -4179,6 +4369,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/sources/{id}", &["delete"]),
     ("/sources/{id}/pause", &["post"]),
     ("/sources/{id}/resume", &["post"]),
+    ("/sources/{id}/retry-failed", &["post"]),
     ("/moments", &["get", "post"]),
     ("/moments/{id}", &["delete"]),
     ("/entities", &["get"]),
@@ -4261,6 +4452,123 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn classify_youtube_bot_check_as_browser_cookie_failure() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "browser_cookies_required");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn source_config_with_web_access_settings_injects_browser_cookie_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES
+              ('web_video_cookie_mode', '"browser"', strftime('%s','now')),
+              ('web_video_cookie_browser', '"safari"', strftime('%s','now'))
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let config = source_config_with_web_access_settings(
+            &paths,
+            "web_video",
+            json!({ "url": "https://www.youtube.com/watch?v=abc123" }),
+        );
+
+        assert_eq!(config["cookies_from_browser"].as_str(), Some("safari"));
+    }
+
+    #[tokio::test]
+    async fn retry_failed_source_items_requeues_failed_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'web_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, status, error, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Video 1', 'failed', 'bot check', '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO item_understandings (item_id, status, result, error)
+                VALUES ('item-1', 'failed', '{}', 'old understanding failure')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let app = router_with_paths(paths.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sources/source-1/retry-failed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "retry failed: {body}");
+        assert_eq!(body["status"], "queued");
+        assert_eq!(body["items"], 1);
+        assert_eq!(body["queued_jobs"], 1);
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let item: (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error FROM items WHERE id = 'item-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(item, ("discovered".to_string(), None));
+
+        let understanding_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM item_understandings WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(understanding_count, 0);
+
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 1);
     }
 
     #[tokio::test]

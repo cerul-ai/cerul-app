@@ -20,6 +20,50 @@ pub struct YouTube {
     cache_dir: PathBuf,
     command_timeout: Option<Duration>,
     clip_duration_sec: Option<u64>,
+    access: YtdlpAccess,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct YtdlpAccess {
+    cookies_from_browser: Option<String>,
+    cookies_path: Option<PathBuf>,
+}
+
+impl YtdlpAccess {
+    pub(crate) fn from_config(config: &serde_json::Value) -> Self {
+        let cookies_from_browser = string_setting(
+            config,
+            &[
+                "cookies_from_browser",
+                "cookie_browser",
+                "ytdlp_cookies_from_browser",
+                "ytdlp_cookie_browser",
+            ],
+        );
+        let cookies_path = string_setting(
+            config,
+            &[
+                "cookies_path",
+                "cookies_file",
+                "ytdlp_cookies_path",
+                "ytdlp_cookies_file",
+            ],
+        )
+        .map(|path| expand_path(&path));
+
+        Self {
+            cookies_from_browser,
+            cookies_path,
+        }
+    }
+
+    pub(crate) fn apply_to_command(&self, command: &mut Command) {
+        if let Some(browser) = self.cookies_from_browser.as_deref() {
+            command.args(["--cookies-from-browser", browser]);
+        } else if let Some(path) = self.cookies_path.as_deref() {
+            command.arg("--cookies").arg(path);
+        }
+    }
 }
 
 impl YouTube {
@@ -66,6 +110,7 @@ impl YouTube {
             .get("clip_duration_sec")
             .and_then(|value| value.as_u64())
             .filter(|value| *value > 0);
+        let access = YtdlpAccess::from_config(&config);
 
         Ok(Self {
             channel_url,
@@ -74,6 +119,7 @@ impl YouTube {
             cache_dir,
             command_timeout,
             clip_duration_sec,
+            access,
         })
     }
 
@@ -123,6 +169,7 @@ impl SourcePlugin for YouTube {
     async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--flat-playlist", "--dump-json"]);
+        self.access.apply_to_command(&mut command);
         if let Some(max_videos) = self.max_videos {
             command.arg("--playlist-end").arg(max_videos.to_string());
         }
@@ -182,6 +229,7 @@ impl SourcePlugin for YouTube {
 
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--no-playlist", "-f", "best[height<=720]/best"]);
+        self.access.apply_to_command(&mut command);
         if let Some(duration_sec) = self.clip_duration_sec {
             command
                 .arg("--download-sections")
@@ -309,6 +357,17 @@ pub(crate) fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(shellexpand::tilde(path).into_owned())
 }
 
+fn string_setting(config: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        config
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
 pub(crate) fn safe_file_stem(value: &str) -> String {
     value
         .chars()
@@ -423,6 +482,32 @@ fi
         .unwrap();
 
         assert_eq!(source.clip_duration_sec(), Some(12));
+    }
+
+    #[test]
+    fn ytdlp_access_reads_browser_cookie_config() {
+        let access = YtdlpAccess::from_config(&json!({
+            "cookies_from_browser": "chrome:Default"
+        }));
+
+        assert_eq!(
+            access.cookies_from_browser.as_deref(),
+            Some("chrome:Default")
+        );
+        assert!(access.cookies_path.is_none());
+    }
+
+    #[test]
+    fn ytdlp_access_reads_cookie_file_config() {
+        let access = YtdlpAccess::from_config(&json!({
+            "cookies_path": "~/Downloads/youtube-cookies.txt"
+        }));
+
+        assert!(access.cookies_from_browser.is_none());
+        assert!(access
+            .cookies_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("Downloads/youtube-cookies.txt")));
     }
 
     #[cfg(unix)]

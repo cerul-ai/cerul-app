@@ -15,6 +15,7 @@ import {
   Pause,
   Play,
   Podcast,
+  RefreshCcw,
   Trash2,
   Wrench,
   Youtube,
@@ -32,6 +33,7 @@ export function SourceRow({
   onPause,
   onResume,
   onRemove,
+  onRetryFailed,
   onFix,
   onViewItems,
 }: {
@@ -41,6 +43,7 @@ export function SourceRow({
   onPause: () => void;
   onResume: () => void;
   onRemove: () => void;
+  onRetryFailed: () => void;
   onFix: () => void;
   onViewItems: () => void;
 }) {
@@ -86,7 +89,12 @@ export function SourceRow({
       <div>
         <strong className="clamp1">{source.name}</strong>
         <span className="muted">
-          {t(source.items === 1 ? "sourceRow.itemCountOne" : "sourceRow.itemCountOther", { count: source.items })} · {t("sourceRow.lastPolled", { when: source.lastPolled })}
+          {t(source.items === 1 ? "sourceRow.itemCountOne" : "sourceRow.itemCountOther", { count: source.items })}
+          {source.failedItems > 0
+            ? ` · ${t(source.failedItems === 1 ? "sourceRow.failedCountOne" : "sourceRow.failedCountOther", { count: source.failedItems })}`
+            : ""}
+          {" · "}
+          {t("sourceRow.lastPolled", { when: source.lastPolled })}
         </span>
       </div>
       {source.status === "error" ? (
@@ -127,6 +135,16 @@ export function SourceRow({
               <Library size={15} />
               <span>{t("sourceRow.viewItems")}</span>
             </button>
+            {source.failedItems > 0 && (source.type === "youtube" || source.type === "web_video") ? (
+              <button
+                type="button"
+                disabled={!canRunAction}
+                onClick={() => runAndClose(onRetryFailed)}
+              >
+                <RefreshCcw size={15} />
+                <span>{t("sourceRow.retryFailed")}</span>
+              </button>
+            ) : null}
             <button
               className="danger"
               type="button"
