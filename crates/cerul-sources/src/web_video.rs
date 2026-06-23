@@ -15,7 +15,10 @@ use tokio::{
 
 use crate::{
     url_policy::validate_external_http_url,
-    youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem, YtdlpAccess},
+    youtube::{
+        default_cache_dir, default_ytdlp_path, expand_path, is_ytdlp_inaccessible_video_error,
+        safe_file_stem, YtdlpAccess,
+    },
     FetchProgress, SourcePlugin,
 };
 
@@ -221,7 +224,65 @@ impl WebVideo {
                 serde_json::from_str(line).context("yt-dlp emitted invalid JSON")?;
             items.push(self.item_from_metadata(metadata, WebVideoSourceKind::Author)?);
         }
-        Ok(items)
+        self.filter_accessible_items(items).await
+    }
+
+    async fn is_accessible_video(&self, item: &DiscoveredItem) -> anyhow::Result<bool> {
+        let fetch_url = self.validated_fetch_url(item)?;
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        self.access.apply_to_command(&mut command);
+        command
+            .arg("--")
+            .arg(fetch_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = self.run_ytdlp(&mut command, "access discovery").await?;
+
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if is_ytdlp_inaccessible_video_error(&stderr) {
+            tracing::info!(
+                platform = self.classified.platform.as_str(),
+                external_id = %item.external_id,
+                title = item.title.as_deref().unwrap_or(""),
+                error = %stderr,
+                "skipping inaccessible web video during source discovery"
+            );
+            return Ok(false);
+        }
+
+        anyhow::bail!("yt-dlp access check failed: {stderr}");
+    }
+
+    async fn filter_accessible_items(
+        &self,
+        candidates: Vec<DiscoveredItem>,
+    ) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let mut accessible = Vec::with_capacity(candidates.len());
+        let mut skipped = 0usize;
+
+        for item in candidates {
+            if self.is_accessible_video(&item).await? {
+                accessible.push(item);
+            } else {
+                skipped += 1;
+            }
+        }
+
+        if skipped > 0 {
+            tracing::info!(
+                source_url = %self.classified.canonical_url,
+                accessible = accessible.len(),
+                skipped,
+                "filtered inaccessible web videos during source discovery"
+            );
+        }
+
+        Ok(accessible)
     }
 
     fn item_from_metadata(
@@ -687,9 +748,28 @@ mod tests {
             &script,
             r#"#!/bin/sh
 if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
-  printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
-  printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+  case "$*" in
+    *youtube*)
+      printf '{"id":"abc123","title":"First YouTube video","duration":12}\n'
+      printf '{"id":"membersOnly","title":"Members-only video","duration":56}\n'
+      printf '{"id":"def456","title":"Second YouTube video","duration":34}\n'
+      ;;
+    *)
+      printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
+      printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+      ;;
+  esac
 elif printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
+  url=""
+  for arg in "$@"; do
+    url="$arg"
+  done
+  case "$url" in
+    *membersOnly*)
+      printf 'ERROR: [youtube] membersOnly: This video is available to this channel'"'"'s members\n' >&2
+      exit 1
+      ;;
+  esac
   printf '{"id":"abc123","title":"Single video","duration":45,"webpage_url":"https://www.youtube.com/watch?v=abc123"}\n'
 else
   out=""
@@ -804,6 +884,29 @@ fi
         assert_eq!(
             items[0].metadata["webpage_url"].as_str(),
             Some("https://www.bilibili.com/video/BV1aa411c7mD")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_skips_inaccessible_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@cerul",
+            "max_videos": 3,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc123", "def456"]
         );
     }
 

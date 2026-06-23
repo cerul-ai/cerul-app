@@ -154,6 +154,65 @@ impl YouTube {
 
         output.with_context(|| format!("failed to run {}", self.ytdlp_path.display()))
     }
+
+    async fn is_accessible_video(&self, item: &DiscoveredItem) -> anyhow::Result<bool> {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        self.access.apply_to_command(&mut command);
+        command
+            .arg("--")
+            .arg(format!(
+                "https://www.youtube.com/watch?v={}",
+                item.external_id
+            ))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = self.run_ytdlp(&mut command, "access discovery").await?;
+
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if is_ytdlp_inaccessible_video_error(&stderr) {
+            tracing::info!(
+                external_id = %item.external_id,
+                title = item.title.as_deref().unwrap_or(""),
+                error = %stderr,
+                "skipping inaccessible YouTube video during source discovery"
+            );
+            return Ok(false);
+        }
+
+        anyhow::bail!("yt-dlp access check failed: {stderr}");
+    }
+
+    async fn filter_accessible_items(
+        &self,
+        candidates: Vec<DiscoveredItem>,
+    ) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let mut accessible = Vec::with_capacity(candidates.len());
+        let mut skipped = 0usize;
+
+        for item in candidates {
+            if self.is_accessible_video(&item).await? {
+                accessible.push(item);
+            } else {
+                skipped += 1;
+            }
+        }
+
+        if skipped > 0 {
+            tracing::info!(
+                channel_url = %self.channel_url,
+                accessible = accessible.len(),
+                skipped,
+                "filtered inaccessible YouTube videos during source discovery"
+            );
+        }
+
+        Ok(accessible)
+    }
 }
 
 #[async_trait]
@@ -214,7 +273,7 @@ impl SourcePlugin for YouTube {
             });
         }
 
-        Ok(items)
+        self.filter_accessible_items(items).await
     }
 
     async fn fetch(&self, item: &DiscoveredItem) -> anyhow::Result<PathBuf> {
@@ -368,6 +427,37 @@ fn string_setting(config: &serde_json::Value, keys: &[&str]) -> Option<String> {
     })
 }
 
+pub(crate) fn is_ytdlp_inaccessible_video_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("not a bot") {
+        return false;
+    }
+
+    normalized.contains("members-only")
+        || normalized.contains("available to this channel's members")
+        || normalized.contains("channel's members")
+        || normalized.contains("join this channel")
+        || normalized.contains("private video")
+        || normalized.contains("this video is private")
+        || normalized.contains("video unavailable")
+        || normalized.contains("this video is unavailable")
+        || normalized.contains("this video is not available")
+        || normalized.contains("not available in your country")
+        || normalized.contains("not available in your region")
+        || normalized.contains("not available from your location")
+        || normalized.contains("geo-restricted")
+        || normalized.contains("has been removed")
+        || normalized.contains("this content isn't available")
+        || normalized.contains("requires payment")
+        || normalized.contains("premium members")
+        || normalized.contains("purchase this video")
+        || normalized.contains("rent this video")
+        || normalized.contains("age-restricted")
+        || normalized.contains("sign in to confirm your age")
+        || normalized.contains("http error 403")
+        || normalized.contains("403: forbidden")
+}
+
 pub(crate) fn safe_file_stem(value: &str) -> String {
     value
         .chars()
@@ -395,8 +485,30 @@ mod tests {
             &script,
             r#"#!/bin/sh
 if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
-  printf '{"id":"abc123","title":"First video","duration":12}\n'
-  printf '{"id":"def456","title":"Second video","duration":34}\n'
+  case "$*" in
+    *"@mixed"*)
+      printf '{"id":"abc123","title":"First video","duration":12}\n'
+      printf '{"id":"membersOnly","title":"Members-only video","duration":56}\n'
+      printf '{"id":"def456","title":"Second video","duration":34}\n'
+      ;;
+    *)
+      printf '{"id":"abc123","title":"First video","duration":12}\n'
+      printf '{"id":"def456","title":"Second video","duration":34}\n'
+      ;;
+  esac
+elif printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
+  url=""
+  for arg in "$@"; do
+    url="$arg"
+  done
+  case "$url" in
+    *membersOnly*)
+      printf 'ERROR: [youtube] membersOnly: This video is available to this channel'"'"'s members\n' >&2
+      exit 1
+      ;;
+  esac
+  id="${url##*=}"
+  printf '{"id":"%s","title":"Checked video","duration":12}\n' "$id"
 else
   out=""
   while [ "$#" -gt 0 ]; do
@@ -437,6 +549,30 @@ fi
         assert_eq!(items[0].external_id, "abc123");
         assert_eq!(items[0].title.as_deref(), Some("First video"));
         assert_eq!(items[0].duration_sec, Some(12.0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovery_skips_inaccessible_channel_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = YouTube::new(json!({
+            "url": "https://www.youtube.com/@mixed",
+            "max_videos": 3,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc123", "def456"]
+        );
     }
 
     #[cfg(unix)]
@@ -562,5 +698,15 @@ fi
                     .join("yt-dlp"),
             )
         }));
+    }
+
+    #[test]
+    fn classifies_expected_inaccessible_ytdlp_errors() {
+        assert!(is_ytdlp_inaccessible_video_error(
+            "ERROR: [youtube] abc: This video is available to this channel's members"
+        ));
+        assert!(!is_ytdlp_inaccessible_video_error(
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot"
+        ));
     }
 }
