@@ -11,13 +11,14 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::Command,
+    task::JoinSet,
 };
 
 use crate::{
     url_policy::validate_external_http_url,
     youtube::{
         default_cache_dir, default_ytdlp_path, expand_path, is_ytdlp_inaccessible_video_error,
-        safe_file_stem, YtdlpAccess,
+        safe_file_stem, YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
     },
     FetchProgress, SourcePlugin,
 };
@@ -199,9 +200,6 @@ impl WebVideo {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--flat-playlist", "--dump-json"]);
         self.access.apply_to_command(&mut command);
-        if let Some(max_videos) = self.max_videos {
-            command.arg("--playlist-end").arg(max_videos.to_string());
-        }
         command
             .arg("--")
             .arg(&self.classified.canonical_url)
@@ -262,16 +260,58 @@ impl WebVideo {
         &self,
         candidates: Vec<DiscoveredItem>,
     ) -> anyhow::Result<Vec<DiscoveredItem>> {
-        let mut accessible = Vec::with_capacity(candidates.len());
+        let target = self.max_videos;
+        let mut accessible =
+            Vec::with_capacity(target.unwrap_or(candidates.len()).min(candidates.len()));
         let mut skipped = 0usize;
+        let mut in_flight = JoinSet::new();
+        let mut candidates = candidates.into_iter().enumerate();
 
-        for item in candidates {
-            if self.is_accessible_video(&item).await? {
-                accessible.push(item);
+        loop {
+            while in_flight.len() < YTDLP_ACCESS_CHECK_CONCURRENCY
+                && target
+                    .map(|target| accessible.len() < target)
+                    .unwrap_or(true)
+            {
+                let Some((index, item)) = candidates.next() else {
+                    break;
+                };
+                let source = self.clone();
+                in_flight.spawn(async move {
+                    let is_accessible = source.is_accessible_video(&item).await?;
+                    Ok::<_, anyhow::Error>((index, item, is_accessible))
+                });
+            }
+
+            if in_flight.is_empty() {
+                break;
+            }
+
+            let (index, item, is_accessible) = in_flight
+                .join_next()
+                .await
+                .expect("in-flight access check exists")
+                .context("failed to join yt-dlp access check task")??;
+            if is_accessible {
+                accessible.push((index, item));
             } else {
                 skipped += 1;
             }
+
+            if target
+                .map(|target| accessible.len() >= target)
+                .unwrap_or(false)
+            {
+                in_flight.abort_all();
+                break;
+            }
         }
+
+        accessible.sort_by_key(|(index, _)| *index);
+        let accessible = accessible
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
 
         if skipped > 0 {
             tracing::info!(
@@ -893,7 +933,7 @@ fi
         let temp = tempfile::tempdir().unwrap();
         let source = WebVideo::new(json!({
             "url": "https://www.youtube.com/@cerul",
-            "max_videos": 3,
+            "max_videos": 2,
             "ytdlp_path": fake_ytdlp(&temp),
             "cache_dir": temp.path().join("cache"),
         }))
