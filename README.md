@@ -15,7 +15,8 @@
     <a href="https://cerul.ai"><strong>Website</strong></a> &middot;
     <a href="https://github.com/cerul-ai/cerul"><strong>Main Repo</strong></a> &middot;
     <a href="https://x.com/cerul_hq"><img src="https://img.shields.io/badge/follow-%40cerul__hq-000?style=flat-square&logo=x" alt="Follow on X" /></a> &middot;
-    <a href="https://discord.gg/qHDEMQB9vN"><img src="https://img.shields.io/badge/join-Discord-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Join Discord" /></a>
+    <a href="https://discord.gg/qHDEMQB9vN"><img src="https://img.shields.io/badge/join-Discord-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Join Discord" /></a> &middot;
+    <a href="#community"><img src="https://img.shields.io/badge/join-WeChat-07C160?style=flat-square&logo=wechat&logoColor=white" alt="Join WeChat group" /></a>
   </p>
 
   <p>
@@ -149,6 +150,41 @@ Cerul App is in alpha. Current release: **0.0.32**. The foundation works end to 
 - Third-party binary license review (`ffmpeg`, `yt-dlp`, `qdrant`)
 
 Want newer ready-to-install builds? Star and watch the repo — public builds ship as GitHub Releases.
+
+## Community
+
+Questions, feedback, or just want to follow along? Join the conversation — pick whichever community is closest to you.
+
+**🇨🇳 中国 (China)** — scan to join the WeChat group or the QQ group:
+
+<table>
+<tr>
+<td align="center" valign="top" width="50%">
+
+**微信群 (WeChat)**
+
+「Cerul.ai 官方社群」
+
+<img src=".github/assets/wechat-group-qr.png" alt="Cerul.ai 官方微信社群二维码" width="220" />
+
+</td>
+<td align="center" valign="top" width="50%">
+
+**QQ 群 (QQ group)**
+
+群号 `715466401`
+
+<img src=".github/assets/qq-group-qr.png" alt="Cerul.ai QQ 群二维码" width="220" />
+
+</td>
+</tr>
+</table>
+
+**🌍 International** — chat with users and contributors worldwide on Discord:
+
+<a href="https://discord.gg/qHDEMQB9vN"><img src="https://img.shields.io/badge/Join%20our-Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord" /></a>
+
+> **Heads up:** the QR codes rotate periodically and may expire. The QQ group number (`715466401`) always works — just search it in QQ. If a WeChat scan fails, ping us on [Discord](https://discord.gg/qHDEMQB9vN) or [X / Twitter](https://x.com/cerul_hq) for the latest invite.
 
 ## How this fits with Cerul
 
