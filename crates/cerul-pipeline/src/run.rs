@@ -1722,7 +1722,7 @@ fn setting_string(paths: &AppPaths, key: &str) -> Option<String> {
             row.get(0)
         })
         .ok()?;
-    match serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| Value::String(raw)) {
+    match serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw)) {
         Value::String(value) => Some(value),
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),

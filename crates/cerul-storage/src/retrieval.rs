@@ -77,6 +77,17 @@ struct Window {
     summary_text: Option<String>,
 }
 
+struct ContentTextParts<'a> {
+    item: &'a ItemInfo,
+    source_label: Option<&'a str>,
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    transcript_text: Option<&'a str>,
+    ocr_text: Option<&'a str>,
+    visual_text: Option<&'a str>,
+    summary_text: Option<&'a str>,
+}
+
 pub fn rebuild_item_retrieval_units(
     paths: &AppPaths,
     item_id: &str,
@@ -358,16 +369,16 @@ fn build_timed_units(
         .or_else(|| nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone()));
         let representative_frame = nearest_frame(&frame_chunks, window.start_sec)
             .and_then(|chunk| chunk.frame_path.clone());
-        let content_text = content_text(
+        let content_text = content_text(ContentTextParts {
             item,
-            source_label.as_deref(),
-            window.start_sec,
-            window.end_sec,
-            transcript_text.as_deref(),
-            ocr_text.as_deref(),
-            visual_text.as_deref(),
-            summary_text.as_deref(),
-        );
+            source_label: source_label.as_deref(),
+            start_sec: window.start_sec,
+            end_sec: window.end_sec,
+            transcript_text: transcript_text.as_deref(),
+            ocr_text: ocr_text.as_deref(),
+            visual_text: visual_text.as_deref(),
+            summary_text: summary_text.as_deref(),
+        });
 
         units.push(StorageRetrievalUnit {
             id: retrieval_unit_id(&item.id, index),
@@ -457,16 +468,16 @@ fn image_unit(
     embedding_profile_id: &str,
 ) -> StorageRetrievalUnit {
     let summary_text = exif_summary(&chunk.metadata);
-    let content_text = content_text(
+    let content_text = content_text(ContentTextParts {
         item,
         source_label,
-        chunk.start_sec,
-        chunk.end_sec,
-        None,
-        None,
-        None,
-        summary_text.as_deref(),
-    );
+        start_sec: chunk.start_sec,
+        end_sec: chunk.end_sec,
+        transcript_text: None,
+        ocr_text: None,
+        visual_text: None,
+        summary_text: summary_text.as_deref(),
+    });
     StorageRetrievalUnit {
         id: retrieval_unit_id(&item.id, index),
         item_id: item.id.clone(),
@@ -773,18 +784,10 @@ fn overlaps(
     }
 }
 
-fn content_text(
-    item: &ItemInfo,
-    source_label: Option<&str>,
-    start_sec: Option<f64>,
-    end_sec: Option<f64>,
-    transcript_text: Option<&str>,
-    ocr_text: Option<&str>,
-    visual_text: Option<&str>,
-    summary_text: Option<&str>,
-) -> String {
+fn content_text(content: ContentTextParts<'_>) -> String {
     let mut parts = Vec::new();
-    if let Some(title) = item
+    if let Some(title) = content
+        .item
         .title
         .as_deref()
         .map(str::trim)
@@ -792,30 +795,36 @@ fn content_text(
     {
         parts.push(format!("Title: {}", limit_text(title, 300)));
     }
-    if let Some(source) = source_label.map(str::trim).filter(|text| !text.is_empty()) {
+    if let Some(source) = content
+        .source_label
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
         parts.push(format!("Source: {}", limit_text(source, 300)));
     }
-    if start_sec.is_some() || end_sec.is_some() {
+    if content.start_sec.is_some() || content.end_sec.is_some() {
         parts.push(format!(
             "Time: {}-{}",
-            start_sec
+            content
+                .start_sec
                 .map(format_seconds)
                 .unwrap_or_else(|| "?".to_string()),
-            end_sec
+            content
+                .end_sec
                 .map(format_seconds)
                 .unwrap_or_else(|| "?".to_string())
         ));
     }
-    if let Some(text) = transcript_text {
+    if let Some(text) = content.transcript_text {
         parts.push(format!("Transcript: {text}"));
     }
-    if let Some(text) = ocr_text {
+    if let Some(text) = content.ocr_text {
         parts.push(format!("On-screen text: {text}"));
     }
-    if let Some(text) = visual_text {
+    if let Some(text) = content.visual_text {
         parts.push(format!("Visual context: {text}"));
     }
-    if let Some(text) = summary_text {
+    if let Some(text) = content.summary_text {
         parts.push(format!("Topics/Summary: {text}"));
     }
     parts.join("\n")

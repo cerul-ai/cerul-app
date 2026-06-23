@@ -1,6 +1,6 @@
 {
   "name": "@cerul/electron-shell",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "description": "Cerul desktop shell",

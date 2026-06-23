@@ -908,8 +908,7 @@ fn hydrate_legacy_chunks(
         .iter()
         .map(|hit| hit.chunk_id.clone())
         .collect::<Vec<_>>();
-    let placeholders = std::iter::repeat("?")
-        .take(chunk_ids.len())
+    let placeholders = std::iter::repeat_n("?", chunk_ids.len())
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
@@ -1012,7 +1011,7 @@ fn apply_match_scores(results: &mut [SearchResult]) {
 
 fn unified_match_score(score: f32, exact_match: bool, source_mask: u8) -> f32 {
     if exact_match {
-        return score.max(0.92).min(0.98);
+        return score.clamp(0.92, 0.98);
     }
     let lexical_boost = if source_mask & SOURCE_TEXT != 0 {
         0.03
@@ -2700,6 +2699,7 @@ mod tests {
         .unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn manual_unit(
         id: &str,
         item_id: &str,
