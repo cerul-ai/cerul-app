@@ -12,6 +12,7 @@ use crate::{url_policy::validate_external_http_url, SourcePlugin};
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
 pub(crate) const YTDLP_ACCESS_CHECK_CONCURRENCY: usize = 4;
+const MAX_EXTRA_ACCESS_CANDIDATES: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct YouTube {
@@ -197,53 +198,62 @@ impl YouTube {
             Vec::with_capacity(target.unwrap_or(candidates.len()).min(candidates.len()));
         let mut skipped = 0usize;
         let mut in_flight = JoinSet::new();
-        let mut candidates = candidates.into_iter().enumerate();
+        let mut results = std::iter::repeat_with(|| None)
+            .take(candidates.len())
+            .collect::<Vec<Option<anyhow::Result<bool>>>>();
+        let mut next_to_spawn = 0usize;
+        let mut next_to_consider = 0usize;
+        let mut reached_target = false;
 
         loop {
             while in_flight.len() < YTDLP_ACCESS_CHECK_CONCURRENCY
+                && next_to_spawn < candidates.len()
                 && target
                     .map(|target| accessible.len() < target)
                     .unwrap_or(true)
             {
-                let Some((index, item)) = candidates.next() else {
-                    break;
-                };
+                let index = next_to_spawn;
+                let item = candidates[index].clone();
                 let source = self.clone();
                 in_flight.spawn(async move {
-                    let is_accessible = source.is_accessible_video(&item).await?;
-                    Ok::<_, anyhow::Error>((index, item, is_accessible))
+                    let is_accessible = source.is_accessible_video(&item).await;
+                    (index, is_accessible)
                 });
+                next_to_spawn += 1;
             }
 
-            if in_flight.is_empty() {
+            while next_to_consider < results.len() {
+                let Some(result) = results[next_to_consider].take() else {
+                    break;
+                };
+                if result? {
+                    accessible.push(candidates[next_to_consider].clone());
+                } else {
+                    skipped += 1;
+                }
+
+                next_to_consider += 1;
+                if target
+                    .map(|target| accessible.len() >= target)
+                    .unwrap_or(false)
+                {
+                    in_flight.abort_all();
+                    reached_target = true;
+                    break;
+                }
+            }
+
+            if reached_target || in_flight.is_empty() {
                 break;
             }
 
-            let (index, item, is_accessible) = in_flight
+            let (index, result) = in_flight
                 .join_next()
                 .await
                 .expect("in-flight access check exists")
-                .context("failed to join yt-dlp access check task")??;
-            if is_accessible {
-                accessible.push((index, item));
-            } else {
-                skipped += 1;
-            }
-
-            if target
-                .map(|target| accessible.len() >= target)
-                .unwrap_or(false)
-            {
-                in_flight.abort_all();
-                break;
-            }
+                .context("failed to join yt-dlp access check task")?;
+            results[index] = Some(result);
         }
-
-        accessible.sort_by_key(|(index, _)| *index);
-        let accessible = accessible
-            .into_iter()
-            .map(|(_, item)| item)
-            .collect::<Vec<_>>();
 
         if skipped > 0 {
             tracing::info!(
@@ -272,6 +282,11 @@ impl SourcePlugin for YouTube {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--flat-playlist", "--dump-json"]);
         self.access.apply_to_command(&mut command);
+        if let Some(candidate_limit) = ytdlp_access_candidate_limit(self.max_videos) {
+            command
+                .arg("--playlist-end")
+                .arg(candidate_limit.to_string());
+        }
         command
             .arg("--")
             .arg(&self.channel_url)
@@ -467,6 +482,12 @@ fn string_setting(config: &serde_json::Value, keys: &[&str]) -> Option<String> {
     })
 }
 
+pub(crate) fn ytdlp_access_candidate_limit(max_videos: Option<usize>) -> Option<usize> {
+    max_videos.map(|target| {
+        target.saturating_add(target.saturating_mul(2).min(MAX_EXTRA_ACCESS_CANDIDATES))
+    })
+}
+
 pub(crate) fn is_ytdlp_inaccessible_video_error(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     if normalized.contains("not a bot") {
@@ -530,6 +551,15 @@ if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
       printf '{"id":"def456","title":"Second video","duration":34}\n'
       printf '{"id":"ghi789","title":"Third video","duration":78}\n'
       ;;
+    *"@order"*)
+      printf '{"id":"slowFirst","title":"Slow first video","duration":12}\n'
+      printf '{"id":"fastSecond","title":"Fast second video","duration":34}\n'
+      printf '{"id":"fastThird","title":"Fast third video","duration":56}\n'
+      ;;
+    *"@unneeded-error"*)
+      printf '{"id":"abc123","title":"First video","duration":12}\n'
+      printf '{"id":"forbidden","title":"Forbidden later video","duration":34}\n'
+      ;;
     *"@mixed"*)
       printf '{"id":"abc123","title":"First video","duration":12}\n'
       printf '{"id":"membersOnly","title":"Members-only video","duration":56}\n'
@@ -546,8 +576,15 @@ elif printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
     url="$arg"
   done
   case "$url" in
+    *slowFirst*)
+      sleep 1
+      ;;
     *membersOnly*)
       printf 'ERROR: [youtube] membersOnly: This video is available to this channel'"'"'s members\n' >&2
+      exit 1
+      ;;
+    *forbidden*)
+      printf 'ERROR: [youtube] forbidden: HTTP Error 403: Forbidden\n' >&2
       exit 1
       ;;
   esac
@@ -640,6 +677,47 @@ fi
                 .collect::<Vec<_>>(),
             vec!["abc123", "def456"]
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovery_preserves_playlist_order_with_concurrent_access_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = YouTube::new(json!({
+            "url": "https://www.youtube.com/@order",
+            "max_videos": 2,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["slowFirst", "fastSecond"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovery_ignores_unneeded_later_probe_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = YouTube::new(json!({
+            "url": "https://www.youtube.com/@unneeded-error",
+            "max_videos": 1,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "abc123");
     }
 
     #[cfg(unix)]
@@ -778,5 +856,13 @@ fi
         assert!(!is_ytdlp_inaccessible_video_error(
             "ERROR: [youtube] abc: Sign in to confirm you're not a bot"
         ));
+    }
+
+    #[test]
+    fn access_candidate_limit_overfetches_with_a_bound() {
+        assert_eq!(ytdlp_access_candidate_limit(None), None);
+        assert_eq!(ytdlp_access_candidate_limit(Some(1)), Some(3));
+        assert_eq!(ytdlp_access_candidate_limit(Some(50)), Some(150));
+        assert_eq!(ytdlp_access_candidate_limit(Some(500)), Some(700));
     }
 }
