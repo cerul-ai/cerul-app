@@ -1,0 +1,47 @@
+{
+  "repository": "yt-dlp/yt-dlp",
+  "channel": "stable",
+  "version": "2026.06.09",
+  "releaseUrl": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.06.09",
+  "releasePublishedAt": "2026-06-09T23:26:57Z",
+  "assets": {
+    "yt-dlp.exe": {
+      "sha256": "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe"
+    },
+    "yt-dlp_linux": {
+      "sha256": "bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp_linux"
+    },
+    "yt-dlp_linux_aarch64": {
+      "sha256": "cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp_linux_aarch64"
+    },
+    "yt-dlp_macos": {
+      "sha256": "b82c3626952e6c14eaf654cc565866775ffd0b9ffb7021628ac59b42c2f4f244",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp_macos"
+    }
+  },
+  "riskKeywords": [
+    "bilibili",
+    "youtube",
+    "extractor",
+    "cookies",
+    "cookies-from-browser",
+    "browser",
+    "captcha",
+    "rate limit",
+    "403",
+    "playlist",
+    "format",
+    "download",
+    "ffmpeg",
+    "node",
+    "deno",
+    "ejs",
+    "deprecated",
+    "removed",
+    "breaking",
+    "security"
+  ]
+}

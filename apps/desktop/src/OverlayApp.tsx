@@ -356,7 +356,7 @@ export function OverlayApp() {
           url: classified.url,
           platform: classified.platform,
           source_kind: classified.sourceKind,
-          max_videos: classified.sourceKind === "author" ? 0 : 1,
+          max_videos: classified.sourceKind === "author" ? 20 : 1,
         });
       } else {
         await api.addSource("rss_podcast", { url, max_episodes: 50 });

@@ -20,6 +20,7 @@ use crate::{
 };
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
+const DEFAULT_AUTHOR_MAX_VIDEOS: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct WebVideo {
@@ -112,7 +113,7 @@ impl WebVideo {
         let max_videos = match classified.kind {
             WebVideoSourceKind::Single => Some(1),
             WebVideoSourceKind::Author => match max_videos {
-                Some(0) | None => None,
+                Some(0) | None => Some(DEFAULT_AUTHOR_MAX_VIDEOS),
                 Some(value) => Some(value),
             },
         };
@@ -751,19 +752,27 @@ fi
     }
 
     #[test]
-    fn zero_max_videos_means_unlimited_for_author() {
+    fn author_defaults_to_twenty_videos() {
         let temp = tempfile::tempdir().unwrap();
-        let source = WebVideo::new(json!({
-            "url": "https://space.bilibili.com/12345",
-            "max_videos": 0,
-            "ytdlp_path": fake_ytdlp(&temp),
-            "cache_dir": temp.path().join("cache"),
-        }))
-        .unwrap();
+        for config in [
+            json!({
+                "url": "https://space.bilibili.com/12345",
+                "ytdlp_path": fake_ytdlp(&temp),
+                "cache_dir": temp.path().join("cache"),
+            }),
+            json!({
+                "url": "https://space.bilibili.com/12345",
+                "max_videos": 0,
+                "ytdlp_path": fake_ytdlp(&temp),
+                "cache_dir": temp.path().join("cache"),
+            }),
+        ] {
+            let source = WebVideo::new(config).unwrap();
 
-        assert_eq!(source.platform(), "bilibili");
-        assert_eq!(source.source_kind(), "author");
-        assert_eq!(source.max_videos(), None);
+            assert_eq!(source.platform(), "bilibili");
+            assert_eq!(source.source_kind(), "author");
+            assert_eq!(source.max_videos(), Some(DEFAULT_AUTHOR_MAX_VIDEOS));
+        }
     }
 
     #[cfg(unix)]

@@ -25,8 +25,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ytdlp-preflight:
+    name: Check bundled yt-dlp pin
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Check bundled yt-dlp pin
+        run: node scripts/check-ytdlp-release.mjs
+
   macos-update-assets:
     name: Build macOS update assets
+    needs: ytdlp-preflight
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7

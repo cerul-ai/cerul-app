@@ -109,7 +109,31 @@ run() {
 # installers via extraResources, so they must be reproducible and verified —
 # `releases/latest` plus no checksum meant any compromised upstream release
 # would ship to users unnoticed.
-YTDLP_VERSION="${CERUL_YTDLP_VERSION:-2026.06.09}"
+YTDLP_MANIFEST="$ROOT/third-party/yt-dlp-manifest.json"
+
+manifest_value() {
+  local key="$1"
+  node -e '
+    const fs = require("fs");
+    const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const value = manifest[process.argv[2]];
+    if (value === undefined || value === null || value === "") process.exit(1);
+    process.stdout.write(String(value));
+  ' "$YTDLP_MANIFEST" "$key"
+}
+
+manifest_asset_sha256() {
+  local asset="$1"
+  node -e '
+    const fs = require("fs");
+    const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const asset = manifest.assets?.[process.argv[2]];
+    if (!asset?.sha256) process.exit(1);
+    process.stdout.write(asset.sha256);
+  ' "$YTDLP_MANIFEST" "$asset"
+}
+
+YTDLP_VERSION="${CERUL_YTDLP_VERSION:-$(manifest_value version)}"
 QDRANT_VERSION="${CERUL_QDRANT_VERSION:-v1.18.2}"
 # Cerul-vendored, self-contained LGPL ffmpeg (built from official source with no
 # --enable-gpl / x264, hosted on the cerul-app releases). See ffmpeg_url().
@@ -117,11 +141,13 @@ FFMPEG_VERSION="${CERUL_FFMPEG_VERSION:-7.1}"
 
 # sha256 per pinned asset. Update together with the versions above.
 expected_sha256() {
+  local manifest_hash
+  if manifest_hash="$(manifest_asset_sha256 "$1" 2>/dev/null)"; then
+    echo "$manifest_hash"
+    return 0
+  fi
+
   case "$1" in
-    yt-dlp_macos) echo "b82c3626952e6c14eaf654cc565866775ffd0b9ffb7021628ac59b42c2f4f244" ;;
-    yt-dlp_linux) echo "bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66" ;;
-    yt-dlp_linux_aarch64) echo "cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd" ;;
-    yt-dlp.exe) echo "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27" ;;
     qdrant-aarch64-apple-darwin.tar.gz) echo "859f487e316ae1bda3b5d7c1e129a0a7344424d992503c188979ca6ac1b47253" ;;
     qdrant-x86_64-apple-darwin.tar.gz) echo "d395eb3d96c2196bbb8c611b800842928fb8b4997924b585bf42ce0ceb90fa1f" ;;
     qdrant-aarch64-unknown-linux-musl.tar.gz) echo "2ead5bb8206289b67c930f0eb29123228ddb43c2344551a0947cbc9046f92c6c" ;;

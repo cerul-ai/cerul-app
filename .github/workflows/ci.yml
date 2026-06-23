@@ -65,7 +65,7 @@ jobs:
               git diff-tree --no-commit-id --name-only -r HEAD > "$changed"
             fi
 
-            if grep -Eq '^(Cargo\.toml|Cargo\.lock|crates/|mlx-sidecar/|scripts/.*(fetch-binaries|build-installers|smoke)|\.github/workflows/ci\.yml)' "$changed"; then
+            if grep -Eq '^(Cargo\.toml|Cargo\.lock|crates/|mlx-sidecar/|third-party/yt-dlp-manifest\.json|scripts/.*(check-ytdlp-release|fetch-binaries|build-installers|smoke)|\.github/workflows/ci\.yml)' "$changed"; then
               rust=true
             fi
 
@@ -89,6 +89,8 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
+      - name: Check bundled yt-dlp pin
+        run: node scripts/check-ytdlp-release.mjs
       - uses: dtolnay/rust-toolchain@stable
         if: steps.changes.outputs.rust == 'true'
         with:

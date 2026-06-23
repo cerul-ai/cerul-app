@@ -33,6 +33,10 @@ import { SourcePreview } from "../components/source-preview";
 import { openDialog } from "../lib/desktopHost";
 import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 
+const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 20;
+const MIN_WEB_VIDEO_AUTHOR_MAX = 1;
+const MAX_WEB_VIDEO_AUTHOR_MAX = 200;
+
 const sourceTabs: {
   id: "folder" | "file" | "youtube" | "podcast";
   icon: LucideIcon;
@@ -58,6 +62,7 @@ export function AddSourceDialog({
   const [folderPath, setFolderPath] = useState("");
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [webVideoMax, setWebVideoMax] = useState(DEFAULT_WEB_VIDEO_AUTHOR_MAX);
   const [webVideoPreview, setWebVideoPreview] = useState<WebVideoClassification | null>(null);
   const [rssUrl, setRssUrl] = useState("");
   const [rssMax, setRssMax] = useState(25);
@@ -109,6 +114,10 @@ export function AddSourceDialog({
     setYoutubeUrl(value);
     setYoutubeValidation({ status: "idle", message: null });
     setWebVideoPreview(null);
+  }
+
+  function updateWebVideoMax(value: number) {
+    setWebVideoMax(clampWebVideoMax(value));
   }
 
   function updateRssUrl(value: string) {
@@ -194,6 +203,7 @@ export function AddSourceDialog({
             body: t("addSource.webVideo.confirmAuthor.body", {
               platform: t(`addSource.webVideo.platform.${preview.platform}`),
               hostname: preview.hostname,
+              max: webVideoMax,
             }),
             confirmLabel: t("addSource.webVideo.confirmAuthor.confirm"),
           });
@@ -205,7 +215,7 @@ export function AddSourceDialog({
           url: preview.url,
           platform: preview.platform,
           source_kind: preview.sourceKind,
-          max_videos: preview.sourceKind === "author" ? 0 : 1,
+          max_videos: preview.sourceKind === "author" ? webVideoMax : 1,
         });
       } else {
         if (!(await validateRssUrl())) {
@@ -276,6 +286,8 @@ export function AddSourceDialog({
               url={youtubeUrl}
               setUrl={updateYoutubeUrl}
               preview={webVideoPreview}
+              max={webVideoMax}
+              setMax={updateWebVideoMax}
               validation={youtubeValidation}
               onValidate={() => void validateYoutubeUrl()}
             />
@@ -326,6 +338,13 @@ export function AddSourceDialog({
       </section>
     </div>
   );
+}
+
+function clampWebVideoMax(value: number) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_WEB_VIDEO_AUTHOR_MAX;
+  }
+  return Math.min(MAX_WEB_VIDEO_AUTHOR_MAX, Math.max(MIN_WEB_VIDEO_AUTHOR_MAX, Math.round(value)));
 }
 
 function FolderTab({
@@ -403,12 +422,16 @@ function YoutubeTab({
   url,
   setUrl,
   preview,
+  max,
+  setMax,
   validation,
   onValidate,
 }: {
   url: string;
   setUrl: (url: string) => void;
   preview: WebVideoClassification | null;
+  max: number;
+  setMax: (max: number) => void;
   validation: ValidationState;
   onValidate: () => void;
 }) {
@@ -416,7 +439,7 @@ function YoutubeTab({
   const initials = preview?.platform === "bilibili" ? "BI" : "YT";
   const validDetail =
     preview?.sourceKind === "author"
-      ? t("addSource.webVideo.validDetailAuthor")
+      ? t("addSource.webVideo.validDetailAuthor", { max })
       : t("addSource.webVideo.validDetailSingle");
   return (
     <div className="col gap-3">
@@ -450,6 +473,31 @@ function YoutubeTab({
         idleMessage={t("source.preview.webVideoIdle")}
         validDetail={validDetail}
       />
+      {preview?.sourceKind === "author" ? (
+        <div className="field-label">
+          <div className="inline-field">
+            <span>{t("addSource.youtube.maxLabel")}</span>
+            <input
+              className="input"
+              type="number"
+              min={MIN_WEB_VIDEO_AUTHOR_MAX}
+              max={MAX_WEB_VIDEO_AUTHOR_MAX}
+              value={max}
+              onChange={(event) => setMax(Number(event.currentTarget.value))}
+            />
+          </div>
+          <input
+            type="range"
+            min={MIN_WEB_VIDEO_AUTHOR_MAX}
+            max={MAX_WEB_VIDEO_AUTHOR_MAX}
+            step={1}
+            value={max}
+            onChange={(event) => setMax(Number(event.currentTarget.value))}
+            aria-label={t("addSource.youtube.maxLabel")}
+          />
+          <p className="field-hint">{t("addSource.webVideo.authorMaxHint", { max })}</p>
+        </div>
+      ) : null}
       <p className="field-hint">{t("addSource.youtube.helper")}</p>
     </div>
   );

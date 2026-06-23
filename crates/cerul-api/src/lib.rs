@@ -1629,7 +1629,7 @@ fn source_config_with_web_access_settings(
     let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
         .ok()
         .flatten()
-        .unwrap_or_else(|| "off".to_string())
+        .unwrap_or_else(|| "browser".to_string())
         .trim()
         .to_ascii_lowercase();
     match mode.as_str() {
@@ -1730,13 +1730,26 @@ fn mark_source_discovery_error(
         config = json!({});
     }
     if let Some(config) = config.as_object_mut() {
-        config.insert("last_error".to_string(), Value::String(error.to_string()));
+        config.insert(
+            "last_error".to_string(),
+            Value::String(friendly_source_discovery_error(error)),
+        );
+        config.insert(
+            "last_error_detail".to_string(),
+            Value::String(error.to_string()),
+        );
     }
     conn.execute(
         "UPDATE sources SET status = 'error', config = ?2 WHERE id = ?1",
         (source_id, config.to_string()),
     )?;
     Ok(())
+}
+
+fn friendly_source_discovery_error(error: &str) -> String {
+    classify_job_error("index_video", error)
+        .map(|info| info.message)
+        .unwrap_or_else(|| error.to_string())
 }
 
 async fn remove_source(
@@ -2934,6 +2947,47 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "members_only",
             "这是会员专享视频。只有连接的浏览器账号具备会员权限时才能下载。".to_string(),
             "Indexing",
+        )
+    } else if normalized.contains("captcha")
+        || normalized.contains("geetest")
+        || normalized.contains("risk control")
+        || normalized.contains("risk-control")
+        || normalized.contains("http error 412")
+        || normalized.contains("412: precondition failed")
+        || normalized.contains("precondition failed")
+        || normalized.contains("风控")
+        || normalized.contains("验证码")
+        || normalized.contains("v_voucher")
+        || normalized.contains("verification required")
+        || normalized.contains("verify you are human")
+    {
+        (
+            "platform_verification_required",
+            "平台触发了风控或验证码。使用浏览器登录态后稍后重试。".to_string(),
+            "Indexing",
+        )
+    } else if normalized.contains("http error 429")
+        || normalized.contains("429: too many requests")
+        || normalized.contains("too many requests")
+        || normalized.contains("rate limit")
+        || normalized.contains("rate-limit")
+        || normalized.contains("限流")
+    {
+        (
+            "rate_limited",
+            "平台暂时限流下载请求。稍后重试，或减少作者主页导入数量。".to_string(),
+            "Sources",
+        )
+    } else if normalized.contains("yt-dlp")
+        && (normalized.contains("update")
+            || normalized.contains("out of date")
+            || normalized.contains("outdated")
+            || normalized.contains("please update"))
+    {
+        (
+            "downloader_outdated",
+            "视频下载器可能过旧，需要更新后重试。".to_string(),
+            "Sources",
         )
     } else if normalized.contains("http error 403") || normalized.contains("403: forbidden") {
         (
@@ -4656,6 +4710,104 @@ mod tests {
 
         assert_eq!(info.code, "browser_cookies_required");
         assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_bilibili_risk_control_as_platform_verification() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: [BiliBili] BV1xx: risk control triggered; verification required with captcha.",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "platform_verification_required");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_bilibili_precondition_failed_as_platform_verification() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: [BiliBili] BV1xx: Unable to download JSON metadata: HTTP Error 412: Precondition Failed",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "platform_verification_required");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_rate_limit_as_rate_limited() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: HTTP Error 429: Too Many Requests",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "rate_limited");
+        assert_eq!(info.settings_section, "Sources");
+    }
+
+    #[test]
+    fn classify_ytdlp_update_error_as_downloader_outdated() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: This extractor is out of date; please update yt-dlp.",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "downloader_outdated");
+        assert_eq!(info.settings_section, "Sources");
+    }
+
+    #[test]
+    fn source_config_with_web_access_settings_defaults_to_browser_cookies() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let config = source_config_with_web_access_settings(
+            &paths,
+            "web_video",
+            json!({ "url": "https://www.bilibili.com/video/BV1abc123456" }),
+        );
+
+        assert_eq!(config["cookies_from_browser"].as_str(), Some("chrome"));
+    }
+
+    #[test]
+    fn source_discovery_error_stores_friendly_message_and_raw_detail() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'web_video', '{}', 'syncing')",
+            [],
+        )
+        .unwrap();
+
+        mark_source_discovery_error(
+            &paths,
+            "source-1",
+            "yt-dlp author discovery failed: ERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed",
+        )
+        .unwrap();
+
+        let (status, raw_config): (String, String) = conn
+            .query_row(
+                "SELECT status, config FROM sources WHERE id = 'source-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let config: Value = serde_json::from_str(&raw_config).unwrap();
+
+        assert_eq!(status, "error");
+        assert_eq!(
+            config["last_error"].as_str(),
+            Some("平台触发了风控或验证码。使用浏览器登录态后稍后重试。")
+        );
+        assert!(config["last_error_detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("HTTP Error 412")));
     }
 
     #[test]
