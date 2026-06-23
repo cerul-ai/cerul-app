@@ -192,7 +192,6 @@ import {
 import { coarseStepKey } from "./lib/jobs";
 import {
   mapSourceRecord,
-  sourceError,
   sourceName,
   sourceStatus,
   sourceType,

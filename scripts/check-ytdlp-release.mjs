@@ -85,6 +85,24 @@ function releaseAsset(release, name) {
   return release.assets?.find((asset) => asset.name === name) ?? null;
 }
 
+function validateManifestHashes(manifest, checksums) {
+  const mismatches = [];
+  for (const assetName of requiredAssets) {
+    const expected = checksums.get(assetName);
+    const actual = manifest.assets?.[assetName]?.sha256?.toLowerCase();
+    if (!actual) {
+      mismatches.push(`${assetName}: missing manifest hash`);
+    } else if (actual !== expected) {
+      mismatches.push(`${assetName}: manifest=${actual} upstream=${expected}`);
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Bundled yt-dlp manifest hashes do not match upstream SHA2-256SUMS:\n${mismatches.join("\n")}`,
+    );
+  }
+}
+
 function riskReport(manifest, release) {
   const keywords = (manifest.riskKeywords ?? []).map((keyword) => String(keyword).toLowerCase());
   const body = release.body ?? "";
@@ -101,7 +119,7 @@ function riskReport(manifest, release) {
     if (!clean) {
       continue;
     }
-    if (clean.startsWith("[![") || clean.includes("img.shields.io")) {
+    if (clean.startsWith("[![")) {
       continue;
     }
     const lower = clean.toLowerCase();
@@ -195,6 +213,7 @@ async function main() {
       `Bundled yt-dlp is stale: manifest has ${manifest.version}, latest stable is ${latestVersion}. Run: node scripts/check-ytdlp-release.mjs --update`,
     );
   } else {
+    validateManifestHashes(manifest, checksums);
     console.log(`Bundled yt-dlp is current: ${manifest.version}`);
   }
 }

@@ -53,9 +53,13 @@ export function sourceStatus(status: string): SourceStatus {
   return "active";
 }
 
-export function sourceError(record: api.SourceRecord, status: SourceStatus) {
+export function sourceError(record: api.SourceRecord, status: SourceStatus, t: TFunction) {
   if (status !== "error") {
     return null;
+  }
+  const errorCode = record.config.last_error_code;
+  if (typeof errorCode === "string" && errorCode.trim()) {
+    return t(`jobs.error.${errorCode}`, { capability: t("source.preview.webVideoTitle") });
   }
   const errorValue = record.config.error ?? record.config.last_error;
   if (typeof errorValue === "string" && errorValue.trim()) {
@@ -78,6 +82,6 @@ export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: T
     items: itemsForSource.length,
     failedItems: itemsForSource.filter((item) => item.status === "failed").length,
     lastPolled: formatUnixTime(record.last_poll_at, t),
-    error: sourceError(record, status),
+    error: sourceError(record, status, t),
   };
 }

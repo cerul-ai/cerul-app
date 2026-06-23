@@ -1730,10 +1730,14 @@ fn mark_source_discovery_error(
         config = json!({});
     }
     if let Some(config) = config.as_object_mut() {
-        config.insert(
-            "last_error".to_string(),
-            Value::String(friendly_source_discovery_error(error)),
-        );
+        if let Some(info) = classify_job_error("index_video", error) {
+            config.insert("last_error_code".to_string(), Value::String(info.code));
+            config.insert(
+                "last_error_settings_section".to_string(),
+                Value::String(info.settings_section),
+            );
+        }
+        config.insert("last_error".to_string(), Value::String(error.to_string()));
         config.insert(
             "last_error_detail".to_string(),
             Value::String(error.to_string()),
@@ -1744,12 +1748,6 @@ fn mark_source_discovery_error(
         (source_id, config.to_string()),
     )?;
     Ok(())
-}
-
-fn friendly_source_discovery_error(error: &str) -> String {
-    classify_job_error("index_video", error)
-        .map(|info| info.message)
-        .unwrap_or_else(|| error.to_string())
 }
 
 async fn remove_source(
@@ -2931,6 +2929,7 @@ fn weekly_review_for_paths(paths: &AppPaths) -> anyhow::Result<WeeklyReviewRespo
 fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
     let normalized = message.to_ascii_lowercase();
     let capability = capability_for_job_type(job_type).to_string();
+    let downloader_error = is_downloader_error(&normalized);
     let (code, friendly, settings_section) = if normalized.contains("sign in to confirm")
         && (normalized.contains("not a bot") || normalized.contains("cookies"))
     {
@@ -2948,30 +2947,32 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "这是会员专享视频。只有连接的浏览器账号具备会员权限时才能下载。".to_string(),
             "Indexing",
         )
-    } else if normalized.contains("captcha")
-        || normalized.contains("geetest")
-        || normalized.contains("risk control")
-        || normalized.contains("risk-control")
-        || normalized.contains("http error 412")
-        || normalized.contains("412: precondition failed")
-        || normalized.contains("precondition failed")
-        || normalized.contains("风控")
-        || normalized.contains("验证码")
-        || normalized.contains("v_voucher")
-        || normalized.contains("verification required")
-        || normalized.contains("verify you are human")
+    } else if downloader_error
+        && (normalized.contains("captcha")
+            || normalized.contains("geetest")
+            || normalized.contains("risk control")
+            || normalized.contains("risk-control")
+            || normalized.contains("http error 412")
+            || normalized.contains("412: precondition failed")
+            || normalized.contains("precondition failed")
+            || normalized.contains("风控")
+            || normalized.contains("验证码")
+            || normalized.contains("v_voucher")
+            || normalized.contains("verification required")
+            || normalized.contains("verify you are human"))
     {
         (
             "platform_verification_required",
             "平台触发了风控或验证码。使用浏览器登录态后稍后重试。".to_string(),
             "Indexing",
         )
-    } else if normalized.contains("http error 429")
-        || normalized.contains("429: too many requests")
-        || normalized.contains("too many requests")
-        || normalized.contains("rate limit")
-        || normalized.contains("rate-limit")
-        || normalized.contains("限流")
+    } else if downloader_error
+        && (normalized.contains("http error 429")
+            || normalized.contains("429: too many requests")
+            || normalized.contains("too many requests")
+            || normalized.contains("rate limit")
+            || normalized.contains("rate-limit")
+            || normalized.contains("限流"))
     {
         (
             "rate_limited",
@@ -3063,6 +3064,12 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         settings_section: settings_section.to_string(),
         message: friendly,
     })
+}
+
+fn is_downloader_error(normalized: &str) -> bool {
+    normalized.contains("yt-dlp")
+        || normalized.contains("[bilibili]")
+        || normalized.contains("[youtube]")
 }
 
 fn capability_for_job_type(job_type: &str) -> &'static str {
@@ -4749,6 +4756,17 @@ mod tests {
     }
 
     #[test]
+    fn classify_provider_rate_limit_does_not_use_downloader_guidance() {
+        let info = classify_job_error(
+            "index_video",
+            "embedding provider returned HTTP Error 429: Too Many Requests",
+        )
+        .unwrap();
+
+        assert_ne!(info.code, "rate_limited");
+    }
+
+    #[test]
     fn classify_ytdlp_update_error_as_downloader_outdated() {
         let info = classify_job_error(
             "index_video",
@@ -4802,9 +4820,12 @@ mod tests {
 
         assert_eq!(status, "error");
         assert_eq!(
-            config["last_error"].as_str(),
-            Some("平台触发了风控或验证码。使用浏览器登录态后稍后重试。")
+            config["last_error_code"].as_str(),
+            Some("platform_verification_required")
         );
+        assert!(config["last_error"]
+            .as_str()
+            .is_some_and(|message| message.contains("HTTP Error 412")));
         assert!(config["last_error_detail"]
             .as_str()
             .is_some_and(|message| message.contains("HTTP Error 412")));
