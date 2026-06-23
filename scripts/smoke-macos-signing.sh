@@ -165,7 +165,7 @@ require_entitlement() {
 
   local entitlements
   entitlements="$(codesign -d --entitlements :- "$subject" 2>/dev/null || true)"
-  if ! printf '%s\n' "$entitlements" | grep -q "<key>$key</key>"; then
+  if ! grep -q "<key>$key</key>" <<<"$entitlements"; then
     echo "Missing required macOS entitlement $key on $subject." >&2
     printf '%s\n' "$entitlements" >&2
     exit 1
@@ -312,10 +312,10 @@ else
 fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
-  if printf '%s\n' "$identity" | grep -q '^Authority=Developer ID Application:'; then
+  if grep -q '^Authority=Developer ID Application:' <<<"$identity"; then
     signing_mode="developer_id"
   elif [ "$ALLOW_AD_HOC" -eq 1 ] &&
-    printf '%s\n' "$identity" | grep -q '^Signature=adhoc$'; then
+    grep -q '^Signature=adhoc$' <<<"$identity"; then
     signing_mode="ad_hoc"
   else
     echo "Cerul.app is not signed with a Developer ID Application certificate." >&2
@@ -331,7 +331,7 @@ fi
 
 if [ "$DRY_RUN" -eq 0 ] && [ "$signing_mode" = "developer_id" ]; then
   if [ -n "$EXPECTED_TEAM_ID" ] &&
-    ! printf '%s\n' "$identity" | grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$"; then
+    ! grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$" <<<"$identity"; then
     echo "Cerul.app TeamIdentifier does not match expected Apple team id $EXPECTED_TEAM_ID." >&2
     printf '%s\n' "$identity" >&2
     exit 1
