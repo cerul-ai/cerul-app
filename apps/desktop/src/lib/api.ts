@@ -105,7 +105,7 @@ export type CreateMomentRequest = {
 };
 
 export type AskCitation = {
-  chunk_id: string;
+  playback_chunk_id: string;
   item_id: string;
   title: string;
   timestamp: string;
@@ -246,7 +246,7 @@ export type VideoUnderstandingRecord = {
 };
 
 export type SearchResultRecord = {
-  chunk_id: string;
+  playback_chunk_id: string;
   item_id: string;
   chunk_type: string;
   start_sec: number | null;

@@ -203,7 +203,7 @@ pub struct AskResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AskCitation {
-    pub chunk_id: String,
+    pub playback_chunk_id: String,
     pub item_id: String,
     pub title: String,
     pub timestamp: String,
@@ -1252,7 +1252,7 @@ async fn ask_library(
         .filter(|result| !result.snippet.trim().is_empty())
         .take(limit)
         .map(|result| AskCitation {
-            chunk_id: result.chunk_id,
+            playback_chunk_id: result.playback_chunk_id,
             item_id: result.item_id,
             title: result
                 .item_title

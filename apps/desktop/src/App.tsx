@@ -317,14 +317,63 @@ function hasOpenModalSurface() {
   return Boolean(document.querySelector(".scrim, .account-pop, .menu, [role='dialog']"));
 }
 
+function syncVideoToTimestamp(
+  video: HTMLVideoElement,
+  timestamp: string,
+  opts: {
+    shouldPlay: boolean;
+    onPlayBlocked?: () => void;
+  },
+) {
+  const targetSeconds = parseTimestampSeconds(timestamp);
+  if (!Number.isFinite(targetSeconds)) {
+    return () => undefined;
+  }
+
+  let cancelled = false;
+  const applySeek = () => {
+    if (cancelled) {
+      return;
+    }
+    const maxTime =
+      Number.isFinite(video.duration) && video.duration > 0
+        ? Math.max(video.duration - 0.1, 0)
+        : targetSeconds;
+    video.currentTime = Math.min(targetSeconds, maxTime);
+    if (opts.shouldPlay) {
+      void video.play().catch(() => {
+        if (!cancelled) {
+          opts.onPlayBlocked?.();
+        }
+      });
+    }
+  };
+
+  if (video.readyState >= 1) {
+    const frame = window.requestAnimationFrame(applySeek);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }
+
+  video.addEventListener("loadedmetadata", applySeek);
+  return () => {
+    cancelled = true;
+    video.removeEventListener("loadedmetadata", applySeek);
+  };
+}
+
 function usePlaybackPositionPersistence({
   itemId,
   videoRef,
+  videoElement,
   chunkId,
   enabled,
 }: {
   itemId: string;
   videoRef: RefObject<HTMLVideoElement | null>;
+  videoElement?: HTMLVideoElement | null;
   chunkId: string | null;
   enabled: boolean;
 }) {
@@ -339,7 +388,7 @@ function usePlaybackPositionPersistence({
     if (!enabled) {
       return;
     }
-    const video = videoRef.current;
+    const video = videoElement ?? videoRef.current;
     if (!video) {
       return;
     }
@@ -391,7 +440,7 @@ function usePlaybackPositionPersistence({
       video.removeEventListener("ended", clearSavedPosition);
       window.removeEventListener("pagehide", persistForced);
     };
-  }, [enabled, itemId, videoRef]);
+  }, [enabled, itemId, videoElement, videoRef]);
 }
 
 async function readDaemonStatus() {
@@ -630,7 +679,9 @@ function AppWorkspace() {
   // until they run a search or dismiss the banner. Gates the ③+② first-run home.
   const [firstRunActive, setFirstRunActive] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(initialRoute.itemId);
-  const [selectedChunkId, setSelectedChunkId] = useState<string | null>(initialRoute.chunkId);
+  const [selectedPlaybackChunkId, setSelectedPlaybackChunkId] = useState<string | null>(
+    initialRoute.playbackChunkId,
+  );
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(
     initialRoute.timestamp,
   );
@@ -745,13 +796,13 @@ function AppWorkspace() {
       const settingsRoute = {
         view: "settings" as const,
         itemId: null,
-        chunkId: null,
+        playbackChunkId: null,
         timestamp: null,
         settingsSection: "Usage",
       };
       setViewState(settingsRoute.view);
       setSelectedItemId(null);
-      setSelectedChunkId(null);
+      setSelectedPlaybackChunkId(null);
       setSelectedTimestamp(null);
       setShowJobsSheet(false);
       setShowAddSource(false);
@@ -780,7 +831,7 @@ function AppWorkspace() {
       }
       setViewState(route.view);
       setSelectedItemId(route.itemId);
-      setSelectedChunkId(route.chunkId);
+      setSelectedPlaybackChunkId(route.playbackChunkId);
       setSelectedTimestamp(route.timestamp);
       setShowJobsSheet(false);
       setShowAddSource(false);
@@ -1145,7 +1196,7 @@ function AppWorkspace() {
     nextView: View,
     params: {
       itemId?: string | null;
-      chunkId?: string | null;
+      playbackChunkId?: string | null;
       timestamp?: string | null;
       settingsSection?: string | null;
     } = {},
@@ -1153,7 +1204,7 @@ function AppWorkspace() {
     setShowJobsSheet(false);
     setShowAddSource(false);
     setSelectedItemId(params.itemId ?? null);
-    setSelectedChunkId(params.chunkId ?? null);
+    setSelectedPlaybackChunkId(params.playbackChunkId ?? null);
     setSelectedTimestamp(params.timestamp ?? null);
     const routeParams =
       nextView === "settings"
@@ -1177,7 +1228,7 @@ function AppWorkspace() {
     void persistLastRoute({
       view: nextView,
       itemId: routeParams.itemId ?? null,
-      chunkId: routeParams.chunkId ?? null,
+      playbackChunkId: routeParams.playbackChunkId ?? null,
       timestamp: routeParams.timestamp ?? null,
       settingsSection: routeParams.settingsSection ?? null,
     });
@@ -1190,7 +1241,7 @@ function AppWorkspace() {
 
     const restoredView = route.view as View;
     setSelectedItemId(route.itemId ?? null);
-    setSelectedChunkId(route.chunkId ?? null);
+    setSelectedPlaybackChunkId(route.playbackChunkId ?? null);
     setSelectedTimestamp(route.timestamp ?? null);
     const restoredRoute =
       restoredView === "settings"
@@ -1635,7 +1686,7 @@ function AppWorkspace() {
             onOpen={(result) =>
               navigate("result-detail", {
                 itemId: result.itemId,
-                chunkId: result.id,
+                playbackChunkId: result.playbackChunkId,
                 timestamp: result.timestamp,
               })
             }
@@ -1661,9 +1712,13 @@ function AppWorkspace() {
         {view === "result-detail" && currentItem ? (
           <ResultDetail
             item={currentItem}
-            startChunkId={selectedChunkId}
+            startChunkId={selectedPlaybackChunkId}
             moreMatches={
-              visibleResults.find((result) => result.id === selectedChunkId)?.moreMatches
+              visibleResults.find(
+                (result) =>
+                  (selectedPlaybackChunkId && result.playbackChunkId === selectedPlaybackChunkId) ||
+                  (result.itemId === selectedItemId && result.timestamp === selectedTimestamp),
+              )?.moreMatches
             }
             startTimestamp={selectedTimestamp ?? "00:00"}
             actionsEnabled={apiStatus === "online"}
@@ -1757,7 +1812,7 @@ function AppWorkspace() {
             onOpenMention={(mention) =>
               navigate("item-detail", {
                 itemId: mention.item_id,
-                chunkId: mention.chunk_id,
+                playbackChunkId: mention.chunk_id,
                 timestamp: mention.timestamp,
               })
             }
@@ -1779,6 +1834,7 @@ function AppWorkspace() {
             apiStatus={apiStatus}
             actionsEnabled={apiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
+            startChunkId={selectedPlaybackChunkId}
             onBack={() => navigate("library")}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
@@ -2639,10 +2695,10 @@ function ResultsScreen({
       if (selectedResult.moreMatches.length > 0) {
         setExpandedResultIds((current) => {
           const next = new Set(current);
-          if (next.has(selectedResult.id)) {
-            next.delete(selectedResult.id);
+          if (next.has(selectedResult.playbackChunkId)) {
+            next.delete(selectedResult.playbackChunkId);
           } else {
-            next.add(selectedResult.id);
+            next.add(selectedResult.playbackChunkId);
           }
           return next;
         });
@@ -2787,11 +2843,11 @@ function ResultsScreen({
           {!isSearching && displayedResults.length > 0
             ? displayedResults.map((result, index) => (
               <ResultCard
-                key={result.id}
+                key={result.playbackChunkId}
                 result={result}
                 index={index}
                 selected={index === selectedIndex}
-                expanded={expandedResultIds.has(result.id)}
+                expanded={expandedResultIds.has(result.playbackChunkId)}
                 onFocus={() => setSelectedIndex(index)}
                 onOpen={onOpen}
                 query={query}
@@ -3206,6 +3262,10 @@ function ResultDetail({
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [isPlaying, setIsPlaying] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
+  const handleVideoElement = useCallback((video: HTMLVideoElement | null) => {
+    setVideoElement(video);
+  }, []);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
     setPlayerChapters(
@@ -3234,7 +3294,7 @@ function ResultDetail({
     item.contentType === "video" && mediaState.chunkId
       ? api.videoSegmentUrl(mediaState.chunkId)
       : null;
-  const timestampLink = timestampDeepLink(item.id, currentTimestamp);
+  const timestampLink = timestampDeepLink(item.id, currentTimestamp, mediaState.chunkId);
   const transcriptPartial = item.status === "indexing";
   const itemBusy =
     itemAction.status === "locating" ||
@@ -3276,6 +3336,7 @@ function ResultDetail({
   usePlaybackPositionPersistence({
     itemId: item.id,
     videoRef,
+    videoElement,
     chunkId: mediaState.chunkId,
     enabled: actionsEnabled && Boolean(playbackUrl),
   });
@@ -3293,7 +3354,7 @@ function ResultDetail({
     }
 
     let cancelled = false;
-    setMediaState({ status: "loading", chunkId: startChunkId, lines: [], message: null });
+    setMediaState({ status: "loading", chunkId: null, lines: [], message: null });
     api
       .listItemChunks(item.id)
       .then((records) => {
@@ -3313,7 +3374,7 @@ function ResultDetail({
         }
         setMediaState({
           status: "error",
-          chunkId: startChunkId,
+          chunkId: null,
           lines: [],
           message: errorMessage(error),
         });
@@ -3329,43 +3390,16 @@ function ResultDetail({
   }, [isPlaying]);
 
   useEffect(() => {
-    const video = videoRef.current;
+    const video = videoElement;
     if (!video || !playbackUrl) {
       return;
     }
 
-    let cancelled = false;
-    const targetSeconds = parseTimestampSeconds(currentTimestamp);
-    const syncVideo = () => {
-      if (cancelled) {
-        return;
-      }
-      if (Number.isFinite(targetSeconds)) {
-        const maxTime = Number.isFinite(video.duration)
-          ? Math.max(video.duration - 0.1, 0)
-          : targetSeconds;
-        video.currentTime = Math.min(targetSeconds, maxTime);
-      }
-      if (shouldAutoPlayRef.current) {
-        void video.play().catch(() => {
-          if (!cancelled) {
-            setIsPlaying(false);
-          }
-        });
-      }
-    };
-
-    if (video.readyState >= 1) {
-      syncVideo();
-    } else {
-      video.addEventListener("loadedmetadata", syncVideo, { once: true });
-    }
-
-    return () => {
-      cancelled = true;
-      video.removeEventListener("loadedmetadata", syncVideo);
-    };
-  }, [currentTimestamp, playbackUrl]);
+    return syncVideoToTimestamp(video, currentTimestamp, {
+      shouldPlay: shouldAutoPlayRef.current,
+      onPlayBlocked: () => setIsPlaying(false),
+    });
+  }, [currentTimestamp, playbackUrl, videoElement]);
 
   useEffect(() => {
     if (copyStatus === "idle") {
@@ -3654,6 +3688,7 @@ function ResultDetail({
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onSeekMarker={(marker) => seekTo(marker.label)}
+                onVideoElement={handleVideoElement}
               />
             ) : mediaState.status === "loading" ? (
               <div className={`video-frame thumb ${item.color}`}>
@@ -4683,6 +4718,7 @@ function ItemDetail({
   apiStatus,
   actionsEnabled,
   startTimestamp,
+  startChunkId,
   onBack,
   onDeleteItem,
   onReindexItem,
@@ -4693,6 +4729,7 @@ function ItemDetail({
   apiStatus: ApiStatus;
   actionsEnabled: boolean;
   startTimestamp: string;
+  startChunkId: string | null;
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
@@ -4701,6 +4738,10 @@ function ItemDetail({
 }) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
+  const handleVideoElement = useCallback((video: HTMLVideoElement | null) => {
+    setVideoElement(video);
+  }, []);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
     setPlayerChapters(
@@ -4712,10 +4753,12 @@ function ItemDetail({
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
+    records: api.ChunkRecord[];
     lines: TranscriptLine[];
     message: string | null;
   }>({
     status: "idle",
+    records: [],
     lines: transcript,
     message: null,
   });
@@ -4746,9 +4789,15 @@ function ItemDetail({
   // id used for the keyframe), otherwise use the first transcript line.
   const playableChunkId =
     item.contentType === "video"
-      ? extractChunkIdFromThumbnail(item.thumbnailUrl) ??
-        (chunkState.status === "loaded" ? chunkState.lines[0]?.id : null) ??
-        null
+      ? chunkState.status === "loaded"
+        ? selectPlaybackChunkId(
+            chunkState.records,
+            startTimestamp,
+            startChunkId ?? extractChunkIdFromThumbnail(item.thumbnailUrl),
+          )
+        : startChunkId
+          ? null
+          : extractChunkIdFromThumbnail(item.thumbnailUrl)
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
 
@@ -4757,7 +4806,7 @@ function ItemDetail({
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting" ||
     itemAction.status === "locating";
-  const timestampLink = timestampDeepLink(item.id, currentTimestamp);
+  const timestampLink = timestampDeepLink(item.id, currentTimestamp, playableChunkId);
   // Resolve the chunk to clip from the LIVE playhead when the export popover
   // opens (falls back to currentTimestamp / the thumbnail chunk).
   function resolveClipTarget(): ClipTarget | null {
@@ -4782,6 +4831,7 @@ function ItemDetail({
   usePlaybackPositionPersistence({
     itemId: item.id,
     videoRef,
+    videoElement,
     chunkId: playableChunkId,
     enabled: actionsEnabled && Boolean(itemPlaybackUrl),
   });
@@ -4792,11 +4842,18 @@ function ItemDetail({
 
   useEffect(() => {
     setCurrentTimestamp(startTimestamp);
-    if (startTimestamp === "0:00") {
+  }, [item.id, startTimestamp]);
+
+  useEffect(() => {
+    const video = videoElement;
+    if (!video || !itemPlaybackUrl) {
       return;
     }
-    seekTo(startTimestamp);
-  }, [item.id, itemPlaybackUrl, startTimestamp]);
+
+    return syncVideoToTimestamp(video, startTimestamp, {
+      shouldPlay: parseTimestampSeconds(startTimestamp) > 0,
+    });
+  }, [item.id, itemPlaybackUrl, startTimestamp, videoElement]);
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
@@ -4861,25 +4918,30 @@ function ItemDetail({
 
   useEffect(() => {
     if (apiStatus !== "online") {
-      setChunkState({ status: "idle", lines: transcript, message: null });
+      setChunkState({ status: "idle", records: [], lines: transcript, message: null });
       return;
     }
 
     let cancelled = false;
-    setChunkState({ status: "loading", lines: [], message: null });
+    setChunkState({ status: "loading", records: [], lines: [], message: null });
     api
       .listItemChunks(item.id)
       .then((records) => {
         if (cancelled) {
           return;
         }
-        setChunkState({ status: "loaded", lines: mapChunkRecords(records), message: null });
+        setChunkState({
+          status: "loaded",
+          records,
+          lines: mapChunkRecords(records),
+          message: null,
+        });
       })
       .catch((error) => {
         if (cancelled) {
           return;
         }
-        setChunkState({ status: "error", lines: [], message: errorMessage(error) });
+        setChunkState({ status: "error", records: [], lines: [], message: errorMessage(error) });
       });
 
     return () => {
@@ -5118,6 +5180,7 @@ function ItemDetail({
               ariaLabel={t("itemDetail.player.aria", { title: item.title })}
               fallbackDurationSec={item.durationSec}
               onSeekMarker={(marker) => seekTo(marker.label)}
+              onVideoElement={handleVideoElement}
             />
           ) : (
             <div className={`video-frame ${item.color}`}>

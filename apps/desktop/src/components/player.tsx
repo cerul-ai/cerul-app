@@ -43,6 +43,7 @@ export function CerulPlayer({
   onPlay,
   onPause,
   onSeekMarker,
+  onVideoElement,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   src: string;
@@ -55,6 +56,7 @@ export function CerulPlayer({
   onPlay?: () => void;
   onPause?: () => void;
   onSeekMarker?: (marker: PlayerMarker) => void;
+  onVideoElement?: (video: HTMLVideoElement | null) => void;
 }) {
   const t = useT();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -75,6 +77,15 @@ export function CerulPlayer({
   // fill the screen (CSS :fullscreen handles the fill; we just stop applying
   // the inline width/aspect that would otherwise leave dead space).
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!onVideoElement) {
+      return;
+    }
+    onVideoElement(video);
+    return () => onVideoElement(null);
+  }, [videoRef, src, onVideoElement]);
 
   // Mirror the <video> element's state into React via its media events.
   useEffect(() => {

@@ -22,7 +22,9 @@ export function mapResultMatch(
   const confidence = resultConfidence(matchScore, 1);
   const scoreInfo = resultScoreInfo(record, bestScore, t);
   return {
-    id: record.chunk_id,
+    playbackChunkId: record.playback_chunk_id,
+    startSec: record.start_sec,
+    endSec: record.end_sec,
     timestamp: formatTimestamp(record.start_sec),
     snippet: displaySnippet(record, t),
     chunkType: record.chunk_type,
@@ -45,8 +47,10 @@ export function mapSearchResult(
   const confidence = resultConfidence(matchScore, 1);
   const scoreInfo = resultScoreInfo(record, bestScore, t);
   return {
-    id: record.chunk_id,
     itemId: record.item_id,
+    playbackChunkId: record.playback_chunk_id,
+    startSec: record.start_sec,
+    endSec: record.end_sec,
     title: item?.title ?? record.item_id,
     source: item?.source ?? t("result.sourceFallback"),
     timestamp: formatTimestamp(record.start_sec),
@@ -160,7 +164,7 @@ function resultMatchScore(record: api.SearchResultRecord, bestScore: number): nu
 
 function resultThumbnailUrl(record: api.SearchResultRecord, item: Item | undefined): string | null {
   if (record.frame_path) {
-    return api.chunkFrameUrl(record.chunk_id);
+    return api.chunkFrameUrl(record.playback_chunk_id);
   }
   if (record.nearest_frame_chunk_id) {
     return api.chunkFrameUrl(record.nearest_frame_chunk_id);

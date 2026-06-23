@@ -12,7 +12,7 @@ pub struct SearchRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchResult {
-    pub chunk_id: String,
+    pub playback_chunk_id: String,
     pub item_id: String,
     pub chunk_type: String,
     pub start_sec: Option<f64>,
@@ -875,7 +875,7 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
         };
 
         results.push(SearchResult {
-            chunk_id: playback_chunk_id,
+            playback_chunk_id,
             item_id: unit.item_id.clone(),
             chunk_type,
             start_sec,
@@ -936,7 +936,7 @@ fn hydrate_legacy_chunks(
         Ok((
             chunk_id.clone(),
             SearchResult {
-                chunk_id,
+                playback_chunk_id: chunk_id,
                 item_id,
                 chunk_type,
                 start_sec,
@@ -969,7 +969,7 @@ fn hydrate_legacy_chunks(
         result.exact_match = hit.exact_match;
         result.source_mask = hit.source_mask;
         if result.frame_path.is_some() {
-            result.nearest_frame_chunk_id = Some(result.chunk_id.clone());
+            result.nearest_frame_chunk_id = Some(result.playback_chunk_id.clone());
         }
         results.push(result);
     }
@@ -997,7 +997,7 @@ fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResul
                     .partial_cmp(&left.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+            .then_with(|| left.playback_chunk_id.cmp(&right.playback_chunk_id))
     });
     dedupe_results(results, limit)
 }
@@ -1399,7 +1399,7 @@ fn is_near_duplicate(left: &SearchResult, right: &SearchResult) -> bool {
     if left.item_id != right.item_id {
         return false;
     }
-    if left.chunk_id == right.chunk_id {
+    if left.playback_chunk_id == right.playback_chunk_id {
         return true;
     }
     match (left.start_sec, right.start_sec) {
@@ -1492,7 +1492,7 @@ mod tests {
         assert_eq!(
             deduped
                 .iter()
-                .map(|hit| hit.chunk_id.as_str())
+                .map(|hit| hit.playback_chunk_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["chunk-a", "chunk-c", "chunk-d"]
         );
@@ -1513,7 +1513,7 @@ mod tests {
         assert_eq!(
             scored
                 .iter()
-                .map(|result| result.chunk_id.as_str())
+                .map(|result| result.playback_chunk_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["chunk-c", "chunk-a", "chunk-b"]
         );
@@ -1531,7 +1531,7 @@ mod tests {
 
         let scored = finalize_results(vec![semantic, exact], 1);
 
-        assert_eq!(scored[0].chunk_id, "chunk-b");
+        assert_eq!(scored[0].playback_chunk_id, "chunk-b");
         assert!(scored[0].exact_match);
     }
 
@@ -1611,7 +1611,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            results.first().unwrap().chunk_id,
+            results.first().unwrap().playback_chunk_id,
             "item-1:transcript:000000"
         );
         assert_eq!(results.first().unwrap().start_sec, Some(12.0));
@@ -1690,7 +1690,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].chunk_id, "item-1:transcript:000000");
+        assert_eq!(results[0].playback_chunk_id, "item-1:transcript:000000");
         assert!(results[0].snippet.contains("fallback search"));
     }
 
@@ -1724,7 +1724,7 @@ mod tests {
         );
         assert_eq!(response.diagnostics.vector_hits_count, 0);
         assert!(response.diagnostics.fts_hits_count >= 1);
-        assert_eq!(response.results[0].chunk_id, "item-1:transcript:000000");
+        assert_eq!(response.results[0].playback_chunk_id, "item-1:transcript:000000");
     }
 
     #[tokio::test]
@@ -1783,7 +1783,7 @@ mod tests {
         assert_eq!(
             results
                 .iter()
-                .map(|result| result.chunk_id.as_str())
+                .map(|result| result.playback_chunk_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["item-1:transcript:000001", "item-1:transcript:000000"]
         );
@@ -1832,7 +1832,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(results[0].chunk_id, "item-1:audio:000000");
+        assert_eq!(results[0].playback_chunk_id, "item-1:audio:000000");
         assert_eq!(results[0].chunk_type, "audio");
     }
 
@@ -1889,7 +1889,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(results[0].snippet, "checkout display shows XR-42");
-        assert_eq!(results[0].chunk_id, "item-1:ocr:000000");
+        assert_eq!(results[0].playback_chunk_id, "item-1:ocr:000000");
         assert_eq!(results[0].chunk_type, "ocr");
     }
 
@@ -1958,7 +1958,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(results[0].snippet, "XR-42 appears on the display");
-        assert_eq!(results[0].chunk_id, "item-1:ocr:000034");
+        assert_eq!(results[0].playback_chunk_id, "item-1:ocr:000034");
         assert_eq!(results[0].chunk_type, "ocr");
         assert_eq!(results[0].start_sec, Some(34.0));
         assert_eq!(
@@ -1995,7 +1995,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].chunk_id, "item-1:transcript:000000");
+        assert_eq!(results[0].playback_chunk_id, "item-1:transcript:000000");
         assert!(results[0].snippet.contains("地下室"));
     }
 
@@ -2034,7 +2034,7 @@ mod tests {
             response.diagnostics.fallback_reason.as_deref(),
             Some("search_index_rebuilding_legacy_fts")
         );
-        assert_eq!(response.results[0].chunk_id, "item-1:transcript:000000");
+        assert_eq!(response.results[0].playback_chunk_id, "item-1:transcript:000000");
         assert!(response.results[0].snippet.contains("legacy transcript"));
     }
 
@@ -2119,7 +2119,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].chunk_id, "item-1:transcript:000000");
+        assert_eq!(results[0].playback_chunk_id, "item-1:transcript:000000");
         assert!(results[0].exact_match);
         assert_ne!(results[0].source_mask & SOURCE_EXACT, 0);
     }
@@ -2311,7 +2311,7 @@ mod tests {
         .unwrap();
 
         let first = results.first().unwrap();
-        assert_eq!(first.chunk_id, "item-1:keyframe:000001");
+        assert_eq!(first.playback_chunk_id, "item-1:keyframe:000001");
         assert_eq!(
             first.nearest_frame_chunk_id.as_deref(),
             Some("item-1:keyframe:000001")
@@ -2459,7 +2459,7 @@ mod tests {
             .contains("retrieval_units"));
         assert_eq!(response.diagnostics.qdrant_text_collection, None);
         assert_eq!(response.diagnostics.qdrant_image_points, Some(0));
-        assert_eq!(response.results[0].chunk_id, "item-1:keyframe:000001");
+        assert_eq!(response.results[0].playback_chunk_id, "item-1:keyframe:000001");
     }
 
     #[tokio::test]
@@ -2500,7 +2500,7 @@ mod tests {
         .unwrap();
 
         let first = results.first().unwrap();
-        assert_eq!(first.chunk_id, "item-1:keyframe:000000");
+        assert_eq!(first.playback_chunk_id, "item-1:keyframe:000000");
         assert!(first.similarity_score.unwrap() > 0.99);
         assert_eq!(
             first.nearest_frame_chunk_id.as_deref(),
@@ -2788,7 +2788,7 @@ mod tests {
         score: f32,
     ) -> SearchResult {
         SearchResult {
-            chunk_id: chunk_id.to_string(),
+            playback_chunk_id: chunk_id.to_string(),
             item_id: item_id.to_string(),
             chunk_type: chunk_type.to_string(),
             start_sec,
