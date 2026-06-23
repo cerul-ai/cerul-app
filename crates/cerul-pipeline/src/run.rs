@@ -779,10 +779,10 @@ impl VideoPipeline {
             0.80,
             "Writing unified search index",
         );
-        let vector_summary = match self
+        let full_index_result = self
             .embed_and_write_retrieval_units(item_id, 0.80, 0.12, true)
-            .await
-        {
+            .await;
+        let vector_summary = match full_index_result {
             Ok(write_summary) => write_summary,
             Err(error) => {
                 let message = error.to_string();
@@ -808,6 +808,15 @@ impl VideoPipeline {
                         transcript_first.search_units,
                         transcript_first.search_vectors,
                     )?;
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_preserved_after_visual_failure",
+                        json!({
+                            "error": message,
+                            "search_units": transcript_first.search_units,
+                            "search_vectors": transcript_first.search_vectors,
+                        }),
+                    );
                 } else {
                     set_embedding_index_status(
                         &self.paths,
