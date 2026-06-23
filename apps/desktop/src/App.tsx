@@ -147,7 +147,7 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
-import { AccountRailButton } from "./components/account-sidebar";
+import { AccountDialogController, AccountRailButton } from "./components/account-sidebar";
 import type {
   ApiStatus,
   AppData,
@@ -1396,9 +1396,11 @@ function AppWorkspace() {
   const mobileTitleKey =
     mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
   const settingsTakeoverActive = view === "settings";
+  const onboardingActive = view === "onboarding";
 
   return (
-    <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
+    <div className="app" data-onboarding={onboardingActive ? "true" : undefined}>
+      <AccountDialogController />
       <div className="titlebar">
         <div className="titlebar-lead">
           {updaterState.phase !== "idle" ? (
@@ -1468,6 +1470,7 @@ function AppWorkspace() {
               <button
                 className="rail-brand"
                 type="button"
+                disabled={onboardingActive}
                 onClick={() => navigate("home")}
                 aria-label={t("shell.openHome")}
               >
@@ -1484,6 +1487,7 @@ function AppWorkspace() {
                     className={item.id === sidebarActiveView ? "rail-item active" : "rail-item"}
                     key={item.id}
                     type="button"
+                    disabled={onboardingActive}
                     onClick={() => navigate(item.id)}
                     title={t(item.labelKey)}
                   >
@@ -1500,6 +1504,7 @@ function AppWorkspace() {
               <button
                 className="rail-item"
                 type="button"
+                disabled={onboardingActive}
                 onClick={() => setShowJobsSheet(true)}
                 title={t("nav.jobs")}
               >
@@ -1517,6 +1522,7 @@ function AppWorkspace() {
               <button
                 className={sidebarActiveView === "settings" ? "rail-item active" : "rail-item"}
                 type="button"
+                disabled={onboardingActive}
                 onClick={() => navigate("settings")}
                 title={t("nav.settings")}
               >
