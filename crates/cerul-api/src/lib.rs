@@ -2491,6 +2491,10 @@ async fn list_jobs(
             AND (
                 j.status IN ('queued', 'running')
                 OR (
+                    j.status = 'completed'
+                    AND COALESCE(j.finished_at, j.started_at, 0) >= strftime('%s','now') - 86400
+                )
+                OR (
                     j.status = 'failed'
                     AND COALESCE(j.finished_at, j.started_at, 0) >= strftime('%s','now') - 604800
                 )
@@ -2517,7 +2521,7 @@ async fn list_jobs(
                     WHEN j.status = 'queued' THEN 1
                     ELSE 2
                 END,
-                COALESCE(j.started_at, j.finished_at, 0) DESC,
+                COALESCE(j.finished_at, j.started_at, 0) DESC,
                 j.id ASC
             LIMIT ? OFFSET ?
             "#,
@@ -7577,7 +7581,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_jobs_drawer_scope_returns_active_and_recent_failures() {
+    async fn list_jobs_drawer_scope_returns_active_and_recent_terminal_jobs() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         {
@@ -7603,7 +7607,7 @@ mod tests {
                     id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
                 )
                 VALUES
-                    ('job-completed', 'item-a', 'index_video', 'completed', 10, 20, NULL, 1, 'completed', NULL),
+                    ('job-completed-old', 'item-a', 'index_video', 'completed', 10, 20, NULL, 1, 'completed', NULL),
                     ('job-old-failed', 'item-a', 'index_video', 'failed', 30, 40, 'old fail', 1, 'failed', NULL),
                     ('job-running', 'item-a', 'index_video', 'running', 50, NULL, NULL, 0.5, 'asr', NULL),
                     ('job-queued', 'item-b', 'index_video', 'queued', NULL, NULL, NULL, 0, 'queued', NULL)
@@ -7611,29 +7615,52 @@ mod tests {
                 [],
             )
             .unwrap();
-            for index in 0..5 {
-                conn.execute(
-                    r#"
-                    INSERT INTO jobs (
-                        id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
-                    )
-                    VALUES (
-                        ?1,
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, finished_at, error, progress, stage, stage_message
+                )
+                VALUES
+                    (
+                        'job-recent-failed',
                         'item-b',
                         'index_video',
                         'failed',
-                        strftime('%s','now') - ?2,
-                        strftime('%s','now') - ?2,
+                        strftime('%s','now') - 20,
+                        strftime('%s','now') - 10,
                         'recent fail',
                         1,
                         'failed',
                         NULL
+                    ),
+                    (
+                        'job-stale-completed',
+                        'item-a',
+                        'index_video',
+                        'completed',
+                        strftime('%s','now') - 90000,
+                        strftime('%s','now') - 90000,
+                        NULL,
+                        1,
+                        'completed',
+                        NULL
+                    ),
+                    (
+                        'job-recent-completed',
+                        'item-a',
+                        'index_video',
+                        'completed',
+                        strftime('%s','now') - 3600,
+                        strftime('%s','now') - 20,
+                        NULL,
+                        1,
+                        'completed',
+                        NULL
                     )
-                    "#,
-                    (format!("job-recent-failed-{index}"), 10 + index),
-                )
-                .unwrap();
-            }
+                "#,
+                [],
+            )
+            .unwrap();
         }
         let app = router_with_paths(paths);
 
@@ -7641,7 +7668,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs?scope=drawer&light=true&limit=2")
+                    .uri("/jobs?scope=drawer&light=true&limit=10")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7658,11 +7685,16 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ids,
-            vec!["job-running".to_string(), "job-queued".to_string()]
+            vec![
+                "job-running".to_string(),
+                "job-queued".to_string(),
+                "job-recent-failed".to_string(),
+                "job-recent-completed".to_string()
+            ]
         );
-        assert!(!ids.contains(&"job-completed".to_string()));
+        assert!(!ids.contains(&"job-completed-old".to_string()));
+        assert!(!ids.contains(&"job-stale-completed".to_string()));
         assert!(!ids.contains(&"job-old-failed".to_string()));
-        assert!(!ids.iter().any(|id| id.starts_with("job-recent-failed-")));
     }
 
     #[tokio::test]
