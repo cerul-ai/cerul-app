@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   CheckCircle2,
@@ -70,9 +71,6 @@ export function AccountRailButton() {
   const status = useAuthStore((state) => state.status);
   const user = useAuthStore((state) => state.user);
   const hydrate = useAuthStore((state) => state.hydrate);
-  const [open, setOpen] = useState(false);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  useEscapeToClose(() => setOpen(false), open);
 
   useEffect(() => {
     if (useAuthStore.getState().status === "loading") {
@@ -80,8 +78,36 @@ export function AccountRailButton() {
     }
   }, [hydrate]);
 
-  // Other surfaces (e.g. the Account & Usage card) can request the account
-  // popover without coupling to this component.
+  const signedIn = status === "signedIn" && !!user;
+  const label = signedIn && user ? user.email : t("settings.account.signIn");
+
+  return (
+    <button
+      className="rail-item"
+      type="button"
+      onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
+      title={label}
+    >
+      <span className="rail-ind" aria-hidden="true" />
+      {signedIn && user ? (
+        <span className="rail-account-avatar" aria-hidden="true">
+          {user.email.charAt(0).toUpperCase()}
+        </span>
+      ) : (
+        <User size={17} />
+      )}
+      <span className="rail-label rail-account-label">{label}</span>
+    </button>
+  );
+}
+
+export function AccountDialogController() {
+  const t = useT();
+  const status = useAuthStore((state) => state.status);
+  const user = useAuthStore((state) => state.user);
+  const [open, setOpen] = useState(false);
+  useEscapeToClose(() => setOpen(false), open);
+
   useEffect(() => {
     const onOpenRequest = () => setOpen(true);
     window.addEventListener("cerul:open-account", onOpenRequest);
@@ -89,41 +115,21 @@ export function AccountRailButton() {
   }, []);
 
   const signedIn = status === "signedIn" && !!user;
-  const label = signedIn && user ? user.email : t("settings.account.signIn");
-
-  return (
+  const accountDialog = open ? (
     <>
-      <button
-        ref={buttonRef}
-        className={open ? "rail-item active" : "rail-item"}
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        title={label}
+      <div className="account-pop-backdrop" onClick={() => setOpen(false)} />
+      <div
+        className="account-pop"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("settings.section.account")}
       >
-        <span className="rail-ind" aria-hidden="true" />
-        {signedIn && user ? (
-          <span className="rail-account-avatar" aria-hidden="true">
-            {user.email.charAt(0).toUpperCase()}
-          </span>
-        ) : (
-          <User size={17} />
-        )}
-        <span className="rail-label rail-account-label">{label}</span>
-      </button>
-      {open ? (
-        <>
-          <div className="account-pop-backdrop" onClick={() => setOpen(false)} />
-          <div
-            className="account-pop"
-            role="dialog"
-            aria-label={t("settings.section.account")}
-          >
-            {signedIn ? <AccountSummary /> : <AccountAuthForm />}
-          </div>
-        </>
-      ) : null}
+        {signedIn ? <AccountSummary /> : <AccountAuthForm />}
+      </div>
     </>
-  );
+  ) : null;
+
+  return accountDialog ? createPortal(accountDialog, document.body) : null;
 }
 
 function AccountAuthForm() {

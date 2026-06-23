@@ -147,7 +147,7 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
-import { AccountRailButton } from "./components/account-sidebar";
+import { AccountDialogController, AccountRailButton } from "./components/account-sidebar";
 import type {
   ApiStatus,
   AppData,
@@ -1399,6 +1399,7 @@ function AppWorkspace() {
 
   return (
     <div className="app" data-onboarding={view === "onboarding" ? "true" : undefined}>
+      <AccountDialogController />
       <div className="titlebar">
         <div className="titlebar-lead">
           {updaterState.phase !== "idle" ? (
