@@ -70,6 +70,21 @@ export function sourceError(record: api.SourceRecord, status: SourceStatus, t: T
   return null;
 }
 
+export function sourceFixSettingsSection(record: api.SourceRecord, status: SourceStatus) {
+  if (status !== "error") {
+    return null;
+  }
+  const section = record.config.last_error_settings_section;
+  if (typeof section !== "string") {
+    return null;
+  }
+  const normalized = section.trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized === "Sources" ? "Indexing" : normalized;
+}
+
 export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: TFunction): Source {
   const type = sourceType(record.type);
   const itemsForSource = allItems.filter((item) => item.sourceId === record.id);
@@ -83,5 +98,6 @@ export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: T
     failedItems: itemsForSource.filter((item) => item.status === "failed").length,
     lastPolled: formatUnixTime(record.last_poll_at, t),
     error: sourceError(record, status, t),
+    fixSettingsSection: sourceFixSettingsSection(record, status),
   };
 }

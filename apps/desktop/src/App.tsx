@@ -1816,6 +1816,7 @@ function AppWorkspace() {
               await refreshCoreData();
             }}
             onViewItems={() => navigate("library")}
+            onOpenSettingsFix={(section) => navigate("settings", { settingsSection: section })}
             requestConfirm={requestConfirm}
           />
         ) : null}

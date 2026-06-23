@@ -21,6 +21,11 @@ ffmpeg executable.
 qdrant is downloaded from official Qdrant GitHub releases unless
 CERUL_QDRANT_DOWNLOAD_URL or a target-specific
 CERUL_QDRANT_DOWNLOAD_URL_<TARGET> is set.
+
+CERUL_YTDLP_VERSION may override the pinned yt-dlp release for testing or
+hotfixes. When it differs from the manifest version, set either
+CERUL_YTDLP_SHA256_<ASSET> (for example CERUL_YTDLP_SHA256_YT_DLP_LINUX) or
+CERUL_YTDLP_SHA256 so the downloaded binary remains verified.
 EOF
 }
 
@@ -95,6 +100,10 @@ sanitize_env_target() {
   printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'
 }
 
+sanitize_env_key() {
+  printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_' '_'
+}
+
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '+'
@@ -133,7 +142,8 @@ manifest_asset_sha256() {
   ' "$YTDLP_MANIFEST" "$asset"
 }
 
-YTDLP_VERSION="${CERUL_YTDLP_VERSION:-$(manifest_value version)}"
+YTDLP_MANIFEST_VERSION="$(manifest_value version)"
+YTDLP_VERSION="${CERUL_YTDLP_VERSION:-$YTDLP_MANIFEST_VERSION}"
 QDRANT_VERSION="${CERUL_QDRANT_VERSION:-v1.18.2}"
 # Cerul-vendored, self-contained LGPL ffmpeg (built from official source with no
 # --enable-gpl / x264, hosted on the cerul-app releases). See ffmpeg_url().
@@ -142,10 +152,34 @@ FFMPEG_VERSION="${CERUL_FFMPEG_VERSION:-7.1}"
 # sha256 per pinned asset. Update together with the versions above.
 expected_sha256() {
   local manifest_hash
-  if manifest_hash="$(manifest_asset_sha256 "$1" 2>/dev/null)"; then
-    echo "$manifest_hash"
-    return 0
-  fi
+  case "$1" in
+    yt-dlp*)
+      if [ "$YTDLP_VERSION" = "$YTDLP_MANIFEST_VERSION" ]; then
+        if manifest_hash="$(manifest_asset_sha256 "$1" 2>/dev/null)"; then
+          echo "$manifest_hash"
+          return 0
+        fi
+      else
+        local asset_key env_name
+        asset_key="$(sanitize_env_key "$1")"
+        env_name="CERUL_YTDLP_SHA256_${asset_key}"
+        if [ -n "${!env_name:-}" ]; then
+          echo "${!env_name}"
+          return 0
+        fi
+        if [ -n "${CERUL_YTDLP_SHA256:-}" ]; then
+          echo "$CERUL_YTDLP_SHA256"
+          return 0
+        fi
+      fi
+      ;;
+    *)
+      if manifest_hash="$(manifest_asset_sha256 "$1" 2>/dev/null)"; then
+        echo "$manifest_hash"
+        return 0
+      fi
+      ;;
+  esac
 
   case "$1" in
     qdrant-aarch64-apple-darwin.tar.gz) echo "859f487e316ae1bda3b5d7c1e129a0a7344424d992503c188979ca6ac1b47253" ;;
@@ -171,9 +205,15 @@ verify_download_checksum() {
   local file="$1"
   local url="$2"
   [ "$DRY_RUN" -eq 1 ] && return 0
-  local asset expected actual
+  local asset asset_key expected actual
   asset="$(basename "$url")"
   if ! expected="$(expected_sha256 "$asset")"; then
+    if [[ "$asset" == yt-dlp* && "$YTDLP_VERSION" != "$YTDLP_MANIFEST_VERSION" ]]; then
+      asset_key="$(sanitize_env_key "$asset")"
+      echo "ERROR: CERUL_YTDLP_VERSION=$YTDLP_VERSION downloads $asset, but no checksum override is set." >&2
+      echo "Set CERUL_YTDLP_SHA256_${asset_key} or CERUL_YTDLP_SHA256." >&2
+      return 1
+    fi
     # Assets supplied via override URLs have no pinned checksum; allow them
     # but make the gap visible in the build log.
     echo "WARNING: no pinned sha256 for $asset; skipping verification" >&2

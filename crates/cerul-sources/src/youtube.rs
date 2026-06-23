@@ -57,13 +57,50 @@ impl YtdlpAccess {
         }
     }
 
-    pub(crate) fn apply_to_command(&self, command: &mut Command) {
-        if let Some(browser) = self.cookies_from_browser.as_deref() {
-            command.args(["--cookies-from-browser", browser]);
-        } else if let Some(path) = self.cookies_path.as_deref() {
+    pub(crate) fn apply_to_command_with_browser_cookies(
+        &self,
+        command: &mut Command,
+        include_browser_cookies: bool,
+    ) {
+        if include_browser_cookies {
+            if let Some(browser) = self.cookies_from_browser.as_deref() {
+                command.args(["--cookies-from-browser", browser]);
+                return;
+            }
+        }
+        if let Some(path) = self.cookies_path.as_deref() {
             command.arg("--cookies").arg(path);
         }
     }
+
+    pub(crate) fn should_retry_without_browser_cookies(&self, stderr: &[u8]) -> bool {
+        self.cookies_from_browser.is_some() && is_browser_cookie_load_error(stderr)
+    }
+}
+
+fn is_browser_cookie_load_error(stderr: &[u8]) -> bool {
+    let normalized = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    normalized.contains("cookie database")
+        || normalized.contains("cookies database")
+        || normalized.contains("failed to decrypt")
+        || normalized.contains("unsupported browser")
+        || normalized.contains("keyring")
+        || (normalized.contains("browser cookies")
+            && (normalized.contains("could not")
+                || normalized.contains("cannot")
+                || normalized.contains("can't")
+                || normalized.contains("failed")
+                || normalized.contains("permission denied")
+                || normalized.contains("no such file")
+                || normalized.contains("unable")))
+        || (normalized.contains("cookies from browser")
+            && (normalized.contains("could not")
+                || normalized.contains("cannot")
+                || normalized.contains("can't")
+                || normalized.contains("failed")
+                || normalized.contains("permission denied")
+                || normalized.contains("no such file")
+                || normalized.contains("unable")))
 }
 
 impl YouTube {
@@ -139,6 +176,68 @@ impl YouTube {
         self.clip_duration_sec
     }
 
+    fn discovery_command(&self, include_browser_cookies: bool) -> Command {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--flat-playlist", "--dump-json"]);
+        self.access
+            .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
+        if let Some(max_videos) = self.max_videos {
+            command.arg("--playlist-end").arg(max_videos.to_string());
+        }
+        command
+            .arg("--")
+            .arg(&self.channel_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    fn fetch_command(
+        &self,
+        output_path: &Path,
+        external_id: &str,
+        include_browser_cookies: bool,
+    ) -> Command {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--no-playlist", "-f", "best[height<=720]/best"]);
+        self.access
+            .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
+        if let Some(duration_sec) = self.clip_duration_sec {
+            command
+                .arg("--download-sections")
+                .arg(format!("*0-{duration_sec}"))
+                .arg("--force-keyframes-at-cuts");
+        }
+        command
+            .arg("-o")
+            .arg(output_path)
+            .arg("--")
+            .arg(format!("https://www.youtube.com/watch?v={external_id}"))
+            .stderr(Stdio::piped());
+        command
+    }
+
+    async fn run_ytdlp_with_browser_cookie_fallback<F>(
+        &self,
+        phase: &str,
+        mut build_command: F,
+    ) -> anyhow::Result<std::process::Output>
+    where
+        F: FnMut(bool) -> Command,
+    {
+        let mut command = build_command(true);
+        let output = self.run_ytdlp(&mut command, phase).await?;
+        if !output.status.success()
+            && self
+                .access
+                .should_retry_without_browser_cookies(&output.stderr)
+        {
+            let mut fallback = build_command(false);
+            return self.run_ytdlp(&mut fallback, phase).await;
+        }
+        Ok(output)
+    }
+
     async fn run_ytdlp(
         &self,
         command: &mut Command,
@@ -167,18 +266,11 @@ impl SourcePlugin for YouTube {
     }
 
     async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
-        let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--flat-playlist", "--dump-json"]);
-        self.access.apply_to_command(&mut command);
-        if let Some(max_videos) = self.max_videos {
-            command.arg("--playlist-end").arg(max_videos.to_string());
-        }
-        command
-            .arg("--")
-            .arg(&self.channel_url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = self.run_ytdlp(&mut command, "discovery").await?;
+        let output = self
+            .run_ytdlp_with_browser_cookie_fallback("discovery", |include_browser_cookies| {
+                self.discovery_command(include_browser_cookies)
+            })
+            .await?;
 
         if !output.status.success() {
             anyhow::bail!(
@@ -227,25 +319,11 @@ impl SourcePlugin for YouTube {
             return Ok(output_path);
         }
 
-        let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--no-playlist", "-f", "best[height<=720]/best"]);
-        self.access.apply_to_command(&mut command);
-        if let Some(duration_sec) = self.clip_duration_sec {
-            command
-                .arg("--download-sections")
-                .arg(format!("*0-{duration_sec}"))
-                .arg("--force-keyframes-at-cuts");
-        }
-        command
-            .arg("-o")
-            .arg(&output_path)
-            .arg("--")
-            .arg(format!(
-                "https://www.youtube.com/watch?v={}",
-                item.external_id
-            ))
-            .stderr(Stdio::piped());
-        let status = self.run_ytdlp(&mut command, "fetch").await?;
+        let status = self
+            .run_ytdlp_with_browser_cookie_fallback("fetch", |include_browser_cookies| {
+                self.fetch_command(&output_path, &item.external_id, include_browser_cookies)
+            })
+            .await?;
 
         if !status.status.success() {
             anyhow::bail!(
@@ -419,6 +497,41 @@ fi
     }
 
     #[cfg(unix)]
+    fn fake_ytdlp_with_missing_browser_cookies(temp: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = temp.path().join("yt-dlp-cookie-fallback");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if printf '%s\n' "$@" | grep -q -- '--cookies-from-browser'; then
+  printf 'ERROR: could not find Chrome cookies database\n' >&2
+  exit 1
+fi
+if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
+  printf '{"id":"abc123","title":"First video","duration":12}\n'
+else
+  out=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+    fi
+    shift
+  done
+  mkdir -p "$(dirname "$out")"
+  printf 'video' > "$out"
+fi
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn discovers_videos_from_ytdlp_json_lines() {
         let temp = tempfile::tempdir().unwrap();
@@ -437,6 +550,25 @@ fi
         assert_eq!(items[0].external_id, "abc123");
         assert_eq!(items[0].title.as_deref(), Some("First video"));
         assert_eq!(items[0].duration_sec, Some(12.0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn falls_back_when_browser_cookies_are_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = YouTube::new(json!({
+            "url": "https://www.youtube.com/@cerul",
+            "max_videos": 1,
+            "cookies_from_browser": "chrome",
+            "ytdlp_path": fake_ytdlp_with_missing_browser_cookies(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "abc123");
     }
 
     #[cfg(unix)]

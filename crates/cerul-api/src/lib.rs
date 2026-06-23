@@ -1715,14 +1715,14 @@ fn mark_source_discovery_error(
     error: &str,
 ) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
-    let config = conn
+    let row = conn
         .query_row(
-            "SELECT config FROM sources WHERE id = ?1",
+            "SELECT type, config FROM sources WHERE id = ?1",
             [source_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
-    let Some(config) = config else {
+    let Some((source_type, config)) = row else {
         return Ok(());
     };
     let mut config = parse_json(&config);
@@ -1730,12 +1730,14 @@ fn mark_source_discovery_error(
         config = json!({});
     }
     if let Some(config) = config.as_object_mut() {
-        if let Some(info) = classify_job_error("index_video", error) {
-            config.insert("last_error_code".to_string(), Value::String(info.code));
-            config.insert(
-                "last_error_settings_section".to_string(),
-                Value::String(info.settings_section),
-            );
+        if matches!(source_type.as_str(), "youtube" | "web_video") {
+            if let Some(info) = classify_job_error("index_video", error) {
+                config.insert("last_error_code".to_string(), Value::String(info.code));
+                config.insert(
+                    "last_error_settings_section".to_string(),
+                    Value::String(info.settings_section),
+                );
+            }
         }
         config.insert("last_error".to_string(), Value::String(error.to_string()));
         config.insert(
@@ -2977,7 +2979,7 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "rate_limited",
             "平台暂时限流下载请求。稍后重试，或减少作者主页导入数量。".to_string(),
-            "Sources",
+            "Indexing",
         )
     } else if normalized.contains("yt-dlp")
         && (normalized.contains("update")
@@ -2988,7 +2990,7 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "downloader_outdated",
             "视频下载器可能过旧，需要更新后重试。".to_string(),
-            "Sources",
+            "Indexing",
         )
     } else if normalized.contains("http error 403") || normalized.contains("403: forbidden") {
         (
@@ -4752,7 +4754,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(info.code, "rate_limited");
-        assert_eq!(info.settings_section, "Sources");
+        assert_eq!(info.settings_section, "Indexing");
     }
 
     #[test]
@@ -4775,7 +4777,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(info.code, "downloader_outdated");
-        assert_eq!(info.settings_section, "Sources");
+        assert_eq!(info.settings_section, "Indexing");
     }
 
     #[test]
@@ -4829,6 +4831,39 @@ mod tests {
         assert!(config["last_error_detail"]
             .as_str()
             .is_some_and(|message| message.contains("HTTP Error 412")));
+    }
+
+    #[test]
+    fn rss_source_discovery_error_keeps_raw_feed_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'rss_podcast', '{}', 'syncing')",
+            [],
+        )
+        .unwrap();
+
+        mark_source_discovery_error(
+            &paths,
+            "source-1",
+            "RSS feed discovery failed: HTTP Error 401: Unauthorized",
+        )
+        .unwrap();
+
+        let raw_config: String = conn
+            .query_row(
+                "SELECT config FROM sources WHERE id = 'source-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let config: Value = serde_json::from_str(&raw_config).unwrap();
+
+        assert!(config.get("last_error_code").is_none());
+        assert!(config["last_error"]
+            .as_str()
+            .is_some_and(|message| message.contains("401")));
     }
 
     #[test]

@@ -24,6 +24,7 @@ export function SourcesScreen({
   onRemoveSource,
   onRetryFailedSource,
   onViewItems,
+  onOpenSettingsFix,
   requestConfirm,
 }: {
   sources: Source[];
@@ -34,6 +35,7 @@ export function SourcesScreen({
   onRemoveSource: (source: Source) => Promise<void>;
   onRetryFailedSource: (source: Source) => Promise<void>;
   onViewItems: (source: Source) => void;
+  onOpenSettingsFix: (section: string) => void;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -103,7 +105,13 @@ export function SourcesScreen({
         onResume={() => void runSourceAction(source, () => onResumeSource(source))}
         onRemove={() => void removeSource(source)}
         onRetryFailed={() => void retryFailedSource(source)}
-        onFix={onAddSource}
+        onFix={() => {
+          if (source.fixSettingsSection) {
+            onOpenSettingsFix(source.fixSettingsSection);
+          } else {
+            onAddSource();
+          }
+        }}
         onViewItems={() => onViewItems(source)}
       />
     );
