@@ -1,8 +1,12 @@
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -25,6 +29,7 @@ use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
+use tracing_subscriber::fmt::MakeWriter;
 
 mod api_models;
 pub mod jobs;
@@ -37,6 +42,7 @@ pub mod video_understanding;
 const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_LIST_LIMIT: usize = 250;
 const MAX_LIST_LIMIT: usize = 1_000;
+const CORE_LOG_FILE: &str = "cerul-core.log";
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -275,6 +281,7 @@ struct UpdatePlaybackPositionRequest {
 pub struct StorageUsageResponse {
     pub data_dir: String,
     pub total_bytes: u64,
+    pub total_apparent_bytes: u64,
     pub categories: Vec<StorageUsageCategory>,
 }
 
@@ -283,6 +290,7 @@ pub struct StorageUsageCategory {
     pub key: String,
     pub label: String,
     pub bytes: u64,
+    pub apparent_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -342,6 +350,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
         .route("/diagnostics", get(diagnostics_bundle))
+        .route("/diagnostics/indexing", get(indexing_diagnostics))
         .route("/search", post(search))
         .route("/search/diagnostics", get(search_diagnostics))
         .route("/search/rebuild", post(rebuild_search_index))
@@ -467,6 +476,7 @@ pub async fn serve() -> anyhow::Result<()> {
 }
 
 pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Result<()> {
+    init_core_file_logging(&paths);
     if let Err(error) = providers::bootstrap_env_providers(&paths) {
         tracing::warn!(%error, "failed to bootstrap env providers");
     }
@@ -486,6 +496,95 @@ pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Resu
     .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
+}
+
+static CORE_LOGGING_INIT: OnceLock<()> = OnceLock::new();
+
+fn init_core_file_logging(paths: &AppPaths) {
+    if CORE_LOGGING_INIT.get().is_some() {
+        return;
+    }
+
+    let log_dir = paths.logs_dir();
+    let result = fs::create_dir_all(&log_dir)
+        .and_then(|_| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_dir.join(CORE_LOG_FILE))
+        })
+        .map(|file| CoreLogWriter {
+            file: Arc::new(Mutex::new(file)),
+        });
+
+    let Ok(writer) = result else {
+        eprintln!(
+            "failed to initialize Cerul core log at {}",
+            log_dir.join(CORE_LOG_FILE).display()
+        );
+        let _ = CORE_LOGGING_INIT.set(());
+        return;
+    };
+
+    match tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_target(true)
+        .with_level(true)
+        .try_init()
+    {
+        Ok(()) => {
+            let _ = CORE_LOGGING_INIT.set(());
+            tracing::info!(
+                log_path = %cerul_storage::log_file_path(paths, CORE_LOG_FILE).display(),
+                "Cerul core file logging initialized"
+            );
+        }
+        Err(error) => {
+            eprintln!("failed to install Cerul core tracing subscriber: {error}");
+            let _ = CORE_LOGGING_INIT.set(());
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CoreLogWriter {
+    file: Arc<Mutex<File>>,
+}
+
+impl<'a> MakeWriter<'a> for CoreLogWriter {
+    type Writer = CoreLogGuard;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CoreLogGuard {
+            file: Arc::clone(&self.file),
+        }
+    }
+}
+
+struct CoreLogGuard {
+    file: Arc<Mutex<File>>,
+}
+
+impl Write for CoreLogGuard {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "core log lock poisoned"))?;
+        file.write_all(buf)?;
+        io::stderr().write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "core log lock poisoned"))?;
+        file.flush()?;
+        io::stderr().flush()
+    }
 }
 
 struct QdrantShutdownGuard;
@@ -818,6 +917,37 @@ struct SearchHealthDiagnostics {
     text_embedding_gap_count: Option<usize>,
     image_embedding_gap_count: Option<usize>,
     qdrant_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexingDiagnosticsResponse {
+    #[serde(flatten)]
+    indexing: jobs::IndexingDiagnostics,
+    qdrant: IndexingQdrantDiagnostics,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexingQdrantDiagnostics {
+    ready: bool,
+    collection: Option<String>,
+    point_count: Option<usize>,
+    error: Option<String>,
+}
+
+async fn indexing_diagnostics(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<IndexingDiagnosticsResponse>> {
+    let indexing = jobs::indexing_diagnostics(&state.paths)?;
+    let search = search_health_diagnostics(&state.paths).await?;
+    Ok(Json(IndexingDiagnosticsResponse {
+        indexing,
+        qdrant: IndexingQdrantDiagnostics {
+            ready: search.qdrant_error.is_none(),
+            collection: search.qdrant_collection,
+            point_count: search.qdrant_point_count,
+            error: search.qdrant_error,
+        },
+    }))
 }
 
 async fn search_diagnostics(
@@ -4247,71 +4377,104 @@ fn safe_filename_part(value: &str) -> String {
 }
 
 fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageResponse> {
-    let total_bytes = path_size(&paths.data)?;
-    let database_bytes = file_size(&paths.db)?;
-    let models_bytes = path_size(&paths.models)?;
-    let index_bytes = path_size(&paths.qdrant)?;
-    let cache_bytes = path_size(&paths.cache)?;
-    let known_bytes = database_bytes
-        .saturating_add(models_bytes)
-        .saturating_add(index_bytes)
-        .saturating_add(cache_bytes);
-    let other_bytes = total_bytes.saturating_sub(known_bytes);
+    let total = path_usage(&paths.data)?;
+    let database = path_usage(&paths.db)?;
+    let models = path_usage(&paths.models)?;
+    let index = path_usage(&paths.qdrant)?;
+    let cache = path_usage(&paths.cache)?;
+    let known_bytes = database
+        .bytes
+        .saturating_add(models.bytes)
+        .saturating_add(index.bytes)
+        .saturating_add(cache.bytes);
+    let known_apparent_bytes = database
+        .apparent_bytes
+        .saturating_add(models.apparent_bytes)
+        .saturating_add(index.apparent_bytes)
+        .saturating_add(cache.apparent_bytes);
+    let other = PathUsage {
+        bytes: total.bytes.saturating_sub(known_bytes),
+        apparent_bytes: total.apparent_bytes.saturating_sub(known_apparent_bytes),
+    };
 
     Ok(StorageUsageResponse {
         data_dir: paths.data.to_string_lossy().to_string(),
-        total_bytes,
+        total_bytes: total.bytes,
+        total_apparent_bytes: total.apparent_bytes,
         categories: vec![
-            storage_category("database", "Database", database_bytes),
-            storage_category("models", "Models", models_bytes),
-            storage_category("index", "Search index", index_bytes),
-            storage_category("cache", "Cache", cache_bytes),
-            storage_category("other", "Other", other_bytes),
+            storage_category("database", "Database", database),
+            storage_category("models", "Models", models),
+            storage_category("index", "Search index", index),
+            storage_category("cache", "Cache", cache),
+            storage_category("other", "Other", other),
         ],
     })
 }
 
-fn storage_category(key: &str, label: &str, bytes: u64) -> StorageUsageCategory {
+fn storage_category(key: &str, label: &str, usage: PathUsage) -> StorageUsageCategory {
     StorageUsageCategory {
         key: key.to_string(),
         label: label.to_string(),
-        bytes,
+        bytes: usage.bytes,
+        apparent_bytes: usage.apparent_bytes,
     }
 }
 
-fn file_size(path: &FsPath) -> anyhow::Result<u64> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
-        Ok(metadata) if metadata.is_dir() => path_size(path),
-        Ok(_) => Ok(0),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(error) => Err(error.into()),
-    }
+#[derive(Debug, Clone, Copy, Default)]
+struct PathUsage {
+    bytes: u64,
+    apparent_bytes: u64,
 }
 
-fn path_size(path: &FsPath) -> anyhow::Result<u64> {
+fn path_usage(path: &FsPath) -> anyhow::Result<PathUsage> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => return Ok(metadata.len()),
-        Ok(metadata) if !metadata.is_dir() => return Ok(0),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Ok(metadata) if metadata.is_file() => return Ok(metadata_usage(&metadata)),
+        Ok(metadata) if !metadata.is_dir() => return Ok(PathUsage::default()),
+        Ok(_metadata) => {
+            let mut total = PathUsage::default();
+            let mut stack = vec![path.to_path_buf()];
+            while let Some(current) = stack.pop() {
+                for entry in fs::read_dir(current)? {
+                    let entry = entry?;
+                    let metadata = fs::symlink_metadata(entry.path())?;
+                    if metadata.is_dir() {
+                        stack.push(entry.path());
+                    } else if metadata.is_file() {
+                        total = add_path_usage(total, metadata_usage(&metadata));
+                    }
+                }
+            }
+            return Ok(total);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PathUsage::default())
+        }
         Err(error) => return Err(error.into()),
     }
+}
 
-    let mut total = 0_u64;
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        for entry in fs::read_dir(current)? {
-            let entry = entry?;
-            let metadata = fs::symlink_metadata(entry.path())?;
-            if metadata.is_dir() {
-                stack.push(entry.path());
-            } else if metadata.is_file() {
-                total = total.saturating_add(metadata.len());
-            }
-        }
+fn add_path_usage(left: PathUsage, right: PathUsage) -> PathUsage {
+    PathUsage {
+        bytes: left.bytes.saturating_add(right.bytes),
+        apparent_bytes: left.apparent_bytes.saturating_add(right.apparent_bytes),
     }
-    Ok(total)
+}
+
+fn metadata_usage(metadata: &fs::Metadata) -> PathUsage {
+    PathUsage {
+        bytes: allocated_bytes(metadata),
+        apparent_bytes: metadata.len(),
+    }
+}
+
+#[cfg(unix)]
+fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
+    metadata.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
+    metadata.len()
 }
 
 fn current_unix_seconds() -> i64 {
@@ -4552,6 +4715,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/metrics", &["get"]),
     ("/openapi.json", &["get"]),
     ("/diagnostics", &["get"]),
+    ("/diagnostics/indexing", &["get"]),
     ("/search", &["post"]),
     ("/search/diagnostics", &["get"]),
     ("/search/rebuild", &["post"]),
@@ -4944,6 +5108,66 @@ mod tests {
         if !home.trim().is_empty() {
             assert!(!serialized.contains(&home));
         }
+    }
+
+    #[tokio::test]
+    async fn indexing_diagnostics_route_reports_local_queue_pressure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at) VALUES
+                    ('inference_mode', '"local"', strftime('%s','now')),
+                    ('concurrent_jobs', '4', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, title, status, metadata)
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 'processing', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, started_at, progress, stage, stage_message)
+                VALUES ('job-1', 'item-1', 'index_video', 'running', 10, 0.24, 'waiting_model', 'Waiting for local model')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/diagnostics/indexing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let diagnostics = response_json(response).await;
+        assert_eq!(diagnostics["configured_concurrent_jobs"], 4);
+        assert_eq!(diagnostics["effective_concurrent_jobs"], 1);
+        assert_eq!(diagnostics["effective_inference_mode"], "local");
+        assert_eq!(diagnostics["waiting_model_jobs"], 1);
+        assert_eq!(diagnostics["counts"]["running_jobs"], 1);
+        assert!(diagnostics["qdrant"]["ready"].is_boolean());
     }
 
     #[tokio::test]
@@ -6680,6 +6904,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let usage = response_json(response).await;
         assert!(usage["total_bytes"].as_u64().unwrap() >= 18);
+        assert!(usage["total_apparent_bytes"].as_u64().unwrap() >= 18);
         let categories = usage["categories"].as_array().unwrap();
         let bytes_for = |key: &str| {
             categories
@@ -6688,9 +6913,19 @@ mod tests {
                 .and_then(|category| category["bytes"].as_u64())
                 .unwrap()
         };
-        assert_eq!(bytes_for("models"), 5);
-        assert_eq!(bytes_for("cache"), 10);
-        assert_eq!(bytes_for("index"), 3);
+        let apparent_bytes_for = |key: &str| {
+            categories
+                .iter()
+                .find(|category| category["key"] == key)
+                .and_then(|category| category["apparent_bytes"].as_u64())
+                .unwrap()
+        };
+        assert_eq!(apparent_bytes_for("models"), 5);
+        assert_eq!(apparent_bytes_for("cache"), 10);
+        assert_eq!(apparent_bytes_for("index"), 3);
+        assert!(bytes_for("models") > 0);
+        assert!(bytes_for("cache") > 0);
+        assert!(bytes_for("index") > 0);
         assert!(bytes_for("database") > 0);
     }
 

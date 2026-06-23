@@ -45,6 +45,10 @@ impl AppPaths {
     pub fn source_cache_dir(&self, source_type: &str) -> PathBuf {
         self.cache.join("sources").join(source_type)
     }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.data.join("logs")
+    }
 }
 
 fn preferred_data_dir() -> anyhow::Result<PathBuf> {
@@ -164,6 +168,7 @@ mod tests {
             paths.source_cache_dir("youtube"),
             temp.path().join("cache").join("sources").join("youtube")
         );
+        assert_eq!(paths.logs_dir(), temp.path().join("logs"));
     }
 
     #[test]

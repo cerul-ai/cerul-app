@@ -20,6 +20,7 @@ use crate::{
 };
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
+const DEFAULT_AUTHOR_MAX_VIDEOS: usize = 50;
 
 #[derive(Debug, Clone)]
 pub struct WebVideo {
@@ -112,8 +113,9 @@ impl WebVideo {
         let max_videos = match classified.kind {
             WebVideoSourceKind::Single => Some(1),
             WebVideoSourceKind::Author => match max_videos {
-                Some(0) | None => None,
+                Some(0) => None,
                 Some(value) => Some(value),
+                None => Some(DEFAULT_AUTHOR_MAX_VIDEOS),
             },
         };
         let ytdlp_path = config
@@ -764,6 +766,19 @@ fi
         assert_eq!(source.platform(), "bilibili");
         assert_eq!(source.source_kind(), "author");
         assert_eq!(source.max_videos(), None);
+    }
+
+    #[test]
+    fn author_defaults_to_latest_50_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://space.bilibili.com/12345",
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        assert_eq!(source.max_videos(), Some(50));
     }
 
     #[cfg(unix)]

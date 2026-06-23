@@ -43,6 +43,7 @@ const sourceTabs: {
   { id: "youtube", icon: Clapperboard, labelKey: "addSource.tab.youtube" },
   { id: "podcast", icon: Podcast, labelKey: "addSource.tab.podcast" },
 ];
+const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 50;
 
 export function AddSourceDialog({
   onClose,
@@ -58,6 +59,8 @@ export function AddSourceDialog({
   const [folderPath, setFolderPath] = useState("");
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [webVideoMax, setWebVideoMax] = useState(DEFAULT_WEB_VIDEO_AUTHOR_MAX);
+  const [webVideoKeepAll, setWebVideoKeepAll] = useState(false);
   const [webVideoPreview, setWebVideoPreview] = useState<WebVideoClassification | null>(null);
   const [rssUrl, setRssUrl] = useState("");
   const [rssMax, setRssMax] = useState(25);
@@ -205,7 +208,12 @@ export function AddSourceDialog({
           url: preview.url,
           platform: preview.platform,
           source_kind: preview.sourceKind,
-          max_videos: preview.sourceKind === "author" ? 0 : 1,
+          max_videos:
+            preview.sourceKind === "author"
+              ? webVideoKeepAll
+                ? 0
+                : webVideoMax
+              : 1,
         });
       } else {
         if (!(await validateRssUrl())) {
@@ -276,6 +284,10 @@ export function AddSourceDialog({
               url={youtubeUrl}
               setUrl={updateYoutubeUrl}
               preview={webVideoPreview}
+              maxVideos={webVideoMax}
+              setMaxVideos={setWebVideoMax}
+              keepAll={webVideoKeepAll}
+              setKeepAll={setWebVideoKeepAll}
               validation={youtubeValidation}
               onValidate={() => void validateYoutubeUrl()}
             />
@@ -403,12 +415,20 @@ function YoutubeTab({
   url,
   setUrl,
   preview,
+  maxVideos,
+  setMaxVideos,
+  keepAll,
+  setKeepAll,
   validation,
   onValidate,
 }: {
   url: string;
   setUrl: (url: string) => void;
   preview: WebVideoClassification | null;
+  maxVideos: number;
+  setMaxVideos: (max: number) => void;
+  keepAll: boolean;
+  setKeepAll: (keepAll: boolean) => void;
   validation: ValidationState;
   onValidate: () => void;
 }) {
@@ -416,7 +436,9 @@ function YoutubeTab({
   const initials = preview?.platform === "bilibili" ? "BI" : "YT";
   const validDetail =
     preview?.sourceKind === "author"
-      ? t("addSource.webVideo.validDetailAuthor")
+      ? keepAll
+        ? t("addSource.youtube.validDetailAll")
+        : t("addSource.youtube.validDetailMax", { max: maxVideos })
       : t("addSource.webVideo.validDetailSingle");
   return (
     <div className="col gap-3">
@@ -450,6 +472,31 @@ function YoutubeTab({
         idleMessage={t("source.preview.webVideoIdle")}
         validDetail={validDetail}
       />
+      {preview?.sourceKind === "author" ? (
+        <div className="row gap-3" style={{ alignItems: "center", flexWrap: "wrap" }}>
+          <label className="field-label inline-field">
+            {t("addSource.youtube.maxLabel")}
+            <input
+              className="input"
+              type="number"
+              min={1}
+              disabled={keepAll}
+              value={maxVideos}
+              onChange={(event) =>
+                setMaxVideos(Math.max(1, Number(event.currentTarget.value) || 1))
+              }
+            />
+          </label>
+          <label className="inline-toggle">
+            <input
+              type="checkbox"
+              checked={keepAll}
+              onChange={(event) => setKeepAll(event.currentTarget.checked)}
+            />
+            <span>{t("addSource.youtube.keepAll")}</span>
+          </label>
+        </div>
+      ) : null}
       <p className="field-hint">{t("addSource.youtube.helper")}</p>
     </div>
   );

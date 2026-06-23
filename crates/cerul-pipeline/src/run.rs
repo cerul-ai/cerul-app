@@ -27,6 +27,7 @@ const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGE
 const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
 const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
 const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
+const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
 
 pub trait Transcriber: Send + Sync {
     fn prepare_transcription(&self) -> anyhow::Result<()> {
@@ -164,6 +165,7 @@ pub struct VideoPipeline {
     embedding_profile: Option<cerul_storage::vectors::EmbeddingProfile>,
     usage_job_id: Option<String>,
     model_permits: Option<Arc<Semaphore>>,
+    transcript_first_indexing: bool,
 }
 
 impl VideoPipeline {
@@ -186,6 +188,7 @@ impl VideoPipeline {
             embedding_profile: None,
             usage_job_id: None,
             model_permits: None,
+            transcript_first_indexing: false,
         }
     }
 
@@ -234,6 +237,11 @@ impl VideoPipeline {
         self
     }
 
+    pub fn with_transcript_first_indexing(mut self, enabled: bool) -> Self {
+        self.transcript_first_indexing = enabled;
+        self
+    }
+
     async fn acquire_model_permit(&self) -> anyhow::Result<Option<OwnedSemaphorePermit>> {
         match &self.model_permits {
             Some(model_permits) => Ok(Some(Arc::clone(model_permits).acquire_owned().await?)),
@@ -254,11 +262,37 @@ impl VideoPipeline {
                 "Waiting for local model",
             );
         }
-        self.acquire_model_permit().await
+        let started = Instant::now();
+        let permit = self.acquire_model_permit().await?;
+        if self.model_permits.is_some() {
+            self.log_pipeline_event(
+                item_id,
+                "model_permit_acquired",
+                json!({
+                    "wait_ms": started.elapsed().as_millis() as u64,
+                }),
+            );
+        }
+        Ok(permit)
     }
 
     fn report_progress(&self, item_id: &str, stage: &'static str, progress: f64, message: &str) {
         self.progress.update(item_id, stage, progress, message);
+    }
+
+    fn log_pipeline_event(&self, item_id: &str, event: &str, details: Value) {
+        if let Err(error) = cerul_storage::append_jsonl_event(
+            &self.paths,
+            PIPELINE_JOB_LOG_FILE,
+            json!({
+                "event": event,
+                "item_id": item_id,
+                "job_id": self.usage_job_id.as_deref(),
+                "details": details,
+            }),
+        ) {
+            tracing::warn!(%error, item_id, event, "failed to append Cerul pipeline event");
+        }
     }
 
     /// Embed `texts` in adaptive batches, advancing the progress bar from `base`
@@ -547,6 +581,87 @@ impl VideoPipeline {
             self.chunk_window_sec,
             self.chunk_overlap_sec,
         );
+        let transcript_first_indexed = if self.transcript_first_indexing {
+            self.report_progress(
+                item_id,
+                "writing_transcript_first",
+                0.62,
+                "Saving transcript-first index",
+            );
+            let first_sqlite_summary = cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+                &self.paths,
+                item_id,
+                &transcript_storage.chunks,
+                &transcript_storage.lines,
+                &[],
+                &keyframes,
+            )?;
+            set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+            match self
+                .embed_and_write_retrieval_units(item_id, 0.625, 0.01, false)
+                .await
+            {
+                Ok(vector_summary) => {
+                    let write_summary = StorageWriteSummary {
+                        transcript_chunks: first_sqlite_summary.transcript_chunks,
+                        keyframes: first_sqlite_summary.keyframes,
+                        text_vectors: vector_summary.text_vectors,
+                        image_vectors: 0,
+                    };
+                    cerul_storage::set_video_multimodal_index_status(
+                        &self.paths,
+                        item_id,
+                        "pending",
+                        None,
+                        frames.len(),
+                        0,
+                        "pending",
+                        None,
+                        0,
+                    )?;
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        write_summary.text_vectors,
+                        write_summary.image_vectors,
+                    )?;
+                    cerul_storage::mark_indexed(&self.paths, item_id)?;
+                    self.report_progress(
+                        item_id,
+                        "transcript_indexed",
+                        0.635,
+                        "Transcript searchable; indexing visuals",
+                    );
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_indexed",
+                        json!({
+                            "transcript_chunks": write_summary.transcript_chunks,
+                            "text_vectors": write_summary.text_vectors,
+                            "sampled_frames": frames.len(),
+                        }),
+                    );
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        item_id,
+                        "transcript-first retrieval index failed; continuing full indexing pass"
+                    );
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_failed",
+                        json!({ "error": error.to_string() }),
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
         let ocr_frames = if self.ocr_enabled {
             let ocr = Arc::clone(&self.ocr);
@@ -594,6 +709,16 @@ impl VideoPipeline {
             0.68,
             "Saving searchable transcript",
         );
+        if transcript_first_indexed {
+            self.log_pipeline_event(
+                item_id,
+                "visual_enrichment_started",
+                json!({
+                    "sampled_frames": frames.len(),
+                    "ocr_chunks": storage_ocr_chunks.len(),
+                }),
+            );
+        }
         let sqlite_summary = cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
             &self.paths,
             item_id,
@@ -611,7 +736,7 @@ impl VideoPipeline {
             "Writing unified search index",
         );
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.80, 0.12)
+            .embed_and_write_retrieval_units(item_id, 0.80, 0.12, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -696,6 +821,18 @@ impl VideoPipeline {
         )?;
         cerul_storage::mark_indexed(&self.paths, item_id)?;
         self.report_progress(item_id, "completed", 1.0, "Index complete");
+        self.log_pipeline_event(
+            item_id,
+            "video_index_complete",
+            json!({
+                "sampled_frames": frames.len(),
+                "ocr_chunks": storage_ocr_chunks.len(),
+                "transcript_chunks": write_summary.transcript_chunks,
+                "text_vectors": write_summary.text_vectors,
+                "image_vectors": write_summary.image_vectors,
+                "transcript_first": self.transcript_first_indexing,
+            }),
+        );
         self.cleanup_success_temp_artifacts(item_id, &audio_path)
             .await;
 
@@ -743,7 +880,7 @@ impl VideoPipeline {
         )?;
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.78, 0.16)
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -821,7 +958,7 @@ impl VideoPipeline {
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.78, 0.16)
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -936,7 +1073,9 @@ impl VideoPipeline {
         item_id: &str,
         base: f64,
         span: f64,
+        include_image_embeddings: bool,
     ) -> anyhow::Result<StorageWriteSummary> {
+        let started = Instant::now();
         let profile = self.active_embedding_profile()?;
         cerul_storage::set_item_search_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
         let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
@@ -949,10 +1088,24 @@ impl VideoPipeline {
             .iter()
             .filter(|unit| !unit.uses_image_embedding())
             .collect::<Vec<_>>();
-        let image_units = units
-            .iter()
-            .filter(|unit| unit.has_image_embedding_source())
-            .collect::<Vec<_>>();
+        let image_units = if include_image_embeddings {
+            units
+                .iter()
+                .filter(|unit| unit.has_image_embedding_source())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        self.log_pipeline_event(
+            item_id,
+            "retrieval_units_built",
+            json!({
+                "units": units.len(),
+                "text_units": text_units.len(),
+                "image_units": image_units.len(),
+                "include_image_embeddings": include_image_embeddings,
+            }),
+        );
 
         let text_inputs = text_units
             .iter()
@@ -1087,6 +1240,7 @@ impl VideoPipeline {
             );
         }
 
+        let qdrant_started = Instant::now();
         cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
             &self.paths,
             item_id,
@@ -1095,6 +1249,7 @@ impl VideoPipeline {
             cerul_storage::SEARCH_INDEX_VERSION,
         )
         .await?;
+        let qdrant_write_ms = qdrant_started.elapsed().as_millis() as u64;
         cerul_storage::set_item_search_index_status(
             &self.paths,
             item_id,
@@ -1103,6 +1258,20 @@ impl VideoPipeline {
             units.len(),
             records.len(),
         )?;
+        self.log_pipeline_event(
+            item_id,
+            "retrieval_index_written",
+            json!({
+                "units": units.len(),
+                "vectors": records.len(),
+                "text_vectors": text_vectors.len(),
+                "image_vectors": image_vectors.len(),
+                "qdrant_write_ms": qdrant_write_ms,
+                "total_ms": started.elapsed().as_millis() as u64,
+                "embedding_profile_id": profile.id,
+                "include_image_embeddings": include_image_embeddings,
+            }),
+        );
 
         Ok(StorageWriteSummary {
             transcript_chunks: units.len(),
@@ -2560,7 +2729,7 @@ mod tests {
         )
         .with_embedding_profile(bad_dimension_profile(&paths));
         let error = pipeline
-            .embed_and_write_retrieval_units("image-1", 0.0, 0.1)
+            .embed_and_write_retrieval_units("image-1", 0.0, 0.1, true)
             .await
             .unwrap_err();
 

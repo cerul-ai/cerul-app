@@ -6,7 +6,7 @@ use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -106,6 +106,7 @@ pub struct MlxSidecarConfig {
     pub python: PathBuf,
     pub script: PathBuf,
     pub models_cache: PathBuf,
+    pub log_path: PathBuf,
     pub embedding_model: String,
     pub asr_model: String,
     pub forced_aligner_model: String,
@@ -139,6 +140,7 @@ impl MlxSidecarConfig {
             python,
             script,
             models_cache,
+            log_path: paths.logs_dir().join("mlx-sidecar.log"),
             embedding_model: env::var("CERUL_MLX_EMBEDDING_MODEL")
                 .unwrap_or_else(|_| DEFAULT_EMBEDDING_MODEL.to_string()),
             asr_model: env::var("CERUL_MLX_ASR_MODEL")
@@ -685,10 +687,45 @@ fn ensure_existing_process(guard: &mut Option<SidecarProcess>) -> anyhow::Result
     Ok(true)
 }
 
+fn append_sidecar_log_line(log: &Arc<Mutex<fs::File>>, stream: &str, line: &str) {
+    let Ok(mut file) = log.lock() else {
+        return;
+    };
+    if write!(file, "[{stream}] {line}").is_ok() && !line.ends_with('\n') {
+        let _ = file.write_all(b"\n");
+    }
+    let _ = file.flush();
+}
+
 fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
     std::fs::create_dir_all(&config.models_cache)?;
     let hf_home = config.models_cache.join("huggingface");
     std::fs::create_dir_all(&hf_home)?;
+    if let Some(parent) = config.log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let sidecar_log = Arc::new(Mutex::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&config.log_path)
+            .with_context(|| {
+                format!(
+                    "failed to open MLX sidecar log: {}",
+                    config.log_path.display()
+                )
+            })?,
+    ));
+    append_sidecar_log_line(
+        &sidecar_log,
+        "system",
+        &format!(
+            "--- starting MLX sidecar python={} script={} models_cache={} ---\n",
+            config.python.display(),
+            config.script.display(),
+            config.models_cache.display()
+        ),
+    );
 
     let mut child = Command::new(&config.python)
         .arg("-u")
@@ -717,7 +754,7 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         .env("HF_HUB_DISABLE_XET", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| {
             format!(
@@ -734,8 +771,13 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to open MLX sidecar stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to open MLX sidecar stderr"))?;
 
     let (sender, responses) = mpsc::channel();
+    let stdout_log = Arc::clone(&sidecar_log);
     thread::Builder::new()
         .name("mlx-sidecar-reader".to_string())
         .spawn(move || {
@@ -745,6 +787,7 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
+                        append_sidecar_log_line(&stdout_log, "stdout", &line);
                         if sender.send(Ok(line)).is_err() {
                             break;
                         }
@@ -757,6 +800,32 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
             }
         })
         .context("failed to spawn MLX sidecar reader thread")?;
+
+    let stderr_log = Arc::clone(&sidecar_log);
+    thread::Builder::new()
+        .name("mlx-sidecar-stderr".to_string())
+        .spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        append_sidecar_log_line(&stderr_log, "stderr", &line);
+                        eprint!("{line}");
+                    }
+                    Err(error) => {
+                        append_sidecar_log_line(
+                            &stderr_log,
+                            "stderr",
+                            &format!("failed to read MLX sidecar stderr: {error}\n"),
+                        );
+                        break;
+                    }
+                }
+            }
+        })
+        .context("failed to spawn MLX sidecar stderr thread")?;
 
     Ok(SidecarProcess {
         child,
@@ -852,6 +921,7 @@ mod tests {
         assert!(config.script.ends_with("mlx-sidecar/cerul_mlx_sidecar.py"));
         assert_eq!(config.embedding_model, DEFAULT_EMBEDDING_MODEL);
         assert_eq!(config.models_cache, paths.models.join("mlx"));
+        assert_eq!(config.log_path, paths.logs_dir().join("mlx-sidecar.log"));
     }
 
     #[test]

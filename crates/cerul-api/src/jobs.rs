@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use cerul_pipeline::run::{Embedder, OcrEngine, PipelineProgress, Transcriber, VideoPipeline};
 use cerul_storage::AppPaths;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
+use serde_json::json;
 use tokio::sync::Semaphore;
 
 static DEFAULT_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
@@ -19,6 +21,7 @@ const DEFAULT_CONCURRENT_JOBS: usize = 2;
 const MAX_CONCURRENT_JOBS: usize = 4;
 const JOB_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(500);
 const JOB_PROGRESS_MIN_DELTA: f64 = 0.01;
+const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedJob {
@@ -123,10 +126,11 @@ struct JobProgressState {
     stage: Option<&'static str>,
     progress: f64,
     last_write: Option<Instant>,
+    stage_started: Option<Instant>,
 }
 
 impl PipelineProgress for JobProgressReporter {
-    fn update(&self, _item_id: &str, stage: &'static str, progress: f64, message: &str) {
+    fn update(&self, item_id: &str, stage: &'static str, progress: f64, message: &str) {
         if !self.should_write(stage, progress) {
             return;
         }
@@ -134,7 +138,7 @@ impl PipelineProgress for JobProgressReporter {
             tracing::warn!(%error, job_id = %self.job_id, stage, "failed to update job progress");
             return;
         }
-        self.record_write(stage, progress);
+        self.record_write(item_id, stage, progress, message);
     }
 }
 
@@ -156,14 +160,85 @@ impl JobProgressReporter {
             || interval_elapsed
     }
 
-    fn record_write(&self, stage: &'static str, progress: f64) {
+    fn record_write(&self, item_id: &str, stage: &'static str, progress: f64, message: &str) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
+        let now = Instant::now();
+        let previous_stage = state.stage;
+        let stage_changed = previous_stage != Some(stage);
+        let previous_stage_duration_ms = if stage_changed {
+            state
+                .stage_started
+                .map(|started| started.elapsed().as_millis() as u64)
+        } else {
+            None
+        };
         state.stage = Some(stage);
         state.progress = progress.clamp(0.0, 1.0);
-        state.last_write = Some(Instant::now());
+        state.last_write = Some(now);
+        if stage_changed || state.stage_started.is_none() {
+            state.stage_started = Some(now);
+        }
+        drop(state);
+
+        log_job_event(
+            &self.paths,
+            json!({
+                "event": "stage_update",
+                "job_id": self.job_id.as_str(),
+                "item_id": item_id,
+                "stage": stage,
+                "progress": progress.clamp(0.0, 1.0),
+                "message": message,
+                "previous_stage": previous_stage,
+                "previous_stage_duration_ms": previous_stage_duration_ms,
+            }),
+        );
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexingDiagnostics {
+    pub paused: bool,
+    pub configured_concurrent_jobs: usize,
+    pub effective_concurrent_jobs: usize,
+    pub effective_inference_mode: String,
+    pub local_model_slots: Option<usize>,
+    pub counts: IndexingDiagnosticsCounts,
+    pub active_stage_counts: Vec<IndexingStageCount>,
+    pub waiting_model_jobs: u64,
+    pub active_jobs: Vec<IndexingActiveJob>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexingDiagnosticsCounts {
+    pub total_items: u64,
+    pub indexed_items: u64,
+    pub discovered_items: u64,
+    pub processing_items: u64,
+    pub failed_items: u64,
+    pub queued_jobs: u64,
+    pub running_jobs: u64,
+    pub failed_jobs: u64,
+    pub completed_jobs: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexingStageCount {
+    pub stage: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexingActiveJob {
+    pub id: String,
+    pub item_id: Option<String>,
+    pub job_type: String,
+    pub stage: Option<String>,
+    pub stage_message: Option<String>,
+    pub progress: f64,
+    pub started_at: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -187,6 +262,16 @@ impl JobWorker {
             return Ok(None);
         };
 
+        log_job_event(
+            &self.paths,
+            json!({
+                "event": "claimed",
+                "job_id": job.id.as_str(),
+                "item_id": job.item_id.as_str(),
+                "job_type": job.job_type.as_str(),
+                "effective_concurrent_jobs": concurrency,
+            }),
+        );
         mark_item_processing(&self.paths, &job)?;
         let result = self.processor.process(&job).await;
 
@@ -219,6 +304,15 @@ impl JobWorker {
         match result {
             Ok(()) => {
                 complete_job(&self.paths, &job)?;
+                log_job_event(
+                    &self.paths,
+                    json!({
+                        "event": "completed",
+                        "job_id": job.id.as_str(),
+                        "item_id": job.item_id.as_str(),
+                        "job_type": job.job_type.as_str(),
+                    }),
+                );
                 Ok(Some(JobOutcome {
                     id: job.id,
                     item_id: job.item_id,
@@ -229,6 +323,16 @@ impl JobWorker {
             Err(error) => {
                 let message = error.to_string();
                 fail_job(&self.paths, &job, &message)?;
+                log_job_event(
+                    &self.paths,
+                    json!({
+                        "event": "failed",
+                        "job_id": job.id.as_str(),
+                        "item_id": job.item_id.as_str(),
+                        "job_type": job.job_type.as_str(),
+                        "error": message.as_str(),
+                    }),
+                );
                 Err(anyhow::anyhow!(message))
             }
         }
@@ -419,9 +523,66 @@ fn effective_concurrent_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
 
 fn concurrent_jobs_for_effective_mode(
     paths: &AppPaths,
-    _effective_mode: &str,
+    effective_mode: &str,
 ) -> anyhow::Result<usize> {
-    configured_concurrent_jobs(paths)
+    let configured = configured_concurrent_jobs(paths)?;
+    if effective_mode == "local" {
+        Ok(1)
+    } else {
+        Ok(configured)
+    }
+}
+
+pub fn indexing_diagnostics(paths: &AppPaths) -> anyhow::Result<IndexingDiagnostics> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let configured = configured_concurrent_jobs(paths)?;
+    let effective_inference_mode = effective_indexing_inference_mode(paths);
+    let effective = concurrent_jobs_for_effective_mode(paths, &effective_inference_mode)?;
+    let paused = is_indexing_paused(paths)?;
+
+    let counts = IndexingDiagnosticsCounts {
+        total_items: count_rows(&conn, "SELECT COUNT(*) FROM items")?,
+        indexed_items: count_rows(
+            &conn,
+            "SELECT COUNT(*) FROM items WHERE status = 'indexed' OR indexed_at IS NOT NULL",
+        )?,
+        discovered_items: count_rows(
+            &conn,
+            "SELECT COUNT(*) FROM items WHERE status = 'discovered'",
+        )?,
+        processing_items: count_rows(
+            &conn,
+            "SELECT COUNT(*) FROM items WHERE status IN ('fetching', 'processing')",
+        )?,
+        failed_items: count_rows(&conn, "SELECT COUNT(*) FROM items WHERE status = 'failed'")?,
+        queued_jobs: count_rows(&conn, "SELECT COUNT(*) FROM jobs WHERE status = 'queued'")?,
+        running_jobs: count_rows(&conn, "SELECT COUNT(*) FROM jobs WHERE status = 'running'")?,
+        failed_jobs: count_rows(&conn, "SELECT COUNT(*) FROM jobs WHERE status = 'failed'")?,
+        completed_jobs: count_rows(
+            &conn,
+            "SELECT COUNT(*) FROM jobs WHERE status = 'completed'",
+        )?,
+    };
+
+    let active_stage_counts = job_stage_counts(&conn)?;
+    let waiting_model_jobs = active_stage_counts
+        .iter()
+        .find(|entry| entry.stage == "waiting_model")
+        .map(|entry| entry.count)
+        .unwrap_or(0);
+    let active_jobs = active_jobs_snapshot(&conn)?;
+
+    Ok(IndexingDiagnostics {
+        paused,
+        configured_concurrent_jobs: configured,
+        effective_concurrent_jobs: effective,
+        local_model_slots: (effective_inference_mode == "local").then_some(1),
+        effective_inference_mode,
+        counts,
+        active_stage_counts,
+        waiting_model_jobs,
+        active_jobs,
+    })
 }
 
 pub fn requeue_interrupted_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
@@ -556,6 +717,7 @@ fn build_pipeline_processor(
             .with_ocr(ocr)
             .with_runtime_control(runtime_control)
             .with_model_permits(model_permits)
+            .with_transcript_first_indexing(true)
     } else {
         let profile =
             cerul_storage::vectors::ensure_embedding_profile_for_inference_mode(&paths, "remote")?;
@@ -742,6 +904,56 @@ fn parse_usize_setting(value: &str) -> Option<usize> {
 fn count_rows(conn: &rusqlite::Connection, sql: &str) -> anyhow::Result<u64> {
     let count: i64 = conn.query_row(sql, [], |row| row.get(0))?;
     Ok(count.try_into()?)
+}
+
+fn job_stage_counts(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexingStageCount>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT COALESCE(stage, status) AS stage, COUNT(*)
+        FROM jobs
+        WHERE status = 'running'
+        GROUP BY COALESCE(stage, status)
+        ORDER BY COUNT(*) DESC, stage ASC
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let count: i64 = row.get(1)?;
+        Ok(IndexingStageCount {
+            stage: row.get(0)?,
+            count: count.max(0) as u64,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn active_jobs_snapshot(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexingActiveJob>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, item_id, job_type, stage, stage_message, progress, started_at
+        FROM jobs
+        WHERE status = 'running'
+        ORDER BY COALESCE(started_at, 0) DESC, id ASC
+        LIMIT 12
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(IndexingActiveJob {
+            id: row.get(0)?,
+            item_id: row.get(1)?,
+            job_type: row.get(2)?,
+            stage: row.get(3)?,
+            stage_message: row.get(4)?,
+            progress: row.get(5)?,
+            started_at: row.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn log_job_event(paths: &AppPaths, event: serde_json::Value) {
+    if let Err(error) = cerul_storage::append_jsonl_event(paths, PIPELINE_JOB_LOG_FILE, event) {
+        tracing::warn!(%error, "failed to append Cerul pipeline job event");
+    }
 }
 
 fn claim_next_job(paths: &AppPaths, max_running_jobs: usize) -> anyhow::Result<Option<ClaimedJob>> {
@@ -1302,7 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_concurrent_jobs_respects_setting_for_local_and_remote_modes() {
+    fn effective_concurrent_jobs_serializes_local_model_work() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         set_setting(&paths, CONCURRENT_JOBS_SETTING, serde_json::json!(4));
@@ -1313,8 +1525,40 @@ mod tests {
         );
         assert_eq!(
             concurrent_jobs_for_effective_mode(&paths, "local").unwrap(),
-            4
+            1
         );
+    }
+
+    #[test]
+    fn indexing_diagnostics_reports_local_effective_concurrency_and_waiting_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        set_setting(&paths, CONCURRENT_JOBS_SETTING, serde_json::json!(4));
+        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "running",
+            "processing",
+        );
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                "UPDATE jobs SET stage = 'waiting_model', stage_message = 'Waiting for local model', progress = 0.24 WHERE id = 'job-1'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let diagnostics = indexing_diagnostics(&paths).unwrap();
+
+        assert_eq!(diagnostics.configured_concurrent_jobs, 4);
+        assert_eq!(diagnostics.effective_concurrent_jobs, 1);
+        assert_eq!(diagnostics.local_model_slots, Some(1));
+        assert_eq!(diagnostics.waiting_model_jobs, 1);
+        assert_eq!(diagnostics.active_jobs.len(), 1);
     }
 
     #[test]

@@ -43,11 +43,17 @@ export function IndexingStrip({
   const active = jobs.filter(isActiveJob);
   const now = useNowSeconds(active.length > 0);
 
-  // Representative job = the running job furthest along (the "current" work).
   const running = active.filter((job) => job.status === "running");
+  const waitingModel = running.filter((job) => job.stage === "waiting_model");
+  const activelyProcessing = running.filter((job) => job.stage !== "waiting_model");
   const queued = active.length - running.length;
   const onlyPausedQueuedJobs = paused && running.length === 0 && queued > 0;
-  const rep = running.slice().sort((a, b) => b.progress - a.progress)[0] ?? null;
+  // Prefer work that is actually advancing over a job that is merely holding a
+  // running slot while it waits for the single local model permit.
+  const rep =
+    activelyProcessing.slice().sort((a, b) => b.progress - a.progress)[0] ??
+    waitingModel.slice().sort((a, b) => b.progress - a.progress)[0] ??
+    null;
   const repPct = rep ? Math.round(rep.progress * 100) : -1;
 
   // Stopwatch for "last progress change": reset only when the watched job or its
@@ -87,7 +93,11 @@ export function IndexingStrip({
   const elapsed = rep ? jobElapsedSeconds(rep, now) : null;
   const eta = rep ? jobEtaLabel(rep, now, t) : null;
   const stalledFor = rep ? now - changeRef.current.at : 0;
-  const stalled = rep !== null && rep.job_type !== "index_audio" && stalledFor > STALL_THRESHOLD_SEC;
+  const stalled =
+    rep !== null &&
+    rep.stage !== "waiting_model" &&
+    rep.job_type !== "index_audio" &&
+    stalledFor > STALL_THRESHOLD_SEC;
 
   const title = onlyPausedQueuedJobs
     ? t(active.length === 1 ? "indexing.strip.pausedOne" : "indexing.strip.pausedOther", {
@@ -114,6 +124,11 @@ export function IndexingStrip({
           <strong>{title}</strong>
           {queued > 0 ? (
             <span className="muted">{t("indexing.strip.queuedSuffix", { count: queued })}</span>
+          ) : null}
+          {waitingModel.length > 0 ? (
+            <span className="muted">
+              {t("indexing.strip.waitingModelSuffix", { count: waitingModel.length })}
+            </span>
           ) : null}
           {step ? (
             <span className="indexing-strip__step">
