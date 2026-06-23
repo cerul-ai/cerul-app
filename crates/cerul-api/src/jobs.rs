@@ -536,7 +536,7 @@ fn concurrent_jobs_for_effective_mode(
 pub fn indexing_diagnostics(paths: &AppPaths) -> anyhow::Result<IndexingDiagnostics> {
     let conn = cerul_storage::sqlite::open(paths)?;
     let configured = configured_concurrent_jobs(paths)?;
-    let effective_inference_mode = effective_indexing_inference_mode(paths);
+    let effective_inference_mode = read_only_effective_indexing_inference_mode(paths);
     let effective = concurrent_jobs_for_effective_mode(paths, &effective_inference_mode)?;
     let paused = is_indexing_paused(paths)?;
 
@@ -849,6 +849,23 @@ fn effective_indexing_inference_mode(paths: &AppPaths) -> String {
             }
         }
     }
+}
+
+fn read_only_effective_indexing_inference_mode(paths: &AppPaths) -> String {
+    let runtime = crate::models::model_runtime_status(paths);
+    read_only_indexing_inference_mode(paths, &runtime)
+}
+
+fn read_only_indexing_inference_mode(
+    paths: &AppPaths,
+    runtime: &crate::models::ModelRuntimeStatus,
+) -> String {
+    let configured = configured_inference_mode(paths);
+    if configured == "remote" {
+        return "remote".to_string();
+    }
+
+    crate::effective_inference_mode_for_runtime(&configured, runtime)
 }
 
 fn indexing_inference_mode(
@@ -1559,6 +1576,26 @@ mod tests {
         assert_eq!(diagnostics.local_model_slots, Some(1));
         assert_eq!(diagnostics.waiting_model_jobs, 1);
         assert_eq!(diagnostics.active_jobs.len(), 1);
+    }
+
+    #[test]
+    fn read_only_indexing_mode_does_not_consume_deferred_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+        set_setting(
+            &paths,
+            "embedding_profile_rebuild_deferred_mode",
+            serde_json::json!("local"),
+        );
+
+        let mode = read_only_indexing_inference_mode(&paths, &local_runtime_status(true));
+
+        assert_eq!(mode, "local");
+        assert_eq!(
+            crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
+            Some("local".to_string())
+        );
     }
 
     #[test]

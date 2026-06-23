@@ -45,6 +45,10 @@ const sourceTabs: {
 ];
 const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 50;
 
+function normalizeWebVideoMax(value: number) {
+  return Math.max(1, Math.floor(Number.isFinite(value) ? value : 1));
+}
+
 export function AddSourceDialog({
   onClose,
   onAddSource,
@@ -191,14 +195,29 @@ export function AddSourceDialog({
         if (!preview) {
           return;
         }
+        const selectedAuthorMax = normalizeWebVideoMax(webVideoMax);
         if (preview.sourceKind === "author") {
           const confirmed = await requestConfirm({
-            title: t("addSource.webVideo.confirmAuthor.title"),
-            body: t("addSource.webVideo.confirmAuthor.body", {
-              platform: t(`addSource.webVideo.platform.${preview.platform}`),
-              hostname: preview.hostname,
-            }),
-            confirmLabel: t("addSource.webVideo.confirmAuthor.confirm"),
+            title: webVideoKeepAll
+              ? t("addSource.webVideo.confirmAuthor.title")
+              : t("addSource.webVideo.confirmAuthorLimited.title", {
+                  max: selectedAuthorMax,
+                }),
+            body: webVideoKeepAll
+              ? t("addSource.webVideo.confirmAuthor.body", {
+                  platform: t(`addSource.webVideo.platform.${preview.platform}`),
+                  hostname: preview.hostname,
+                })
+              : t("addSource.webVideo.confirmAuthorLimited.body", {
+                  platform: t(`addSource.webVideo.platform.${preview.platform}`),
+                  hostname: preview.hostname,
+                  max: selectedAuthorMax,
+                }),
+            confirmLabel: webVideoKeepAll
+              ? t("addSource.webVideo.confirmAuthor.confirm")
+              : t("addSource.webVideo.confirmAuthorLimited.confirm", {
+                  max: selectedAuthorMax,
+                }),
           });
           if (!confirmed) {
             return;
@@ -212,7 +231,7 @@ export function AddSourceDialog({
             preview.sourceKind === "author"
               ? webVideoKeepAll
                 ? 0
-                : webVideoMax
+                : selectedAuthorMax
               : 1,
         });
       } else {
@@ -480,10 +499,11 @@ function YoutubeTab({
               className="input"
               type="number"
               min={1}
+              step={1}
               disabled={keepAll}
               value={maxVideos}
               onChange={(event) =>
-                setMaxVideos(Math.max(1, Number(event.currentTarget.value) || 1))
+                setMaxVideos(normalizeWebVideoMax(Number(event.currentTarget.value)))
               }
             />
           </label>

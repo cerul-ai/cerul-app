@@ -151,6 +151,13 @@ struct TranscriptStorage {
 }
 
 #[derive(Clone)]
+struct TranscriptFirstIndexSummary {
+    write_summary: StorageWriteSummary,
+    search_units: usize,
+    search_vectors: usize,
+}
+
+#[derive(Clone)]
 pub struct VideoPipeline {
     paths: AppPaths,
     transcriber: Arc<dyn Transcriber>,
@@ -585,7 +592,7 @@ impl VideoPipeline {
             .chunks
             .iter()
             .any(|chunk| !chunk.text.trim().is_empty());
-        let transcript_first_indexed = if self.transcript_first_indexing && has_transcript_text {
+        let transcript_first_summary = if self.transcript_first_indexing && has_transcript_text {
             self.report_progress(
                 item_id,
                 "writing_transcript_first",
@@ -631,7 +638,6 @@ impl VideoPipeline {
                         write_summary.text_vectors,
                         write_summary.image_vectors,
                     )?;
-                    cerul_storage::mark_indexed(&self.paths, item_id)?;
                     self.report_progress(
                         item_id,
                         "transcript_indexed",
@@ -647,7 +653,11 @@ impl VideoPipeline {
                             "sampled_frames": frames.len(),
                         }),
                     );
-                    true
+                    Some(TranscriptFirstIndexSummary {
+                        write_summary,
+                        search_units: vector_summary.transcript_chunks,
+                        search_vectors: vector_summary.text_vectors,
+                    })
                 }
                 Ok(vector_summary) => {
                     cerul_storage::set_item_search_index_status(
@@ -667,7 +677,7 @@ impl VideoPipeline {
                             "text_vectors": vector_summary.text_vectors,
                         }),
                     );
-                    false
+                    None
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -680,7 +690,7 @@ impl VideoPipeline {
                         "transcript_first_failed",
                         json!({ "error": error.to_string() }),
                     );
-                    false
+                    None
                 }
             }
         } else {
@@ -694,7 +704,7 @@ impl VideoPipeline {
                     }),
                 );
             }
-            false
+            None
         };
 
         let ocr_frames = if self.ocr_enabled {
@@ -743,7 +753,7 @@ impl VideoPipeline {
             0.68,
             "Saving searchable transcript",
         );
-        if transcript_first_indexed {
+        if transcript_first_summary.is_some() {
             self.log_pipeline_event(
                 item_id,
                 "visual_enrichment_started",
@@ -781,15 +791,41 @@ impl VideoPipeline {
                     item_id,
                     "unified retrieval index write failed; keeping canonical transcript and OCR artifacts"
                 );
-                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
-                cerul_storage::set_item_search_index_status(
-                    &self.paths,
-                    item_id,
-                    "failed",
-                    Some(&message),
-                    0,
-                    0,
-                )?;
+                if let Some(transcript_first) = &transcript_first_summary {
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.write_summary.text_vectors,
+                        transcript_first.write_summary.image_vectors,
+                    )?;
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.search_units,
+                        transcript_first.search_vectors,
+                    )?;
+                } else {
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "failed",
+                        Some(&message),
+                        0,
+                        0,
+                    )?;
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "failed",
+                        Some(&message),
+                        0,
+                        0,
+                    )?;
+                }
                 cerul_storage::set_video_multimodal_index_status(
                     &self.paths,
                     item_id,
@@ -810,7 +846,11 @@ impl VideoPipeline {
                     item_id,
                     "partial",
                     1.0,
-                    "Transcript saved; search index unavailable",
+                    if transcript_first_summary.is_some() {
+                        "Transcript searchable; visual index unavailable"
+                    } else {
+                        "Transcript saved; search index unavailable"
+                    },
                 );
                 self.cleanup_success_temp_artifacts(item_id, &audio_path)
                     .await;
@@ -864,7 +904,7 @@ impl VideoPipeline {
                 "transcript_chunks": write_summary.transcript_chunks,
                 "text_vectors": write_summary.text_vectors,
                 "image_vectors": write_summary.image_vectors,
-                "transcript_first": self.transcript_first_indexing,
+                "transcript_first": transcript_first_summary.is_some(),
             }),
         );
         self.cleanup_success_temp_artifacts(item_id, &audio_path)
