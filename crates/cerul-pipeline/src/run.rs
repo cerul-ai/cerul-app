@@ -581,7 +581,11 @@ impl VideoPipeline {
             self.chunk_window_sec,
             self.chunk_overlap_sec,
         );
-        let transcript_first_indexed = if self.transcript_first_indexing {
+        let has_transcript_text = transcript_storage
+            .chunks
+            .iter()
+            .any(|chunk| !chunk.text.trim().is_empty());
+        let transcript_first_indexed = if self.transcript_first_indexing && has_transcript_text {
             self.report_progress(
                 item_id,
                 "writing_transcript_first",
@@ -601,7 +605,7 @@ impl VideoPipeline {
                 .embed_and_write_retrieval_units(item_id, 0.625, 0.01, false)
                 .await
             {
-                Ok(vector_summary) => {
+                Ok(vector_summary) if vector_summary.text_vectors > 0 => {
                     let write_summary = StorageWriteSummary {
                         transcript_chunks: first_sqlite_summary.transcript_chunks,
                         keyframes: first_sqlite_summary.keyframes,
@@ -645,6 +649,26 @@ impl VideoPipeline {
                     );
                     true
                 }
+                Ok(vector_summary) => {
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "pending",
+                        None,
+                        0,
+                        0,
+                    )?;
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_skipped",
+                        json!({
+                            "reason": "empty_text_vectors",
+                            "transcript_chunks": first_sqlite_summary.transcript_chunks,
+                            "text_vectors": vector_summary.text_vectors,
+                        }),
+                    );
+                    false
+                }
                 Err(error) => {
                     tracing::warn!(
                         %error,
@@ -660,6 +684,16 @@ impl VideoPipeline {
                 }
             }
         } else {
+            if self.transcript_first_indexing {
+                self.log_pipeline_event(
+                    item_id,
+                    "transcript_first_skipped",
+                    json!({
+                        "reason": "empty_transcript",
+                        "transcript_chunks": transcript_storage.chunks.len(),
+                    }),
+                );
+            }
             false
         };
 

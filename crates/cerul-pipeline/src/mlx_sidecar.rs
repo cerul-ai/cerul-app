@@ -777,7 +777,6 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
         .ok_or_else(|| anyhow::anyhow!("failed to open MLX sidecar stderr"))?;
 
     let (sender, responses) = mpsc::channel();
-    let stdout_log = Arc::clone(&sidecar_log);
     thread::Builder::new()
         .name("mlx-sidecar-reader".to_string())
         .spawn(move || {
@@ -787,7 +786,6 @@ fn spawn_process(config: &MlxSidecarConfig) -> anyhow::Result<SidecarProcess> {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        append_sidecar_log_line(&stdout_log, "stdout", &line);
                         if sender.send(Ok(line)).is_err() {
                             break;
                         }
