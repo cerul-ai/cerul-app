@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
@@ -12,7 +12,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
-import { useEscapeToClose } from "../lib/use-dismissable";
+import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { InlineNotice } from "./leaf";
 import { BrandMark } from "./brand";
 import { useAuthStore } from "../lib/cloud/authStore";
@@ -70,13 +70,6 @@ export function AccountRailButton() {
   const t = useT();
   const status = useAuthStore((state) => state.status);
   const user = useAuthStore((state) => state.user);
-  const hydrate = useAuthStore((state) => state.hydrate);
-
-  useEffect(() => {
-    if (useAuthStore.getState().status === "loading") {
-      void hydrate();
-    }
-  }, [hydrate]);
 
   const signedIn = status === "signedIn" && !!user;
   const label = signedIn && user ? user.email : t("settings.account.signIn");
@@ -105,8 +98,17 @@ export function AccountDialogController() {
   const t = useT();
   const status = useAuthStore((state) => state.status);
   const user = useAuthStore((state) => state.user);
+  const hydrate = useAuthStore((state) => state.hydrate);
   const [open, setOpen] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   useEscapeToClose(() => setOpen(false), open);
+  useDialogFocus(dialogRef, open);
+
+  useEffect(() => {
+    if (useAuthStore.getState().status === "loading") {
+      void hydrate();
+    }
+  }, [hydrate]);
 
   useEffect(() => {
     const onOpenRequest = () => setOpen(true);
@@ -119,6 +121,7 @@ export function AccountDialogController() {
     <>
       <div className="account-pop-backdrop" onClick={() => setOpen(false)} />
       <div
+        ref={dialogRef}
         className="account-pop"
         role="dialog"
         aria-modal="true"
