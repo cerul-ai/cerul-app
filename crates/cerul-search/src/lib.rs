@@ -2327,7 +2327,7 @@ mod tests {
             Some("item-1:unit:v2:000000")
         );
         assert_eq!(
-            hydrated.first().map(|hit| hit.chunk_id.as_str()),
+            hydrated.first().map(|hit| hit.playback_chunk_id.as_str()),
             Some("item-1:unit:v2:000000")
         );
     }
