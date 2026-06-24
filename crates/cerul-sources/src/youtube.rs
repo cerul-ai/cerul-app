@@ -244,7 +244,14 @@ impl YouTube {
         let mut command = Command::new(&self.ytdlp_path);
         apply_ytdlp_js_runtime(&mut command);
         apply_ytdlp_ffmpeg_location(&mut command);
-        command.args(["--no-update", "--no-playlist", "-f", YTDLP_VIDEO_FORMAT]);
+        command.args([
+            "--no-update",
+            "--no-playlist",
+            "-f",
+            YTDLP_VIDEO_FORMAT,
+            "--merge-output-format",
+            "mp4",
+        ]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         if let Some(duration_sec) = self.clip_duration_sec {

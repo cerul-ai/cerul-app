@@ -39,6 +39,24 @@ needs_bundled_binaries() {
   return 1
 }
 
+can_auto_stage_bundled_binaries() {
+  local target="$1"
+  case "$target" in
+    *apple-darwin)
+      return 0
+      ;;
+  esac
+  local target_env
+  target_env="CERUL_FFMPEG_URL_$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')"
+  if [ -n "${CERUL_FFMPEG_URL:-}" ] || [ -n "${!target_env:-}" ]; then
+    return 0
+  fi
+  if command -v ffmpeg >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 if command -v osascript >/dev/null 2>&1; then
   osascript -e 'quit app "Cerul"' >/dev/null 2>&1 || true
 fi
@@ -62,7 +80,12 @@ if [ "$TARGET_TRIPLE" = "unsupported" ]; then
   echo "Cannot infer target triple for this host; scripts/fetch-binaries.sh will report details."
   CERUL_BINARY_PROBE_TIMEOUT_SEC="${CERUL_BINARY_PROBE_TIMEOUT_SEC:-60}" bash scripts/fetch-binaries.sh
 elif needs_bundled_binaries "$TARGET_TRIPLE"; then
-  CERUL_BINARY_PROBE_TIMEOUT_SEC="${CERUL_BINARY_PROBE_TIMEOUT_SEC:-60}" bash scripts/fetch-binaries.sh
+  if ! can_auto_stage_bundled_binaries "$TARGET_TRIPLE"; then
+    echo "Skipping bundled binary staging for $TARGET_TRIPLE: no default ffmpeg download is configured and ffmpeg is not on PATH."
+    echo "Install ffmpeg or set CERUL_FFMPEG_URL to enable bundled media tooling for web video imports."
+  else
+    CERUL_BINARY_PROBE_TIMEOUT_SEC="${CERUL_BINARY_PROBE_TIMEOUT_SEC:-60}" bash scripts/fetch-binaries.sh
+  fi
 fi
 
 bash scripts/clean-dev-runtime.sh

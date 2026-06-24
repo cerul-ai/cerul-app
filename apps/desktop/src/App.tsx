@@ -1168,6 +1168,7 @@ function AppWorkspace() {
           readDaemonStatus(),
         ]);
       const mappedItems = itemRecords.map((record) => mapItemRecord(record, jobRecords, t));
+      const hasSyncingSources = sourceRecords.some((source) => source.status === "syncing");
       const nextData: AppData = {
         sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
@@ -1180,7 +1181,7 @@ function AppWorkspace() {
       setData(nextData);
       setApiStatus("online");
       const pendingRetry = lastSearchRef.current;
-      if (pendingRetry?.retryWhenIdle && !jobRecords.some(isActiveJob)) {
+      if (pendingRetry?.retryWhenIdle && !hasSyncingSources && !jobRecords.some(isActiveJob)) {
         lastSearchRef.current = { query: pendingRetry.query, retryWhenIdle: false };
         const seqAtSchedule = searchSeqRef.current;
         api

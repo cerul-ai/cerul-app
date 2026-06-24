@@ -771,7 +771,7 @@ fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
             return Ok(ClassifiedWebVideo {
                 platform: WebVideoPlatform::Bilibili,
                 kind: WebVideoSourceKind::Single,
-                canonical_url: canonical_bilibili_video_url(&path_parts[1]),
+                canonical_url: canonical_bilibili_video_url(&path_parts[1], &parsed),
             });
         }
         if host == "space.bilibili.com" && !path_parts.is_empty() {
@@ -787,8 +787,17 @@ fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
     anyhow::bail!("unsupported video host; supported hosts are YouTube and Bilibili")
 }
 
-fn canonical_bilibili_video_url(video_id: &str) -> String {
-    format!("https://www.bilibili.com/video/{video_id}")
+fn canonical_bilibili_video_url(video_id: &str, source_url: &Url) -> String {
+    let mut canonical = format!("https://www.bilibili.com/video/{video_id}");
+    if let Some(page) = source_url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "p").then_some(value))
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|page| *page > 0)
+    {
+        canonical.push_str(&format!("?p={page}"));
+    }
+    canonical
 }
 
 fn canonical_bilibili_author_url(mid: &str) -> String {
@@ -1108,6 +1117,16 @@ exit 1
         assert_eq!(
             bili_single_with_tracking.canonical_url,
             "https://www.bilibili.com/video/BV1LVjd6fEdK"
+        );
+
+        let bili_single_part = classify_web_video_url(
+            "https://www.bilibili.com/video/BV1LVjd6fEdK/?p=2&spm_id_from=333.1007.top_right_bar_window_history.content.click&vd_source=b8130a78bc5596e579d32a2778e31137",
+        )
+        .unwrap();
+        assert_eq!(bili_single_part.kind, WebVideoSourceKind::Single);
+        assert_eq!(
+            bili_single_part.canonical_url,
+            "https://www.bilibili.com/video/BV1LVjd6fEdK?p=2"
         );
 
         let bili_author = classify_web_video_url("https://space.bilibili.com/12345").unwrap();

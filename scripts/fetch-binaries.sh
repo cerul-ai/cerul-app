@@ -660,6 +660,10 @@ needs_stage_binary() {
     ! staged_binary_version_matches "$name" "$path" "$YTDLP_VERSION" "$@"; then
     return 0
   fi
+  if [ "$name" = "qdrant" ] &&
+    ! staged_binary_version_matches "$name" "$path" "${QDRANT_VERSION#v}" "$@"; then
+    return 0
+  fi
   if run_probe "$path" "$@"; then
     return 1
   fi
