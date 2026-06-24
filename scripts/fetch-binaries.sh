@@ -549,7 +549,68 @@ run_probe() {
   done
 
   kill -9 "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
   return 124
+}
+
+probe_output() {
+  local path="$1"
+  shift
+  local timeout_sec="${CERUL_BINARY_PROBE_TIMEOUT_SEC:-60}"
+  local tmp
+  tmp="$(mktemp)"
+
+  if command -v timeout >/dev/null 2>&1; then
+    if timeout "$timeout_sec" "$path" "$@" >"$tmp" 2>/dev/null; then
+      cat "$tmp"
+      rm -f "$tmp"
+      return 0
+    fi
+    local status=$?
+    rm -f "$tmp"
+    return "$status"
+  fi
+
+  "$path" "$@" >"$tmp" 2>/dev/null &
+  local pid="$!"
+  local i
+  for ((i = 1; i <= timeout_sec; i++)); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      if wait "$pid"; then
+        cat "$tmp"
+        rm -f "$tmp"
+        return 0
+      else
+        local status=$?
+        rm -f "$tmp"
+        return "$status"
+      fi
+    fi
+    sleep 1
+  done
+
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+  rm -f "$tmp"
+  return 124
+}
+
+staged_binary_version_matches() {
+  local name="$1"
+  local path="$2"
+  local expected="$3"
+  shift 3
+  local actual
+  if ! actual="$(probe_output "$path" "$@")"; then
+    echo "Existing staged $name version probe failed; staging a fresh copy: $path" >&2
+    return 1
+  fi
+  actual="$(printf '%s\n' "$actual" | head -n 1 | tr -d '\r')"
+  case "$actual" in
+    *"$expected"*) return 0 ;;
+  esac
+  echo "Existing staged $name version '$actual' does not match expected '$expected'; staging a fresh copy: $path" >&2
+  return 1
 }
 
 verify_staged_binary() {
@@ -591,12 +652,27 @@ needs_stage_binary() {
     echo "Existing staged ffmpeg has unbundled macOS dynamic library paths; staging a fresh copy: $path" >&2
     return 0
   fi
+  if [ "$name" = "ffmpeg" ] &&
+    ! staged_binary_version_matches "$name" "$path" "ffmpeg version $FFMPEG_VERSION" "$@"; then
+    return 0
+  fi
+  if [ "$name" = "yt-dlp" ] &&
+    ! staged_binary_version_matches "$name" "$path" "$YTDLP_VERSION" "$@"; then
+    return 0
+  fi
   if run_probe "$path" "$@"; then
     return 1
   fi
 
   echo "Existing staged $name is not runnable; staging a fresh copy: $path" >&2
   return 0
+}
+
+write_version_markers() {
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  printf '%s\n' "$FFMPEG_VERSION" >"$OUT_DIR/.ffmpeg-version"
+  printf '%s\n' "$YTDLP_VERSION" >"$OUT_DIR/.yt-dlp-version"
+  printf '%s\n' "$QDRANT_VERSION" >"$OUT_DIR/.qdrant-version"
 }
 
 OUT_DIR="$ROOT/third-party/$TARGET"
@@ -636,6 +712,7 @@ fi
 verify_staged_binary "ffmpeg" "$FFMPEG_OUT" -version
 verify_staged_binary "yt-dlp" "$YTDLP_OUT" --version
 verify_staged_binary "qdrant" "$QDRANT_OUT" --version
+write_version_markers
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "Would stage bundled binaries for $TARGET:"

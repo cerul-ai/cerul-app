@@ -17,9 +17,10 @@ use tokio::{
 use crate::{
     url_policy::validate_external_http_url,
     youtube::{
-        default_cache_dir, default_ytdlp_path, expand_path, is_ytdlp_inaccessible_video_error,
-        merge_browser_cookie_fallback_stderr, safe_file_stem, ytdlp_access_candidate_limit,
-        YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
+        apply_ytdlp_ffmpeg_location, apply_ytdlp_js_runtime, default_cache_dir, default_ytdlp_path,
+        expand_path, is_ytdlp_inaccessible_video_error, merge_browser_cookie_fallback_stderr,
+        safe_file_stem, ytdlp_access_candidate_limit, YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
+        YTDLP_VIDEO_FORMAT,
     },
     FetchProgress, SourcePlugin,
 };
@@ -179,7 +180,13 @@ impl WebVideo {
 
     fn single_discovery_command(&self, include_browser_cookies: bool) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        apply_ytdlp_js_runtime(&mut command);
+        command.args([
+            "--no-update",
+            "--dump-single-json",
+            "--skip-download",
+            "--no-playlist",
+        ]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         command
@@ -192,7 +199,8 @@ impl WebVideo {
 
     fn author_discovery_command(&self, include_browser_cookies: bool) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--flat-playlist", "--dump-json"]);
+        apply_ytdlp_js_runtime(&mut command);
+        command.args(["--no-update", "--flat-playlist", "--dump-json"]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         if let Some(candidate_limit) = ytdlp_access_candidate_limit(self.max_videos) {
@@ -210,7 +218,13 @@ impl WebVideo {
 
     fn access_check_command(&self, fetch_url: &str, include_browser_cookies: bool) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        apply_ytdlp_js_runtime(&mut command);
+        command.args([
+            "--no-update",
+            "--dump-single-json",
+            "--skip-download",
+            "--no-playlist",
+        ]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         command
@@ -228,10 +242,13 @@ impl WebVideo {
         include_browser_cookies: bool,
     ) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
+        apply_ytdlp_js_runtime(&mut command);
+        apply_ytdlp_ffmpeg_location(&mut command);
         command.args([
+            "--no-update",
             "--no-playlist",
             "-f",
-            "best[height<=720]/best",
+            YTDLP_VIDEO_FORMAT,
             "--merge-output-format",
             "mp4",
             "--newline",
@@ -300,7 +317,20 @@ impl WebVideo {
     }
 
     async fn is_accessible_video(&self, item: &DiscoveredItem) -> anyhow::Result<bool> {
-        let fetch_url = self.validated_fetch_url(item)?;
+        let fetch_url = match self.validated_fetch_url(item) {
+            Ok(fetch_url) => fetch_url,
+            Err(error) if is_non_video_author_candidate(&error) => {
+                tracing::info!(
+                    platform = self.classified.platform.as_str(),
+                    external_id = %item.external_id,
+                    title = item.title.as_deref().unwrap_or(""),
+                    error = %error,
+                    "skipping non-video web item during source discovery"
+                );
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
         let output = self
             .run_ytdlp_with_browser_cookie_fallback("access discovery", |include_browser_cookies| {
                 self.access_check_command(&fetch_url, include_browser_cookies)
@@ -741,21 +771,28 @@ fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
             return Ok(ClassifiedWebVideo {
                 platform: WebVideoPlatform::Bilibili,
                 kind: WebVideoSourceKind::Single,
-                canonical_url: parsed.to_string(),
+                canonical_url: canonical_bilibili_video_url(&path_parts[1]),
             });
         }
         if host == "space.bilibili.com" && !path_parts.is_empty() {
-            let canonical_url = ensure_path_suffix(parsed, "video");
             return Ok(ClassifiedWebVideo {
                 platform: WebVideoPlatform::Bilibili,
                 kind: WebVideoSourceKind::Author,
-                canonical_url,
+                canonical_url: canonical_bilibili_author_url(path_parts[0]),
             });
         }
         anyhow::bail!("unsupported Bilibili URL; use a video URL or author homepage");
     }
 
     anyhow::bail!("unsupported video host; supported hosts are YouTube and Bilibili")
+}
+
+fn canonical_bilibili_video_url(video_id: &str) -> String {
+    format!("https://www.bilibili.com/video/{video_id}")
+}
+
+fn canonical_bilibili_author_url(mid: &str) -> String {
+    format!("https://space.bilibili.com/{mid}/video")
 }
 
 fn ensure_path_suffix(mut url: Url, suffix: &str) -> String {
@@ -798,6 +835,14 @@ fn metadata_string(metadata: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn is_non_video_author_candidate(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains("yt-dlp returned a non-video download URL")
+    })
 }
 
 async fn collect_output<R>(reader: Option<R>, progress: Option<FetchProgress>) -> Vec<u8>
@@ -926,6 +971,7 @@ if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
       ;;
     *)
       printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
+      printf '{"id":"145149047_2367","title":"Bili season","webpage_url":"https://space.bilibili.com/145149047/lists/2367?type=season","url":"https://space.bilibili.com/145149047/lists/2367?type=season"}\n'
       printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
       ;;
   esac
@@ -1049,6 +1095,20 @@ exit 1
             classify_web_video_url("https://www.bilibili.com/video/BV1aa411c7mD").unwrap();
         assert_eq!(bili_single.platform, WebVideoPlatform::Bilibili);
         assert_eq!(bili_single.kind, WebVideoSourceKind::Single);
+        assert_eq!(
+            bili_single.canonical_url,
+            "https://www.bilibili.com/video/BV1aa411c7mD"
+        );
+
+        let bili_single_with_tracking = classify_web_video_url(
+            "https://www.bilibili.com/video/BV1LVjd6fEdK/?spm_id_from=333.1007.top_right_bar_window_history.content.click&vd_source=b8130a78bc5596e579d32a2778e31137",
+        )
+        .unwrap();
+        assert_eq!(bili_single_with_tracking.kind, WebVideoSourceKind::Single);
+        assert_eq!(
+            bili_single_with_tracking.canonical_url,
+            "https://www.bilibili.com/video/BV1LVjd6fEdK"
+        );
 
         let bili_author = classify_web_video_url("https://space.bilibili.com/12345").unwrap();
         assert_eq!(bili_author.kind, WebVideoSourceKind::Author);
@@ -1056,6 +1116,19 @@ exit 1
             bili_author.canonical_url,
             "https://space.bilibili.com/12345/video"
         );
+
+        for url in [
+            "https://space.bilibili.com/12345/upload/video",
+            "https://space.bilibili.com/12345/dynamic",
+            "https://space.bilibili.com/12345/?spm_id_from=333.999.0.0",
+        ] {
+            let classified = classify_web_video_url(url).unwrap();
+            assert_eq!(classified.kind, WebVideoSourceKind::Author);
+            assert_eq!(
+                classified.canonical_url,
+                "https://space.bilibili.com/12345/video"
+            );
+        }
     }
 
     #[test]
