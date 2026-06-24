@@ -707,6 +707,7 @@ impl VideoPipeline {
             None
         };
 
+        let mut ocr_error: Option<String> = None;
         let ocr_frames = if self.ocr_enabled {
             let ocr = Arc::clone(&self.ocr);
             let frames_for_ocr = frames.clone();
@@ -719,25 +720,64 @@ impl VideoPipeline {
                 "Reading text from visual frames",
             );
             let _model_permit = self.acquire_model_permit_with_wait(item_id, 0.64).await?;
-            let frames = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
-                let total = frames_for_ocr.len();
-                let mut collected = Vec::with_capacity(total);
-                for (index, frame) in frames_for_ocr.iter().enumerate() {
-                    collected.extend(ocr.ocr_images(std::slice::from_ref(frame))?);
-                    let done = index + 1;
-                    let fraction = done as f64 / total.max(1) as f64;
-                    ocr_progress.update(
-                        &ocr_item_id,
-                        "ocr_frames",
-                        0.64 + fraction * 0.03,
-                        &format!("Reading text from visual frames · {done}/{total}"),
-                    );
+            let frames_result: anyhow::Result<Vec<OcrFrame>> =
+                match tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
+                    let total = frames_for_ocr.len();
+                    let mut collected = Vec::with_capacity(total);
+                    for (index, frame) in frames_for_ocr.iter().enumerate() {
+                        collected.extend(ocr.ocr_images(std::slice::from_ref(frame))?);
+                        let done = index + 1;
+                        let fraction = done as f64 / total.max(1) as f64;
+                        ocr_progress.update(
+                            &ocr_item_id,
+                            "ocr_frames",
+                            0.64 + fraction * 0.03,
+                            &format!("Reading text from visual frames · {done}/{total}"),
+                        );
+                    }
+                    Ok(collected)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => Err(error.into()),
+                };
+            match frames_result {
+                Ok(frames) => {
+                    self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
+                    frames
                 }
-                Ok(collected)
-            })
-            .await??;
-            self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
-            frames
+                Err(error) if transcript_first_summary.is_some() => {
+                    let message = error.to_string();
+                    self.release_runtime_models(
+                        ModelReleaseScope::Ocr,
+                        item_id,
+                        "ocr failed after transcript-first index",
+                    );
+                    tracing::warn!(
+                        %error,
+                        item_id,
+                        "ocr failed after transcript-first index; continuing with transcript-only search"
+                    );
+                    self.log_pipeline_event(
+                        item_id,
+                        "ocr_failed_after_transcript_first",
+                        json!({ "error": message.clone() }),
+                    );
+                    self.report_progress(
+                        item_id,
+                        "ocr_frames",
+                        0.67,
+                        "OCR unavailable; transcript remains searchable",
+                    );
+                    ocr_error = Some(message);
+                    Vec::new()
+                }
+                Err(error) => {
+                    self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr failed");
+                    return Err(error);
+                }
+            }
         } else {
             Vec::new()
         };
@@ -746,6 +786,16 @@ impl VideoPipeline {
             .filter(|frame| !frame.text.trim().is_empty())
             .map(|frame| StorageOcrChunk::frame(frame.path, frame.text))
             .collect::<Vec<_>>();
+        let ocr_status = if self.ocr_enabled {
+            if ocr_error.is_some() {
+                "failed"
+            } else {
+                "indexed"
+            }
+        } else {
+            "disabled"
+        };
+        let ocr_error_message = ocr_error.as_deref();
 
         self.report_progress(
             item_id,
@@ -849,12 +899,8 @@ impl VideoPipeline {
                     None,
                     frames.len(),
                     0,
-                    if self.ocr_enabled {
-                        "indexed"
-                    } else {
-                        "disabled"
-                    },
-                    None,
+                    ocr_status,
+                    ocr_error_message,
                     storage_ocr_chunks.len(),
                 )?;
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
@@ -893,12 +939,8 @@ impl VideoPipeline {
             None,
             frames.len(),
             0,
-            if self.ocr_enabled {
-                "indexed"
-            } else {
-                "disabled"
-            },
-            None,
+            ocr_status,
+            ocr_error_message,
             storage_ocr_chunks.len(),
         )?;
         set_embedding_index_status(
@@ -2218,6 +2260,14 @@ mod tests {
         }
     }
 
+    struct FailingOcrEngine;
+
+    impl OcrEngine for FailingOcrEngine {
+        fn ocr_images(&self, _paths: &[PathBuf]) -> anyhow::Result<Vec<OcrFrame>> {
+            anyhow::bail!("OCR sidecar unavailable")
+        }
+    }
+
     #[derive(Default)]
     struct RecordingProgress {
         stages: Mutex<Vec<(String, f64)>>,
@@ -2546,6 +2596,81 @@ mod tests {
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(metadata["ocr_index_status"], "indexed");
         assert_eq!(metadata["ocr_indexed_chunks"], summary.ocr_chunks as u64);
+    }
+
+    #[tokio::test]
+    async fn process_video_item_keeps_transcript_searchable_when_ocr_fails_after_transcript_first()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let videos = temp.path().join("videos");
+        std::fs::create_dir(&videos).unwrap();
+        let video = videos.join("sample.mp4");
+        create_sample_video(&video).await.unwrap();
+        insert_source_and_item(&paths, &videos, &video);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(FakeTranscriber),
+            Arc::new(FakeEmbedder),
+        )
+        .with_ocr(Arc::new(FailingOcrEngine))
+        .with_frame_interval_sec(2)
+        .with_transcript_first_indexing(true);
+        let summary = pipeline.process_video_item("item-1").await.unwrap();
+
+        assert_eq!(summary.ocr_chunks, 0);
+        assert!(summary.text_vectors >= 1);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (
+            status,
+            metadata,
+            search_index_status,
+            search_index_unit_count,
+            search_index_vector_count,
+        ): (String, String, String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+
+        assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert!(search_index_unit_count > 0);
+        assert!(search_index_vector_count > 0);
+        assert_eq!(metadata["ocr_index_status"], "failed");
+        assert_eq!(metadata["ocr_indexed_chunks"], 0);
+        assert!(metadata["ocr_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("OCR sidecar unavailable"));
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "red square introduction".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
     }
 
     #[tokio::test]
