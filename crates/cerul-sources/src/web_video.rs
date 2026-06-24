@@ -18,7 +18,8 @@ use crate::{
     url_policy::validate_external_http_url,
     youtube::{
         default_cache_dir, default_ytdlp_path, expand_path, is_ytdlp_inaccessible_video_error,
-        safe_file_stem, ytdlp_access_candidate_limit, YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
+        merge_browser_cookie_fallback_stderr, safe_file_stem, ytdlp_access_candidate_limit,
+        YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
     },
     FetchProgress, SourcePlugin,
 };
@@ -518,7 +519,12 @@ impl WebVideo {
                 .should_retry_without_browser_cookies(&output.stderr)
         {
             let mut fallback = build_command(false);
-            return self.run_ytdlp(&mut fallback, phase).await;
+            let mut fallback_output = self.run_ytdlp(&mut fallback, phase).await?;
+            if !fallback_output.status.success() {
+                fallback_output.stderr =
+                    merge_browser_cookie_fallback_stderr(&output.stderr, &fallback_output.stderr);
+            }
+            return Ok(fallback_output);
         }
         Ok(output)
     }
@@ -547,9 +553,14 @@ impl WebVideo {
                 "Browser cookies unavailable; retrying without cookies",
             );
             let mut fallback = build_command(false);
-            return self
+            let mut fallback_output = self
                 .run_ytdlp_with_progress(&mut fallback, phase, progress)
-                .await;
+                .await?;
+            if !fallback_output.status.success() {
+                fallback_output.stderr =
+                    merge_browser_cookie_fallback_stderr(&output.stderr, &fallback_output.stderr);
+            }
+            return Ok(fallback_output);
         }
         Ok(output)
     }
@@ -997,6 +1008,29 @@ fi
         script
     }
 
+    #[cfg(unix)]
+    fn fake_ytdlp_with_failed_browser_cookie_fallback(temp: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = temp.path().join("yt-dlp-cookie-fallback-fails");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if printf '%s\n' "$@" | grep -q -- '--cookies-from-browser'; then
+  printf 'ERROR: could not find Chrome cookies database\n' >&2
+  exit 1
+fi
+printf 'ERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed\n' >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
     #[test]
     fn classifies_supported_urls() {
         let youtube_single =
@@ -1097,6 +1131,25 @@ fi
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].external_id, "abc123");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keeps_browser_cookie_error_when_fallback_also_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.bilibili.com/video/BV1aa411c7mD",
+            "cookies_from_browser": "chrome",
+            "ytdlp_path": fake_ytdlp_with_failed_browser_cookie_fallback(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let error = source.discover().await.unwrap_err().to_string();
+
+        assert!(error.contains("could not find Chrome cookies database"));
+        assert!(error.contains("Retry without browser cookies also failed"));
+        assert!(error.contains("HTTP Error 412"));
     }
 
     #[cfg(unix)]

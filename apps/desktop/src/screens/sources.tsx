@@ -23,6 +23,7 @@ export function SourcesScreen({
   onResumeSource,
   onRemoveSource,
   onRetryFailedSource,
+  onRetrySourceDiscovery,
   onViewItems,
   onOpenSettingsFix,
   requestConfirm,
@@ -34,6 +35,7 @@ export function SourcesScreen({
   onResumeSource: (source: Source) => Promise<void>;
   onRemoveSource: (source: Source) => Promise<void>;
   onRetryFailedSource: (source: Source) => Promise<void>;
+  onRetrySourceDiscovery: (source: Source) => Promise<void>;
   onViewItems: (source: Source) => void;
   onOpenSettingsFix: (section: string) => void;
   requestConfirm: RequestConfirm;
@@ -105,6 +107,7 @@ export function SourcesScreen({
         onResume={() => void runSourceAction(source, () => onResumeSource(source))}
         onRemove={() => void removeSource(source)}
         onRetryFailed={() => void retryFailedSource(source)}
+        onRetryDiscovery={() => void runSourceAction(source, () => onRetrySourceDiscovery(source))}
         onFix={() => {
           if (source.fixSettingsSection) {
             onOpenSettingsFix(source.fixSettingsSection);

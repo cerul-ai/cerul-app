@@ -1815,6 +1815,10 @@ function AppWorkspace() {
               await api.retryFailedSourceItems(source.id);
               await refreshCoreData();
             }}
+            onRetrySourceDiscovery={async (source) => {
+              await api.retrySourceDiscovery(source.id);
+              await refreshCoreData();
+            }}
             onViewItems={() => navigate("library")}
             onOpenSettingsFix={(section) => navigate("settings", { settingsSection: section })}
             requestConfirm={requestConfirm}

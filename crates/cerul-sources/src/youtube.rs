@@ -80,6 +80,20 @@ impl YtdlpAccess {
     }
 }
 
+pub(crate) fn merge_browser_cookie_fallback_stderr(primary: &[u8], fallback: &[u8]) -> Vec<u8> {
+    let mut combined = Vec::with_capacity(primary.len() + fallback.len() + 128);
+    combined.extend_from_slice(
+        b"Browser cookie load failed before retrying without browser cookies:\n",
+    );
+    combined.extend_from_slice(primary);
+    if !primary.ends_with(b"\n") {
+        combined.push(b'\n');
+    }
+    combined.extend_from_slice(b"\nRetry without browser cookies also failed:\n");
+    combined.extend_from_slice(fallback);
+    combined
+}
+
 fn is_browser_cookie_load_error(stderr: &[u8]) -> bool {
     let normalized = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     normalized.contains("cookie database")
@@ -250,7 +264,12 @@ impl YouTube {
                 .should_retry_without_browser_cookies(&output.stderr)
         {
             let mut fallback = build_command(false);
-            return self.run_ytdlp(&mut fallback, phase).await;
+            let mut fallback_output = self.run_ytdlp(&mut fallback, phase).await?;
+            if !fallback_output.status.success() {
+                fallback_output.stderr =
+                    merge_browser_cookie_fallback_stderr(&output.stderr, &fallback_output.stderr);
+            }
+            return Ok(fallback_output);
         }
         Ok(output)
     }

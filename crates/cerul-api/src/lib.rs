@@ -352,6 +352,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/sources/:id/pause", post(pause_source))
         .route("/sources/:id/resume", post(resume_source))
         .route("/sources/:id/retry-failed", post(retry_failed_source_items))
+        .route("/sources/:id/retry-discovery", post(retry_source_discovery))
         .route("/moments", get(list_moments).post(create_moment))
         .route("/moments/:id", delete(remove_moment))
         .route("/entities", get(list_entities))
@@ -1858,6 +1859,15 @@ async fn retry_failed_source_items(
     })))
 }
 
+async fn retry_source_discovery(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    queue_source_discovery_retry(&state.paths, &id)?;
+    spawn_source_discovery(state.paths.clone(), id.clone());
+    Ok(Json(json!({ "status": "syncing", "id": id })))
+}
+
 #[derive(Debug, Deserialize)]
 struct ListItemsQuery {
     limit: Option<usize>,
@@ -2944,6 +2954,13 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "该视频平台要求登录验证。连接浏览器登录状态后重试失败视频。".to_string(),
             "Indexing",
         )
+    } else if downloader_error && is_browser_cookie_load_error_message(&normalized) {
+        (
+            "browser_cookies_unavailable",
+            "无法读取所选浏览器的 Cookie。请选择已安装且可访问的浏览器，或改用 cookies.txt 后重试。"
+                .to_string(),
+            "Indexing",
+        )
     } else if normalized.contains("members-only")
         || normalized.contains("available to this channel's members")
         || normalized.contains("channel's members")
@@ -3082,6 +3099,31 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         settings_section: settings_section.to_string(),
         message: friendly,
     })
+}
+
+fn is_browser_cookie_load_error_message(normalized: &str) -> bool {
+    normalized.contains("browser cookie load failed")
+        || normalized.contains("cookie database")
+        || normalized.contains("cookies database")
+        || normalized.contains("failed to decrypt")
+        || normalized.contains("unsupported browser")
+        || normalized.contains("keyring")
+        || (normalized.contains("browser cookies")
+            && (normalized.contains("could not")
+                || normalized.contains("cannot")
+                || normalized.contains("can't")
+                || normalized.contains("failed")
+                || normalized.contains("permission denied")
+                || normalized.contains("no such file")
+                || normalized.contains("unable")))
+        || (normalized.contains("cookies from browser")
+            && (normalized.contains("could not")
+                || normalized.contains("cannot")
+                || normalized.contains("can't")
+                || normalized.contains("failed")
+                || normalized.contains("permission denied")
+                || normalized.contains("no such file")
+                || normalized.contains("unable")))
 }
 
 fn is_downloader_error(normalized: &str) -> bool {
@@ -3818,6 +3860,37 @@ fn set_source_status(paths: &AppPaths, id: &str, status: &str) -> anyhow::Result
     let conn = cerul_storage::sqlite::open(paths)?;
     let updated = conn.execute("UPDATE sources SET status = ?1 WHERE id = ?2", (status, id))?;
     anyhow::ensure!(updated == 1, "source not found: {id}");
+    Ok(())
+}
+
+fn queue_source_discovery_retry(paths: &AppPaths, id: &str) -> anyhow::Result<()> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let row = conn
+        .query_row(
+            "SELECT type, config FROM sources WHERE id = ?1",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((source_type, config)) = row else {
+        anyhow::bail!("source not found: {id}");
+    };
+    anyhow::ensure!(
+        should_discover_source_async(&source_type),
+        "source type does not support discovery retry: {source_type}"
+    );
+
+    let mut config = parse_json(&config);
+    if let Some(object) = config.as_object_mut() {
+        object.remove("last_error");
+        object.remove("last_error_detail");
+        object.remove("last_error_code");
+        object.remove("last_error_settings_section");
+    }
+    conn.execute(
+        "UPDATE sources SET status = 'syncing', config = ?2 WHERE id = ?1",
+        (id, config.to_string()),
+    )?;
     Ok(())
 }
 
@@ -4641,6 +4714,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/sources/{id}/pause", &["post"]),
     ("/sources/{id}/resume", &["post"]),
     ("/sources/{id}/retry-failed", &["post"]),
+    ("/sources/{id}/retry-discovery", &["post"]),
     ("/moments", &["get", "post"]),
     ("/moments/{id}", &["delete"]),
     ("/entities", &["get"]),
@@ -4734,6 +4808,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(info.code, "browser_cookies_required");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_browser_cookie_load_failure_before_platform_fallback() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp single discovery failed: Browser cookie load failed before retrying without browser cookies:\nERROR: could not find Chrome cookies database\n\nRetry without browser cookies also failed:\nERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "browser_cookies_unavailable");
         assert_eq!(info.settings_section, "Indexing");
     }
 
@@ -4929,6 +5015,50 @@ mod tests {
         );
 
         assert_eq!(config["cookies_from_browser"].as_str(), Some("safari"));
+    }
+
+    #[test]
+    fn queue_source_discovery_retry_marks_source_syncing_and_clears_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO sources (id, type, config, status)
+                VALUES (
+                    'source-1',
+                    'web_video',
+                    '{"url":"https://www.bilibili.com/video/BV1aa411c7mD","last_error":"old","last_error_detail":"old detail","last_error_code":"platform_verification_required","last_error_settings_section":"Indexing"}',
+                    'error'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        queue_source_discovery_retry(&paths, "source-1").unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let (status, raw_config): (String, String) = conn
+            .query_row(
+                "SELECT status, config FROM sources WHERE id = 'source-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let config = parse_json(&raw_config);
+
+        assert_eq!(status, "syncing");
+        assert_eq!(
+            config["url"].as_str(),
+            Some("https://www.bilibili.com/video/BV1aa411c7mD")
+        );
+        assert!(config.get("last_error").is_none());
+        assert!(config.get("last_error_detail").is_none());
+        assert!(config.get("last_error_code").is_none());
+        assert!(config.get("last_error_settings_section").is_none());
     }
 
     #[tokio::test]

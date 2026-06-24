@@ -12,7 +12,9 @@ rg -qF "source-error-toggle" apps/desktop/src
 rg -qF "source-error-panel" apps/desktop/src
 rg -qF '"sourceRow.errorTitle": "Source needs attention"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF 't("sourceRow.fix")' apps/desktop/src
+rg -qF 't("sourceRow.retryDiscovery")' apps/desktop/src
 rg -qF 't("sourceRow.remove")' apps/desktop/src
+rg -qF "/retry-discovery" apps/desktop/src/lib/api.ts
 rg -qF ".source-error-toggle" apps/desktop/src/styles/extensions.css
 rg -qF ".source-error-panel" apps/desktop/src/styles/extensions.css
 

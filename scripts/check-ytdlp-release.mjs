@@ -11,6 +11,7 @@ const manifestPath = path.join(root, "third-party", "yt-dlp-manifest.json");
 const args = new Set(process.argv.slice(2));
 const shouldUpdate = args.has("--update");
 const dryRun = args.has("--dry-run");
+const checkPinnedOnly = args.has("--check-pinned");
 const execFileAsync = promisify(execFile);
 
 const requiredAssets = [
@@ -23,6 +24,11 @@ const requiredAssets = [
 function fail(message) {
   console.error(message);
   process.exitCode = 1;
+}
+
+if (shouldUpdate && checkPinnedOnly) {
+  fail("--update and --check-pinned cannot be used together");
+  process.exit();
 }
 
 async function readManifest() {
@@ -159,10 +165,14 @@ async function appendStepSummary(report) {
 async function main() {
   const manifest = await readManifest();
   const repository = manifest.repository ?? "yt-dlp/yt-dlp";
-  const release = await githubJson(`https://api.github.com/repos/${repository}/releases/latest`);
+  const release = await githubJson(
+    checkPinnedOnly
+      ? `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(manifest.version)}`
+      : `https://api.github.com/repos/${repository}/releases/latest`,
+  );
   const checksumAsset = releaseAsset(release, "SHA2-256SUMS");
   if (!checksumAsset) {
-    throw new Error(`Latest yt-dlp release ${release.tag_name} has no SHA2-256SUMS asset`);
+    throw new Error(`yt-dlp release ${release.tag_name} has no SHA2-256SUMS asset`);
   }
 
   const checksums = parseChecksums(await fetchText(checksumAsset.browser_download_url));
@@ -204,6 +214,18 @@ async function main() {
     } else {
       await writeFile(manifestPath, serialized);
       console.log(`Updated ${path.relative(root, manifestPath)} to ${latestVersion}`);
+    }
+    return;
+  }
+
+  if (checkPinnedOnly) {
+    if (release.tag_name !== manifest.version) {
+      fail(
+        `Bundled yt-dlp manifest version ${manifest.version} resolved to release ${release.tag_name}`,
+      );
+    } else {
+      validateManifestHashes(manifest, checksums);
+      console.log(`Bundled yt-dlp manifest hashes match pinned release: ${manifest.version}`);
     }
     return;
   }

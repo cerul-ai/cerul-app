@@ -39,7 +39,7 @@ rg -qF "scripts/smoke-add-source-ui.sh" scripts/smoke.sh
 rg -qF "pub mod web_video" crates/cerul-sources/src/lib.rs
 rg -qF "\"web_video\" => Ok(Box::new(web_video::WebVideo::new(config)?))" crates/cerul-sources/src/lib.rs
 rg -qF "WebVideoSourceKind::Author" crates/cerul-sources/src/web_video.rs
-rg -qF "command.arg(\"--playlist-end\").arg(max_videos.to_string())" crates/cerul-sources/src/web_video.rs
+rg -qF "ytdlp_access_candidate_limit(self.max_videos)" crates/cerul-sources/src/web_video.rs
 rg -qF "fn author_defaults_to_twenty_videos" crates/cerul-sources/src/web_video.rs
 
 echo "add_source_ui_smoke web_video_single_and_author=enabled author_confirmation=enabled author_default_max_videos=20 rss_preview=title_image_episode_count max_input_clamp=enabled brief_helper_copy=enabled"
