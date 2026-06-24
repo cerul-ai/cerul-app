@@ -90,6 +90,8 @@ jobs:
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
       - name: Check bundled yt-dlp pin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/check-ytdlp-release.mjs
       - uses: dtolnay/rust-toolchain@stable
         if: steps.changes.outputs.rust == 'true'

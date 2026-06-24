@@ -58,10 +58,14 @@ export function sourceError(record: api.SourceRecord, status: SourceStatus, t: T
     return null;
   }
   const errorCode = record.config.last_error_code;
-  if (typeof errorCode === "string" && errorCode.trim()) {
+  const errorValue = record.config.error ?? record.config.last_error;
+  if (
+    typeof errorCode === "string" &&
+    errorCode.trim() &&
+    errorCode !== "unknown_processing_error"
+  ) {
     return t(`jobs.error.${errorCode}`, { capability: t("source.preview.webVideoTitle") });
   }
-  const errorValue = record.config.error ?? record.config.last_error;
   if (typeof errorValue === "string" && errorValue.trim()) {
     return sanitizeErrorText(errorValue);
   }

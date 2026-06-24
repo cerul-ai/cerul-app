@@ -2992,6 +2992,17 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "视频下载器可能过旧，需要更新后重试。".to_string(),
             "Indexing",
         )
+    } else if downloader_error
+        && (normalized.contains("http error 401")
+            || normalized.contains("401: unauthorized")
+            || normalized.contains("unauthorized")
+            || normalized.contains("401"))
+    {
+        (
+            "download_forbidden",
+            "平台拒绝下载请求。连接浏览器登录状态，稍后再重试失败视频。".to_string(),
+            "Indexing",
+        )
     } else if normalized.contains("http error 403") || normalized.contains("403: forbidden") {
         (
             "download_forbidden",
@@ -3012,11 +3023,12 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "下载器缺少 YouTube 需要的 JavaScript 运行时，部分视频可能无法下载。".to_string(),
             "Indexing",
         )
-    } else if normalized.contains("api key")
-        || normalized.contains("missing key")
-        || normalized.contains("no key")
-        || normalized.contains("unauthorized")
-        || normalized.contains("401")
+    } else if !downloader_error
+        && (normalized.contains("api key")
+            || normalized.contains("missing key")
+            || normalized.contains("no key")
+            || normalized.contains("unauthorized")
+            || normalized.contains("401"))
     {
         (
             "missing_api_key",
@@ -4743,6 +4755,30 @@ mod tests {
 
         assert_eq!(info.code, "platform_verification_required");
         assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_downloader_unauthorized_as_download_forbidden() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp author discovery failed: ERROR: [BiliBili] BV1xx: HTTP Error 401: Unauthorized",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "download_forbidden");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_provider_unauthorized_as_missing_api_key() {
+        let info = classify_job_error(
+            "index_video",
+            "embedding provider returned HTTP Error 401: Unauthorized; missing API key",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "missing_api_key");
+        assert_eq!(info.settings_section, "Models");
     }
 
     #[test]

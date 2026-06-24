@@ -34,6 +34,8 @@ jobs:
         with:
           node-version: 22
       - name: Check bundled yt-dlp pin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/check-ytdlp-release.mjs
 
   macos-update-assets:
