@@ -21,7 +21,7 @@ import {
   jobTypeLabel,
   jobUsageLabel,
 } from "../lib/jobs";
-import type { Item } from "../lib/types";
+import type { Item, Source } from "../lib/types";
 import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { useNowSeconds } from "../lib/use-now";
 import { EmptyState } from "../components/leaf";
@@ -42,6 +42,7 @@ function jobSortTime(job: api.JobRecord): number {
 
 export function JobsSheet({
   jobs,
+  syncingSources = [],
   items,
   stepStarts,
   paused = false,
@@ -53,6 +54,7 @@ export function JobsSheet({
   onOpenSources,
 }: {
   jobs: api.JobRecord[];
+  syncingSources?: Source[];
   items: Item[];
   stepStarts: Record<string, number>;
   paused?: boolean;
@@ -79,18 +81,22 @@ export function JobsSheet({
   const activeJobs = sortedJobs.filter(isActiveJob);
   const queuedJobs = activeJobs.filter((job) => job.status === "queued");
   const runningJobs = activeJobs.filter((job) => job.status === "running");
-  const onlyPausedQueuedJobs = paused && runningJobs.length === 0 && queuedJobs.length > 0;
+  const activeCount = activeJobs.length + syncingSources.length;
+  const totalCount = sortedJobs.length + syncingSources.length;
+  const onlyPausedQueuedJobs =
+    paused && syncingSources.length === 0 && runningJobs.length === 0 && queuedJobs.length > 0;
   const failedJobs = sortedJobs.filter((job) => jobGroup(job) === "failed");
   const doneJobs = sortedJobs.filter((job) => jobGroup(job) === "done");
-  const now = useNowSeconds(activeJobs.length > 0);
+  const now = useNowSeconds(activeCount > 0);
 
   const filters: { id: "all" | JobGroup; label: string; n: number }[] = [
-    { id: "all", label: t("jobs.filter.all"), n: sortedJobs.length },
-    { id: "running", label: t(paused ? "jobs.groupQueued" : "jobs.groupRunning"), n: activeJobs.length },
+    { id: "all", label: t("jobs.filter.all"), n: totalCount },
+    { id: "running", label: t(paused ? "jobs.groupQueued" : "jobs.groupRunning"), n: activeCount },
     { id: "done", label: t("jobs.status.completed"), n: doneJobs.length },
     { id: "failed", label: t("jobs.status.failed"), n: failedJobs.length },
   ];
   const visibleJobs = sortedJobs.filter((job) => filter === "all" || filter === jobGroup(job));
+  const visibleSyncingSources = filter === "all" || filter === "running" ? syncingSources : [];
 
   // Header summary, with the failed count tinted red (prototype §H).
   const runningLabel =
@@ -98,11 +104,28 @@ export function JobsSheet({
       ? t(queuedJobs.length === 1 ? "jobs.queuedCountOne" : "jobs.queuedCountOther", {
           count: queuedJobs.length,
         })
-      : activeJobs.length > 0
-      ? t(activeJobs.length === 1 ? "jobs.activeCountOne" : "jobs.activeCountOther", {
-          count: activeJobs.length,
+      : activeCount > 0
+      ? t(activeCount === 1 ? "jobs.activeCountOne" : "jobs.activeCountOther", {
+          count: activeCount,
         })
       : null;
+
+  const renderSyncingSourceCard = (source: Source) => (
+    <div className="jobs-tl-item" key={`source:${source.id}`}>
+      <span className="jobs-tl-node steel" aria-hidden="true" />
+      <div className="jobs-tl-card steel">
+        <div className="jobs-tl-head">
+          <span className="jobs-tl-title clamp1">{source.name}</span>
+          <span className="jobs-tl-pill steel">
+            <span className="jobs-tl-pill-dot pulse" />
+            {t("jobs.status.discovering")}
+          </span>
+        </div>
+        <div className="jobs-tl-type">{t("jobs.type.source_discovery")}</div>
+        <p className="muted jobs-tl-stage">{t("jobs.sourceDiscovery.body")}</p>
+      </div>
+    </div>
+  );
 
   const renderCard = (job: api.JobRecord) => {
     const group = jobGroup(job);
@@ -254,7 +277,7 @@ export function JobsSheet({
             </div>
           ) : null}
 
-          {sortedJobs.length > 0 ? (
+          {totalCount > 0 ? (
             <>
               <div className="jobs-filters">
                 {filters.map((f) => (
@@ -273,9 +296,10 @@ export function JobsSheet({
                 </span>
               </div>
 
-              {visibleJobs.length > 0 ? (
+              {visibleJobs.length > 0 || visibleSyncingSources.length > 0 ? (
                 <div className="jobs-timeline">
                   <span className="jobs-timeline-line" aria-hidden="true" />
+                  {visibleSyncingSources.map(renderSyncingSourceCard)}
                   {visibleJobs.map(renderCard)}
                 </div>
               ) : (

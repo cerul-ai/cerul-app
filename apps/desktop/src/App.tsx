@@ -580,6 +580,7 @@ function wait(ms: number) {
 
 function searchIndexIsSettling(data: AppData) {
   return (
+    data.sources.some((source) => source.status === "syncing") ||
     data.jobs.some(isActiveJob) ||
     data.items.some(
       (item) =>
@@ -704,6 +705,7 @@ function AppWorkspace() {
   >([]);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("connecting");
   const [apiError, setApiError] = useState<string | null>(null);
+  const [activityPollUntil, setActivityPollUntil] = useState(0);
   const coreLevel = useCoreStatus(apiStatus, apiError);
   const [data, setData] = useState<AppData>({
     sources: [],
@@ -739,7 +741,14 @@ function AppWorkspace() {
   );
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
+  const syncingSources = visibleSources.filter((source) => source.status === "syncing");
+  const syncingSourceCount = syncingSources.length;
+  const backgroundActivityCount = activeJobCount + syncingSourceCount;
   const stepStarts = useStepStarts(visibleJobs);
+  const kickActivityPolling = useCallback((durationMs = 120_000) => {
+    const until = Date.now() + durationMs;
+    setActivityPollUntil((current) => Math.max(current, until));
+  }, []);
 
   // First-run on-device-model consent + download. Fetches capability and shows
   // the dialog once, gated on `local_models_prompted` so it never re-prompts —
@@ -1080,15 +1089,26 @@ function AppWorkspace() {
   }, [themePreference]);
 
   useEffect(() => {
-    if (apiStatus !== "online" || activeJobCount === 0) {
+    const pollWindowOpen = activityPollUntil > Date.now();
+    if (apiStatus !== "online" || (backgroundActivityCount === 0 && !pollWindowOpen)) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
       void refreshCoreData();
-    }, 2500);
-    return () => window.clearInterval(intervalId);
-  }, [apiStatus, activeJobCount]);
+    }, syncingSourceCount > 0 && activeJobCount === 0 ? 1500 : 2500);
+    const timeoutId = pollWindowOpen
+      ? window.setTimeout(() => {
+          setActivityPollUntil((current) => (current <= Date.now() ? 0 : current));
+        }, Math.max(250, activityPollUntil - Date.now() + 100))
+      : null;
+    return () => {
+      window.clearInterval(intervalId);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [apiStatus, activeJobCount, syncingSourceCount, backgroundActivityCount, activityPollUntil]);
 
   // Items/sources are mapped through t() at fetch time; re-map once when the
   // user switches language so dates/status text don't stay in the old locale.
@@ -1148,6 +1168,7 @@ function AppWorkspace() {
           readDaemonStatus(),
         ]);
       const mappedItems = itemRecords.map((record) => mapItemRecord(record, jobRecords, t));
+      const hasSyncingSources = sourceRecords.some((source) => source.status === "syncing");
       const nextData: AppData = {
         sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
@@ -1160,7 +1181,7 @@ function AppWorkspace() {
       setData(nextData);
       setApiStatus("online");
       const pendingRetry = lastSearchRef.current;
-      if (pendingRetry?.retryWhenIdle && !jobRecords.some(isActiveJob)) {
+      if (pendingRetry?.retryWhenIdle && !hasSyncingSources && !jobRecords.some(isActiveJob)) {
         lastSearchRef.current = { query: pendingRetry.query, retryWhenIdle: false };
         const seqAtSchedule = searchSeqRef.current;
         api
@@ -1408,11 +1429,17 @@ function AppWorkspace() {
       error: null,
     });
     try {
+      if (sourceCount > 0) {
+        kickActivityPolling();
+      }
       for (const folder of folders) {
         await api.addSource("folder_video", { path: folder });
       }
       for (const channel of youtubeChannels) {
         await api.addSource("youtube", { url: channel.url, max_videos: 50 });
+      }
+      if (sourceCount > 0) {
+        kickActivityPolling();
       }
       setModelDownloadState({ status: "downloading", error: null });
       await api.updateSettings({
@@ -1561,9 +1588,9 @@ function AppWorkspace() {
                 <span className="rail-ind" aria-hidden="true" />
                 <span style={{ position: "relative", display: "inline-flex" }}>
                   <ListChecks size={17} />
-                  {activeJobCount > 0 ? (
+                  {backgroundActivityCount > 0 ? (
                     <span className="badge-count" aria-hidden="true">
-                      {activeJobCount > 9 ? "9+" : activeJobCount}
+                      {backgroundActivityCount > 9 ? "9+" : backgroundActivityCount}
                     </span>
                   ) : null}
                 </span>
@@ -1629,9 +1656,9 @@ function AppWorkspace() {
             >
               <span style={{ position: "relative", display: "inline-flex" }}>
                 <ListChecks size={17} />
-                {activeJobCount > 0 ? (
+                {backgroundActivityCount > 0 ? (
                   <span className="badge-count" aria-hidden="true">
-                    {activeJobCount > 9 ? "9+" : activeJobCount}
+                    {backgroundActivityCount > 9 ? "9+" : backgroundActivityCount}
                   </span>
                 ) : null}
               </span>
@@ -1728,7 +1755,9 @@ function AppWorkspace() {
               navigate("library");
             }}
             onReindexItem={async (itemToReindex) => {
+              kickActivityPolling();
               await api.reindexItem(itemToReindex.id);
+              kickActivityPolling();
               await refreshCoreData();
             }}
             onItemUpdated={async () => {
@@ -1741,6 +1770,7 @@ function AppWorkspace() {
           <LibraryScreen
             items={visibleItems}
             jobs={visibleJobs}
+            syncingSources={syncingSources}
             stepStarts={stepStarts}
             indexingPaused={indexingPaused}
             actionsEnabled={apiStatus === "online"}
@@ -1786,8 +1816,14 @@ function AppWorkspace() {
               }
             }}
             onReindexItems={async (itemIds) => {
+              if (itemIds.length > 0) {
+                kickActivityPolling();
+              }
               for (const itemId of itemIds) {
                 await api.reindexItem(itemId);
+              }
+              if (itemIds.length > 0) {
+                kickActivityPolling();
               }
               await refreshCoreData();
             }}
@@ -1841,7 +1877,9 @@ function AppWorkspace() {
               navigate("library");
             }}
             onReindexItem={async (itemToReindex) => {
+              kickActivityPolling();
               await api.reindexItem(itemToReindex.id);
+              kickActivityPolling();
               await refreshCoreData();
             }}
             onItemUpdated={async () => {
@@ -1868,11 +1906,15 @@ function AppWorkspace() {
               await refreshCoreData();
             }}
             onRetryFailedSource={async (source) => {
+              kickActivityPolling();
               await api.retryFailedSourceItems(source.id);
+              kickActivityPolling();
               await refreshCoreData();
             }}
             onRetrySourceDiscovery={async (source) => {
+              kickActivityPolling();
               await api.retrySourceDiscovery(source.id);
+              kickActivityPolling();
               await refreshCoreData();
             }}
             onViewItems={() => navigate("library")}
@@ -1925,7 +1967,9 @@ function AppWorkspace() {
           onClose={() => setShowAddSource(false)}
           requestConfirm={requestConfirm}
           onAddSource={async (type, config) => {
+            kickActivityPolling();
             await api.addSource(type, config);
+            kickActivityPolling();
             await refreshCoreData();
           }}
         />
@@ -1933,6 +1977,7 @@ function AppWorkspace() {
       {showJobsSheet ? (
         <JobsSheet
           jobs={drawerJobs}
+          syncingSources={syncingSources}
           items={visibleItems}
           stepStarts={stepStarts}
           paused={indexingPaused}
@@ -2251,12 +2296,14 @@ function HomeScreen({
   const t = useT();
   const indexedCount = items.filter((item) => item.status === "indexed").length;
   const activeSources = sources.filter((source) => source.status === "active").length;
+  const erroredSources = sources.filter((source) => source.status === "error");
   const activeJobs = jobs.filter(isActiveJob);
   const runningJobs = activeJobs.filter((job) => job.status === "running");
   const queuedJobs = activeJobs.filter((job) => job.status === "queued");
   const onlyPausedQueuedJobs = indexingPaused && runningJobs.length === 0 && queuedJobs.length > 0;
   const hasSources = sources.length > 0;
   const searchDisabled = hasSources && indexedCount === 0;
+  const blockedBySourceErrors = searchDisabled && activeJobs.length === 0 && erroredSources.length > 0;
   const runtimeMinutes = Math.round(
     items.reduce((total, item) => total + durationMinutes(item.duration), 0),
   );
@@ -2300,16 +2347,24 @@ function HomeScreen({
       ? lastOpened.timestamp
       : null);
 
-  const statusLabel =
-    onlyPausedQueuedJobs
-      ? t("home.status.pausedQueuedJobs", { count: queuedJobs.length })
-      : activeJobs.length > 0
-      ? t("home.status.indexingJobs", { count: activeJobs.length })
-      : apiStatus === "online"
-        ? searchDisabled
-          ? t("home.status.indexingFirst")
-          : t("home.status.indexedCount", { count: indexedCount })
-        : coreStatusText(apiStatus, t);
+  const statusLabel = (() => {
+    if (onlyPausedQueuedJobs) {
+      return t("home.status.pausedQueuedJobs", { count: queuedJobs.length });
+    }
+    if (activeJobs.length > 0) {
+      return t("home.status.indexingJobs", { count: activeJobs.length });
+    }
+    if (apiStatus !== "online") {
+      return coreStatusText(apiStatus, t);
+    }
+    if (blockedBySourceErrors) {
+      return t("home.status.sourceErrors", { count: erroredSources.length });
+    }
+    if (searchDisabled) {
+      return t("home.status.indexingFirst");
+    }
+    return t("home.status.indexedCount", { count: indexedCount });
+  })();
 
   function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
     if (searchDisabled) {
@@ -2395,7 +2450,9 @@ function HomeScreen({
         </form>
         {searchDisabled ? (
           <p className="field-hint" id="home-search-helper" style={{ marginTop: 10 }}>
-            {t("home.lockedHint")}
+            {blockedBySourceErrors
+              ? t("home.lockedHintSourceErrors", { count: erroredSources.length })
+              : t("home.lockedHint")}
           </p>
         ) : null}
 
@@ -4318,6 +4375,7 @@ function EntityDetailScreen({
 function LibraryScreen({
   items,
   jobs,
+  syncingSources,
   stepStarts,
   indexingPaused,
   actionsEnabled,
@@ -4331,6 +4389,7 @@ function LibraryScreen({
 }: {
   items: Item[];
   jobs: api.JobRecord[];
+  syncingSources: Source[];
   stepStarts: Record<string, number>;
   indexingPaused: boolean;
   actionsEnabled: boolean;
@@ -4535,6 +4594,7 @@ function LibraryScreen({
       <IndexingStrip
         jobs={jobs}
         items={items}
+        syncingSources={syncingSources}
         stepStarts={stepStarts}
         paused={indexingPaused}
         onOpen={onOpenJobs}

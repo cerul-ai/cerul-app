@@ -2,8 +2,10 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cerul_models::{ContentType, DiscoveredItem};
 use std::{
+    env,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::OnceLock,
     time::Duration,
 };
 use tokio::{process::Command, task::JoinSet};
@@ -12,7 +14,10 @@ use crate::{url_policy::validate_external_http_url, SourcePlugin};
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
 pub(crate) const YTDLP_ACCESS_CHECK_CONCURRENCY: usize = 4;
+pub(crate) const YTDLP_VIDEO_FORMAT: &str =
+    "bestvideo[height<=720][vcodec^=avc1]+bestaudio/bestvideo[height<=720][vcodec!*=av01]+bestaudio/best[height<=720]/best";
 const MAX_EXTRA_ACCESS_CANDIDATES: usize = 200;
+static YTDLP_JS_RUNTIMES: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct YouTube {
@@ -194,7 +199,8 @@ impl YouTube {
 
     fn discovery_command(&self, include_browser_cookies: bool) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--flat-playlist", "--dump-json"]);
+        apply_ytdlp_js_runtime(&mut command);
+        command.args(["--no-update", "--flat-playlist", "--dump-json"]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         if let Some(candidate_limit) = ytdlp_access_candidate_limit(self.max_videos) {
@@ -212,7 +218,13 @@ impl YouTube {
 
     fn access_check_command(&self, external_id: &str, include_browser_cookies: bool) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        apply_ytdlp_js_runtime(&mut command);
+        command.args([
+            "--no-update",
+            "--dump-single-json",
+            "--skip-download",
+            "--no-playlist",
+        ]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         command
@@ -230,7 +242,16 @@ impl YouTube {
         include_browser_cookies: bool,
     ) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--no-playlist", "-f", "best[height<=720]/best"]);
+        apply_ytdlp_js_runtime(&mut command);
+        apply_ytdlp_ffmpeg_location(&mut command);
+        command.args([
+            "--no-update",
+            "--no-playlist",
+            "-f",
+            YTDLP_VIDEO_FORMAT,
+            "--merge-output-format",
+            "mp4",
+        ]);
         self.access
             .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         if let Some(duration_sec) = self.clip_duration_sec {
@@ -505,6 +526,75 @@ pub(crate) fn default_ytdlp_path() -> PathBuf {
     }
 
     PathBuf::from(executable)
+}
+
+pub(crate) fn apply_ytdlp_js_runtime(command: &mut Command) {
+    if let Some(runtimes) = ytdlp_js_runtimes() {
+        command.arg("--js-runtimes").arg(runtimes);
+    }
+}
+
+pub(crate) fn apply_ytdlp_ffmpeg_location(command: &mut Command) {
+    let Some(path) = env::var_os("CERUL_FFMPEG_PATH").map(PathBuf::from) else {
+        return;
+    };
+    if path.exists() {
+        command.arg("--ffmpeg-location").arg(path);
+    }
+}
+
+fn ytdlp_js_runtimes() -> Option<&'static str> {
+    YTDLP_JS_RUNTIMES
+        .get_or_init(resolve_ytdlp_js_runtimes)
+        .as_deref()
+}
+
+fn resolve_ytdlp_js_runtimes() -> Option<String> {
+    if let Ok(value) = env::var("CERUL_YTDLP_JS_RUNTIMES") {
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "none" | "off" | "disable" | "disabled"
+            )
+        {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    find_js_runtime("deno")
+        .map(|path| format!("deno:{}", path.display()))
+        .or_else(|| find_js_runtime("node").map(|path| format!("node:{}", path.display())))
+}
+
+fn find_js_runtime(name: &str) -> Option<PathBuf> {
+    let executable = executable_name(name);
+    bundled_ytdlp_candidates(&executable)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .or_else(|| find_executable_on_path(name))
+}
+
+fn executable_name(name: &str) -> String {
+    if cfg!(windows) && !name.ends_with(".exe") {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    let executable = executable_name(name);
+
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join(&executable);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn bundled_ytdlp_candidates(executable: &str) -> Vec<PathBuf> {

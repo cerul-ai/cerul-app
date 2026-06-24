@@ -20,7 +20,7 @@ import {
   jobStepInfo,
   jobStepProgressPercent,
 } from "../lib/jobs";
-import type { Item } from "../lib/types";
+import type { Item, Source } from "../lib/types";
 import { useNowSeconds } from "../lib/use-now";
 import { ProgressBar } from "./transcript";
 
@@ -29,25 +29,29 @@ const STALL_THRESHOLD_SEC = 90;
 export function IndexingStrip({
   jobs,
   items,
+  syncingSources = [],
   stepStarts,
   paused = false,
   onOpen,
 }: {
   jobs: api.JobRecord[];
   items: Item[];
+  syncingSources?: Source[];
   stepStarts: Record<string, number>;
   paused?: boolean;
   onOpen: () => void;
 }) {
   const t = useT();
   const active = jobs.filter(isActiveJob);
-  const now = useNowSeconds(active.length > 0);
+  const activeCount = active.length + syncingSources.length;
+  const now = useNowSeconds(activeCount > 0);
 
   const running = active.filter((job) => job.status === "running");
   const waitingModel = running.filter((job) => job.stage === "waiting_model");
   const activelyProcessing = running.filter((job) => job.stage !== "waiting_model");
   const queued = active.length - running.length;
-  const onlyPausedQueuedJobs = paused && running.length === 0 && queued > 0;
+  const onlyPausedQueuedJobs =
+    paused && syncingSources.length === 0 && running.length === 0 && queued > 0;
   // Prefer work that is actually advancing over a job that is merely holding a
   // running slot while it waits for the single local model permit.
   const rep =
@@ -64,7 +68,7 @@ export function IndexingStrip({
     changeRef.current = { key: `${rep?.id ?? ""}:${repPct}`, at: Date.now() / 1000 };
   }, [rep?.id, repPct]);
 
-  if (active.length === 0) {
+  if (activeCount === 0) {
     return null;
   }
 
@@ -85,9 +89,10 @@ export function IndexingStrip({
           0,
         ) / active.length
       : 0;
+  const repSource = active.length === 0 ? syncingSources[0] : null;
   const repItem = rep ? items.find((item) => item.id === rep.item_id) : undefined;
-  const repTitle = repItem?.title ?? rep?.item_id ?? null;
-  const stageMessage = rep ? jobStageMessage(rep, t) : null;
+  const repTitle = repItem?.title ?? rep?.item_id ?? repSource?.name ?? null;
+  const stageMessage = rep ? jobStageMessage(rep, t) : repSource ? t("jobs.sourceDiscovery.body") : null;
   const step = rep ? jobStepInfo(rep) : null;
   const stepElapsed = rep ? jobStepElapsedSeconds(rep, stepStarts, now) : null;
   const elapsed = rep ? jobElapsedSeconds(rep, now) : null;
@@ -99,12 +104,17 @@ export function IndexingStrip({
     rep.job_type !== "index_audio" &&
     stalledFor > STALL_THRESHOLD_SEC;
 
-  const title = onlyPausedQueuedJobs
-    ? t(active.length === 1 ? "indexing.strip.pausedOne" : "indexing.strip.pausedOther", {
-        count: active.length,
+  const sourceDiscoveryOnly = active.length === 0 && syncingSources.length > 0;
+  const title = sourceDiscoveryOnly
+    ? t(syncingSources.length === 1 ? "indexing.strip.sourcesOne" : "indexing.strip.sourcesOther", {
+        count: syncingSources.length,
       })
-    : t(active.length === 1 ? "indexing.strip.one" : "indexing.strip.other", {
-        count: active.length,
+    : onlyPausedQueuedJobs
+    ? t(activeCount === 1 ? "indexing.strip.pausedOne" : "indexing.strip.pausedOther", {
+        count: activeCount,
+      })
+    : t(activeCount === 1 ? "indexing.strip.one" : "indexing.strip.other", {
+        count: activeCount,
       });
 
   return (
@@ -128,6 +138,11 @@ export function IndexingStrip({
           {waitingModel.length > 0 ? (
             <span className="muted">
               {t("indexing.strip.waitingModelSuffix", { count: waitingModel.length })}
+            </span>
+          ) : null}
+          {syncingSources.length > 0 ? (
+            <span className="muted">
+              {t("indexing.strip.sourceDiscoverySuffix", { count: syncingSources.length })}
             </span>
           ) : null}
           {step ? (
