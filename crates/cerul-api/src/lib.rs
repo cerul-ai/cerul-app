@@ -7778,6 +7778,17 @@ for arg in "$@"; do
   exit 0
   fi
 done
+for arg in "$@"; do
+  if [ "$arg" = "--dump-single-json" ]; then
+  url=""
+  for value in "$@"; do
+    url="$value"
+  done
+  id="${url##*=}"
+  printf '{"id":"%s","title":"Checked video","duration":12}\n' "$id"
+  exit 0
+  fi
+done
 out=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then

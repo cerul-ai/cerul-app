@@ -11,11 +11,15 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::Command,
+    task::JoinSet,
 };
 
 use crate::{
     url_policy::validate_external_http_url,
-    youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem, YtdlpAccess},
+    youtube::{
+        default_cache_dir, default_ytdlp_path, expand_path, is_ytdlp_inaccessible_video_error,
+        safe_file_stem, ytdlp_access_candidate_limit, YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
+    },
     FetchProgress, SourcePlugin,
 };
 
@@ -196,8 +200,10 @@ impl WebVideo {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--flat-playlist", "--dump-json"]);
         self.access.apply_to_command(&mut command);
-        if let Some(max_videos) = self.max_videos {
-            command.arg("--playlist-end").arg(max_videos.to_string());
+        if let Some(candidate_limit) = ytdlp_access_candidate_limit(self.max_videos) {
+            command
+                .arg("--playlist-end")
+                .arg(candidate_limit.to_string());
         }
         command
             .arg("--")
@@ -221,7 +227,116 @@ impl WebVideo {
                 serde_json::from_str(line).context("yt-dlp emitted invalid JSON")?;
             items.push(self.item_from_metadata(metadata, WebVideoSourceKind::Author)?);
         }
-        Ok(items)
+        self.filter_accessible_items(items).await
+    }
+
+    async fn is_accessible_video(&self, item: &DiscoveredItem) -> anyhow::Result<bool> {
+        let fetch_url = self.validated_fetch_url(item)?;
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        self.access.apply_to_command(&mut command);
+        command
+            .arg("--")
+            .arg(fetch_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = self.run_ytdlp(&mut command, "access discovery").await?;
+
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if is_ytdlp_inaccessible_video_error(&stderr) {
+            tracing::info!(
+                platform = self.classified.platform.as_str(),
+                external_id = %item.external_id,
+                title = item.title.as_deref().unwrap_or(""),
+                error = %stderr,
+                "skipping inaccessible web video during source discovery"
+            );
+            return Ok(false);
+        }
+
+        anyhow::bail!("yt-dlp access check failed: {stderr}");
+    }
+
+    async fn filter_accessible_items(
+        &self,
+        candidates: Vec<DiscoveredItem>,
+    ) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let target = self.max_videos;
+        let mut accessible =
+            Vec::with_capacity(target.unwrap_or(candidates.len()).min(candidates.len()));
+        let mut skipped = 0usize;
+        let mut in_flight = JoinSet::new();
+        let mut results = std::iter::repeat_with(|| None)
+            .take(candidates.len())
+            .collect::<Vec<Option<anyhow::Result<bool>>>>();
+        let mut next_to_spawn = 0usize;
+        let mut next_to_consider = 0usize;
+        let mut reached_target = false;
+
+        loop {
+            while in_flight.len() < YTDLP_ACCESS_CHECK_CONCURRENCY
+                && next_to_spawn < candidates.len()
+                && target
+                    .map(|target| accessible.len() < target)
+                    .unwrap_or(true)
+            {
+                let index = next_to_spawn;
+                let item = candidates[index].clone();
+                let source = self.clone();
+                in_flight.spawn(async move {
+                    let is_accessible = source.is_accessible_video(&item).await;
+                    (index, is_accessible)
+                });
+                next_to_spawn += 1;
+            }
+
+            while next_to_consider < results.len() {
+                let Some(result) = results[next_to_consider].take() else {
+                    break;
+                };
+                if result? {
+                    accessible.push(candidates[next_to_consider].clone());
+                } else {
+                    skipped += 1;
+                }
+
+                next_to_consider += 1;
+                if target
+                    .map(|target| accessible.len() >= target)
+                    .unwrap_or(false)
+                {
+                    in_flight.abort_all();
+                    reached_target = true;
+                    break;
+                }
+            }
+
+            if reached_target || in_flight.is_empty() {
+                break;
+            }
+
+            let (index, result) = in_flight
+                .join_next()
+                .await
+                .expect("in-flight access check exists")
+                .context("failed to join yt-dlp access check task")?;
+            results[index] = Some(result);
+        }
+
+        if skipped > 0 {
+            tracing::info!(
+                source_url = %self.classified.canonical_url,
+                accessible = accessible.len(),
+                skipped,
+                "filtered inaccessible web videos during source discovery"
+            );
+        }
+
+        Ok(accessible)
     }
 
     fn item_from_metadata(
@@ -687,9 +802,44 @@ mod tests {
             &script,
             r#"#!/bin/sh
 if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
-  printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
-  printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+  case "$*" in
+    *"@order"*)
+      printf '{"id":"slowFirst","title":"Slow first YouTube video","duration":12}\n'
+      printf '{"id":"fastSecond","title":"Fast second YouTube video","duration":34}\n'
+      printf '{"id":"fastThird","title":"Fast third YouTube video","duration":56}\n'
+      ;;
+    *"@unneeded-error"*)
+      printf '{"id":"abc123","title":"First YouTube video","duration":12}\n'
+      printf '{"id":"forbidden","title":"Forbidden later video","duration":34}\n'
+      ;;
+    *youtube*)
+      printf '{"id":"abc123","title":"First YouTube video","duration":12}\n'
+      printf '{"id":"membersOnly","title":"Members-only video","duration":56}\n'
+      printf '{"id":"def456","title":"Second YouTube video","duration":34}\n'
+      ;;
+    *)
+      printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
+      printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+      ;;
+  esac
 elif printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
+  url=""
+  for arg in "$@"; do
+    url="$arg"
+  done
+  case "$url" in
+    *slowFirst*)
+      sleep 1
+      ;;
+    *membersOnly*)
+      printf 'ERROR: [youtube] membersOnly: This video is available to this channel'"'"'s members\n' >&2
+      exit 1
+      ;;
+    *forbidden*)
+      printf 'ERROR: [youtube] forbidden: HTTP Error 403: Forbidden\n' >&2
+      exit 1
+      ;;
+  esac
   printf '{"id":"abc123","title":"Single video","duration":45,"webpage_url":"https://www.youtube.com/watch?v=abc123"}\n'
 else
   out=""
@@ -805,6 +955,70 @@ fi
             items[0].metadata["webpage_url"].as_str(),
             Some("https://www.bilibili.com/video/BV1aa411c7mD")
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_skips_inaccessible_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@cerul",
+            "max_videos": 2,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc123", "def456"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_preserves_order_with_concurrent_access_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@order",
+            "max_videos": 2,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["slowFirst", "fastSecond"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_ignores_unneeded_later_probe_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@unneeded-error",
+            "max_videos": 1,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "abc123");
     }
 
     #[cfg(unix)]
