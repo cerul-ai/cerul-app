@@ -642,7 +642,7 @@ impl VideoPipeline {
                         item_id,
                         "transcript_indexed",
                         0.635,
-                        "Transcript searchable; indexing visuals",
+                        "Transcript searchable while indexing visuals",
                     );
                     self.log_pipeline_event(
                         item_id,
@@ -819,6 +819,7 @@ impl VideoPipeline {
                         "transcript_first_preserved_after_visual_failure",
                         json!({
                             "error": message,
+                            "full_index_write_mode": "upsert_preserve_existing",
                             "search_units": transcript_first.search_units,
                             "search_vectors": transcript_first.search_vectors,
                         }),
