@@ -81,6 +81,42 @@ export type UsageSummary = {
   by_capability: UsageBreakdown[];
 };
 
+export type IndexingDiagnostics = {
+  paused: boolean;
+  configured_concurrent_jobs: number;
+  effective_concurrent_jobs: number;
+  effective_inference_mode: string;
+  local_model_slots: number | null;
+  counts: {
+    total_items: number;
+    indexed_items: number;
+    discovered_items: number;
+    processing_items: number;
+    failed_items: number;
+    queued_jobs: number;
+    running_jobs: number;
+    failed_jobs: number;
+    completed_jobs: number;
+  };
+  active_stage_counts: { stage: string; count: number }[];
+  waiting_model_jobs: number;
+  active_jobs: Array<{
+    id: string;
+    item_id: string | null;
+    job_type: string;
+    stage: string | null;
+    stage_message: string | null;
+    progress: number;
+    started_at: number | null;
+  }>;
+  qdrant: {
+    ready: boolean;
+    collection: string | null;
+    point_count: number | null;
+    error: string | null;
+  };
+};
+
 export type MomentRecord = {
   id: string;
   item_id: string;
@@ -170,11 +206,13 @@ export type StorageUsageCategory = {
   key: string;
   label: string;
   bytes: number;
+  apparent_bytes: number;
 };
 
 export type StorageUsageResponse = {
   data_dir: string;
   total_bytes: number;
+  total_apparent_bytes: number;
   categories: StorageUsageCategory[];
 };
 
@@ -560,6 +598,10 @@ export async function weeklyReview() {
 
 export async function usageSummary() {
   return fetchJson<UsageSummary>("/usage/summary");
+}
+
+export async function indexingDiagnostics() {
+  return fetchJson<IndexingDiagnostics>("/diagnostics/indexing");
 }
 
 export async function storageUsage() {

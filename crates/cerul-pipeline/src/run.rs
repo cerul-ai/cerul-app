@@ -27,6 +27,7 @@ const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGE
 const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
 const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
 const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
+const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
 
 pub trait Transcriber: Send + Sync {
     fn prepare_transcription(&self) -> anyhow::Result<()> {
@@ -150,6 +151,13 @@ struct TranscriptStorage {
 }
 
 #[derive(Clone)]
+struct TranscriptFirstIndexSummary {
+    write_summary: StorageWriteSummary,
+    search_units: usize,
+    search_vectors: usize,
+}
+
+#[derive(Clone)]
 pub struct VideoPipeline {
     paths: AppPaths,
     transcriber: Arc<dyn Transcriber>,
@@ -164,6 +172,7 @@ pub struct VideoPipeline {
     embedding_profile: Option<cerul_storage::vectors::EmbeddingProfile>,
     usage_job_id: Option<String>,
     model_permits: Option<Arc<Semaphore>>,
+    transcript_first_indexing: bool,
 }
 
 impl VideoPipeline {
@@ -186,6 +195,7 @@ impl VideoPipeline {
             embedding_profile: None,
             usage_job_id: None,
             model_permits: None,
+            transcript_first_indexing: false,
         }
     }
 
@@ -234,6 +244,11 @@ impl VideoPipeline {
         self
     }
 
+    pub fn with_transcript_first_indexing(mut self, enabled: bool) -> Self {
+        self.transcript_first_indexing = enabled;
+        self
+    }
+
     async fn acquire_model_permit(&self) -> anyhow::Result<Option<OwnedSemaphorePermit>> {
         match &self.model_permits {
             Some(model_permits) => Ok(Some(Arc::clone(model_permits).acquire_owned().await?)),
@@ -254,11 +269,37 @@ impl VideoPipeline {
                 "Waiting for local model",
             );
         }
-        self.acquire_model_permit().await
+        let started = Instant::now();
+        let permit = self.acquire_model_permit().await?;
+        if self.model_permits.is_some() {
+            self.log_pipeline_event(
+                item_id,
+                "model_permit_acquired",
+                json!({
+                    "wait_ms": started.elapsed().as_millis() as u64,
+                }),
+            );
+        }
+        Ok(permit)
     }
 
     fn report_progress(&self, item_id: &str, stage: &'static str, progress: f64, message: &str) {
         self.progress.update(item_id, stage, progress, message);
+    }
+
+    fn log_pipeline_event(&self, item_id: &str, event: &str, details: Value) {
+        if let Err(error) = cerul_storage::append_jsonl_event(
+            &self.paths,
+            PIPELINE_JOB_LOG_FILE,
+            json!({
+                "event": event,
+                "item_id": item_id,
+                "job_id": self.usage_job_id.as_deref(),
+                "details": details,
+            }),
+        ) {
+            tracing::warn!(%error, item_id, event, "failed to append Cerul pipeline event");
+        }
     }
 
     /// Embed `texts` in adaptive batches, advancing the progress bar from `base`
@@ -547,7 +588,126 @@ impl VideoPipeline {
             self.chunk_window_sec,
             self.chunk_overlap_sec,
         );
+        let has_transcript_text = transcript_storage
+            .chunks
+            .iter()
+            .any(|chunk| !chunk.text.trim().is_empty());
+        let transcript_first_summary = if self.transcript_first_indexing && has_transcript_text {
+            self.report_progress(
+                item_id,
+                "writing_transcript_first",
+                0.62,
+                "Saving transcript-first index",
+            );
+            let first_sqlite_summary = cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+                &self.paths,
+                item_id,
+                &transcript_storage.chunks,
+                &transcript_storage.lines,
+                &[],
+                &keyframes,
+            )?;
+            set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+            match self
+                .embed_and_write_retrieval_units(item_id, 0.625, 0.01, false, true)
+                .await
+            {
+                Ok(vector_summary) if vector_summary.text_vectors > 0 => {
+                    let write_summary = StorageWriteSummary {
+                        transcript_chunks: first_sqlite_summary.transcript_chunks,
+                        keyframes: first_sqlite_summary.keyframes,
+                        text_vectors: vector_summary.text_vectors,
+                        image_vectors: 0,
+                    };
+                    cerul_storage::set_video_multimodal_index_status(
+                        &self.paths,
+                        item_id,
+                        "pending",
+                        None,
+                        frames.len(),
+                        0,
+                        "pending",
+                        None,
+                        0,
+                    )?;
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        write_summary.text_vectors,
+                        write_summary.image_vectors,
+                    )?;
+                    self.report_progress(
+                        item_id,
+                        "transcript_indexed",
+                        0.635,
+                        "Transcript searchable while indexing visuals",
+                    );
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_indexed",
+                        json!({
+                            "transcript_chunks": write_summary.transcript_chunks,
+                            "text_vectors": write_summary.text_vectors,
+                            "sampled_frames": frames.len(),
+                        }),
+                    );
+                    Some(TranscriptFirstIndexSummary {
+                        write_summary,
+                        search_units: vector_summary.transcript_chunks,
+                        search_vectors: vector_summary.text_vectors,
+                    })
+                }
+                Ok(vector_summary) => {
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "pending",
+                        None,
+                        0,
+                        0,
+                    )?;
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_skipped",
+                        json!({
+                            "reason": "empty_text_vectors",
+                            "transcript_chunks": first_sqlite_summary.transcript_chunks,
+                            "text_vectors": vector_summary.text_vectors,
+                        }),
+                    );
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        item_id,
+                        "transcript-first retrieval index failed; continuing full indexing pass"
+                    );
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_failed",
+                        json!({ "error": error.to_string() }),
+                    );
+                    None
+                }
+            }
+        } else {
+            if self.transcript_first_indexing {
+                self.log_pipeline_event(
+                    item_id,
+                    "transcript_first_skipped",
+                    json!({
+                        "reason": "empty_transcript",
+                        "transcript_chunks": transcript_storage.chunks.len(),
+                    }),
+                );
+            }
+            None
+        };
 
+        let mut ocr_error: Option<String> = None;
         let ocr_frames = if self.ocr_enabled {
             let ocr = Arc::clone(&self.ocr);
             let frames_for_ocr = frames.clone();
@@ -560,25 +720,64 @@ impl VideoPipeline {
                 "Reading text from visual frames",
             );
             let _model_permit = self.acquire_model_permit_with_wait(item_id, 0.64).await?;
-            let frames = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
-                let total = frames_for_ocr.len();
-                let mut collected = Vec::with_capacity(total);
-                for (index, frame) in frames_for_ocr.iter().enumerate() {
-                    collected.extend(ocr.ocr_images(std::slice::from_ref(frame))?);
-                    let done = index + 1;
-                    let fraction = done as f64 / total.max(1) as f64;
-                    ocr_progress.update(
-                        &ocr_item_id,
-                        "ocr_frames",
-                        0.64 + fraction * 0.03,
-                        &format!("Reading text from visual frames · {done}/{total}"),
-                    );
+            let frames_result: anyhow::Result<Vec<OcrFrame>> =
+                match tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
+                    let total = frames_for_ocr.len();
+                    let mut collected = Vec::with_capacity(total);
+                    for (index, frame) in frames_for_ocr.iter().enumerate() {
+                        collected.extend(ocr.ocr_images(std::slice::from_ref(frame))?);
+                        let done = index + 1;
+                        let fraction = done as f64 / total.max(1) as f64;
+                        ocr_progress.update(
+                            &ocr_item_id,
+                            "ocr_frames",
+                            0.64 + fraction * 0.03,
+                            &format!("Reading text from visual frames · {done}/{total}"),
+                        );
+                    }
+                    Ok(collected)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => Err(error.into()),
+                };
+            match frames_result {
+                Ok(frames) => {
+                    self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
+                    frames
                 }
-                Ok(collected)
-            })
-            .await??;
-            self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
-            frames
+                Err(error) if transcript_first_summary.is_some() => {
+                    let message = error.to_string();
+                    self.release_runtime_models(
+                        ModelReleaseScope::Ocr,
+                        item_id,
+                        "ocr failed after transcript-first index",
+                    );
+                    tracing::warn!(
+                        %error,
+                        item_id,
+                        "ocr failed after transcript-first index; continuing with transcript-only search"
+                    );
+                    self.log_pipeline_event(
+                        item_id,
+                        "ocr_failed_after_transcript_first",
+                        json!({ "error": message.clone() }),
+                    );
+                    self.report_progress(
+                        item_id,
+                        "ocr_frames",
+                        0.67,
+                        "OCR unavailable; transcript remains searchable",
+                    );
+                    ocr_error = Some(message);
+                    Vec::new()
+                }
+                Err(error) => {
+                    self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr failed");
+                    return Err(error);
+                }
+            }
         } else {
             Vec::new()
         };
@@ -587,6 +786,16 @@ impl VideoPipeline {
             .filter(|frame| !frame.text.trim().is_empty())
             .map(|frame| StorageOcrChunk::frame(frame.path, frame.text))
             .collect::<Vec<_>>();
+        let ocr_status = if self.ocr_enabled {
+            if ocr_error.is_some() {
+                "failed"
+            } else {
+                "indexed"
+            }
+        } else {
+            "disabled"
+        };
+        let ocr_error_message = ocr_error.as_deref();
 
         self.report_progress(
             item_id,
@@ -594,14 +803,98 @@ impl VideoPipeline {
             0.68,
             "Saving searchable transcript",
         );
-        let sqlite_summary = cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+        if transcript_first_summary.is_some() {
+            self.log_pipeline_event(
+                item_id,
+                "visual_enrichment_started",
+                json!({
+                    "sampled_frames": frames.len(),
+                    "ocr_chunks": storage_ocr_chunks.len(),
+                }),
+            );
+        }
+        let sqlite_summary = match cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
             &self.paths,
             item_id,
             &transcript_storage.chunks,
             &transcript_storage.lines,
             &storage_ocr_chunks,
             &keyframes,
-        )?;
+        ) {
+            Ok(summary) => summary,
+            Err(error) => {
+                let message = error.to_string();
+                if let Some(transcript_first) = &transcript_first_summary {
+                    tracing::warn!(
+                        %error,
+                        item_id,
+                        "canonical SQLite rewrite failed after transcript-first index; preserving transcript-only search"
+                    );
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.write_summary.text_vectors,
+                        transcript_first.write_summary.image_vectors,
+                    )?;
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.search_units,
+                        transcript_first.search_vectors,
+                    )?;
+                    cerul_storage::set_video_multimodal_index_status(
+                        &self.paths,
+                        item_id,
+                        "display_only",
+                        Some(&message),
+                        frames.len(),
+                        0,
+                        if self.ocr_enabled {
+                            "failed"
+                        } else {
+                            "disabled"
+                        },
+                        if self.ocr_enabled {
+                            Some(&message)
+                        } else {
+                            None
+                        },
+                        0,
+                    )?;
+                    cerul_storage::mark_indexed(&self.paths, item_id)?;
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_preserved_after_sqlite_rewrite_failure",
+                        json!({
+                            "error": message,
+                            "search_units": transcript_first.search_units,
+                            "search_vectors": transcript_first.search_vectors,
+                        }),
+                    );
+                    self.report_progress(
+                        item_id,
+                        "partial",
+                        1.0,
+                        "Transcript searchable; visual metadata unavailable",
+                    );
+                    self.cleanup_success_temp_artifacts(item_id, &audio_path)
+                        .await;
+                    return Ok(ProcessVideoSummary::from_write_summary(
+                        item_id,
+                        audio_path,
+                        frames_dir,
+                        frames.len(),
+                        0,
+                        transcript_first.write_summary.clone(),
+                    ));
+                }
+                return Err(error);
+            }
+        };
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
         self.report_progress(
@@ -610,10 +903,16 @@ impl VideoPipeline {
             0.80,
             "Writing unified search index",
         );
-        let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.80, 0.12)
-            .await
-        {
+        let full_index_result = self
+            .embed_and_write_retrieval_units(
+                item_id,
+                0.80,
+                0.12,
+                true,
+                transcript_first_summary.is_none(),
+            )
+            .await;
+        let vector_summary = match full_index_result {
             Ok(write_summary) => write_summary,
             Err(error) => {
                 let message = error.to_string();
@@ -622,15 +921,51 @@ impl VideoPipeline {
                     item_id,
                     "unified retrieval index write failed; keeping canonical transcript and OCR artifacts"
                 );
-                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
-                cerul_storage::set_item_search_index_status(
-                    &self.paths,
-                    item_id,
-                    "failed",
-                    Some(&message),
-                    0,
-                    0,
-                )?;
+                if let Some(transcript_first) = &transcript_first_summary {
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.write_summary.text_vectors,
+                        transcript_first.write_summary.image_vectors,
+                    )?;
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.search_units,
+                        transcript_first.search_vectors,
+                    )?;
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_preserved_after_visual_failure",
+                        json!({
+                            "error": message,
+                            "full_index_write_mode": "upsert_preserve_existing",
+                            "search_units": transcript_first.search_units,
+                            "search_vectors": transcript_first.search_vectors,
+                        }),
+                    );
+                } else {
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "failed",
+                        Some(&message),
+                        0,
+                        0,
+                    )?;
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "failed",
+                        Some(&message),
+                        0,
+                        0,
+                    )?;
+                }
                 cerul_storage::set_video_multimodal_index_status(
                     &self.paths,
                     item_id,
@@ -638,12 +973,8 @@ impl VideoPipeline {
                     None,
                     frames.len(),
                     0,
-                    if self.ocr_enabled {
-                        "indexed"
-                    } else {
-                        "disabled"
-                    },
-                    None,
+                    ocr_status,
+                    ocr_error_message,
                     storage_ocr_chunks.len(),
                 )?;
                 cerul_storage::mark_indexed(&self.paths, item_id)?;
@@ -651,7 +982,11 @@ impl VideoPipeline {
                     item_id,
                     "partial",
                     1.0,
-                    "Transcript saved; search index unavailable",
+                    if transcript_first_summary.is_some() {
+                        "Transcript searchable; visual index unavailable"
+                    } else {
+                        "Transcript saved; search index unavailable"
+                    },
                 );
                 self.cleanup_success_temp_artifacts(item_id, &audio_path)
                     .await;
@@ -678,12 +1013,8 @@ impl VideoPipeline {
             None,
             frames.len(),
             0,
-            if self.ocr_enabled {
-                "indexed"
-            } else {
-                "disabled"
-            },
-            None,
+            ocr_status,
+            ocr_error_message,
             storage_ocr_chunks.len(),
         )?;
         set_embedding_index_status(
@@ -696,6 +1027,18 @@ impl VideoPipeline {
         )?;
         cerul_storage::mark_indexed(&self.paths, item_id)?;
         self.report_progress(item_id, "completed", 1.0, "Index complete");
+        self.log_pipeline_event(
+            item_id,
+            "video_index_complete",
+            json!({
+                "sampled_frames": frames.len(),
+                "ocr_chunks": storage_ocr_chunks.len(),
+                "transcript_chunks": write_summary.transcript_chunks,
+                "text_vectors": write_summary.text_vectors,
+                "image_vectors": write_summary.image_vectors,
+                "transcript_first": transcript_first_summary.is_some(),
+            }),
+        );
         self.cleanup_success_temp_artifacts(item_id, &audio_path)
             .await;
 
@@ -743,7 +1086,7 @@ impl VideoPipeline {
         )?;
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.78, 0.16)
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -821,7 +1164,7 @@ impl VideoPipeline {
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.78, 0.16)
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -936,9 +1279,21 @@ impl VideoPipeline {
         item_id: &str,
         base: f64,
         span: f64,
+        include_image_embeddings: bool,
+        replace_existing_vectors: bool,
     ) -> anyhow::Result<StorageWriteSummary> {
+        let started = Instant::now();
         let profile = self.active_embedding_profile()?;
-        cerul_storage::set_item_search_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+        if replace_existing_vectors {
+            cerul_storage::set_item_search_index_status(
+                &self.paths,
+                item_id,
+                "pending",
+                None,
+                0,
+                0,
+            )?;
+        }
         let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
         anyhow::ensure!(
             !units.is_empty(),
@@ -949,10 +1304,25 @@ impl VideoPipeline {
             .iter()
             .filter(|unit| !unit.uses_image_embedding())
             .collect::<Vec<_>>();
-        let image_units = units
-            .iter()
-            .filter(|unit| unit.has_image_embedding_source())
-            .collect::<Vec<_>>();
+        let image_units = if include_image_embeddings {
+            units
+                .iter()
+                .filter(|unit| unit.has_image_embedding_source())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        self.log_pipeline_event(
+            item_id,
+            "retrieval_units_built",
+            json!({
+                "units": units.len(),
+                "text_units": text_units.len(),
+                "image_units": image_units.len(),
+                "include_image_embeddings": include_image_embeddings,
+                "replace_existing_vectors": replace_existing_vectors,
+            }),
+        );
 
         let text_inputs = text_units
             .iter()
@@ -1087,14 +1457,35 @@ impl VideoPipeline {
             );
         }
 
-        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
-            &self.paths,
-            item_id,
-            &records,
-            &profile,
-            cerul_storage::SEARCH_INDEX_VERSION,
-        )
-        .await?;
+        let qdrant_started = Instant::now();
+        let stale_vectors_deleted = if replace_existing_vectors {
+            cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+                &self.paths,
+                item_id,
+                &records,
+                &profile,
+                cerul_storage::SEARCH_INDEX_VERSION,
+            )
+            .await?;
+            0
+        } else {
+            cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
+                &self.paths,
+                &records,
+                &profile,
+                cerul_storage::SEARCH_INDEX_VERSION,
+            )
+            .await?;
+            cerul_storage::vectors::delete_stale_item_unified_embeddings_for_profile(
+                &self.paths,
+                item_id,
+                &records,
+                &profile,
+                cerul_storage::SEARCH_INDEX_VERSION,
+            )
+            .await?
+        };
+        let qdrant_write_ms = qdrant_started.elapsed().as_millis() as u64;
         cerul_storage::set_item_search_index_status(
             &self.paths,
             item_id,
@@ -1103,6 +1494,22 @@ impl VideoPipeline {
             units.len(),
             records.len(),
         )?;
+        self.log_pipeline_event(
+            item_id,
+            "retrieval_index_written",
+            json!({
+                "units": units.len(),
+                "vectors": records.len(),
+                "text_vectors": text_vectors.len(),
+                "image_vectors": image_vectors.len(),
+                "qdrant_write_ms": qdrant_write_ms,
+                "total_ms": started.elapsed().as_millis() as u64,
+                "embedding_profile_id": profile.id,
+                "include_image_embeddings": include_image_embeddings,
+                "replace_existing_vectors": replace_existing_vectors,
+                "stale_vectors_deleted": stale_vectors_deleted,
+            }),
+        );
 
         Ok(StorageWriteSummary {
             transcript_chunks: units.len(),
@@ -1927,6 +2334,42 @@ mod tests {
         }
     }
 
+    struct FailingOcrEngine;
+
+    impl OcrEngine for FailingOcrEngine {
+        fn ocr_images(&self, _paths: &[PathBuf]) -> anyhow::Result<Vec<OcrFrame>> {
+            anyhow::bail!("OCR sidecar unavailable")
+        }
+    }
+
+    struct FailingSqliteRewriteOcrEngine {
+        paths: AppPaths,
+    }
+
+    impl OcrEngine for FailingSqliteRewriteOcrEngine {
+        fn ocr_images(&self, paths: &[PathBuf]) -> anyhow::Result<Vec<OcrFrame>> {
+            let conn = sqlite::open(&self.paths)?;
+            conn.execute_batch(
+                r#"
+                CREATE TRIGGER IF NOT EXISTS fail_final_ocr_rewrite
+                BEFORE INSERT ON chunks
+                WHEN NEW.chunk_type = 'ocr'
+                BEGIN
+                    SELECT RAISE(FAIL, 'injected sqlite rewrite failure');
+                END;
+                "#,
+            )?;
+            Ok(paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| OcrFrame {
+                    path: path.clone(),
+                    text: format!("rewrite failure frame text {index}"),
+                })
+                .collect())
+        }
+    }
+
     #[derive(Default)]
     struct RecordingProgress {
         stages: Mutex<Vec<(String, f64)>>,
@@ -2272,6 +2715,171 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn process_video_item_keeps_transcript_searchable_when_ocr_fails_after_transcript_first()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let videos = temp.path().join("videos");
+        std::fs::create_dir(&videos).unwrap();
+        let video = videos.join("sample.mp4");
+        create_sample_video(&video).await.unwrap();
+        insert_source_and_item(&paths, &videos, &video);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(FakeTranscriber),
+            Arc::new(FakeEmbedder),
+        )
+        .with_ocr(Arc::new(FailingOcrEngine))
+        .with_frame_interval_sec(2)
+        .with_transcript_first_indexing(true);
+        let summary = pipeline.process_video_item("item-1").await.unwrap();
+
+        assert_eq!(summary.ocr_chunks, 0);
+        assert!(summary.text_vectors >= 1);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (
+            status,
+            metadata,
+            search_index_status,
+            search_index_unit_count,
+            search_index_vector_count,
+        ): (String, String, String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+
+        assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert!(search_index_unit_count > 0);
+        assert!(search_index_vector_count > 0);
+        assert_eq!(metadata["ocr_index_status"], "failed");
+        assert_eq!(metadata["ocr_indexed_chunks"], 0);
+        assert!(metadata["ocr_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("OCR sidecar unavailable"));
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "red square introduction".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
+    }
+
+    #[tokio::test]
+    async fn process_video_item_keeps_transcript_searchable_when_sqlite_rewrite_fails_after_transcript_first(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let videos = temp.path().join("videos");
+        std::fs::create_dir(&videos).unwrap();
+        let video = videos.join("sample.mp4");
+        create_sample_video(&video).await.unwrap();
+        insert_source_and_item(&paths, &videos, &video);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(FakeTranscriber),
+            Arc::new(FakeEmbedder),
+        )
+        .with_ocr(Arc::new(FailingSqliteRewriteOcrEngine {
+            paths: paths.clone(),
+        }))
+        .with_frame_interval_sec(2)
+        .with_transcript_first_indexing(true);
+        let summary = pipeline.process_video_item("item-1").await.unwrap();
+
+        assert_eq!(summary.ocr_chunks, 0);
+        assert_eq!(summary.image_vectors, 0);
+        assert!(summary.text_vectors >= 1);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (
+            status,
+            metadata,
+            search_index_status,
+            search_index_unit_count,
+            search_index_vector_count,
+        ): (String, String, String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        let ocr_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'ocr'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert!(search_index_unit_count > 0);
+        assert!(search_index_vector_count > 0);
+        assert_eq!(ocr_count, 0);
+        assert_eq!(metadata["visual_index_status"], "display_only");
+        assert!(metadata["visual_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("injected sqlite rewrite failure"));
+        assert_eq!(metadata["ocr_index_status"], "failed");
+        assert!(metadata["ocr_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("injected sqlite rewrite failure"));
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "red square introduction".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
+    }
+
+    #[tokio::test]
     async fn process_video_item_marks_visual_frames_display_only() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
@@ -2574,7 +3182,7 @@ mod tests {
         )
         .with_embedding_profile(bad_dimension_profile(&paths));
         let error = pipeline
-            .embed_and_write_retrieval_units("image-1", 0.0, 0.1)
+            .embed_and_write_retrieval_units("image-1", 0.0, 0.1, true, true)
             .await
             .unwrap_err();
 

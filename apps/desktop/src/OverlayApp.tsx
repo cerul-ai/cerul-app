@@ -27,6 +27,7 @@ type SearchState = "idle" | "loading" | "ready" | "error";
 type OverlayMode = "search" | "ask";
 
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
+const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 50;
 const searchDebounceMs = 100;
 const overlayRetainQueryMs = 30_000;
 const defaultHotkeyLabel = "Alt Space";

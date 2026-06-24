@@ -11,16 +11,18 @@ rg -qF "requestConfirm({" apps/desktop/src/dialogs/add-source-dialog.tsx
 rg -qF "onAddSource(\"web_video\"" apps/desktop/src
 rg -qF "platform: preview.platform" apps/desktop/src
 rg -qF "source_kind: preview.sourceKind" apps/desktop/src
-rg -qF "max_videos: preview.sourceKind === \"author\" ? webVideoMax : 1" apps/desktop/src
+rg -qF "webVideoKeepAll" apps/desktop/src/dialogs/add-source-dialog.tsx
+rg -qF "max_videos:" apps/desktop/src/dialogs/add-source-dialog.tsx
 rg -qF "const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 20" apps/desktop/src/dialogs/add-source-dialog.tsx
 rg -qF "setWebVideoMax(clampWebVideoMax(value))" apps/desktop/src/dialogs/add-source-dialog.tsx
 rg -qF '"addSource.folder.helper": "Cerul watches .mp4, .mkv, .webm, and .mov files inside this folder."' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"addSource.youtube.helper": "Supports one YouTube/Bilibili video or an author homepage. Author homepages download and index the number of videos you choose."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"addSource.youtube.helper": "Supports one YouTube/Bilibili video or an author homepage. Author homepages import the latest 20 videos by default; keep all only when explicitly selected."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"addSource.webVideo.validDetailSingle": "This video will be downloaded locally before indexing."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"addSource.webVideo.validDetailAuthor": "The latest {max} videos from this author homepage will be downloaded and indexed."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"addSource.webVideo.authorMaxHint": "The latest {max} videos will be imported. Batch imports use the browser session."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"addSource.webVideo.playlistUnsupported": "YouTube playlists are not supported yet. Use a single video or author homepage URL."' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"addSource.webVideo.confirmAuthor.title": "Import this author'\''s latest videos?"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"addSource.webVideo.confirmAuthor.title": "Download all videos from this author?"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"addSource.webVideo.confirmAuthorLimited.title": "Download the latest {max} videos from this author?"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "api.previewRssSource" apps/desktop/src
 rg -qF "preview.episode_count" apps/desktop/src
 rg -qF "imageUrl={preview?.image_url ?? null}" apps/desktop/src

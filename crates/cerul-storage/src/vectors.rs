@@ -169,6 +169,17 @@ struct QdrantRetrievedPoint {
     vector: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct QdrantScrollResult {
+    points: Vec<QdrantScrollPoint>,
+    next_page_offset: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QdrantScrollPoint {
+    id: Value,
+}
+
 pub async fn ensure_collections(paths: &AppPaths) -> anyhow::Result<()> {
     let profile = ensure_active_embedding_profile(paths)?;
     ensure_unified_collection_for_profile(paths, &profile, crate::SEARCH_INDEX_VERSION).await
@@ -253,6 +264,45 @@ pub async fn replace_item_unified_embeddings_for_profile(
     let collection = unified_collection_name(paths, profile, index_version);
     ensure_unified_collection_for_profile(paths, profile, index_version).await?;
     replace_collection_item_embeddings(paths, &collection, item_id, records).await
+}
+
+pub async fn upsert_item_unified_embeddings_for_profile(
+    paths: &AppPaths,
+    records: &[VectorRecord],
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> anyhow::Result<()> {
+    ensure_qdrant_ready(paths).await?;
+    let collection = unified_collection_name(paths, profile, index_version);
+    ensure_unified_collection_for_profile(paths, profile, index_version).await?;
+    upsert_collection_embeddings(paths, &collection, records).await
+}
+
+pub async fn delete_stale_item_unified_embeddings_for_profile(
+    paths: &AppPaths,
+    item_id: &str,
+    keep_records: &[VectorRecord],
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> anyhow::Result<usize> {
+    ensure_qdrant_ready(paths).await?;
+    let collection = unified_collection_name(paths, profile, index_version);
+    if !collection_exists(paths, &collection).await? {
+        return Ok(0);
+    }
+
+    let keep_ids = keep_records
+        .iter()
+        .map(|record| point_id(&record.point_key))
+        .collect::<HashSet<_>>();
+    let existing_ids = scroll_collection_item_point_ids(paths, &collection, item_id).await?;
+    let stale_ids = existing_ids
+        .into_iter()
+        .filter(|id| !keep_ids.contains(id))
+        .collect::<Vec<_>>();
+
+    delete_collection_points(paths, &collection, &stale_ids).await?;
+    Ok(stale_ids.len())
 }
 
 pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
@@ -407,7 +457,14 @@ async fn replace_collection_item_embeddings(
     records: &[VectorRecord],
 ) -> anyhow::Result<()> {
     delete_collection_item_embeddings(paths, collection, item_id).await?;
+    upsert_collection_embeddings(paths, collection, records).await
+}
 
+async fn upsert_collection_embeddings(
+    paths: &AppPaths,
+    collection: &str,
+    records: &[VectorRecord],
+) -> anyhow::Result<()> {
     for batch in records.chunks(VECTOR_BATCH_SIZE) {
         if batch.is_empty() {
             continue;
@@ -436,6 +493,73 @@ async fn replace_collection_item_embeddings(
         .await?;
     }
 
+    Ok(())
+}
+
+async fn scroll_collection_item_point_ids(
+    paths: &AppPaths,
+    collection: &str,
+    item_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut point_ids = Vec::new();
+    let mut offset: Option<Value> = None;
+    loop {
+        let mut body = json!({
+            "filter": {
+                "must": [
+                    {
+                        "key": "item_id",
+                        "match": { "value": item_id }
+                    }
+                ]
+            },
+            "limit": VECTOR_BATCH_SIZE,
+            "with_payload": false,
+            "with_vector": false
+        });
+        if let Some(next_offset) = offset.take() {
+            body["offset"] = next_offset;
+        }
+
+        let result: QdrantScrollResult = qdrant_post(
+            paths,
+            &format!("/collections/{collection}/points/scroll"),
+            None,
+            &body,
+        )
+        .await?;
+        point_ids.extend(
+            result
+                .points
+                .into_iter()
+                .filter_map(|point| point.id.as_str().map(ToOwned::to_owned)),
+        );
+
+        let Some(next_offset) = result.next_page_offset else {
+            break;
+        };
+        offset = Some(next_offset);
+    }
+    Ok(point_ids)
+}
+
+async fn delete_collection_points(
+    paths: &AppPaths,
+    collection: &str,
+    point_ids: &[String],
+) -> anyhow::Result<()> {
+    for batch in point_ids.chunks(VECTOR_BATCH_SIZE) {
+        if batch.is_empty() {
+            continue;
+        }
+        let _: Value = qdrant_post(
+            paths,
+            &format!("/collections/{collection}/points/delete"),
+            Some(&[("wait", "true")]),
+            &json!({ "points": batch }),
+        )
+        .await?;
+    }
     Ok(())
 }
 

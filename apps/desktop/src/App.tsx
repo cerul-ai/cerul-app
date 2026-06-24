@@ -7428,6 +7428,8 @@ function StorageSettings({
   const busy = action.status === "running";
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const apparentTotalDiffers =
+    usage !== null && usage.total_apparent_bytes !== usage.total_bytes;
 
   useEffect(() => {
     let cancelled = false;
@@ -7531,8 +7533,17 @@ function StorageSettings({
         <SettingRow
           label={t("settings.storage.cacheSize.label")}
           control={
-            <span className="settings-value">
-              {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
+            <span className="settings-value col" style={{ alignItems: "flex-end", gap: 2 }}>
+              <span>
+                {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
+              </span>
+              {usage && apparentTotalDiffers ? (
+                <span className="faint mono">
+                  {t("settings.storage.logicalSize", {
+                    size: formatBytes(usage.total_apparent_bytes),
+                  })}
+                </span>
+              ) : null}
             </span>
           }
         />
@@ -7547,7 +7558,17 @@ function StorageSettings({
                 <div className="storage-row" key={category.key}>
                   <div className="row" style={{ justifyContent: "space-between" }}>
                     <span>{storageCategoryLabel(category.key, category.label, t)}</span>
-                    <span className="mono faint">{formatBytes(category.bytes)}</span>
+                    <span className="mono faint">
+                      {formatBytes(category.bytes)}
+                      {category.apparent_bytes !== category.bytes ? (
+                        <span>
+                          {" · "}
+                          {t("settings.storage.logicalSize", {
+                            size: formatBytes(category.apparent_bytes),
+                          })}
+                        </span>
+                      ) : null}
+                    </span>
                   </div>
                   <ProgressBar value={pct} />
                 </div>

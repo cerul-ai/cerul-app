@@ -118,9 +118,9 @@ impl WebVideo {
         let max_videos = match classified.kind {
             WebVideoSourceKind::Single => Some(1),
             WebVideoSourceKind::Author => match max_videos {
-                None => Some(DEFAULT_AUTHOR_MAX_VIDEOS),
                 Some(0) => None,
                 Some(value) => Some(value),
+                None => Some(DEFAULT_AUTHOR_MAX_VIDEOS),
             },
         };
         let ytdlp_path = config
@@ -1094,6 +1094,20 @@ exit 1
         .unwrap();
 
         assert_eq!(source.max_videos(), None);
+    }
+
+    #[test]
+    fn explicit_author_max_videos_can_raise_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://space.bilibili.com/12345",
+            "max_videos": 50,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        assert_eq!(source.max_videos(), Some(50));
     }
 
     #[cfg(unix)]
