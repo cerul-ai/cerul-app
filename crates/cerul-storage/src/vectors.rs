@@ -255,6 +255,18 @@ pub async fn replace_item_unified_embeddings_for_profile(
     replace_collection_item_embeddings(paths, &collection, item_id, records).await
 }
 
+pub async fn upsert_item_unified_embeddings_for_profile(
+    paths: &AppPaths,
+    records: &[VectorRecord],
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> anyhow::Result<()> {
+    ensure_qdrant_ready(paths).await?;
+    let collection = unified_collection_name(paths, profile, index_version);
+    ensure_unified_collection_for_profile(paths, profile, index_version).await?;
+    upsert_collection_embeddings(paths, &collection, records).await
+}
+
 pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
     ensure_qdrant_ready(paths).await?;
     let profiles = list_embedding_profiles(paths)?;
@@ -407,7 +419,14 @@ async fn replace_collection_item_embeddings(
     records: &[VectorRecord],
 ) -> anyhow::Result<()> {
     delete_collection_item_embeddings(paths, collection, item_id).await?;
+    upsert_collection_embeddings(paths, collection, records).await
+}
 
+async fn upsert_collection_embeddings(
+    paths: &AppPaths,
+    collection: &str,
+    records: &[VectorRecord],
+) -> anyhow::Result<()> {
     for batch in records.chunks(VECTOR_BATCH_SIZE) {
         if batch.is_empty() {
             continue;

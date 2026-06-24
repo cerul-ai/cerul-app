@@ -609,7 +609,7 @@ impl VideoPipeline {
             )?;
             set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
             match self
-                .embed_and_write_retrieval_units(item_id, 0.625, 0.01, false)
+                .embed_and_write_retrieval_units(item_id, 0.625, 0.01, false, true)
                 .await
             {
                 Ok(vector_summary) if vector_summary.text_vectors > 0 => {
@@ -780,7 +780,13 @@ impl VideoPipeline {
             "Writing unified search index",
         );
         let full_index_result = self
-            .embed_and_write_retrieval_units(item_id, 0.80, 0.12, true)
+            .embed_and_write_retrieval_units(
+                item_id,
+                0.80,
+                0.12,
+                true,
+                transcript_first_summary.is_none(),
+            )
             .await;
         let vector_summary = match full_index_result {
             Ok(write_summary) => write_summary,
@@ -963,7 +969,7 @@ impl VideoPipeline {
         )?;
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true)
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -1041,7 +1047,7 @@ impl VideoPipeline {
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
         let vector_summary = match self
-            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true)
+            .embed_and_write_retrieval_units(item_id, 0.78, 0.16, true, true)
             .await
         {
             Ok(write_summary) => write_summary,
@@ -1157,10 +1163,20 @@ impl VideoPipeline {
         base: f64,
         span: f64,
         include_image_embeddings: bool,
+        replace_existing_vectors: bool,
     ) -> anyhow::Result<StorageWriteSummary> {
         let started = Instant::now();
         let profile = self.active_embedding_profile()?;
-        cerul_storage::set_item_search_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+        if replace_existing_vectors {
+            cerul_storage::set_item_search_index_status(
+                &self.paths,
+                item_id,
+                "pending",
+                None,
+                0,
+                0,
+            )?;
+        }
         let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
         anyhow::ensure!(
             !units.is_empty(),
@@ -1187,6 +1203,7 @@ impl VideoPipeline {
                 "text_units": text_units.len(),
                 "image_units": image_units.len(),
                 "include_image_embeddings": include_image_embeddings,
+                "replace_existing_vectors": replace_existing_vectors,
             }),
         );
 
@@ -1324,14 +1341,24 @@ impl VideoPipeline {
         }
 
         let qdrant_started = Instant::now();
-        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
-            &self.paths,
-            item_id,
-            &records,
-            &profile,
-            cerul_storage::SEARCH_INDEX_VERSION,
-        )
-        .await?;
+        if replace_existing_vectors {
+            cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+                &self.paths,
+                item_id,
+                &records,
+                &profile,
+                cerul_storage::SEARCH_INDEX_VERSION,
+            )
+            .await?;
+        } else {
+            cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
+                &self.paths,
+                &records,
+                &profile,
+                cerul_storage::SEARCH_INDEX_VERSION,
+            )
+            .await?;
+        }
         let qdrant_write_ms = qdrant_started.elapsed().as_millis() as u64;
         cerul_storage::set_item_search_index_status(
             &self.paths,
@@ -1353,6 +1380,7 @@ impl VideoPipeline {
                 "total_ms": started.elapsed().as_millis() as u64,
                 "embedding_profile_id": profile.id,
                 "include_image_embeddings": include_image_embeddings,
+                "replace_existing_vectors": replace_existing_vectors,
             }),
         );
 
@@ -2812,7 +2840,7 @@ mod tests {
         )
         .with_embedding_profile(bad_dimension_profile(&paths));
         let error = pipeline
-            .embed_and_write_retrieval_units("image-1", 0.0, 0.1, true)
+            .embed_and_write_retrieval_units("image-1", 0.0, 0.1, true, true)
             .await
             .unwrap_err();
 
