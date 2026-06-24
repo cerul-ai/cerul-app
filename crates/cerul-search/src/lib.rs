@@ -1724,7 +1724,10 @@ mod tests {
         );
         assert_eq!(response.diagnostics.vector_hits_count, 0);
         assert!(response.diagnostics.fts_hits_count >= 1);
-        assert_eq!(response.results[0].playback_chunk_id, "item-1:transcript:000000");
+        assert_eq!(
+            response.results[0].playback_chunk_id,
+            "item-1:transcript:000000"
+        );
     }
 
     #[tokio::test]
@@ -2034,7 +2037,10 @@ mod tests {
             response.diagnostics.fallback_reason.as_deref(),
             Some("search_index_rebuilding_legacy_fts")
         );
-        assert_eq!(response.results[0].playback_chunk_id, "item-1:transcript:000000");
+        assert_eq!(
+            response.results[0].playback_chunk_id,
+            "item-1:transcript:000000"
+        );
         assert!(response.results[0].snippet.contains("legacy transcript"));
     }
 
@@ -2459,7 +2465,10 @@ mod tests {
             .contains("retrieval_units"));
         assert_eq!(response.diagnostics.qdrant_text_collection, None);
         assert_eq!(response.diagnostics.qdrant_image_points, Some(0));
-        assert_eq!(response.results[0].playback_chunk_id, "item-1:keyframe:000001");
+        assert_eq!(
+            response.results[0].playback_chunk_id,
+            "item-1:keyframe:000001"
+        );
     }
 
     #[tokio::test]
