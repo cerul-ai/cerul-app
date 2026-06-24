@@ -813,14 +813,88 @@ impl VideoPipeline {
                 }),
             );
         }
-        let sqlite_summary = cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+        let sqlite_summary = match cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
             &self.paths,
             item_id,
             &transcript_storage.chunks,
             &transcript_storage.lines,
             &storage_ocr_chunks,
             &keyframes,
-        )?;
+        ) {
+            Ok(summary) => summary,
+            Err(error) => {
+                let message = error.to_string();
+                if let Some(transcript_first) = &transcript_first_summary {
+                    tracing::warn!(
+                        %error,
+                        item_id,
+                        "canonical SQLite rewrite failed after transcript-first index; preserving transcript-only search"
+                    );
+                    set_embedding_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.write_summary.text_vectors,
+                        transcript_first.write_summary.image_vectors,
+                    )?;
+                    cerul_storage::set_item_search_index_status(
+                        &self.paths,
+                        item_id,
+                        "indexed",
+                        None,
+                        transcript_first.search_units,
+                        transcript_first.search_vectors,
+                    )?;
+                    cerul_storage::set_video_multimodal_index_status(
+                        &self.paths,
+                        item_id,
+                        "display_only",
+                        Some(&message),
+                        frames.len(),
+                        0,
+                        if self.ocr_enabled {
+                            "failed"
+                        } else {
+                            "disabled"
+                        },
+                        if self.ocr_enabled {
+                            Some(&message)
+                        } else {
+                            None
+                        },
+                        0,
+                    )?;
+                    cerul_storage::mark_indexed(&self.paths, item_id)?;
+                    self.log_pipeline_event(
+                        item_id,
+                        "transcript_first_preserved_after_sqlite_rewrite_failure",
+                        json!({
+                            "error": message,
+                            "search_units": transcript_first.search_units,
+                            "search_vectors": transcript_first.search_vectors,
+                        }),
+                    );
+                    self.report_progress(
+                        item_id,
+                        "partial",
+                        1.0,
+                        "Transcript searchable; visual metadata unavailable",
+                    );
+                    self.cleanup_success_temp_artifacts(item_id, &audio_path)
+                        .await;
+                    return Ok(ProcessVideoSummary::from_write_summary(
+                        item_id,
+                        audio_path,
+                        frames_dir,
+                        frames.len(),
+                        0,
+                        transcript_first.write_summary.clone(),
+                    ));
+                }
+                return Err(error);
+            }
+        };
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
         self.report_progress(
@@ -2268,6 +2342,34 @@ mod tests {
         }
     }
 
+    struct FailingSqliteRewriteOcrEngine {
+        paths: AppPaths,
+    }
+
+    impl OcrEngine for FailingSqliteRewriteOcrEngine {
+        fn ocr_images(&self, paths: &[PathBuf]) -> anyhow::Result<Vec<OcrFrame>> {
+            let conn = sqlite::open(&self.paths)?;
+            conn.execute_batch(
+                r#"
+                CREATE TRIGGER IF NOT EXISTS fail_final_ocr_rewrite
+                BEFORE INSERT ON chunks
+                WHEN NEW.chunk_type = 'ocr'
+                BEGIN
+                    SELECT RAISE(FAIL, 'injected sqlite rewrite failure');
+                END;
+                "#,
+            )?;
+            Ok(paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| OcrFrame {
+                    path: path.clone(),
+                    text: format!("rewrite failure frame text {index}"),
+                })
+                .collect())
+        }
+    }
+
     #[derive(Default)]
     struct RecordingProgress {
         stages: Mutex<Vec<(String, f64)>>,
@@ -2660,6 +2762,96 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("OCR sidecar unavailable"));
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "red square introduction".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
+    }
+
+    #[tokio::test]
+    async fn process_video_item_keeps_transcript_searchable_when_sqlite_rewrite_fails_after_transcript_first(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let videos = temp.path().join("videos");
+        std::fs::create_dir(&videos).unwrap();
+        let video = videos.join("sample.mp4");
+        create_sample_video(&video).await.unwrap();
+        insert_source_and_item(&paths, &videos, &video);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(FakeTranscriber),
+            Arc::new(FakeEmbedder),
+        )
+        .with_ocr(Arc::new(FailingSqliteRewriteOcrEngine {
+            paths: paths.clone(),
+        }))
+        .with_frame_interval_sec(2)
+        .with_transcript_first_indexing(true);
+        let summary = pipeline.process_video_item("item-1").await.unwrap();
+
+        assert_eq!(summary.ocr_chunks, 0);
+        assert_eq!(summary.image_vectors, 0);
+        assert!(summary.text_vectors >= 1);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (
+            status,
+            metadata,
+            search_index_status,
+            search_index_unit_count,
+            search_index_vector_count,
+        ): (String, String, String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        let ocr_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'ocr'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert!(search_index_unit_count > 0);
+        assert!(search_index_vector_count > 0);
+        assert_eq!(ocr_count, 0);
+        assert_eq!(metadata["visual_index_status"], "display_only");
+        assert!(metadata["visual_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("injected sqlite rewrite failure"));
+        assert_eq!(metadata["ocr_index_status"], "failed");
+        assert!(metadata["ocr_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("injected sqlite rewrite failure"));
 
         let hits = cerul_search::search_fts_only(
             &paths,
