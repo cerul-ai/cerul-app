@@ -30,7 +30,7 @@ export function readRouteState(): RouteState {
   return {
     view: VIEW_IDS.includes(id as View) ? (id as View) : "home",
     itemId: params.get("itemId"),
-    chunkId: params.get("chunkId"),
+    playbackChunkId: params.get("playbackChunkId"),
     timestamp: params.get("t"),
     settingsSection: params.get("section"),
     oauthProvider: params.get("provider"),
@@ -44,7 +44,7 @@ export function routeHash(
   view: View,
   params: {
     itemId?: string | null;
-    chunkId?: string | null;
+    playbackChunkId?: string | null;
     timestamp?: string | null;
     settingsSection?: string | null;
   } = {},
@@ -53,8 +53,8 @@ export function routeHash(
   if (params.itemId) {
     search.set("itemId", params.itemId);
   }
-  if (params.chunkId) {
-    search.set("chunkId", params.chunkId);
+  if (params.playbackChunkId) {
+    search.set("playbackChunkId", params.playbackChunkId);
   }
   if (params.timestamp) {
     search.set("t", params.timestamp);

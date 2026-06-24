@@ -6,7 +6,7 @@ const localFallbackKey = "cerul.uiState.v1";
 export type PersistedRoute = {
   view: string;
   itemId?: string | null;
-  chunkId?: string | null;
+  playbackChunkId?: string | null;
   timestamp?: string | null;
   settingsSection?: string | null;
 };

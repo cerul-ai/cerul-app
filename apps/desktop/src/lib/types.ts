@@ -55,8 +55,10 @@ export type OnboardingYoutubeChannel = {
 };
 
 export type Result = {
-  id: string;
   itemId: string;
+  playbackChunkId: string;
+  startSec: number | null;
+  endSec: number | null;
   title: string;
   source: string;
   timestamp: string;
@@ -77,7 +79,9 @@ export type Result = {
 };
 
 export type ResultMatch = {
-  id: string;
+  playbackChunkId: string;
+  startSec: number | null;
+  endSec: number | null;
   timestamp: string;
   snippet: string;
   chunkType?: string;
@@ -183,7 +187,7 @@ export type AppData = {
 export type RouteState = {
   view: View;
   itemId: string | null;
-  chunkId: string | null;
+  playbackChunkId: string | null;
   timestamp: string | null;
   settingsSection: string | null;
   oauthProvider: string | null;

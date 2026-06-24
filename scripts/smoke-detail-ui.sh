@@ -43,7 +43,9 @@ rg -qF "onSeek={seekTo}" apps/desktop/src
 rg -qF "matchTime={startTimestamp}" apps/desktop/src
 rg -qF "line.time === matchTime" apps/desktop/src
 rg -qF "function copyTimestampLink" apps/desktop/src
-rg -qF "timestampDeepLink(item.id, currentTimestamp)" apps/desktop/src
+rg -qF "timestampDeepLink(item.id, currentTimestamp, mediaState.chunkId)" apps/desktop/src
+rg -qF "timestampDeepLink(item.id, currentTimestamp, playableChunkId)" apps/desktop/src
+rg -qF "playbackChunkId: result.playbackChunkId" apps/desktop/src
 rg -qF "cerul-app://item/" apps/desktop/src
 rg -qF "function canOpenOriginalSource(item: Item)" apps/desktop/src
 rg -qF "async function openOriginalSourceForItem(item: Item, t: TFunction)" apps/desktop/src
@@ -71,4 +73,4 @@ rg -qF ".detail-issue-actions" apps/desktop/src/styles/extensions.css
 rg -qF ".seg-btn.matched" apps/desktop/src/styles/app.css
 rg -qF ".transcript .seg-btn" apps/desktop/src/styles/extensions.css
 
-echo "detail_ui_smoke copy_timestamp_link=cerul_deep_link clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches playback_state=api_video_segment matched_marker=enabled item_delete_reindex=enabled"
+echo "detail_ui_smoke copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches playback_state=api_video_segment matched_marker=enabled item_delete_reindex=enabled"

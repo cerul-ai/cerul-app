@@ -199,7 +199,7 @@ export function ResultCard({
           aria-label={t("result.moreMatchesAriaLabel")}
         >
           {result.moreMatches.map((match) => (
-            <span className="result-more-match" key={match.id}>
+            <span className="result-more-match" key={match.playbackChunkId}>
               <strong>
                 <span className="mono">{match.timestamp}</span>
                 <em className={`chip confidence-dot ${match.confidence}`}>

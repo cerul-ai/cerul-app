@@ -11,8 +11,8 @@ import { loadPersistedUiState, persistFirstRunActive } from "./lib/uiStore";
 import { isBackendFallbackSnippet } from "./lib/results";
 
 type OverlayResult = {
-  id: string;
   itemId: string;
+  playbackChunkId: string;
   title: string;
   source: string;
   timestamp: string;
@@ -330,13 +330,16 @@ export function OverlayApp() {
     clearRetainedQueryTimer();
     await invokeHostCommand("open_main_result", {
       itemId: result.itemId,
+      playbackChunkId: result.playbackChunkId,
       timestamp: result.timestamp,
     }).catch(() => undefined);
     resetOverlayQuery();
   }
 
   async function copyResultLink(result: OverlayResult) {
-    const link = `cerul-app://item/${result.itemId}?t=${encodeURIComponent(result.timestamp)}`;
+    const params = new URLSearchParams({ t: result.timestamp });
+    params.set("playbackChunkId", result.playbackChunkId);
+    const link = `cerul-app://item/${encodeURIComponent(result.itemId)}?${params.toString()}`;
     await navigator.clipboard?.writeText(link).catch(() => undefined);
   }
 
@@ -513,12 +516,12 @@ export function OverlayApp() {
                     <div className="overlay-answer-cites">
                       {askAnswer.citations.map((citation) => (
                         <button
-                          key={citation.chunk_id}
+                          key={citation.playback_chunk_id}
                           type="button"
                           onClick={() =>
                             void openResult({
-                              id: citation.chunk_id,
                               itemId: citation.item_id,
+                              playbackChunkId: citation.playback_chunk_id,
                               title: citation.title,
                               source: citation.title,
                               timestamp: citation.timestamp,
@@ -613,7 +616,7 @@ export function OverlayApp() {
                   const isPodcast = modality.key === "podcast";
                   return (
                     <button
-                      key={result.id}
+                      key={result.playbackChunkId}
                       type="button"
                       role="option"
                       aria-selected={index === selectedIndex}
@@ -802,7 +805,7 @@ function mapOverlayResult(
   // New search results provide a representative frame chunk id. Keep the direct
   // frame_path branch for older local cores during development.
   const thumbnailUrl = record.frame_path
-    ? api.chunkFrameUrl(record.chunk_id)
+    ? api.chunkFrameUrl(record.playback_chunk_id)
     : record.nearest_frame_chunk_id
       ? api.chunkFrameUrl(record.nearest_frame_chunk_id)
       : item?.thumbnail_chunk_id
@@ -810,8 +813,8 @@ function mapOverlayResult(
         : null;
 
   return {
-    id: record.chunk_id,
     itemId: record.item_id,
+    playbackChunkId: record.playback_chunk_id,
     // Prefer the title the backend joins into the result; the locally-fetched
     // items list can be empty/stale and leave the row showing a raw id.
     title: cleanMediaTitle(

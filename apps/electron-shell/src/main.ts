@@ -992,9 +992,16 @@ function routeDeepLink(url?: string) {
   if (parsed.hostname === "item") {
     const itemId = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
     const timestamp = parsed.searchParams.get("t") ?? "";
-    openMainRoute(
-      `item-detail?itemId=${encodeURIComponent(itemId)}&t=${encodeURIComponent(timestamp)}`,
-    );
+    const playbackChunkId = parsed.searchParams.get("playbackChunkId") ?? "";
+    const routeParams = new URLSearchParams();
+    routeParams.set("itemId", itemId);
+    if (timestamp) {
+      routeParams.set("t", timestamp);
+    }
+    if (playbackChunkId) {
+      routeParams.set("playbackChunkId", playbackChunkId);
+    }
+    openMainRoute(`${playbackChunkId ? "result-detail" : "item-detail"}?${routeParams.toString()}`);
   } else if (parsed.hostname === "settings") {
     const section = parsed.searchParams.get("section");
     openMainRoute(section ? `settings?section=${encodeURIComponent(section)}` : "settings");
@@ -3298,11 +3305,19 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
       resizeOverlay(Number(args.height ?? 0));
       return null;
     case "open_main_result":
-      openMainRoute(
-        `result-detail?itemId=${encodeURIComponent(String(args.itemId ?? ""))}&t=${encodeURIComponent(
-          String(args.timestamp ?? ""),
-        )}`,
-      );
+      {
+        const routeParams = new URLSearchParams();
+        routeParams.set("itemId", String(args.itemId ?? ""));
+        const playbackChunkId = String(args.playbackChunkId ?? "");
+        const timestamp = String(args.timestamp ?? "");
+        if (playbackChunkId) {
+          routeParams.set("playbackChunkId", playbackChunkId);
+        }
+        if (timestamp) {
+          routeParams.set("t", timestamp);
+        }
+        openMainRoute(`result-detail?${routeParams.toString()}`);
+      }
       return null;
     case "open_main_settings":
       openMainRoute(
