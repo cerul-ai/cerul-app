@@ -1342,7 +1342,7 @@ impl VideoPipeline {
         }
 
         let qdrant_started = Instant::now();
-        if replace_existing_vectors {
+        let stale_vectors_deleted = if replace_existing_vectors {
             cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
                 &self.paths,
                 item_id,
@@ -1351,6 +1351,7 @@ impl VideoPipeline {
                 cerul_storage::SEARCH_INDEX_VERSION,
             )
             .await?;
+            0
         } else {
             cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
                 &self.paths,
@@ -1359,7 +1360,15 @@ impl VideoPipeline {
                 cerul_storage::SEARCH_INDEX_VERSION,
             )
             .await?;
-        }
+            cerul_storage::vectors::delete_stale_item_unified_embeddings_for_profile(
+                &self.paths,
+                item_id,
+                &records,
+                &profile,
+                cerul_storage::SEARCH_INDEX_VERSION,
+            )
+            .await?
+        };
         let qdrant_write_ms = qdrant_started.elapsed().as_millis() as u64;
         cerul_storage::set_item_search_index_status(
             &self.paths,
@@ -1382,6 +1391,7 @@ impl VideoPipeline {
                 "embedding_profile_id": profile.id,
                 "include_image_embeddings": include_image_embeddings,
                 "replace_existing_vectors": replace_existing_vectors,
+                "stale_vectors_deleted": stale_vectors_deleted,
             }),
         );
 
