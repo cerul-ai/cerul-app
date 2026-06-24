@@ -3179,6 +3179,7 @@ body.overlay-body {
     grid-template-columns: auto minmax(0, 1fr);
   }
   .source-error-fix,
+  .source-error-retry,
   .source-error-remove {
     grid-column: 2;
     justify-self: start;

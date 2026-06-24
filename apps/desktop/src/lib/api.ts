@@ -532,6 +532,13 @@ export async function retryFailedSourceItems(id: string) {
   );
 }
 
+export async function retrySourceDiscovery(id: string) {
+  return fetchJson<{ status: string; id: string }>(
+    `/sources/${encodeURIComponent(id)}/retry-discovery`,
+    { method: "POST" },
+  );
+}
+
 export async function removeSource(id: string) {
   return fetchJson<{ status: string; id: string }>(`/sources/${encodeURIComponent(id)}`, {
     method: "DELETE",

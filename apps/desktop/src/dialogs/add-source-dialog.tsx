@@ -33,6 +33,10 @@ import { SourcePreview } from "../components/source-preview";
 import { openDialog } from "../lib/desktopHost";
 import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 
+const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 20;
+const MIN_WEB_VIDEO_AUTHOR_MAX = 1;
+const MAX_WEB_VIDEO_AUTHOR_MAX = 200;
+
 const sourceTabs: {
   id: "folder" | "file" | "youtube" | "podcast";
   icon: LucideIcon;
@@ -43,11 +47,6 @@ const sourceTabs: {
   { id: "youtube", icon: Clapperboard, labelKey: "addSource.tab.youtube" },
   { id: "podcast", icon: Podcast, labelKey: "addSource.tab.podcast" },
 ];
-const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 50;
-
-function normalizeWebVideoMax(value: number) {
-  return Math.max(1, Math.floor(Number.isFinite(value) ? value : 1));
-}
 
 export function AddSourceDialog({
   onClose,
@@ -116,6 +115,10 @@ export function AddSourceDialog({
     setYoutubeUrl(value);
     setYoutubeValidation({ status: "idle", message: null });
     setWebVideoPreview(null);
+  }
+
+  function updateWebVideoMax(value: number) {
+    setWebVideoMax(clampWebVideoMax(value));
   }
 
   function updateRssUrl(value: string) {
@@ -195,7 +198,7 @@ export function AddSourceDialog({
         if (!preview) {
           return;
         }
-        const selectedAuthorMax = normalizeWebVideoMax(webVideoMax);
+        const selectedAuthorMax = clampWebVideoMax(webVideoMax);
         if (preview.sourceKind === "author") {
           const confirmed = await requestConfirm({
             title: webVideoKeepAll
@@ -304,7 +307,7 @@ export function AddSourceDialog({
               setUrl={updateYoutubeUrl}
               preview={webVideoPreview}
               maxVideos={webVideoMax}
-              setMaxVideos={setWebVideoMax}
+              setMaxVideos={updateWebVideoMax}
               keepAll={webVideoKeepAll}
               setKeepAll={setWebVideoKeepAll}
               validation={youtubeValidation}
@@ -357,6 +360,13 @@ export function AddSourceDialog({
       </section>
     </div>
   );
+}
+
+function clampWebVideoMax(value: number) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_WEB_VIDEO_AUTHOR_MAX;
+  }
+  return Math.min(MAX_WEB_VIDEO_AUTHOR_MAX, Math.max(MIN_WEB_VIDEO_AUTHOR_MAX, Math.round(value)));
 }
 
 function FolderTab({
@@ -457,7 +467,7 @@ function YoutubeTab({
     preview?.sourceKind === "author"
       ? keepAll
         ? t("addSource.youtube.validDetailAll")
-        : t("addSource.youtube.validDetailMax", { max: maxVideos })
+        : t("addSource.webVideo.validDetailAuthor", { max: maxVideos })
       : t("addSource.webVideo.validDetailSingle");
   return (
     <div className="col gap-3">
@@ -492,21 +502,29 @@ function YoutubeTab({
         validDetail={validDetail}
       />
       {preview?.sourceKind === "author" ? (
-        <div className="row gap-3" style={{ alignItems: "center", flexWrap: "wrap" }}>
-          <label className="field-label inline-field">
-            {t("addSource.youtube.maxLabel")}
+        <div className="field-label">
+          <div className="inline-field">
+            <span>{t("addSource.youtube.maxLabel")}</span>
             <input
               className="input"
               type="number"
-              min={1}
-              step={1}
+              min={MIN_WEB_VIDEO_AUTHOR_MAX}
+              max={MAX_WEB_VIDEO_AUTHOR_MAX}
               disabled={keepAll}
               value={maxVideos}
-              onChange={(event) =>
-                setMaxVideos(normalizeWebVideoMax(Number(event.currentTarget.value)))
-              }
+              onChange={(event) => setMaxVideos(Number(event.currentTarget.value))}
             />
-          </label>
+          </div>
+          <input
+            type="range"
+            min={MIN_WEB_VIDEO_AUTHOR_MAX}
+            max={MAX_WEB_VIDEO_AUTHOR_MAX}
+            step={1}
+            disabled={keepAll}
+            value={maxVideos}
+            onChange={(event) => setMaxVideos(Number(event.currentTarget.value))}
+            aria-label={t("addSource.youtube.maxLabel")}
+          />
           <label className="inline-toggle">
             <input
               type="checkbox"
@@ -515,6 +533,11 @@ function YoutubeTab({
             />
             <span>{t("addSource.youtube.keepAll")}</span>
           </label>
+          <p className="field-hint">
+            {keepAll
+              ? t("addSource.youtube.validDetailAll")
+              : t("addSource.webVideo.authorMaxHint", { max: maxVideos })}
+          </p>
         </div>
       ) : null}
       <p className="field-hint">{t("addSource.youtube.helper")}</p>

@@ -53,17 +53,40 @@ export function sourceStatus(status: string): SourceStatus {
   return "active";
 }
 
-export function sourceError(record: api.SourceRecord, status: SourceStatus) {
+export function sourceError(record: api.SourceRecord, status: SourceStatus, t: TFunction) {
   if (status !== "error") {
     return null;
   }
+  const errorCode = record.config.last_error_code;
   const errorValue = record.config.error ?? record.config.last_error;
+  if (
+    typeof errorCode === "string" &&
+    errorCode.trim() &&
+    errorCode !== "unknown_processing_error"
+  ) {
+    return t(`jobs.error.${errorCode}`, { capability: t("source.preview.webVideoTitle") });
+  }
   if (typeof errorValue === "string" && errorValue.trim()) {
     return sanitizeErrorText(errorValue);
   }
   // No backend detail: return null so the UI renders its localized fallback
   // (sourceRow.errorFallback) instead of a hardcoded English sentence.
   return null;
+}
+
+export function sourceFixSettingsSection(record: api.SourceRecord, status: SourceStatus) {
+  if (status !== "error") {
+    return null;
+  }
+  const section = record.config.last_error_settings_section;
+  if (typeof section !== "string") {
+    return null;
+  }
+  const normalized = section.trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized === "Sources" ? "Indexing" : normalized;
 }
 
 export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: TFunction): Source {
@@ -78,6 +101,7 @@ export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: T
     items: itemsForSource.length,
     failedItems: itemsForSource.filter((item) => item.status === "failed").length,
     lastPolled: formatUnixTime(record.last_poll_at, t),
-    error: sourceError(record, status),
+    error: sourceError(record, status, t),
+    fixSettingsSection: sourceFixSettingsSection(record, status),
   };
 }

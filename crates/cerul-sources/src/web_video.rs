@@ -4,23 +4,28 @@ use cerul_models::{ContentType, DiscoveredItem};
 use reqwest::Url;
 use serde_json::{json, Value};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::Command,
+    task::JoinSet,
 };
 
 use crate::{
     url_policy::validate_external_http_url,
-    youtube::{default_cache_dir, default_ytdlp_path, expand_path, safe_file_stem, YtdlpAccess},
+    youtube::{
+        default_cache_dir, default_ytdlp_path, expand_path, is_ytdlp_inaccessible_video_error,
+        merge_browser_cookie_fallback_stderr, safe_file_stem, ytdlp_access_candidate_limit,
+        YtdlpAccess, YTDLP_ACCESS_CHECK_CONCURRENCY,
+    },
     FetchProgress, SourcePlugin,
 };
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Video];
-const DEFAULT_AUTHOR_MAX_VIDEOS: usize = 50;
+const DEFAULT_AUTHOR_MAX_VIDEOS: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct WebVideo {
@@ -172,16 +177,91 @@ impl WebVideo {
         self.max_videos
     }
 
-    async fn discover_single(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
+    fn single_discovery_command(&self, include_browser_cookies: bool) -> Command {
         let mut command = Command::new(&self.ytdlp_path);
         command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
-        self.access.apply_to_command(&mut command);
+        self.access
+            .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
         command
             .arg("--")
             .arg(&self.classified.canonical_url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = self.run_ytdlp(&mut command, "single discovery").await?;
+        command
+    }
+
+    fn author_discovery_command(&self, include_browser_cookies: bool) -> Command {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--flat-playlist", "--dump-json"]);
+        self.access
+            .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
+        if let Some(candidate_limit) = ytdlp_access_candidate_limit(self.max_videos) {
+            command
+                .arg("--playlist-end")
+                .arg(candidate_limit.to_string());
+        }
+        command
+            .arg("--")
+            .arg(&self.classified.canonical_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    fn access_check_command(&self, fetch_url: &str, include_browser_cookies: bool) -> Command {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args(["--dump-single-json", "--skip-download", "--no-playlist"]);
+        self.access
+            .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
+        command
+            .arg("--")
+            .arg(fetch_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    fn fetch_command(
+        &self,
+        output_path: &Path,
+        fetch_url: &str,
+        include_browser_cookies: bool,
+    ) -> Command {
+        let mut command = Command::new(&self.ytdlp_path);
+        command.args([
+            "--no-playlist",
+            "-f",
+            "best[height<=720]/best",
+            "--merge-output-format",
+            "mp4",
+            "--newline",
+            "--progress-template",
+            "download:CERUL_PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s %(progress.eta)s %(progress.speed)s",
+        ]);
+        self.access
+            .apply_to_command_with_browser_cookies(&mut command, include_browser_cookies);
+        if let Some(duration_sec) = self.clip_duration_sec {
+            command
+                .arg("--download-sections")
+                .arg(format!("*0-{duration_sec}"))
+                .arg("--force-keyframes-at-cuts");
+        }
+        command
+            .arg("-o")
+            .arg(output_path)
+            .arg("--")
+            .arg(fetch_url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    async fn discover_single(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let output = self
+            .run_ytdlp_with_browser_cookie_fallback("single discovery", |include_browser_cookies| {
+                self.single_discovery_command(include_browser_cookies)
+            })
+            .await?;
         if !output.status.success() {
             anyhow::bail!(
                 "yt-dlp single discovery failed: {}",
@@ -195,18 +275,11 @@ impl WebVideo {
     }
 
     async fn discover_author(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
-        let mut command = Command::new(&self.ytdlp_path);
-        command.args(["--flat-playlist", "--dump-json"]);
-        self.access.apply_to_command(&mut command);
-        if let Some(max_videos) = self.max_videos {
-            command.arg("--playlist-end").arg(max_videos.to_string());
-        }
-        command
-            .arg("--")
-            .arg(&self.classified.canonical_url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = self.run_ytdlp(&mut command, "author discovery").await?;
+        let output = self
+            .run_ytdlp_with_browser_cookie_fallback("author discovery", |include_browser_cookies| {
+                self.author_discovery_command(include_browser_cookies)
+            })
+            .await?;
         if !output.status.success() {
             anyhow::bail!(
                 "yt-dlp author discovery failed: {}",
@@ -223,7 +296,112 @@ impl WebVideo {
                 serde_json::from_str(line).context("yt-dlp emitted invalid JSON")?;
             items.push(self.item_from_metadata(metadata, WebVideoSourceKind::Author)?);
         }
-        Ok(items)
+        self.filter_accessible_items(items).await
+    }
+
+    async fn is_accessible_video(&self, item: &DiscoveredItem) -> anyhow::Result<bool> {
+        let fetch_url = self.validated_fetch_url(item)?;
+        let output = self
+            .run_ytdlp_with_browser_cookie_fallback("access discovery", |include_browser_cookies| {
+                self.access_check_command(&fetch_url, include_browser_cookies)
+            })
+            .await?;
+
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if is_ytdlp_inaccessible_video_error(&stderr) {
+            tracing::info!(
+                platform = self.classified.platform.as_str(),
+                external_id = %item.external_id,
+                title = item.title.as_deref().unwrap_or(""),
+                error = %stderr,
+                "skipping inaccessible web video during source discovery"
+            );
+            return Ok(false);
+        }
+
+        anyhow::bail!("yt-dlp access check failed: {stderr}");
+    }
+
+    async fn filter_accessible_items(
+        &self,
+        candidates: Vec<DiscoveredItem>,
+    ) -> anyhow::Result<Vec<DiscoveredItem>> {
+        let target = self.max_videos;
+        let mut accessible =
+            Vec::with_capacity(target.unwrap_or(candidates.len()).min(candidates.len()));
+        let mut skipped = 0usize;
+        let mut in_flight = JoinSet::new();
+        let mut results = std::iter::repeat_with(|| None)
+            .take(candidates.len())
+            .collect::<Vec<Option<anyhow::Result<bool>>>>();
+        let mut next_to_spawn = 0usize;
+        let mut next_to_consider = 0usize;
+        let mut reached_target = false;
+
+        loop {
+            while in_flight.len() < YTDLP_ACCESS_CHECK_CONCURRENCY
+                && next_to_spawn < candidates.len()
+                && target
+                    .map(|target| accessible.len() < target)
+                    .unwrap_or(true)
+            {
+                let index = next_to_spawn;
+                let item = candidates[index].clone();
+                let source = self.clone();
+                in_flight.spawn(async move {
+                    let is_accessible = source.is_accessible_video(&item).await;
+                    (index, is_accessible)
+                });
+                next_to_spawn += 1;
+            }
+
+            while next_to_consider < results.len() {
+                let Some(result) = results[next_to_consider].take() else {
+                    break;
+                };
+                if result? {
+                    accessible.push(candidates[next_to_consider].clone());
+                } else {
+                    skipped += 1;
+                }
+
+                next_to_consider += 1;
+                if target
+                    .map(|target| accessible.len() >= target)
+                    .unwrap_or(false)
+                {
+                    in_flight.abort_all();
+                    reached_target = true;
+                    break;
+                }
+            }
+
+            if reached_target || in_flight.is_empty() {
+                break;
+            }
+
+            let (index, result) = in_flight
+                .join_next()
+                .await
+                .expect("in-flight access check exists")
+                .context("failed to join yt-dlp access check task")?;
+            results[index] = Some(result);
+        }
+
+        if skipped > 0 {
+            tracing::info!(
+                source_url = %self.classified.canonical_url,
+                accessible = accessible.len(),
+                skipped,
+                "filtered inaccessible web videos during source discovery"
+            );
+        }
+
+        Ok(accessible)
     }
 
     fn item_from_metadata(
@@ -325,6 +503,68 @@ impl WebVideo {
         ))
     }
 
+    async fn run_ytdlp_with_browser_cookie_fallback<F>(
+        &self,
+        phase: &str,
+        mut build_command: F,
+    ) -> anyhow::Result<std::process::Output>
+    where
+        F: FnMut(bool) -> Command,
+    {
+        let mut command = build_command(true);
+        let output = self.run_ytdlp(&mut command, phase).await?;
+        if !output.status.success()
+            && self
+                .access
+                .should_retry_without_browser_cookies(&output.stderr)
+        {
+            let mut fallback = build_command(false);
+            let mut fallback_output = self.run_ytdlp(&mut fallback, phase).await?;
+            if !fallback_output.status.success() {
+                fallback_output.stderr =
+                    merge_browser_cookie_fallback_stderr(&output.stderr, &fallback_output.stderr);
+            }
+            return Ok(fallback_output);
+        }
+        Ok(output)
+    }
+
+    async fn run_ytdlp_with_progress_and_browser_cookie_fallback<F>(
+        &self,
+        phase: &str,
+        progress: Option<FetchProgress>,
+        mut build_command: F,
+    ) -> anyhow::Result<YtdlpRunOutput>
+    where
+        F: FnMut(bool) -> Command,
+    {
+        let mut command = build_command(true);
+        let output = self
+            .run_ytdlp_with_progress(&mut command, phase, progress.clone())
+            .await?;
+        if !output.status.success()
+            && self
+                .access
+                .should_retry_without_browser_cookies(&output.stderr)
+        {
+            emit_progress(
+                &progress,
+                0.0,
+                "Browser cookies unavailable; retrying without cookies",
+            );
+            let mut fallback = build_command(false);
+            let mut fallback_output = self
+                .run_ytdlp_with_progress(&mut fallback, phase, progress)
+                .await?;
+            if !fallback_output.status.success() {
+                fallback_output.stderr =
+                    merge_browser_cookie_fallback_stderr(&output.stderr, &fallback_output.stderr);
+            }
+            return Ok(fallback_output);
+        }
+        Ok(output)
+    }
+
     async fn run_ytdlp(
         &self,
         command: &mut Command,
@@ -414,35 +654,15 @@ impl SourcePlugin for WebVideo {
         }
 
         emit_progress(&progress, 0.0, "Starting video download");
-        let mut command = Command::new(&self.ytdlp_path);
-        command.args([
-            "--no-playlist",
-            "-f",
-            "best[height<=720]/best",
-            "--merge-output-format",
-            "mp4",
-            "--newline",
-            "--progress-template",
-            "download:CERUL_PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s %(progress.eta)s %(progress.speed)s",
-        ]);
-        self.access.apply_to_command(&mut command);
-        if let Some(duration_sec) = self.clip_duration_sec {
-            command
-                .arg("--download-sections")
-                .arg(format!("*0-{duration_sec}"))
-                .arg("--force-keyframes-at-cuts");
-        }
         let fetch_url = self.validated_fetch_url(item)?;
-        command
-            .arg("-o")
-            .arg(&output_path)
-            .arg("--")
-            .arg(fetch_url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
         let output = self
-            .run_ytdlp_with_progress(&mut command, "fetch", progress.clone())
+            .run_ytdlp_with_progress_and_browser_cookie_fallback(
+                "fetch",
+                progress.clone(),
+                |include_browser_cookies| {
+                    self.fetch_command(&output_path, &fetch_url, include_browser_cookies)
+                },
+            )
             .await?;
         if !output.status.success() {
             anyhow::bail!(
@@ -689,9 +909,44 @@ mod tests {
             &script,
             r#"#!/bin/sh
 if printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
-  printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
-  printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+  case "$*" in
+    *"@order"*)
+      printf '{"id":"slowFirst","title":"Slow first YouTube video","duration":12}\n'
+      printf '{"id":"fastSecond","title":"Fast second YouTube video","duration":34}\n'
+      printf '{"id":"fastThird","title":"Fast third YouTube video","duration":56}\n'
+      ;;
+    *"@unneeded-error"*)
+      printf '{"id":"abc123","title":"First YouTube video","duration":12}\n'
+      printf '{"id":"forbidden","title":"Forbidden later video","duration":34}\n'
+      ;;
+    *youtube*)
+      printf '{"id":"abc123","title":"First YouTube video","duration":12}\n'
+      printf '{"id":"membersOnly","title":"Members-only video","duration":56}\n'
+      printf '{"id":"def456","title":"Second YouTube video","duration":34}\n'
+      ;;
+    *)
+      printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
+      printf '{"id":"BV1bb411c7mD","title":"Second Bili video","duration":34}\n'
+      ;;
+  esac
 elif printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
+  url=""
+  for arg in "$@"; do
+    url="$arg"
+  done
+  case "$url" in
+    *slowFirst*)
+      sleep 1
+      ;;
+    *membersOnly*)
+      printf 'ERROR: [youtube] membersOnly: This video is available to this channel'"'"'s members\n' >&2
+      exit 1
+      ;;
+    *forbidden*)
+      printf 'ERROR: [youtube] forbidden: HTTP Error 403: Forbidden\n' >&2
+      exit 1
+      ;;
+  esac
   printf '{"id":"abc123","title":"Single video","duration":45,"webpage_url":"https://www.youtube.com/watch?v=abc123"}\n'
 else
   out=""
@@ -707,6 +962,66 @@ else
   mkdir -p "$(dirname "$out")"
   printf 'video' > "$out"
 fi
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    fn fake_ytdlp_with_missing_browser_cookies(temp: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = temp.path().join("yt-dlp-cookie-fallback");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if printf '%s\n' "$@" | grep -q -- '--cookies-from-browser'; then
+  printf 'ERROR: could not find Chrome cookies database\n' >&2
+  exit 1
+fi
+if printf '%s\n' "$@" | grep -q -- '--dump-single-json'; then
+  printf '{"id":"abc123","title":"Single video","duration":45,"webpage_url":"https://www.youtube.com/watch?v=abc123"}\n'
+elif printf '%s\n' "$@" | grep -q -- '--flat-playlist'; then
+  printf '{"id":"BV1aa411c7mD","title":"First Bili video","duration":12}\n'
+else
+  out=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+    fi
+    shift
+  done
+  mkdir -p "$(dirname "$out")"
+  printf 'video' > "$out"
+fi
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    fn fake_ytdlp_with_failed_browser_cookie_fallback(temp: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = temp.path().join("yt-dlp-cookie-fallback-fails");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if printf '%s\n' "$@" | grep -q -- '--cookies-from-browser'; then
+  printf 'ERROR: could not find Chrome cookies database\n' >&2
+  exit 1
+fi
+printf 'ERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed\n' >&2
+exit 1
 "#,
         )
         .unwrap();
@@ -753,7 +1068,22 @@ fi
     }
 
     #[test]
-    fn zero_max_videos_means_unlimited_for_author() {
+    fn author_defaults_to_twenty_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://space.bilibili.com/12345",
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        assert_eq!(source.platform(), "bilibili");
+        assert_eq!(source.source_kind(), "author");
+        assert_eq!(source.max_videos(), Some(DEFAULT_AUTHOR_MAX_VIDEOS));
+    }
+
+    #[test]
+    fn explicit_zero_author_max_videos_remains_unlimited() {
         let temp = tempfile::tempdir().unwrap();
         let source = WebVideo::new(json!({
             "url": "https://space.bilibili.com/12345",
@@ -763,16 +1093,15 @@ fi
         }))
         .unwrap();
 
-        assert_eq!(source.platform(), "bilibili");
-        assert_eq!(source.source_kind(), "author");
         assert_eq!(source.max_videos(), None);
     }
 
     #[test]
-    fn author_defaults_to_latest_50_videos() {
+    fn explicit_author_max_videos_can_raise_limit() {
         let temp = tempfile::tempdir().unwrap();
         let source = WebVideo::new(json!({
             "url": "https://space.bilibili.com/12345",
+            "max_videos": 50,
             "ytdlp_path": fake_ytdlp(&temp),
             "cache_dir": temp.path().join("cache"),
         }))
@@ -802,6 +1131,43 @@ fi
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn falls_back_when_browser_cookies_are_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "cookies_from_browser": "chrome",
+            "ytdlp_path": fake_ytdlp_with_missing_browser_cookies(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "abc123");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keeps_browser_cookie_error_when_fallback_also_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.bilibili.com/video/BV1aa411c7mD",
+            "cookies_from_browser": "chrome",
+            "ytdlp_path": fake_ytdlp_with_failed_browser_cookie_fallback(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let error = source.discover().await.unwrap_err().to_string();
+
+        assert!(error.contains("could not find Chrome cookies database"));
+        assert!(error.contains("Retry without browser cookies also failed"));
+        assert!(error.contains("HTTP Error 412"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn discovers_author_videos() {
         let temp = tempfile::tempdir().unwrap();
         let source = WebVideo::new(json!({
@@ -820,6 +1186,70 @@ fi
             items[0].metadata["webpage_url"].as_str(),
             Some("https://www.bilibili.com/video/BV1aa411c7mD")
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_skips_inaccessible_videos() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@cerul",
+            "max_videos": 2,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc123", "def456"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_preserves_order_with_concurrent_access_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@order",
+            "max_videos": 2,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["slowFirst", "fastSecond"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn author_discovery_ignores_unneeded_later_probe_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = WebVideo::new(json!({
+            "url": "https://www.youtube.com/@unneeded-error",
+            "max_videos": 1,
+            "ytdlp_path": fake_ytdlp(&temp),
+            "cache_dir": temp.path().join("cache"),
+        }))
+        .unwrap();
+
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "abc123");
     }
 
     #[cfg(unix)]
