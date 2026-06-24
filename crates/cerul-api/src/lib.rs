@@ -2994,7 +2994,7 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "downloader_outdated",
             "视频下载器可能过旧，需要更新后重试。".to_string(),
-            "Indexing",
+            "About",
         )
     } else if downloader_error
         && (normalized.contains("http error 401")
@@ -4817,7 +4817,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(info.code, "downloader_outdated");
-        assert_eq!(info.settings_section, "Indexing");
+        assert_eq!(info.settings_section, "About");
     }
 
     #[test]

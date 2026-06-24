@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 rg -qF 'status: "error"' apps/desktop/src
-rg -qF "sourceError(record, status)" apps/desktop/src
+rg -qF "sourceError(record, status, t)" apps/desktop/src
 rg -qF "source.status === \"error\"" apps/desktop/src
 rg -qF "const [errorExpanded, setErrorExpanded]" apps/desktop/src
 rg -qF "source-error-toggle" apps/desktop/src
