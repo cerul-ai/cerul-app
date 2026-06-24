@@ -431,7 +431,7 @@ async fn sqlite_fts_search(
         JOIN retrieval_units u ON u.rowid = retrieval_units_fts.rowid
         JOIN items i ON i.id = u.item_id
         WHERE retrieval_units_fts MATCH ?1
-          AND i.status = 'indexed'
+          AND i.status IN ('indexed', 'processing')
           AND i.search_index_status = 'indexed'
           AND i.search_index_version = u.index_version
           AND u.index_version = ?2
@@ -477,7 +477,7 @@ async fn sqlite_literal_search(
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
         WHERE u.content_text IS NOT NULL
-          AND i.status = 'indexed'
+          AND i.status IN ('indexed', 'processing')
           AND i.search_index_status = 'indexed'
           AND i.search_index_version = u.index_version
           AND u.index_version = ?2
@@ -1079,7 +1079,7 @@ fn load_units_for_hits(
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
         WHERE u.id IN ({placeholders})
-          AND i.status = 'indexed'
+          AND i.status IN ('indexed', 'processing')
           AND i.search_index_status = 'indexed'
           AND i.search_index_version = u.index_version
         "#,
@@ -2277,6 +2277,59 @@ mod tests {
 
         assert!(hits.is_empty());
         assert!(hydrated.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sqlite_text_search_includes_transcript_first_processing_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "UPDATE items SET status = 'processing' WHERE id = 'item-1'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(2.0),
+            Some(8.0),
+            "transcript first phrase",
+            None,
+            &profile,
+        );
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
+
+        let hits = sqlite_text_search(&paths, "transcript first phrase", 5)
+            .await
+            .unwrap();
+        let hydrated = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 1.0,
+                similarity_score: Some(1.0),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            }],
+            "transcript",
+        )
+        .unwrap();
+
+        assert_eq!(
+            hits.first().map(|hit| hit.chunk_id.as_str()),
+            Some("item-1:unit:v2:000000")
+        );
+        assert_eq!(
+            hydrated.first().map(|hit| hit.chunk_id.as_str()),
+            Some("item-1:unit:v2:000000")
+        );
     }
 
     #[tokio::test]

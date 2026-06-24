@@ -161,6 +161,7 @@ export type Source = {
   failedItems: number;
   lastPolled: string;
   error: string | null;
+  fixSettingsSection: string | null;
 };
 
 export type DaemonStatus = {

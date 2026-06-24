@@ -64,6 +64,7 @@ design/exports/
 .artifacts/
 third-party/*
 !third-party/README.md
+!third-party/yt-dlp-manifest.json
 
 # Bundled, self-contained MLX Python runtime (built by scripts/build-mlx-runtime.sh)
 apps/electron-shell/mlx-runtime/

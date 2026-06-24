@@ -27,6 +27,7 @@ type SearchState = "idle" | "loading" | "ready" | "error";
 type OverlayMode = "search" | "ask";
 
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
+const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 50;
 const searchDebounceMs = 100;
 const overlayRetainQueryMs = 30_000;
 const defaultHotkeyLabel = "Alt Space";
@@ -359,7 +360,7 @@ export function OverlayApp() {
           url: classified.url,
           platform: classified.platform,
           source_kind: classified.sourceKind,
-          max_videos: classified.sourceKind === "author" ? 0 : 1,
+          max_videos: classified.sourceKind === "author" ? 20 : 1,
         });
       } else {
         await api.addSource("rss_podcast", { url, max_episodes: 50 });

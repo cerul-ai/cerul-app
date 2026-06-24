@@ -34,6 +34,7 @@ export function SourceRow({
   onResume,
   onRemove,
   onRetryFailed,
+  onRetryDiscovery,
   onFix,
   onViewItems,
 }: {
@@ -44,6 +45,7 @@ export function SourceRow({
   onResume: () => void;
   onRemove: () => void;
   onRetryFailed: () => void;
+  onRetryDiscovery: () => void;
   onFix: () => void;
   onViewItems: () => void;
 }) {
@@ -64,6 +66,9 @@ export function SourceRow({
             ? Clapperboard
             : Podcast;
   const canRunAction = actionsEnabled && !isPending;
+  const canRetryDiscovery =
+    source.status === "error" &&
+    (source.type === "youtube" || source.type === "web_video" || source.type === "podcast");
   const toggleLabel = source.status === "paused" ? t("sourceRow.resume") : t("sourceRow.pause");
   const statusLabel =
     source.status === "active"
@@ -145,6 +150,16 @@ export function SourceRow({
                 <span>{t("sourceRow.retryFailed")}</span>
               </button>
             ) : null}
+            {canRetryDiscovery ? (
+              <button
+                type="button"
+                disabled={!canRunAction}
+                onClick={() => runAndClose(onRetryDiscovery)}
+              >
+                <RefreshCcw size={15} />
+                <span>{t("sourceRow.retryDiscovery")}</span>
+              </button>
+            ) : null}
             <button
               className="danger"
               type="button"
@@ -168,6 +183,17 @@ export function SourceRow({
             <Wrench size={15} />
             <span>{t("sourceRow.fix")}</span>
           </button>
+          {canRetryDiscovery ? (
+            <button
+              type="button"
+              className="btn btn-secondary sm source-error-retry"
+              disabled={!canRunAction}
+              onClick={onRetryDiscovery}
+            >
+              <RefreshCcw size={15} />
+              <span>{t("sourceRow.retryDiscovery")}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn btn-danger sm source-error-remove"
