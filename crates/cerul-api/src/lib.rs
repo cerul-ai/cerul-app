@@ -352,6 +352,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/sources/:id/pause", post(pause_source))
         .route("/sources/:id/resume", post(resume_source))
         .route("/sources/:id/retry-failed", post(retry_failed_source_items))
+        .route("/sources/:id/retry-discovery", post(retry_source_discovery))
         .route("/moments", get(list_moments).post(create_moment))
         .route("/moments/:id", delete(remove_moment))
         .route("/entities", get(list_entities))
@@ -1629,7 +1630,7 @@ fn source_config_with_web_access_settings(
     let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
         .ok()
         .flatten()
-        .unwrap_or_else(|| "off".to_string())
+        .unwrap_or_else(|| "browser".to_string())
         .trim()
         .to_ascii_lowercase();
     match mode.as_str() {
@@ -1715,14 +1716,14 @@ fn mark_source_discovery_error(
     error: &str,
 ) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
-    let config = conn
+    let row = conn
         .query_row(
-            "SELECT config FROM sources WHERE id = ?1",
+            "SELECT type, config FROM sources WHERE id = ?1",
             [source_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
-    let Some(config) = config else {
+    let Some((source_type, config)) = row else {
         return Ok(());
     };
     let mut config = parse_json(&config);
@@ -1730,7 +1731,20 @@ fn mark_source_discovery_error(
         config = json!({});
     }
     if let Some(config) = config.as_object_mut() {
+        if matches!(source_type.as_str(), "youtube" | "web_video") {
+            if let Some(info) = classify_job_error("index_video", error) {
+                config.insert("last_error_code".to_string(), Value::String(info.code));
+                config.insert(
+                    "last_error_settings_section".to_string(),
+                    Value::String(info.settings_section),
+                );
+            }
+        }
         config.insert("last_error".to_string(), Value::String(error.to_string()));
+        config.insert(
+            "last_error_detail".to_string(),
+            Value::String(error.to_string()),
+        );
     }
     conn.execute(
         "UPDATE sources SET status = 'error', config = ?2 WHERE id = ?1",
@@ -1843,6 +1857,15 @@ async fn retry_failed_source_items(
         "items": failed_items.len(),
         "queued_jobs": queued_jobs
     })))
+}
+
+async fn retry_source_discovery(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    queue_source_discovery_retry(&state.paths, &id)?;
+    spawn_source_discovery(state.paths.clone(), id.clone());
+    Ok(Json(json!({ "status": "syncing", "id": id })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2922,12 +2945,20 @@ fn weekly_review_for_paths(paths: &AppPaths) -> anyhow::Result<WeeklyReviewRespo
 fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
     let normalized = message.to_ascii_lowercase();
     let capability = capability_for_job_type(job_type).to_string();
+    let downloader_error = is_downloader_error(&normalized);
     let (code, friendly, settings_section) = if normalized.contains("sign in to confirm")
         && (normalized.contains("not a bot") || normalized.contains("cookies"))
     {
         (
             "browser_cookies_required",
             "该视频平台要求登录验证。连接浏览器登录状态后重试失败视频。".to_string(),
+            "Indexing",
+        )
+    } else if downloader_error && is_browser_cookie_load_error_message(&normalized) {
+        (
+            "browser_cookies_unavailable",
+            "无法读取所选浏览器的 Cookie。请选择已安装且可访问的浏览器，或改用 cookies.txt 后重试。"
+                .to_string(),
             "Indexing",
         )
     } else if normalized.contains("members-only")
@@ -2937,6 +2968,60 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         (
             "members_only",
             "这是会员专享视频。只有连接的浏览器账号具备会员权限时才能下载。".to_string(),
+            "Indexing",
+        )
+    } else if downloader_error
+        && (normalized.contains("captcha")
+            || normalized.contains("geetest")
+            || normalized.contains("risk control")
+            || normalized.contains("risk-control")
+            || normalized.contains("http error 412")
+            || normalized.contains("412: precondition failed")
+            || normalized.contains("precondition failed")
+            || normalized.contains("风控")
+            || normalized.contains("验证码")
+            || normalized.contains("v_voucher")
+            || normalized.contains("verification required")
+            || normalized.contains("verify you are human"))
+    {
+        (
+            "platform_verification_required",
+            "平台触发了风控或验证码。使用浏览器登录态后稍后重试。".to_string(),
+            "Indexing",
+        )
+    } else if downloader_error
+        && (normalized.contains("http error 429")
+            || normalized.contains("429: too many requests")
+            || normalized.contains("too many requests")
+            || normalized.contains("rate limit")
+            || normalized.contains("rate-limit")
+            || normalized.contains("限流"))
+    {
+        (
+            "rate_limited",
+            "平台暂时限流下载请求。稍后重试，或减少作者主页导入数量。".to_string(),
+            "Indexing",
+        )
+    } else if normalized.contains("yt-dlp")
+        && (normalized.contains("update")
+            || normalized.contains("out of date")
+            || normalized.contains("outdated")
+            || normalized.contains("please update"))
+    {
+        (
+            "downloader_outdated",
+            "视频下载器可能过旧，需要更新后重试。".to_string(),
+            "About",
+        )
+    } else if downloader_error
+        && (normalized.contains("http error 401")
+            || normalized.contains("401: unauthorized")
+            || normalized.contains("unauthorized")
+            || normalized.contains("401"))
+    {
+        (
+            "download_forbidden",
+            "平台拒绝下载请求。连接浏览器登录状态，稍后再重试失败视频。".to_string(),
             "Indexing",
         )
     } else if normalized.contains("http error 403") || normalized.contains("403: forbidden") {
@@ -2959,11 +3044,12 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "下载器缺少 YouTube 需要的 JavaScript 运行时，部分视频可能无法下载。".to_string(),
             "Indexing",
         )
-    } else if normalized.contains("api key")
-        || normalized.contains("missing key")
-        || normalized.contains("no key")
-        || normalized.contains("unauthorized")
-        || normalized.contains("401")
+    } else if !downloader_error
+        && (normalized.contains("api key")
+            || normalized.contains("missing key")
+            || normalized.contains("no key")
+            || normalized.contains("unauthorized")
+            || normalized.contains("401"))
     {
         (
             "missing_api_key",
@@ -3013,6 +3099,37 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
         settings_section: settings_section.to_string(),
         message: friendly,
     })
+}
+
+fn is_browser_cookie_load_error_message(normalized: &str) -> bool {
+    normalized.contains("browser cookie load failed")
+        || normalized.contains("cookie database")
+        || normalized.contains("cookies database")
+        || normalized.contains("failed to decrypt")
+        || normalized.contains("unsupported browser")
+        || normalized.contains("keyring")
+        || (normalized.contains("browser cookies")
+            && (normalized.contains("could not")
+                || normalized.contains("cannot")
+                || normalized.contains("can't")
+                || normalized.contains("failed")
+                || normalized.contains("permission denied")
+                || normalized.contains("no such file")
+                || normalized.contains("unable")))
+        || (normalized.contains("cookies from browser")
+            && (normalized.contains("could not")
+                || normalized.contains("cannot")
+                || normalized.contains("can't")
+                || normalized.contains("failed")
+                || normalized.contains("permission denied")
+                || normalized.contains("no such file")
+                || normalized.contains("unable")))
+}
+
+fn is_downloader_error(normalized: &str) -> bool {
+    normalized.contains("yt-dlp")
+        || normalized.contains("[bilibili]")
+        || normalized.contains("[youtube]")
 }
 
 fn capability_for_job_type(job_type: &str) -> &'static str {
@@ -3743,6 +3860,37 @@ fn set_source_status(paths: &AppPaths, id: &str, status: &str) -> anyhow::Result
     let conn = cerul_storage::sqlite::open(paths)?;
     let updated = conn.execute("UPDATE sources SET status = ?1 WHERE id = ?2", (status, id))?;
     anyhow::ensure!(updated == 1, "source not found: {id}");
+    Ok(())
+}
+
+fn queue_source_discovery_retry(paths: &AppPaths, id: &str) -> anyhow::Result<()> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let row = conn
+        .query_row(
+            "SELECT type, config FROM sources WHERE id = ?1",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((source_type, config)) = row else {
+        anyhow::bail!("source not found: {id}");
+    };
+    anyhow::ensure!(
+        should_discover_source_async(&source_type),
+        "source type does not support discovery retry: {source_type}"
+    );
+
+    let mut config = parse_json(&config);
+    if let Some(object) = config.as_object_mut() {
+        object.remove("last_error");
+        object.remove("last_error_detail");
+        object.remove("last_error_code");
+        object.remove("last_error_settings_section");
+    }
+    conn.execute(
+        "UPDATE sources SET status = 'syncing', config = ?2 WHERE id = ?1",
+        (id, config.to_string()),
+    )?;
     Ok(())
 }
 
@@ -4566,6 +4714,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/sources/{id}/pause", &["post"]),
     ("/sources/{id}/resume", &["post"]),
     ("/sources/{id}/retry-failed", &["post"]),
+    ("/sources/{id}/retry-discovery", &["post"]),
     ("/moments", &["get", "post"]),
     ("/moments/{id}", &["delete"]),
     ("/entities", &["get"]),
@@ -4663,6 +4812,187 @@ mod tests {
     }
 
     #[test]
+    fn classify_browser_cookie_load_failure_before_platform_fallback() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp single discovery failed: Browser cookie load failed before retrying without browser cookies:\nERROR: could not find Chrome cookies database\n\nRetry without browser cookies also failed:\nERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "browser_cookies_unavailable");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_bilibili_risk_control_as_platform_verification() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: [BiliBili] BV1xx: risk control triggered; verification required with captcha.",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "platform_verification_required");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_bilibili_precondition_failed_as_platform_verification() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: [BiliBili] BV1xx: Unable to download JSON metadata: HTTP Error 412: Precondition Failed",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "platform_verification_required");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_downloader_unauthorized_as_download_forbidden() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp author discovery failed: ERROR: [BiliBili] BV1xx: HTTP Error 401: Unauthorized",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "download_forbidden");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_provider_unauthorized_as_missing_api_key() {
+        let info = classify_job_error(
+            "index_video",
+            "embedding provider returned HTTP Error 401: Unauthorized; missing API key",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "missing_api_key");
+        assert_eq!(info.settings_section, "Models");
+    }
+
+    #[test]
+    fn classify_rate_limit_as_rate_limited() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: HTTP Error 429: Too Many Requests",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "rate_limited");
+        assert_eq!(info.settings_section, "Indexing");
+    }
+
+    #[test]
+    fn classify_provider_rate_limit_does_not_use_downloader_guidance() {
+        let info = classify_job_error(
+            "index_video",
+            "embedding provider returned HTTP Error 429: Too Many Requests",
+        )
+        .unwrap();
+
+        assert_ne!(info.code, "rate_limited");
+    }
+
+    #[test]
+    fn classify_ytdlp_update_error_as_downloader_outdated() {
+        let info = classify_job_error(
+            "index_video",
+            "yt-dlp fetch failed: ERROR: This extractor is out of date; please update yt-dlp.",
+        )
+        .unwrap();
+
+        assert_eq!(info.code, "downloader_outdated");
+        assert_eq!(info.settings_section, "About");
+    }
+
+    #[test]
+    fn source_config_with_web_access_settings_defaults_to_browser_cookies() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let config = source_config_with_web_access_settings(
+            &paths,
+            "web_video",
+            json!({ "url": "https://www.bilibili.com/video/BV1abc123456" }),
+        );
+
+        assert_eq!(config["cookies_from_browser"].as_str(), Some("chrome"));
+    }
+
+    #[test]
+    fn source_discovery_error_stores_friendly_message_and_raw_detail() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'web_video', '{}', 'syncing')",
+            [],
+        )
+        .unwrap();
+
+        mark_source_discovery_error(
+            &paths,
+            "source-1",
+            "yt-dlp author discovery failed: ERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed",
+        )
+        .unwrap();
+
+        let (status, raw_config): (String, String) = conn
+            .query_row(
+                "SELECT status, config FROM sources WHERE id = 'source-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let config: Value = serde_json::from_str(&raw_config).unwrap();
+
+        assert_eq!(status, "error");
+        assert_eq!(
+            config["last_error_code"].as_str(),
+            Some("platform_verification_required")
+        );
+        assert!(config["last_error"]
+            .as_str()
+            .is_some_and(|message| message.contains("HTTP Error 412")));
+        assert!(config["last_error_detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("HTTP Error 412")));
+    }
+
+    #[test]
+    fn rss_source_discovery_error_keeps_raw_feed_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'rss_podcast', '{}', 'syncing')",
+            [],
+        )
+        .unwrap();
+
+        mark_source_discovery_error(
+            &paths,
+            "source-1",
+            "RSS feed discovery failed: HTTP Error 401: Unauthorized",
+        )
+        .unwrap();
+
+        let raw_config: String = conn
+            .query_row(
+                "SELECT config FROM sources WHERE id = 'source-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let config: Value = serde_json::from_str(&raw_config).unwrap();
+
+        assert!(config.get("last_error_code").is_none());
+        assert!(config["last_error"]
+            .as_str()
+            .is_some_and(|message| message.contains("401")));
+    }
+
+    #[test]
     fn source_config_with_web_access_settings_injects_browser_cookie_setting() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -4685,6 +5015,50 @@ mod tests {
         );
 
         assert_eq!(config["cookies_from_browser"].as_str(), Some("safari"));
+    }
+
+    #[test]
+    fn queue_source_discovery_retry_marks_source_syncing_and_clears_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO sources (id, type, config, status)
+                VALUES (
+                    'source-1',
+                    'web_video',
+                    '{"url":"https://www.bilibili.com/video/BV1aa411c7mD","last_error":"old","last_error_detail":"old detail","last_error_code":"platform_verification_required","last_error_settings_section":"Indexing"}',
+                    'error'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        queue_source_discovery_retry(&paths, "source-1").unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let (status, raw_config): (String, String) = conn
+            .query_row(
+                "SELECT status, config FROM sources WHERE id = 'source-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let config = parse_json(&raw_config);
+
+        assert_eq!(status, "syncing");
+        assert_eq!(
+            config["url"].as_str(),
+            Some("https://www.bilibili.com/video/BV1aa411c7mD")
+        );
+        assert!(config.get("last_error").is_none());
+        assert!(config.get("last_error_detail").is_none());
+        assert!(config.get("last_error_code").is_none());
+        assert!(config.get("last_error_settings_section").is_none());
     }
 
     #[tokio::test]

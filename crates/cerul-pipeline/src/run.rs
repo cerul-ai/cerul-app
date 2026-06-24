@@ -1668,7 +1668,7 @@ fn apply_ytdlp_access_settings(
     }
 
     let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
-        .unwrap_or_else(|| "off".to_string())
+        .unwrap_or_else(|| "browser".to_string())
         .trim()
         .to_ascii_lowercase();
     match mode.as_str() {
@@ -1989,6 +1989,20 @@ mod tests {
             config["cookies_from_browser"].as_str(),
             Some("chrome:Default")
         );
+    }
+
+    #[test]
+    fn web_video_source_config_defaults_to_browser_cookies() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+
+        let config = source_config_with_app_cache(
+            &paths,
+            "web_video",
+            serde_json::json!({ "url": "https://space.bilibili.com/123456" }),
+        );
+
+        assert_eq!(config["cookies_from_browser"].as_str(), Some("chrome"));
     }
 
     #[test]

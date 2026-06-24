@@ -1,0 +1,45 @@
+name: Update yt-dlp
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ytdlp-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Refresh bundled yt-dlp manifest
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Update yt-dlp manifest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-ytdlp-release.mjs --update
+      - name: Install binary staging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Verify fetch script reads manifest
+        run: scripts/fetch-binaries.sh --target x86_64-unknown-linux-gnu --dry-run
+      - name: Open update pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: codex/update-ytdlp
+          delete-branch: true
+          title: Update bundled yt-dlp
+          commit-message: Update bundled yt-dlp
+          body: |
+            Updates the pinned yt-dlp release manifest and asset checksums.
+
+            The workflow summary contains the release-note risk scan. Review matches around Bilibili, YouTube, cookies, extractor, download, format, and runtime behavior before merging.

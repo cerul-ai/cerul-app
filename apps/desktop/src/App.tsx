@@ -192,7 +192,6 @@ import {
 import { coarseStepKey } from "./lib/jobs";
 import {
   mapSourceRecord,
-  sourceError,
   sourceName,
   sourceStatus,
   sourceType,
@@ -1816,7 +1815,12 @@ function AppWorkspace() {
               await api.retryFailedSourceItems(source.id);
               await refreshCoreData();
             }}
+            onRetrySourceDiscovery={async (source) => {
+              await api.retrySourceDiscovery(source.id);
+              await refreshCoreData();
+            }}
             onViewItems={() => navigate("library")}
+            onOpenSettingsFix={(section) => navigate("settings", { settingsSection: section })}
             requestConfirm={requestConfirm}
           />
         ) : null}
@@ -5573,7 +5577,7 @@ function IndexingSettings({
 }) {
   const t = useT();
   const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 4);
-  const webCookieMode = settingString(settings, "web_video_cookie_mode", "off");
+  const webCookieMode = settingString(settings, "web_video_cookie_mode", "browser");
   const webCookieBrowser = settingString(settings, "web_video_cookie_browser", "chrome");
   const webCookiesPath = settingString(settings, "web_video_cookies_path", "");
   // Track the value locally while dragging; persist once on release —
