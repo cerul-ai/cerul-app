@@ -36,6 +36,10 @@ function jobGroup(job: api.JobRecord): JobGroup {
   return "running";
 }
 
+function jobSortTime(job: api.JobRecord): number {
+  return isActiveJob(job) ? job.started_at ?? job.finished_at ?? 0 : job.finished_at ?? job.started_at ?? 0;
+}
+
 export function JobsSheet({
   jobs,
   items,
@@ -70,7 +74,7 @@ export function JobsSheet({
     if (activeDelta !== 0) {
       return activeDelta;
     }
-    return (b.started_at ?? b.finished_at ?? 0) - (a.started_at ?? a.finished_at ?? 0);
+    return jobSortTime(b) - jobSortTime(a);
   });
   const activeJobs = sortedJobs.filter(isActiveJob);
   const queuedJobs = activeJobs.filter((job) => job.status === "queued");
