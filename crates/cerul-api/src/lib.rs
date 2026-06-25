@@ -454,7 +454,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/ask", post(v1_ask))
         .route("/items", get(v1_list_items))
         .route("/items/:id", get(v1_get_item))
-        .route("/items/:id/chunks", get(v1_list_item_chunks));
+        .route("/items/:id/chunks", get(v1_list_item_chunks))
+        .route("/chunks/:id/frame", get(get_chunk_frame))
+        .route("/chunks/:id/video-segment", get(get_chunk_video_segment))
+        .route("/chunks/:id/video-clip", get(get_chunk_video_clip));
 
     Router::new()
         .nest("/internal", internal_routes)
@@ -949,7 +952,7 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             plan: None,
             credits_remaining: None,
         },
-        capabilities: vec!["status", "openapi", "search", "ask", "items"],
+        capabilities: vec!["status", "openapi", "search", "ask", "items", "chunks"],
     }))
 }
 
@@ -6280,6 +6283,9 @@ const V1_API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/items", &["get"]),
     ("/v1/items/{id}", &["get"]),
     ("/v1/items/{id}/chunks", &["get"]),
+    ("/v1/chunks/{id}/frame", &["get"]),
+    ("/v1/chunks/{id}/video-segment", &["get"]),
+    ("/v1/chunks/{id}/video-clip", &["get"]),
 ];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
@@ -6870,7 +6876,7 @@ mod tests {
         assert_eq!(status_json["account"]["signed_in"], false);
         assert_eq!(
             status_json["capabilities"],
-            json!(["status", "openapi", "search", "ask", "items"])
+            json!(["status", "openapi", "search", "ask", "items", "chunks"])
         );
 
         let openapi = app
@@ -6893,6 +6899,9 @@ mod tests {
         assert!(paths.contains_key("/v1/items"));
         assert!(paths.contains_key("/v1/items/{id}"));
         assert!(paths.contains_key("/v1/items/{id}/chunks"));
+        assert!(paths.contains_key("/v1/chunks/{id}/frame"));
+        assert!(paths.contains_key("/v1/chunks/{id}/video-segment"));
+        assert!(paths.contains_key("/v1/chunks/{id}/video-clip"));
         assert!(!paths.contains_key("/internal/health"));
         assert!(!paths.contains_key("/health"));
     }
@@ -9457,6 +9466,104 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn v1_chunk_binary_routes_resolve_agent_evidence_urls() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let image = temp.path().join("frame.PNG");
+        let video = temp.path().join("clip.mp4");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        std::fs::write(&video, b"0123456789abcdef").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', ?1, 10, 'indexed', '{}')
+                "#,
+                [video.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+                VALUES ('chunk-frame', 'item-1', 'keyframe', 2, 2, ?1, '{}')
+                "#,
+                [image.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+                VALUES ('chunk-video', 'item-1', 'transcript', 2, 5, 'hello', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let frame = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/chunk-frame/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(frame.status(), StatusCode::OK);
+        assert_eq!(
+            frame.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("image/png"))
+        );
+        let frame_body = to_bytes(frame.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&frame_body[..], b"png-bytes");
+
+        let segment = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/chunk-video/video-segment")
+                    .header(header::RANGE, "bytes=1-3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(segment.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            segment.headers().get(header::CONTENT_RANGE),
+            Some(&HeaderValue::from_static("bytes 1-3/16"))
+        );
+        let segment_body = to_bytes(segment.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&segment_body[..], b"123");
+
+        let missing_clip = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/missing/video-clip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_clip.status(), StatusCode::NOT_FOUND);
+        let missing_clip = response_json(missing_clip).await;
+        assert_eq!(missing_clip["error"], "video clip not found");
     }
 
     #[tokio::test]
