@@ -112,7 +112,7 @@ Evidence should include at least:
 - [x] 6. Add `/v1/status` and `/v1/openapi.json`.
 - [x] 7. Add `/v1/search` with agent-friendly request and response fields, including evidence URLs.
 - [x] 8. Add `/v1/ask` with `mode`, citations, evidence, and usage metadata.
-- [ ] 9. Add `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` agent responses.
+- [x] 9. Add `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` agent responses.
 - [ ] 10. Add `/v1/chunks/:id/frame`, `/v1/chunks/:id/video-segment`, and `/v1/chunks/:id/video-clip`.
 - [ ] 11. Add or update tests proving root routes are gone and product routes still work.
 - [ ] 12. Update README and API examples to use `/v1` and the configured port.
@@ -126,3 +126,4 @@ Evidence should include at least:
 - 2026-06-26: Added `/v1/status` and `/v1/openapi.json` with agent-facing status fields, v1-only OpenAPI paths, and route tests.
 - 2026-06-26: Added `/v1/search` with structured agent results, local clip/preview evidence URL fields, usage metadata, and unsupported cloud-target validation.
 - 2026-06-26: Added `/v1/ask` as extractive mode with shared v1 citation/evidence shape, local usage metadata, and mode validation.
+- 2026-06-26: Added `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` with stable item metadata, chunk context, pagination, local evidence locators, and privacy-preserving field selection.

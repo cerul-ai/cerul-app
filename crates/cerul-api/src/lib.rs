@@ -451,7 +451,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/status", get(v1_status))
         .route("/openapi.json", get(v1_openapi_json))
         .route("/search", post(v1_search))
-        .route("/ask", post(v1_ask));
+        .route("/ask", post(v1_ask))
+        .route("/items", get(v1_list_items))
+        .route("/items/:id", get(v1_get_item))
+        .route("/items/:id/chunks", get(v1_list_item_chunks));
 
     Router::new()
         .nest("/internal", internal_routes)
@@ -946,8 +949,27 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             plan: None,
             credits_remaining: None,
         },
-        capabilities: vec!["status", "openapi", "search", "ask"],
+        capabilities: vec!["status", "openapi", "search", "ask", "items"],
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct V1ListItemsQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    status: Option<String>,
+    source_id: Option<String>,
+    source_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct V1ItemChunksQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    from_sec: Option<f64>,
+    to_sec: Option<f64>,
+    #[serde(rename = "type")]
+    chunk_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -989,6 +1011,85 @@ struct V1AskResponse {
     citations: Vec<V1SearchResult>,
     warnings: Vec<String>,
     usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemsResponse {
+    request_id: String,
+    execution: V1Execution,
+    items: Vec<V1Item>,
+    page: V1Page,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemResponse {
+    request_id: String,
+    execution: V1Execution,
+    item: V1Item,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemChunksResponse {
+    request_id: String,
+    execution: V1Execution,
+    item: V1Item,
+    chunks: Vec<V1ItemChunk>,
+    page: V1Page,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Page {
+    limit: usize,
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Item {
+    id: String,
+    title: String,
+    content_type: String,
+    source_type: String,
+    source_url: Option<String>,
+    status: String,
+    duration_sec: Option<f64>,
+    indexed_at: Option<i64>,
+    chunk_count: usize,
+    thumbnail: Option<V1Locator>,
+    open_in_cerul: String,
+}
+
+#[derive(Debug)]
+struct V1ItemRow {
+    id: String,
+    title: String,
+    content_type: String,
+    external_id: Option<String>,
+    duration_sec: Option<f64>,
+    indexed_at: Option<i64>,
+    status: String,
+    metadata: Value,
+    source_type: String,
+    source_config: Value,
+    thumbnail_chunk_id: Option<String>,
+    chunk_count: usize,
+    has_raw_path: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemChunk {
+    id: String,
+    #[serde(rename = "type")]
+    chunk_type: String,
+    source: &'static str,
+    time: V1SearchTime,
+    text: V1ChunkText,
+    evidence: V1Evidence,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ChunkText {
+    content: Option<String>,
+    snippet: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1202,6 +1303,429 @@ async fn v1_ask(
             credits_used: 0,
         },
     }))
+}
+
+async fn v1_list_items(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(query): Query<V1ListItemsQuery>,
+) -> ApiResult<Json<V1ItemsResponse>> {
+    let limit = v1_page_limit(query.limit, 50, 100);
+    let offset = v1_cursor_offset(query.cursor.as_deref())?;
+    let fetch_limit = limit + 1;
+    let statuses = split_filter_values(query.status.as_deref());
+    let base_url = v1_base_url(&headers, &state.paths);
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let mut params: Vec<SqlValue> = Vec::new();
+    let mut sql = v1_item_select_sql();
+    sql.push_str(" WHERE i.status != 'deleting'");
+
+    if !statuses.is_empty() {
+        sql.push_str(" AND i.status IN (");
+        sql.push_str(
+            &std::iter::repeat_n("?", statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push(')');
+        params.extend(statuses.into_iter().map(SqlValue::from));
+    }
+    if let Some(source_id) = query.source_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND i.source_id = ?");
+        params.push(SqlValue::from(source_id));
+    }
+    if let Some(source_type) = query.source_type.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND s.type = ?");
+        params.push(SqlValue::from(source_type));
+    }
+    sql.push_str(
+        r#"
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, i.id ASC
+        LIMIT ? OFFSET ?
+        "#,
+    );
+    params.push(SqlValue::from(fetch_limit as i64));
+    params.push(SqlValue::from(offset as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(params.iter()),
+        v1_item_row_from_row,
+    )?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if rows.len() > limit {
+        rows.truncate(limit);
+        Some((offset + limit).to_string())
+    } else {
+        None
+    };
+    let items = rows
+        .iter()
+        .map(|item| v1_item_from_row(item, &base_url))
+        .collect::<Vec<_>>();
+
+    Ok(Json(V1ItemsResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        items,
+        page: V1Page { limit, next_cursor },
+    }))
+}
+
+async fn v1_get_item(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<V1ItemResponse>> {
+    let base_url = v1_base_url(&headers, &state.paths);
+    let item = v1_load_item(&state.paths, &id)?
+        .ok_or_else(|| ApiError::not_found(format!("item not found: {id}")))?;
+
+    Ok(Json(V1ItemResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        item: v1_item_from_row(&item, &base_url),
+    }))
+}
+
+async fn v1_list_item_chunks(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<V1ItemChunksQuery>,
+) -> ApiResult<Json<V1ItemChunksResponse>> {
+    let limit = v1_page_limit(query.limit, 100, 250);
+    let offset = v1_cursor_offset(query.cursor.as_deref())?;
+    let fetch_limit = limit + 1;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let item = v1_load_item(&state.paths, &id)?
+        .ok_or_else(|| ApiError::not_found(format!("item not found: {id}")))?;
+
+    if let Some(from_sec) = query.from_sec {
+        if !from_sec.is_finite() || from_sec < 0.0 {
+            return Err(ApiError::bad_request(
+                "from_sec must be a finite non-negative number",
+            ));
+        }
+    }
+    if let Some(to_sec) = query.to_sec {
+        if !to_sec.is_finite() || to_sec < 0.0 {
+            return Err(ApiError::bad_request(
+                "to_sec must be a finite non-negative number",
+            ));
+        }
+    }
+    if let (Some(from_sec), Some(to_sec)) = (query.from_sec, query.to_sec) {
+        if to_sec < from_sec {
+            return Err(ApiError::bad_request(
+                "to_sec must be greater than or equal to from_sec",
+            ));
+        }
+    }
+
+    let mut params: Vec<SqlValue> = vec![SqlValue::from(id.clone())];
+    let mut sql = String::from(
+        r#"
+        SELECT id, item_id, chunk_type, start_sec, end_sec, text, frame_path, metadata
+        FROM chunks
+        WHERE item_id = ?
+        "#,
+    );
+    if let Some(chunk_type) = query.chunk_type.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND chunk_type = ?");
+        params.push(SqlValue::from(chunk_type));
+    }
+    if let Some(from_sec) = query.from_sec {
+        sql.push_str(" AND COALESCE(end_sec, start_sec, 0) >= ?");
+        params.push(SqlValue::from(from_sec));
+    }
+    if let Some(to_sec) = query.to_sec {
+        sql.push_str(" AND COALESCE(start_sec, end_sec, 0) <= ?");
+        params.push(SqlValue::from(to_sec));
+    }
+    sql.push_str(
+        r#"
+        ORDER BY COALESCE(start_sec, 0), id ASC
+        LIMIT ? OFFSET ?
+        "#,
+    );
+    params.push(SqlValue::from(fetch_limit as i64));
+    params.push(SqlValue::from(offset as i64));
+
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), chunk_from_row)?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if rows.len() > limit {
+        rows.truncate(limit);
+        Some((offset + limit).to_string())
+    } else {
+        None
+    };
+    let chunks = rows
+        .iter()
+        .map(|chunk| v1_item_chunk(chunk, &item, &base_url))
+        .collect::<Vec<_>>();
+
+    Ok(Json(V1ItemChunksResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        item: v1_item_from_row(&item, &base_url),
+        chunks,
+        page: V1Page { limit, next_cursor },
+    }))
+}
+
+fn v1_page_limit(limit: Option<usize>, default: usize, max: usize) -> usize {
+    limit.unwrap_or(default).clamp(1, max)
+}
+
+fn v1_cursor_offset(cursor: Option<&str>) -> ApiResult<usize> {
+    let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(0);
+    };
+    cursor
+        .parse::<usize>()
+        .map_err(|_| ApiError::bad_request("cursor must be a non-negative integer offset"))
+}
+
+fn v1_load_item(paths: &AppPaths, id: &str) -> anyhow::Result<Option<V1ItemRow>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let sql = format!(
+        r#"
+        {}
+        WHERE i.id = ?1
+          AND i.status != 'deleting'
+        "#,
+        v1_item_select_sql()
+    );
+    conn.query_row(&sql, [id], v1_item_row_from_row)
+        .optional()
+        .map_err(Into::into)
+}
+
+fn v1_item_select_sql() -> String {
+    r#"
+        SELECT i.id, i.content_type, i.external_id, i.title,
+               COALESCE(i.duration_sec, (
+                   SELECT MAX(c2.end_sec)
+                   FROM chunks c2
+                   WHERE c2.item_id = i.id
+               )) AS duration_sec,
+               i.indexed_at, i.status, i.metadata,
+               s.type AS source_type, s.config AS source_config,
+               (
+                   SELECT c.id
+                   FROM chunks c
+                   WHERE c.item_id = i.id
+                     AND c.frame_path IS NOT NULL
+                   ORDER BY COALESCE(c.start_sec, 0), c.id
+                   LIMIT 1
+               ) AS thumbnail_chunk_id,
+               (
+                   SELECT COUNT(*)
+                   FROM chunks c
+                   WHERE c.item_id = i.id
+               ) AS chunk_count,
+               CASE WHEN i.raw_path IS NOT NULL AND TRIM(i.raw_path) <> '' THEN 1 ELSE 0 END
+        FROM items i
+        JOIN sources s ON s.id = i.source_id
+    "#
+    .to_string()
+}
+
+fn v1_item_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<V1ItemRow> {
+    let title = row
+        .get::<_, Option<String>>(3)?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Untitled media".to_string());
+    let metadata = row
+        .get::<_, Option<String>>(7)?
+        .as_deref()
+        .map(parse_json)
+        .unwrap_or_else(|| json!({}));
+    let source_config = row
+        .get::<_, Option<String>>(9)?
+        .as_deref()
+        .map(parse_json)
+        .unwrap_or_else(|| json!({}));
+    let chunk_count = row.get::<_, i64>(11)?.max(0) as usize;
+    let has_raw_path = row.get::<_, i64>(12)? == 1;
+
+    Ok(V1ItemRow {
+        id: row.get(0)?,
+        content_type: row.get(1)?,
+        external_id: row.get(2)?,
+        title,
+        duration_sec: row.get(4)?,
+        indexed_at: row.get(5)?,
+        status: row.get(6)?,
+        metadata,
+        source_type: row.get(8)?,
+        source_config,
+        thumbnail_chunk_id: row.get(10)?,
+        chunk_count,
+        has_raw_path,
+    })
+}
+
+fn v1_item_from_row(item: &V1ItemRow, base_url: &str) -> V1Item {
+    let thumbnail = item
+        .thumbnail_chunk_id
+        .as_deref()
+        .map(|chunk_id| V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/frame",
+                base_url,
+                encode_path_segment(chunk_id)
+            ),
+        });
+    V1Item {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        content_type: item.content_type.clone(),
+        source_type: item.source_type.clone(),
+        source_url: v1_item_source_url(item),
+        status: item.status.clone(),
+        duration_sec: item.duration_sec,
+        indexed_at: item.indexed_at,
+        chunk_count: item.chunk_count,
+        thumbnail,
+        open_in_cerul: v1_open_item_in_cerul_link(&item.id),
+    }
+}
+
+fn v1_item_chunk(chunk: &ChunkRecord, item: &V1ItemRow, base_url: &str) -> V1ItemChunk {
+    V1ItemChunk {
+        id: chunk.id.clone(),
+        chunk_type: v1_result_type(&chunk.chunk_type).to_string(),
+        source: "local_library",
+        time: V1SearchTime {
+            start_sec: chunk.start_sec.filter(|value| value.is_finite()),
+            end_sec: chunk.end_sec.filter(|value| value.is_finite()),
+            timestamp: chunk.start_sec.map(format_playback_timestamp),
+        },
+        text: V1ChunkText {
+            content: chunk.text.clone(),
+            snippet: chunk.text.as_deref().map(|text| trim_for_answer(text, 360)),
+        },
+        evidence: v1_chunk_evidence(
+            &chunk.id,
+            item,
+            chunk.start_sec,
+            chunk.frame_path.as_deref(),
+            base_url,
+        ),
+    }
+}
+
+fn v1_chunk_evidence(
+    chunk_id: &str,
+    item: &V1ItemRow,
+    start_sec: Option<f64>,
+    frame_path: Option<&str>,
+    base_url: &str,
+) -> V1Evidence {
+    let clip = if item.has_raw_path && item.content_type == "video" {
+        Some(V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/video-clip?before_sec=3&after_sec=5",
+                base_url,
+                encode_path_segment(chunk_id)
+            ),
+        })
+    } else {
+        None
+    };
+    let preview = frame_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|_| V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/frame",
+                base_url,
+                encode_path_segment(chunk_id)
+            ),
+        });
+    let evidence_kind = match (clip.is_some(), preview.is_some()) {
+        (true, _) => "video_clip",
+        (false, true) => "frame",
+        (false, false) => "chunk",
+    };
+
+    V1Evidence {
+        id: chunk_id.to_string(),
+        kind: evidence_kind,
+        clip,
+        preview,
+        open_in_cerul: v1_open_in_cerul_link(&item.id, chunk_id, start_sec),
+    }
+}
+
+fn v1_item_source_url(item: &V1ItemRow) -> Option<String> {
+    for key in [
+        "webpage_url",
+        "original_url",
+        "source_url",
+        "url",
+        "enclosure_url",
+        "feed_url",
+        "channel_url",
+    ] {
+        if let Some(url) = item
+            .metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(v1_http_url)
+        {
+            return Some(url);
+        }
+    }
+    if item.source_type == "youtube" {
+        if let Some(external_id) = item
+            .external_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(format!("https://www.youtube.com/watch?v={external_id}"));
+        }
+    }
+    for key in ["url", "feed_url", "channel_url"] {
+        if let Some(url) = item
+            .source_config
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(v1_http_url)
+        {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn v1_http_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
 }
 
 fn validate_v1_local_target(target: Option<&str>) -> ApiResult<()> {
@@ -1451,6 +1975,10 @@ fn v1_open_in_cerul_link(item_id: &str, chunk_id: &str, start_sec: Option<f64>) 
         link.push_str(&format_seconds_param(start_sec));
     }
     link
+}
+
+fn v1_open_item_in_cerul_link(item_id: &str) -> String {
+    format!("cerul://items/{}", encode_path_segment(item_id))
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -5749,6 +6277,9 @@ const V1_API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/openapi.json", &["get"]),
     ("/v1/search", &["post"]),
     ("/v1/ask", &["post"]),
+    ("/v1/items", &["get"]),
+    ("/v1/items/{id}", &["get"]),
+    ("/v1/items/{id}/chunks", &["get"]),
 ];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
@@ -6339,7 +6870,7 @@ mod tests {
         assert_eq!(status_json["account"]["signed_in"], false);
         assert_eq!(
             status_json["capabilities"],
-            json!(["status", "openapi", "search", "ask"])
+            json!(["status", "openapi", "search", "ask", "items"])
         );
 
         let openapi = app
@@ -6359,6 +6890,9 @@ mod tests {
         assert!(paths.contains_key("/v1/openapi.json"));
         assert!(paths.contains_key("/v1/search"));
         assert!(paths.contains_key("/v1/ask"));
+        assert!(paths.contains_key("/v1/items"));
+        assert!(paths.contains_key("/v1/items/{id}"));
+        assert!(paths.contains_key("/v1/items/{id}/chunks"));
         assert!(!paths.contains_key("/internal/health"));
         assert!(!paths.contains_key("/health"));
     }
@@ -6620,6 +7154,98 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only extractive mode"));
+    }
+
+    #[tokio::test]
+    async fn v1_items_returns_agent_friendly_item_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items?status=indexed&limit=1")
+                    .header(header::HOST, "127.0.0.1:25003")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["request_id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["page"], json!({"limit": 1, "next_cursor": null}));
+        let item = &body["items"][0];
+        assert_eq!(item["id"], "item-1");
+        assert_eq!(item["title"], "Scaling Talk");
+        assert_eq!(item["content_type"], "video");
+        assert_eq!(item["source_type"], "local");
+        assert_eq!(item["status"], "indexed");
+        assert_eq!(item["duration_sec"], 120.5);
+        assert_eq!(item["indexed_at"], 10);
+        assert_eq!(item["chunk_count"], 2);
+        assert_eq!(item["source_url"], Value::Null);
+        assert_eq!(
+            item["thumbnail"]["url"],
+            "http://127.0.0.1:25003/v1/chunks/item-1%3Akeyframe%3A000012/frame"
+        );
+        assert_eq!(item["open_in_cerul"], "cerul://items/item-1");
+        assert!(item.get("raw_path").is_none());
+        assert!(item.get("metadata").is_none());
+    }
+
+    #[tokio::test]
+    async fn v1_item_chunks_returns_agent_context_with_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=transcript&limit=5")
+                    .header(header::HOST, "127.0.0.1:25004")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["item"]["id"], "item-1");
+        assert_eq!(body["chunks"].as_array().unwrap().len(), 1);
+        let chunk = &body["chunks"][0];
+        assert_eq!(chunk["id"], "item-1:transcript:000000");
+        assert_eq!(chunk["type"], "transcript");
+        assert_eq!(chunk["source"], "local_library");
+        assert_eq!(chunk["time"]["start_sec"], 12.3);
+        assert_eq!(chunk["time"]["end_sec"], 18.0);
+        assert_eq!(chunk["time"]["timestamp"], "0:12");
+        assert_eq!(
+            chunk["text"]["content"],
+            "The talk says scaling laws keep holding across larger training runs."
+        );
+        assert_eq!(
+            chunk["evidence"]["clip"]["url"],
+            "http://127.0.0.1:25004/v1/chunks/item-1%3Atranscript%3A000000/video-clip?before_sec=3&after_sec=5"
+        );
+        assert_eq!(chunk["evidence"]["preview"], Value::Null);
+        assert_eq!(
+            chunk["evidence"]["open_in_cerul"],
+            "cerul://items/item-1?chunk=item-1%3Atranscript%3A000000&t=12.3"
+        );
+        assert_eq!(body["page"], json!({"limit": 5, "next_cursor": null}));
     }
 
     #[tokio::test]
