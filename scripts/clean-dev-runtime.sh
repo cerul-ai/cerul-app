@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-API_PORT="${CERUL_API_PORT:-7777}"
+API_PORT="${CERUL_API_PORT:-23785}"
 
 if [ "${CERUL_SKIP_DEV_RUNTIME_CLEANUP:-0}" = "1" ]; then
   exit 0
@@ -90,7 +90,7 @@ check_api_port() {
   lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >&2 || true
 
   if command -v curl >/dev/null 2>&1 &&
-    curl -fsS --max-time 1 "http://127.0.0.1:$API_PORT/health" >/dev/null 2>&1; then
+    curl -fsS --max-time 1 "http://127.0.0.1:$API_PORT/internal/health" >/dev/null 2>&1; then
     echo "Existing Cerul Core on port $API_PORT is healthy; Electron will reuse it." >&2
     return
   fi

@@ -115,7 +115,7 @@ Evidence should include at least:
 - [x] 9. Add `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` agent responses.
 - [x] 10. Add `/v1/chunks/:id/frame`, `/v1/chunks/:id/video-segment`, and `/v1/chunks/:id/video-clip`.
 - [x] 11. Add or update tests proving root routes are gone and product routes still work.
-- [ ] 12. Update README, API examples, and smoke scripts to use `/v1`, `/internal`, and the configured port.
+- [x] 12. Update README, API examples, and smoke scripts to use `/v1`, `/internal`, and the configured port.
 - [ ] 13. Push each completed item, open/update the PR, comment `@codex review`, and monitor review feedback for up to 30 minutes after each push.
 
 ## Completion Log
@@ -129,3 +129,4 @@ Evidence should include at least:
 - 2026-06-26: Added `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` with stable item metadata, chunk context, pagination, local evidence locators, and privacy-preserving field selection.
 - 2026-06-26: Added `/v1/chunks/:id/frame`, `/v1/chunks/:id/video-segment`, and `/v1/chunks/:id/video-clip` by exposing the existing local binary evidence handlers under the agent v1 namespace with route coverage.
 - 2026-06-26: Expanded route regression coverage so removed root API routes return 404 and representative desktop `/internal` product routes remain available.
+- 2026-06-26: Updated README examples and current smoke scripts to use `/v1`, `/internal`, default port `23785`, and configured-port helpers; added `v1_base_url` to local endpoint discovery metadata.

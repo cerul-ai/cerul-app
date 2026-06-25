@@ -61,7 +61,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ locate Electron resources/bin/cerul-core.exe"
   echo "+ copy packaged cerul-core.exe and sibling resources/third-party to a temporary install directory"
   echo "+ launch copied cerul-core.exe with CERUL_FFMPEG_PATH, CERUL_YTDLP_PATH, and CERUL_QDRANT_BIN"
-  echo "+ poll http://127.0.0.1:7777/health for status=ok"
+  echo "+ poll http://127.0.0.1:23785/internal/health for status=ok"
   emit_result planned
   exit 0
 fi
@@ -75,7 +75,7 @@ case "$(uname -s)" in
 esac
 
 TARGET_TRIPLE="${CERUL_TARGET_TRIPLE:-x86_64-pc-windows-msvc}"
-API_HEALTH_URL="${CERUL_API_HEALTH_URL:-http://127.0.0.1:7777/health}"
+API_HEALTH_URL="${CERUL_API_HEALTH_URL:-http://127.0.0.1:23785/internal/health}"
 CURL_BIN="${CURL_BIN:-$(command -v curl || true)}"
 
 if [ -z "$CURL_BIN" ]; then

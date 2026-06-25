@@ -690,6 +690,7 @@ fn write_api_endpoint_file(paths: &AppPaths, port: u16) -> anyhow::Result<()> {
     let base_url = format!("http://127.0.0.1:{port}");
     let payload = json!({
         "base_url": base_url,
+        "v1_base_url": format!("{base_url}/v1"),
         "internal_base_url": format!("{base_url}/internal"),
         "port": port,
         "version": env!("CARGO_PKG_VERSION"),
@@ -7837,6 +7838,7 @@ mod tests {
                 .unwrap();
         assert_eq!(endpoint["port"], 24001);
         assert_eq!(endpoint["base_url"], "http://127.0.0.1:24001");
+        assert_eq!(endpoint["v1_base_url"], "http://127.0.0.1:24001/v1");
         assert_eq!(
             endpoint["internal_base_url"],
             "http://127.0.0.1:24001/internal"

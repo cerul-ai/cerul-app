@@ -56,8 +56,9 @@ host_target_triple() {
 }
 
 TARGET_TRIPLE="${CERUL_TARGET_TRIPLE:-$(host_target_triple)}"
-API_BASE_URL="${CERUL_API_BASE_URL:-http://127.0.0.1:7777}"
-API_HEALTH_URL="${CERUL_API_HEALTH_URL:-$API_BASE_URL/health}"
+API_BASE_URL="${CERUL_API_BASE_URL:-http://127.0.0.1:23785}"
+INTERNAL_API_BASE_URL="$API_BASE_URL/internal"
+API_HEALTH_URL="${CERUL_API_HEALTH_URL:-$INTERNAL_API_BASE_URL/health}"
 CURL_BIN="${CURL_BIN:-/usr/bin/curl}"
 
 if command -v node >/dev/null 2>&1 && [ -f "$ROOT/apps/electron-shell/package.json" ]; then
@@ -109,7 +110,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ verify Contents/Resources/bin/cerul-core is executable"
   echo "+ launch installed Electron app with isolated HOME and stripped PATH"
   echo "+ poll $API_HEALTH_URL for installed runtime health"
-  echo "+ roundtrip settings and inference mode through $API_BASE_URL"
+  echo "+ roundtrip settings and inference mode through $INTERNAL_API_BASE_URL"
   echo "+ add temporary folder_video source and verify discovered item plus queued job"
   emit_result planned
   exit 0
@@ -254,7 +255,7 @@ api_request() {
   local method="$1"
   local path="$2"
   local body="${3:-}"
-  local url="$API_BASE_URL$path"
+  local url="$INTERNAL_API_BASE_URL$path"
 
   if [ "$method" = "GET" ]; then
     "$CURL_BIN" -fsS --max-time 5 "$url"

@@ -8,6 +8,8 @@ HOTKEY="${CERUL_HOTKEY_SMOKE_HOTKEY:-Alt+Space}"
 TIMEOUT="${CERUL_HOTKEY_SMOKE_TIMEOUT:-15}"
 MANUAL_TRIGGER="${CERUL_HOTKEY_SMOKE_MANUAL:-0}"
 DRY_RUN=0
+API_HEALTH_URL="${CERUL_API_HEALTH_URL:-http://127.0.0.1:23785/internal/health}"
+CURL_BIN="${CURL_BIN:-/usr/bin/curl}"
 
 usage() {
   cat <<'EOF'
@@ -133,7 +135,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "+ locate latest target/electron/*.dmg and copy Cerul.app"
   fi
   echo "+ launch copied Cerul.app with isolated HOME, stripped PATH, and CERUL_GLOBAL_HOTKEY=$HOTKEY"
-  echo "+ wait for http://127.0.0.1:7777/health"
+  echo "+ wait for $API_HEALTH_URL"
   if [ "$MANUAL_TRIGGER" -eq 1 ]; then
     echo "+ wait up to ${TIMEOUT}s for a physical $HOTKEY press"
   else
@@ -149,9 +151,6 @@ if [ "$(uname -s)" != "Darwin" ]; then
   echo "Installed hotkey smoke requires macOS." >&2
   exit 2
 fi
-
-API_HEALTH_URL="${CERUL_API_HEALTH_URL:-http://127.0.0.1:7777/health}"
-CURL_BIN="${CURL_BIN:-/usr/bin/curl}"
 
 if [ ! -x "$CURL_BIN" ]; then
   if command -v curl >/dev/null 2>&1; then

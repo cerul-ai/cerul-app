@@ -6,6 +6,8 @@ cd "$ROOT"
 
 source scripts/load-env.sh
 export GGML_NATIVE="${GGML_NATIVE:-OFF}"
+API_PORT="${CERUL_API_PORT:-23785}"
+export CERUL_API_PORT="$API_PORT"
 
 host_target() {
   case "$(uname -s)-$(uname -m)" in
@@ -62,15 +64,15 @@ if command -v osascript >/dev/null 2>&1; then
 fi
 
 for _ in {1..20}; do
-  if ! lsof -nP -iTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
+  if ! lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-if lsof -nP -iTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is still in use after asking Cerul to quit:"
-  lsof -nP -iTCP:7777 -sTCP:LISTEN
+if lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port $API_PORT is still in use after asking Cerul to quit:"
+  lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN
   echo "Quit the process above, then rerun ./run.sh."
   exit 1
 fi
