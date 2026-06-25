@@ -7994,7 +7994,7 @@ function AdvancedSettings({
 
   return (
     <>
-      <SettingsGroup title={t("settings.advanced.localApi.title")}>
+      <SettingsGroup title={t("settings.advanced.group.title")}>
         <SettingRow
           label={t("settings.advanced.binding.label")}
           description={t("settings.advanced.binding.description")}
@@ -8035,8 +8035,6 @@ function AdvancedSettings({
             }
           />
         ) : null}
-      </SettingsGroup>
-      <SettingsGroup title={t("settings.advanced.privacy.title")}>
         <SettingRow
           label={t("settings.advanced.telemetry.label")}
           description={t("settings.advanced.telemetry.description")}
@@ -8061,8 +8059,6 @@ function AdvancedSettings({
             </div>
           }
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("settings.advanced.modelDownload.title")}>
         <SettingRow
           label={t("settings.advanced.modelDownload.source.label")}
           description={t("settings.advanced.modelDownload.source.description")}
@@ -8081,8 +8077,6 @@ function AdvancedSettings({
             </select>
           }
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("settings.advanced.diagnostics.title")}>
         <SettingRow
           label={t("settings.advanced.logLevel.label")}
           control={
@@ -8672,18 +8666,22 @@ function KeyRecorder({
   const [recording, setRecording] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!recording) {
       return;
     }
+    function finish() {
+      setRecording(false);
+      setPreview(null);
+      setConflict(null);
+    }
     function onKey(event: globalThis.KeyboardEvent) {
       event.preventDefault();
       event.stopPropagation();
       if (event.key === "Escape") {
-        setRecording(false);
-        setPreview(null);
-        setConflict(null);
+        finish();
         return;
       }
       const accelerator = acceleratorFromEvent(event);
@@ -8693,34 +8691,45 @@ function KeyRecorder({
         if (event.ctrlKey) mods.push("Ctrl");
         if (event.altKey) mods.push("Alt");
         if (event.shiftKey) mods.push("Shift");
+        setConflict(null);
         setPreview(mods.length ? `${mods.join("+")}+…` : "…");
+        return;
+      }
+      // A bindable shortcut must include at least one modifier — a bare key
+      // would fire constantly. Keep recording and nudge the user.
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        setPreview(accelerator);
+        setConflict(t("settings.shortcuts.needsModifier"));
         return;
       }
       const owner = conflicts[accelerator];
       if (owner && accelerator !== value) {
-        setConflict(owner);
         setPreview(accelerator);
-        window.setTimeout(() => {
-          setRecording(false);
-          setPreview(null);
-          setConflict(null);
-        }, 1500);
+        setConflict(t("settings.shortcuts.conflict", { name: owner }));
+        window.setTimeout(finish, 1500);
         return;
       }
       onChange(accelerator);
-      setRecording(false);
-      setPreview(null);
-      setConflict(null);
+      finish();
+    }
+    function onPointerDown(event: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        finish();
+      }
     }
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording, conflicts, value, onChange]);
+    document.addEventListener("mousedown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onPointerDown, true);
+    };
+  }, [recording, conflicts, value, onChange, t]);
 
   const shown = preview ?? value;
   const caps = formatHotkeyLabel(shown).split(" ").filter(Boolean);
 
   return (
-    <div className="kbd-recorder-wrap">
+    <div className="kbd-recorder-wrap" ref={wrapRef}>
       <button
         type="button"
         className={`kbd-recorder${recording ? " is-recording" : ""}${conflict ? " is-conflict" : ""}`}
@@ -8753,9 +8762,7 @@ function KeyRecorder({
           {t("settings.shortcuts.reset")}
         </button>
       ) : null}
-      {conflict ? (
-        <span className="kbd-conflict">{t("settings.shortcuts.conflict", { name: conflict })}</span>
-      ) : null}
+      {conflict ? <span className="kbd-conflict">{conflict}</span> : null}
     </div>
   );
 }
