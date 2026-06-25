@@ -67,7 +67,7 @@ export function SourceRow({
             : Podcast;
   const canRunAction = actionsEnabled && !isPending;
   const canRetryDiscovery =
-    source.status === "error" &&
+    (source.status === "error" || source.status === "syncing") &&
     (source.type === "youtube" || source.type === "web_video" || source.type === "podcast");
   const toggleLabel = source.status === "paused" ? t("sourceRow.resume") : t("sourceRow.pause");
   const statusLabel =

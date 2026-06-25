@@ -4,6 +4,7 @@ pub mod logs;
 pub mod paths;
 pub mod providers;
 pub mod retrieval;
+pub mod settings;
 pub mod sqlite;
 pub mod usage;
 pub mod vectors;
@@ -24,6 +25,7 @@ pub use items::{
 };
 pub use logs::{append_jsonl_event, log_file_path};
 pub use paths::AppPaths;
+pub use settings::read_string_setting;
 pub use retrieval::{
     best_sub_unit_for_query, best_visual_sub_unit_for_query, clear_item_search_index,
     indexed_item_count, item_has_retrieval_units, item_retrieval_unit_count,

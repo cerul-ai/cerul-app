@@ -960,39 +960,52 @@ function AppWorkspace() {
       timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), delay);
     }
 
-    function scheduleOfflineRetry() {
+    function scheduleRetrySoon(force = false) {
       if (cancelled) {
         return;
       }
       clearScheduledCheck();
-      timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), automaticUpdateOfflineRetryMs);
+      timeoutId = window.setTimeout(
+        () => void runAutomaticUpdateCheck({ force }),
+        automaticUpdateOfflineRetryMs,
+      );
     }
 
-    async function runAutomaticUpdateCheck() {
+    async function runAutomaticUpdateCheck({ force = false }: { force?: boolean } = {}) {
       clearScheduledCheck();
       if (cancelled || checkInFlight) {
         return;
       }
       if (window.navigator.onLine === false) {
-        scheduleOfflineRetry();
+        scheduleRetrySoon(force);
         return;
       }
-      if (!automaticUpdateCheckIsDue()) {
+      if (!force && !automaticUpdateCheckIsDue()) {
         scheduleNextDueCheck();
         return;
       }
       checkInFlight = true;
+      let succeeded = false;
       try {
         const next = await runDesktopUpdaterCheck();
         if (!cancelled) {
           setUpdaterState(next);
         }
+        succeeded = true;
       } catch (error) {
         console.error("desktop updater automatic check failed", error);
       } finally {
         checkInFlight = false;
-        writeLastAutomaticUpdateCheckAt(Date.now());
-        scheduleNextDueCheck();
+        if (succeeded) {
+          // Only a check that actually reached the update server advances the
+          // throttle. A transient failure now retries soon instead of persisting
+          // a "checked" timestamp that used to strand users on an old build for
+          // the full interval whenever the update host briefly errored.
+          writeLastAutomaticUpdateCheckAt(Date.now());
+          scheduleNextDueCheck();
+        } else {
+          scheduleRetrySoon(force);
+        }
       }
     }
 
@@ -1008,6 +1021,21 @@ function AppWorkspace() {
       scheduleDueCheckAfter(randomDelay(automaticUpdateResumeDelayRangeMs));
     }
 
+    function scheduleStartupCheck() {
+      if (cancelled) {
+        return;
+      }
+      // Every cold launch checks once, after a short randomized delay so we don't
+      // race app startup or stampede the update host. The 6h throttle then governs
+      // only the background/resume cadence of a long-running session — reopening
+      // the app no longer silently skips the check.
+      clearScheduledCheck();
+      timeoutId = window.setTimeout(
+        () => void runAutomaticUpdateCheck({ force: true }),
+        randomDelay(automaticUpdateStartupDelayRangeMs),
+      );
+    }
+
     function handleVisibilityChange() {
       if (document.visibilityState === "visible") {
         scheduleResumeCheck();
@@ -1015,11 +1043,7 @@ function AppWorkspace() {
     }
 
     void getDesktopUpdaterState().then(setUpdaterState);
-    if (automaticUpdateCheckIsDue()) {
-      scheduleDueCheckAfter(randomDelay(automaticUpdateStartupDelayRangeMs));
-    } else {
-      scheduleNextDueCheck();
-    }
+    scheduleStartupCheck();
     wakeProbeId = window.setInterval(() => {
       const now = Date.now();
       if (now - lastWakeProbeAt > automaticUpdateWakeGapMs) {
@@ -5536,7 +5560,11 @@ function SettingsScreen({
           ) : null}
           {activeSection === "Usage" ? <UsageSettings /> : null}
           {activeSection === "Storage" ? (
-            <StorageSettings requestConfirm={requestConfirm} />
+            <StorageSettings
+              settings={settings}
+              onSettingsChange={saveSettings}
+              requestConfirm={requestConfirm}
+            />
           ) : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
@@ -7537,8 +7565,12 @@ function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
 }
 
 function StorageSettings({
+  settings,
+  onSettingsChange,
   requestConfirm,
 }: {
+  settings: api.SettingsMap;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -7553,6 +7585,11 @@ function StorageSettings({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const apparentTotalDiffers =
     usage !== null && usage.total_apparent_bytes !== usage.total_bytes;
+  // The download/media directory is a normal user setting; unset means downloads
+  // land under the app cache. Models, the DB and the index are never relocated.
+  const configuredDownloadDir =
+    typeof settings.media_dir === "string" ? settings.media_dir.trim() : "";
+  const effectiveDownloadDir = configuredDownloadDir || locations?.cache_dir || "";
 
   useEffect(() => {
     let cancelled = false;
@@ -7581,6 +7618,44 @@ function StorageSettings({
       setUsage(await api.storageUsage());
     } catch (error) {
       console.warn("failed to refresh Cerul storage usage", error);
+    }
+  }
+
+  async function changeDownloadDir() {
+    const selected = await openDialog({ multiple: false, directory: true }).catch(() => null);
+    if (typeof selected !== "string" || !selected.trim()) {
+      return;
+    }
+    setAction({ status: "running", message: null });
+    try {
+      await onSettingsChange({ media_dir: selected.trim() });
+      await refreshStorageUsage();
+      setAction({ status: "done", message: t("settings.storage.message.downloadDirChanged") });
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function resetDownloadDir() {
+    setAction({ status: "running", message: null });
+    try {
+      await onSettingsChange({ media_dir: "" });
+      setAction({ status: "done", message: t("settings.storage.message.downloadDirReset") });
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function revealDownloadDir() {
+    if (!effectiveDownloadDir) {
+      return;
+    }
+    setAction({ status: "running", message: null });
+    try {
+      await revealSourcePath(effectiveDownloadDir);
+      setAction({ status: "done", message: t("settings.storage.message.dataOpened") });
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -7653,6 +7728,54 @@ function StorageSettings({
             </div>
           }
         />
+        <SettingRow
+          label={t("settings.storage.downloadDir.label")}
+          control={
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-end",
+                gap: 6,
+                minWidth: 0,
+              }}
+            >
+              <code className="clamp1" style={{ maxWidth: 340 }}>
+                {effectiveDownloadDir || "~/Library/Application Support/Cerul/cache"}
+              </code>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                {configuredDownloadDir ? (
+                  <button
+                    className="btn btn-ghost sm"
+                    type="button"
+                    disabled={busy || !hasDesktopHost()}
+                    onClick={() => void resetDownloadDir()}
+                  >
+                    <span>{t("settings.storage.downloadDir.reset")}</span>
+                  </button>
+                ) : null}
+                <button
+                  className="btn btn-secondary sm"
+                  type="button"
+                  disabled={busy || !effectiveDownloadDir}
+                  onClick={() => void revealDownloadDir()}
+                >
+                  <Folder size={16} />
+                  <span>{t("settings.storage.dataDir.reveal")}</span>
+                </button>
+                <button
+                  className="btn btn-secondary sm"
+                  type="button"
+                  disabled={busy || !hasDesktopHost()}
+                  onClick={() => void changeDownloadDir()}
+                >
+                  <span>{t("settings.storage.downloadDir.change")}</span>
+                </button>
+              </div>
+            </div>
+          }
+        />
+        <p className="field-hint">{t("settings.storage.downloadDir.desc")}</p>
         <SettingRow
           label={t("settings.storage.cacheSize.label")}
           control={

@@ -265,6 +265,7 @@ app
     createMainWindow();
     createOverlayWindow();
     setupTray();
+    buildApplicationMenu();
     startStatusMonitor();
     registerGlobalHotkey(await initialGlobalHotkey(), { throwOnFailure: false });
     routeDeepLink(pendingDeepLink);
@@ -746,6 +747,8 @@ function setupTray() {
       { label: "Mini Window", click: () => toggleMenuBarWindow({ forceShow: true }) },
       { label: "Open Cerul", click: () => focusMainWindow() },
       { label: "Search Overlay", click: () => showOverlay() },
+      { type: "separator" },
+      { label: "Check for Updates…", click: () => void handleManualUpdateCheck() },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
     ]),
@@ -2833,6 +2836,57 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
     }
     console.error("electron-updater check failed; release-page fallback active", error);
   }
+}
+
+// Manual "Check for Updates…" entry points (tray + native app menu). Mirrors the
+// Settings → About button but surfaces feedback natively: an up-to-date result
+// shows a dialog (otherwise a silent check looks broken), while a found update
+// brings the window forward so the rail "Update" pill is visible.
+async function handleManualUpdateCheck() {
+  await runDesktopUpdateCheck();
+  if (latestUpdaterState.phase !== "idle") {
+    focusMainWindow();
+    return;
+  }
+  const zh = app.getLocale().toLowerCase().startsWith("zh");
+  void dialog.showMessageBox({
+    type: "info",
+    buttons: ["OK"],
+    message: zh ? "已是最新版本" : "You're up to date",
+    detail: zh
+      ? `Cerul ${app.getVersion()} 已经是最新版本。`
+      : `Cerul ${app.getVersion()} is the latest version.`,
+  });
+}
+
+function buildApplicationMenu() {
+  // Native menu integration is the macOS convention — "Check for Updates…" lives
+  // in the app menu. On Windows/Linux the tray entry covers manual checks, so we
+  // leave Electron's default menu untouched rather than rebuild a full menu bar.
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const template: Parameters<typeof Menu.buildFromTemplate>[0] = [
+    {
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { label: "Check for Updates…", click: () => void handleManualUpdateCheck() },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 async function startDesktopUpdateDownload() {

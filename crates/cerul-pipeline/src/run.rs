@@ -2055,14 +2055,31 @@ fn source_config_with_app_cache(
     };
     object.entry("cache_dir").or_insert_with(|| {
         serde_json::Value::String(
-            paths
-                .source_cache_dir(source_type)
+            source_download_dir(paths, source_type)
                 .to_string_lossy()
                 .into_owned(),
         )
     });
     apply_ytdlp_access_settings(paths, source_type, &mut object);
     serde_json::Value::Object(object)
+}
+
+// Resolve where a source's downloaded media is written. Defaults to the app
+// cache (`<data>/cache/sources/<type>`), but honors a user-chosen download
+// directory (Settings → Storage, persisted as the `media_dir` setting) so large
+// video files can live on an external disk. The setting is read per fetch, so a
+// change takes effect for the next download without a restart; the lookup is a
+// cached single-row query. Models, the database and the vector index are never
+// relocated by this.
+fn source_download_dir(paths: &AppPaths, source_type: &str) -> PathBuf {
+    match cerul_storage::read_string_setting(paths, "media_dir") {
+        Ok(Some(dir)) => Path::new(&dir).join("sources").join(source_type),
+        Ok(None) => paths.source_cache_dir(source_type),
+        Err(error) => {
+            tracing::warn!(%error, "failed to read media_dir setting; using default cache dir");
+            paths.source_cache_dir(source_type)
+        }
+    }
 }
 
 fn apply_ytdlp_access_settings(
@@ -2404,6 +2421,32 @@ mod tests {
 
             assert_eq!(config["cache_dir"].as_str(), Some(expected.as_str()));
         }
+    }
+
+    #[test]
+    fn remote_sources_honor_media_dir_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let media = temp.path().join("external-media");
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('media_dir', ?1, strftime('%s','now'))",
+            [serde_json::Value::String(media.to_string_lossy().into_owned()).to_string()],
+        )
+        .unwrap();
+
+        let config = source_config_with_app_cache(
+            &paths,
+            "web_video",
+            serde_json::json!({ "url": "u" }),
+        );
+        let expected = media
+            .join("sources")
+            .join("web_video")
+            .to_string_lossy()
+            .into_owned();
+
+        assert_eq!(config["cache_dir"].as_str(), Some(expected.as_str()));
     }
 
     #[test]

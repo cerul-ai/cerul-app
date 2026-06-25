@@ -487,6 +487,7 @@ pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Resu
     if let Err(error) = jobs::requeue_interrupted_jobs(&paths) {
         tracing::warn!(%error, "failed to requeue interrupted Cerul jobs");
     }
+    resume_interrupted_source_discovery(&paths);
     let _worker = jobs::spawn_default_job_worker(paths.clone());
     let _qdrant_shutdown = QdrantShutdownGuard;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1685,6 +1686,32 @@ fn spawn_source_discovery(paths: AppPaths, source_id: String) {
             tracing::warn!(source_id, error = %message, "source discovery failed");
         }
     });
+}
+
+// After a restart, source discovery (unlike index jobs) is not otherwise resumed,
+// so a source left mid-discovery would sit in `syncing` forever with no task
+// running. Re-spawn discovery for every still-syncing source at startup.
+fn resume_interrupted_source_discovery(paths: &AppPaths) {
+    let ids = match syncing_source_ids(paths) {
+        Ok(ids) => ids,
+        Err(error) => {
+            tracing::warn!(%error, "failed to list interrupted Cerul source discovery");
+            return;
+        }
+    };
+    for id in ids {
+        tracing::info!(source_id = %id, "resuming interrupted source discovery after restart");
+        spawn_source_discovery(paths.clone(), id);
+    }
+}
+
+fn syncing_source_ids(paths: &AppPaths) -> anyhow::Result<Vec<String>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare("SELECT id FROM sources WHERE status = 'syncing'")?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
 }
 
 async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> anyhow::Result<()> {
