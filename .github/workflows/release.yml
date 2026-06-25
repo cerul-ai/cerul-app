@@ -651,7 +651,12 @@ jobs:
             --arg desc "$desc" \
             '{username:"Cerul Releases", content:$content,
               embeds:[{title:$title, url:$url, description:$desc, color:4090781}]}')"
-          curl -fsS -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
+          if ! curl -fsS -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"; then
+            printf '%s\n' "$release_body" > notes/release-body-before-discord-marker.md
+            gh release edit "$TAG" --notes-file notes/release-body-before-discord-marker.md
+            echo "Discord announcement failed; removed recorded marker so a rerun can retry."
+            exit 1
+          fi
           echo "Announced ${TAG} on Discord."
       - name: Surface tweet draft for manual posting
         if: always()

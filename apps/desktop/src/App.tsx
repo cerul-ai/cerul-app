@@ -4621,7 +4621,7 @@ function LibraryScreen({
         light: true,
       });
       for (const item of page) {
-        if (item.status === "failed") {
+        if (itemStatus(item) === "failed") {
           ids.push(item.id);
         }
       }

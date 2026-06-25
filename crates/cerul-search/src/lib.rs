@@ -1419,19 +1419,19 @@ fn dedupe_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult>
     let mut per_item_counts = HashMap::<String, usize>::new();
 
     for result in results {
+        if let Some(existing) = kept
+            .iter_mut()
+            .find(|existing| is_near_duplicate(existing, &result))
+        {
+            merge_result_evidence(existing, result);
+            continue;
+        }
         if per_item_counts
             .get(&result.item_id)
             .copied()
             .unwrap_or_default()
             >= PER_ITEM_CAP
         {
-            continue;
-        }
-        if let Some(existing) = kept
-            .iter_mut()
-            .find(|existing| is_near_duplicate(existing, &result))
-        {
-            merge_result_evidence(existing, result);
             continue;
         }
         *per_item_counts.entry(result.item_id.clone()).or_default() += 1;
@@ -1576,6 +1576,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["chunk-a", "chunk-c", "chunk-d"]
         );
+    }
+
+    #[test]
+    fn dedupe_results_merges_duplicates_after_item_cap() {
+        let mut late_vector = result("chunk-d", "item-1", "moment", Some(18.0), 0.72);
+        late_vector.source_mask = SOURCE_TEXT_VECTOR;
+        late_vector.similarity_score = Some(0.72);
+        let results = vec![
+            result("chunk-a", "item-1", "transcript", Some(10.0), 0.04),
+            result("chunk-b", "item-1", "transcript", Some(90.0), 0.03),
+            result("chunk-c", "item-1", "transcript", Some(150.0), 0.02),
+            late_vector,
+        ];
+
+        let deduped = dedupe_results(results, 10);
+
+        assert_eq!(deduped.len(), 3);
+        assert_ne!(deduped[0].source_mask & SOURCE_TEXT_VECTOR, 0);
+        assert_eq!(deduped[0].similarity_score, Some(0.72));
     }
 
     #[test]
