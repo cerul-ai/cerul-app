@@ -50,16 +50,29 @@ This document is the source of truth for moving Cerul's local and remote agent-f
 - `GET /internal/entities`
 - `GET /internal/entities/:id`
 - `GET /internal/weekly-review`
-- `PATCH/DELETE /internal/items/:id`
+- `GET /internal/items`
+- `GET/PATCH/DELETE /internal/items/:id`
 - `GET/PATCH /internal/items/:id/playback`
 - `POST /internal/items/:id/reindex`
+- `GET /internal/items/:id/chunks`
 - `GET/POST /internal/items/:id/understanding`
 - `GET /internal/jobs`
 - `POST /internal/jobs/:id/cancel`
 - `GET /internal/usage/events`
 - `GET /internal/usage/summary`
 - `GET /internal/storage/usage`
-- `GET /internal/models/*`
+- `GET /internal/models/catalog`
+- `GET /internal/models/whisper`
+- `POST /internal/models/whisper/:id/download`
+- `GET /internal/models/whisper/auto-download-status`
+- `GET /internal/models/embed/status`
+- `POST /internal/models/embed/prepare`
+- `GET /internal/models/local/capability`
+- `POST /internal/models/local/prepare`
+- `GET /internal/models/local/prepare-status`
+- `POST /internal/models/local/prepare-cancel`
+- `POST /internal/models/local/delete`
+- `POST /internal/models/local/repair`
 - `GET/POST/PATCH/DELETE /internal/providers/*`
 - `GET/PATCH /internal/settings`
 
@@ -130,3 +143,4 @@ Evidence should include at least:
 - 2026-06-26: Added `/v1/chunks/:id/frame`, `/v1/chunks/:id/video-segment`, and `/v1/chunks/:id/video-clip` by exposing the existing local binary evidence handlers under the agent v1 namespace with route coverage.
 - 2026-06-26: Expanded route regression coverage so removed root API routes return 404 and representative desktop `/internal` product routes remain available.
 - 2026-06-26: Updated README examples and current smoke scripts to use `/v1`, `/internal`, default port `23785`, and configured-port helpers; added `v1_base_url` to local endpoint discovery metadata.
+- 2026-06-26: Addressed review feedback by documenting the desktop item read routes and model setup mutation routes preserved under `/internal`.
