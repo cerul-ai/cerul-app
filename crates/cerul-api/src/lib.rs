@@ -447,9 +447,13 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             get(providers::discover_provider_models),
         )
         .route("/settings", get(list_settings).patch(update_settings));
+    let v1_routes = Router::new()
+        .route("/status", get(v1_status))
+        .route("/openapi.json", get(v1_openapi_json));
 
     Router::new()
         .nest("/internal", internal_routes)
+        .nest("/v1", v1_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_remote_auth,
@@ -810,8 +814,16 @@ async fn metrics() -> Response {
 }
 
 async fn openapi_json() -> Json<Value> {
+    Json(openapi_document("Cerul Internal API", API_PATHS))
+}
+
+async fn v1_openapi_json() -> Json<Value> {
+    Json(openapi_document("Cerul Agent API", V1_API_PATHS))
+}
+
+fn openapi_document(title: &str, api_paths: &[(&str, &[&str])]) -> Value {
     let mut paths = serde_json::Map::new();
-    for (path, methods) in API_PATHS {
+    for (path, methods) in api_paths {
         let mut method_map = serde_json::Map::new();
         for method in *methods {
             method_map.insert(
@@ -826,13 +838,113 @@ async fn openapi_json() -> Json<Value> {
         paths.insert((*path).to_string(), Value::Object(method_map));
     }
 
-    Json(json!({
+    json!({
         "openapi": "3.1.0",
         "info": {
-            "title": "Cerul API",
+            "title": title,
             "version": env!("CARGO_PKG_VERSION")
         },
         "paths": paths
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct V1Execution {
+    target: &'static str,
+    account_id: Option<String>,
+    privacy: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusResponse {
+    request_id: String,
+    status: &'static str,
+    version: &'static str,
+    execution: V1Execution,
+    library: V1StatusLibrary,
+    search: V1StatusSearch,
+    indexing: V1StatusIndexing,
+    account: V1StatusAccount,
+    capabilities: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusLibrary {
+    total_items: u64,
+    indexed_items: u64,
+    processing_items: u64,
+    failed_items: u64,
+    chunk_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusSearch {
+    ready: bool,
+    retrieval_mode: &'static str,
+    text_ready: bool,
+    vector_ready: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusIndexing {
+    paused: bool,
+    active_jobs: u64,
+    queued_jobs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusAccount {
+    signed_in: bool,
+    plan: Option<String>,
+    credits_remaining: Option<i64>,
+}
+
+async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResponse>> {
+    let indexing = jobs::indexing_diagnostics(&state.paths)?;
+    let search = search_health_diagnostics(&state.paths).await?;
+    let text_ready = search.fts_row_count > 0 || search.retrieval_unit_fts_row_count > 0;
+    let vector_ready = search.qdrant_error.is_none() && search.qdrant_point_count.unwrap_or(0) > 0;
+    let retrieval_mode = match (text_ready, vector_ready) {
+        (true, true) => "hybrid",
+        (true, false) => "text",
+        (false, true) => "vector",
+        (false, false) => "empty",
+    };
+    let counts = &indexing.counts;
+
+    Ok(Json(V1StatusResponse {
+        request_id: new_id("req"),
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        library: V1StatusLibrary {
+            total_items: counts.total_items,
+            indexed_items: counts.indexed_items,
+            processing_items: counts.processing_items,
+            failed_items: counts.failed_items,
+            chunk_count: search.chunk_count,
+        },
+        search: V1StatusSearch {
+            ready: text_ready || vector_ready,
+            retrieval_mode,
+            text_ready,
+            vector_ready,
+        },
+        indexing: V1StatusIndexing {
+            paused: indexing.paused,
+            active_jobs: counts.running_jobs,
+            queued_jobs: counts.queued_jobs,
+        },
+        account: V1StatusAccount {
+            signed_in: false,
+            plan: None,
+            credits_remaining: None,
+        },
+        capabilities: vec!["status", "openapi"],
     }))
 }
 
@@ -5101,6 +5213,9 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/settings", &["get", "patch"]),
 ];
 
+const V1_API_PATHS: &[(&str, &[&str])] =
+    &[("/v1/status", &["get"]), ("/v1/openapi.json", &["get"])];
+
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
     "cloud_api_key",
     "cloud_connected",
@@ -5624,6 +5739,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn router_serves_v1_status_and_openapi() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, status, indexed_at, metadata
+                )
+                VALUES
+                    ('item-indexed', 'source-1', 'video', 'video-1', 'Indexed', 'indexed', 10, '{}'),
+                    ('item-processing', 'source-1', 'video', 'video-2', 'Processing', 'processing', NULL, '{}'),
+                    ('item-failed', 'source-1', 'video', 'video-3', 'Failed', 'failed', NULL, '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES ('job-queued', 'item-processing', 'index_video', 'queued', 0)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(&paths);
+        cerul_storage::set_item_search_index_status(&paths, "item-indexed", "indexed", None, 0, 0)
+            .unwrap();
+        let app = router_with_paths(paths);
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status_json = response_json(status).await;
+        assert!(status_json["request_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("req-"));
+        assert_eq!(status_json["status"], "ok");
+        assert_eq!(status_json["execution"]["target"], "local");
+        assert_eq!(status_json["execution"]["privacy"], "local_only");
+        assert_eq!(status_json["library"]["total_items"], 3);
+        assert_eq!(status_json["library"]["indexed_items"], 1);
+        assert_eq!(status_json["library"]["processing_items"], 1);
+        assert_eq!(status_json["library"]["failed_items"], 1);
+        assert_eq!(status_json["indexing"]["queued_jobs"], 1);
+        assert_eq!(status_json["account"]["signed_in"], false);
+        assert_eq!(status_json["capabilities"], json!(["status", "openapi"]));
+
+        let openapi = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(openapi.status(), StatusCode::OK);
+        let openapi_json = response_json(openapi).await;
+        let paths = openapi_json["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/v1/status"));
+        assert!(paths.contains_key("/v1/openapi.json"));
+        assert!(!paths.contains_key("/internal/health"));
+        assert!(!paths.contains_key("/health"));
+    }
+
+    #[tokio::test]
     async fn root_routes_are_not_retained_as_compatibility_aliases() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -5636,6 +5836,7 @@ mod tests {
             (Method::GET, "/items"),
             (Method::GET, "/chunks/chunk-1/frame"),
             (Method::GET, "/settings"),
+            (Method::GET, "/openapi.json"),
         ] {
             let response = app
                 .clone()
