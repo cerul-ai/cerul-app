@@ -8064,6 +8064,7 @@ function AdvancedSettings({
           description={t("settings.advanced.modelDownload.source.description")}
           control={
             <select
+              className="select"
               value={modelDownloadSource}
               disabled={disabled}
               onChange={(event) =>
@@ -8081,6 +8082,7 @@ function AdvancedSettings({
           label={t("settings.advanced.logLevel.label")}
           control={
             <select
+              className="select"
               value={logLevel}
               disabled={disabled}
               onChange={(event) => void onSettingsChange({ log_level: event.currentTarget.value })}
@@ -8442,7 +8444,7 @@ function AboutSettings() {
     <>
       <SettingsGroup>
         <div className="about-hero">
-          <span className="about-appicon" aria-hidden="true" />
+          <BrandMark className="about-appicon" />
           <div className="about-id">
             <strong>Cerul</strong>
             <span className="about-tagline">
