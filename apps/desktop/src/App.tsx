@@ -5926,17 +5926,45 @@ function IndexingSettings({
   // Optimistic value while clicking; coalesce rapid +/− into one PATCH (a
   // settings write also triggers a multi-request refresh).
   const jobsCommitTimer = useRef<number | undefined>(undefined);
+  const pendingJobsRef = useRef<number | null>(null);
+  const concurrentJobsRef = useRef(concurrentJobs);
+  const onSettingsChangeRef = useRef(onSettingsChange);
+  useEffect(() => {
+    concurrentJobsRef.current = concurrentJobs;
+  }, [concurrentJobs]);
+  useEffect(() => {
+    onSettingsChangeRef.current = onSettingsChange;
+  }, [onSettingsChange]);
+  const flushJobsDraft = (clearDraft: boolean) => {
+    const pending = pendingJobsRef.current;
+    if (pending === null) {
+      return;
+    }
+    window.clearTimeout(jobsCommitTimer.current);
+    jobsCommitTimer.current = undefined;
+    pendingJobsRef.current = null;
+    if (pending === concurrentJobsRef.current) {
+      if (clearDraft) {
+        setJobsDraft(null);
+      }
+      return;
+    }
+    void onSettingsChangeRef.current({ concurrent_jobs: pending }).finally(() => {
+      if (clearDraft) {
+        setJobsDraft(null);
+      }
+    });
+  };
   const setJobs = (next: number) => {
     const clamped = Math.min(maxConcurrentJobs, Math.max(1, next));
     setJobsDraft(clamped);
+    pendingJobsRef.current = clamped;
     window.clearTimeout(jobsCommitTimer.current);
     jobsCommitTimer.current = window.setTimeout(() => {
-      void onSettingsChange({ concurrent_jobs: clamped }).finally(() => {
-        setJobsDraft(null);
-      });
+      flushJobsDraft(true);
     }, 350);
   };
-  useEffect(() => () => window.clearTimeout(jobsCommitTimer.current), []);
+  useEffect(() => () => flushJobsDraft(false), []);
   const commitCookiesPath = () => {
     if (cookiesPathDraft !== null && cookiesPathDraft !== webCookiesPath) {
       void onSettingsChange({ web_video_cookies_path: cookiesPathDraft });

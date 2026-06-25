@@ -26,6 +26,18 @@ pub fn chunk_segments(
         return Vec::new();
     };
 
+    if segments.len() == 1 {
+        let text = first.text.trim();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        return vec![TranscriptChunk {
+            start: first.start,
+            end: first.end,
+            text: text.to_string(),
+        }];
+    }
+
     let step_sec = window_sec - overlap_sec;
     let mut chunks = Vec::new();
     let mut window_start = first.start;
@@ -75,6 +87,28 @@ mod tests {
     #[test]
     fn chunk_segments_returns_empty_for_empty_input() {
         assert!(chunk_segments(&[], 30.0, 5.0).is_empty());
+    }
+
+    #[test]
+    fn chunk_segments_keeps_single_long_segment_as_one_chunk() {
+        let chunks = chunk_segments(
+            &[Segment {
+                start: 0.0,
+                end: 600.0,
+                text: "recognized speech".to_string(),
+            }],
+            30.0,
+            5.0,
+        );
+
+        assert_eq!(
+            chunks,
+            vec![TranscriptChunk {
+                start: 0.0,
+                end: 600.0,
+                text: "recognized speech".to_string(),
+            }]
+        );
     }
 
     #[test]

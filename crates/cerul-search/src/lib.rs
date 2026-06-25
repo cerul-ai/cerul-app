@@ -984,6 +984,16 @@ fn hydrate_legacy_chunks(
 fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
     let mut results = results;
     apply_match_scores(&mut results);
+    sort_results(&mut results);
+    let results_len = results.len();
+    let mut results = dedupe_results(results, results_len);
+    apply_match_scores(&mut results);
+    sort_results(&mut results);
+    results.truncate(limit);
+    results
+}
+
+fn sort_results(results: &mut [SearchResult]) {
     results.sort_by(|left, right| {
         right
             .exact_match
@@ -1002,9 +1012,6 @@ fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResul
             })
             .then_with(|| left.playback_chunk_id.cmp(&right.playback_chunk_id))
     });
-    let mut results = dedupe_results(results, limit);
-    apply_match_scores(&mut results);
-    results
 }
 
 fn apply_match_scores(results: &mut [SearchResult]) {
@@ -1648,6 +1655,29 @@ mod tests {
         assert_ne!(scored[0].source_mask & SOURCE_TEXT, 0);
         assert!((scored[0].score - 0.62).abs() < 0.001);
         assert!((scored[0].match_score - 0.65).abs() < 0.001);
+    }
+
+    #[test]
+    fn finalize_results_resorts_after_merging_duplicate_evidence() {
+        let mut high_bm25 = result("chunk-a", "item-1", "transcript", Some(10.0), 12.0);
+        high_bm25.source_mask = SOURCE_TEXT;
+        let mut stronger_final = result("chunk-b", "item-2", "moment", Some(40.0), 0.70);
+        stronger_final.source_mask = SOURCE_TEXT_VECTOR;
+        stronger_final.similarity_score = Some(0.70);
+        let mut nearby_vector = result("chunk-c", "item-1", "moment", Some(18.0), 0.62);
+        nearby_vector.source_mask = SOURCE_TEXT_VECTOR;
+        nearby_vector.similarity_score = Some(0.62);
+
+        let scored = finalize_results(vec![high_bm25, stronger_final, nearby_vector], 10);
+
+        assert_eq!(
+            scored
+                .iter()
+                .map(|result| result.playback_chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chunk-b", "chunk-a"]
+        );
+        assert!(scored[0].match_score > scored[1].match_score);
     }
 
     #[test]
