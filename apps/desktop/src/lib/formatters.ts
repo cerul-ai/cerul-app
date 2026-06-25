@@ -185,7 +185,12 @@ const IS_MAC =
  * this is display-only. */
 export function formatHotkeyLabel(label: string): string {
   if (!IS_MAC) {
-    return label;
+    // "Plus" is the canonical token for the "+" key (it can't live raw in a
+    // "+"-separated accelerator); render it back as "+" for display.
+    return label
+      .split("+")
+      .map((part) => (part.trim() === "Plus" ? "+" : part.trim()))
+      .join("+");
   }
   return label
     .split("+")
@@ -199,6 +204,8 @@ export function formatHotkeyLabel(label: string): string {
           return "\u2303"; // ⌃
         case "Shift":
           return "\u21e7"; // ⇧
+        case "Plus":
+          return "+";
         default:
           return part.trim();
       }

@@ -897,17 +897,18 @@ fn parse_progress_line(line: &str) -> Option<(f64, String)> {
             .and_then(|value| parse_optional_f64(value))
             .or_else(|| parts.get(2).and_then(|value| parse_optional_f64(value)));
         let eta = parts.get(3).and_then(|value| parse_optional_f64(value));
+        let speed = parts.get(4).and_then(|value| parse_optional_f64(value));
         if let (Some(downloaded), Some(total)) = (downloaded, total) {
             if total > 0.0 {
                 let fraction = (downloaded / total).clamp(0.0, 1.0);
-                return Some((fraction, download_message(fraction, eta)));
+                return Some((fraction, download_message(fraction, eta, speed)));
             }
         }
     }
 
     let percent = parse_bracket_download_percent(trimmed)?;
     let fraction = (percent / 100.0).clamp(0.0, 1.0);
-    Some((fraction, download_message(fraction, None)))
+    Some((fraction, download_message(fraction, None, None)))
 }
 
 fn parse_optional_f64(value: &str) -> Option<f64> {
@@ -930,11 +931,34 @@ fn parse_bracket_download_percent(line: &str) -> Option<f64> {
     raw.parse::<f64>().ok()
 }
 
-fn download_message(fraction: f64, eta: Option<f64>) -> String {
+// Language-neutral download stats, e.g. "45% · 3.2 MB/s · ETA 1:20". The renderer
+// prepends the localized "downloading" stage label, so we deliberately omit any
+// leading word here. Speed/ETA are dropped whenever yt-dlp hasn't reported them
+// yet (early frames, or the bracket-percent fallback path).
+fn download_message(fraction: f64, eta: Option<f64>, speed_bytes_per_sec: Option<f64>) -> String {
     let pct = (fraction * 100.0).round() as u64;
-    match eta.and_then(|value| (value >= 0.0).then_some(value.round() as u64)) {
-        Some(eta) => format!("Downloading video · {pct}% · ETA {}", format_eta(eta)),
-        None => format!("Downloading video · {pct}%"),
+    let mut parts = vec![format!("{pct}%")];
+    if let Some(speed) = speed_bytes_per_sec.filter(|value| *value > 0.0) {
+        parts.push(format_speed(speed));
+    }
+    if let Some(eta) = eta.and_then(|value| (value >= 0.0).then_some(value.round() as u64)) {
+        parts.push(format!("ETA {}", format_eta(eta)));
+    }
+    parts.join(" · ")
+}
+
+fn format_speed(bytes_per_sec: f64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    if bytes_per_sec >= GIB {
+        format!("{:.1} GB/s", bytes_per_sec / GIB)
+    } else if bytes_per_sec >= MIB {
+        format!("{:.1} MB/s", bytes_per_sec / MIB)
+    } else if bytes_per_sec >= KIB {
+        format!("{:.0} KB/s", bytes_per_sec / KIB)
+    } else {
+        format!("{:.0} B/s", bytes_per_sec.max(0.0))
     }
 }
 
@@ -1421,6 +1445,12 @@ exit 1
         let structured = parse_progress_line("CERUL_PROGRESS 50 100 NA 5 1").unwrap();
         assert_eq!(structured.0, 0.5);
         assert!(structured.1.contains("ETA 0:05"));
+        // The yt-dlp speed field (5th column) now rides along in the message.
+        assert!(
+            structured.1.contains("B/s"),
+            "message missing speed: {}",
+            structured.1
+        );
 
         let legacy =
             parse_progress_line("[download]  23.4% of 10.00MiB at 1MiB/s ETA 00:07").unwrap();

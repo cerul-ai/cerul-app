@@ -60,6 +60,7 @@ import {
   ReceiptText,
   Search,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -258,7 +259,9 @@ const sidebarParentFor: Partial<Record<View, View>> = {
   "entity-detail": "library",
   "item-detail": "library",
 };
-const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
+const NEW_SOURCE_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
+  ? "Cmd+N"
+  : "Ctrl+N";
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
 const lastOpenedStorageKey = "cerul.lastOpened.v1";
 const lastAutomaticUpdateCheckStorageKey = "cerul.updater.lastAutomaticCheckAt.v1";
@@ -960,39 +963,52 @@ function AppWorkspace() {
       timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), delay);
     }
 
-    function scheduleOfflineRetry() {
+    function scheduleRetrySoon(force = false) {
       if (cancelled) {
         return;
       }
       clearScheduledCheck();
-      timeoutId = window.setTimeout(() => void runAutomaticUpdateCheck(), automaticUpdateOfflineRetryMs);
+      timeoutId = window.setTimeout(
+        () => void runAutomaticUpdateCheck({ force }),
+        automaticUpdateOfflineRetryMs,
+      );
     }
 
-    async function runAutomaticUpdateCheck() {
+    async function runAutomaticUpdateCheck({ force = false }: { force?: boolean } = {}) {
       clearScheduledCheck();
       if (cancelled || checkInFlight) {
         return;
       }
       if (window.navigator.onLine === false) {
-        scheduleOfflineRetry();
+        scheduleRetrySoon(force);
         return;
       }
-      if (!automaticUpdateCheckIsDue()) {
+      if (!force && !automaticUpdateCheckIsDue()) {
         scheduleNextDueCheck();
         return;
       }
       checkInFlight = true;
+      let succeeded = false;
       try {
         const next = await runDesktopUpdaterCheck();
         if (!cancelled) {
           setUpdaterState(next);
         }
+        succeeded = true;
       } catch (error) {
         console.error("desktop updater automatic check failed", error);
       } finally {
         checkInFlight = false;
-        writeLastAutomaticUpdateCheckAt(Date.now());
-        scheduleNextDueCheck();
+        if (succeeded) {
+          // Only a check that actually reached the update server advances the
+          // throttle. A transient failure now retries soon instead of persisting
+          // a "checked" timestamp that used to strand users on an old build for
+          // the full interval whenever the update host briefly errored.
+          writeLastAutomaticUpdateCheckAt(Date.now());
+          scheduleNextDueCheck();
+        } else {
+          scheduleRetrySoon(force);
+        }
       }
     }
 
@@ -1008,6 +1024,21 @@ function AppWorkspace() {
       scheduleDueCheckAfter(randomDelay(automaticUpdateResumeDelayRangeMs));
     }
 
+    function scheduleStartupCheck() {
+      if (cancelled) {
+        return;
+      }
+      // Every cold launch checks once, after a short randomized delay so we don't
+      // race app startup or stampede the update host. The 6h throttle then governs
+      // only the background/resume cadence of a long-running session — reopening
+      // the app no longer silently skips the check.
+      clearScheduledCheck();
+      timeoutId = window.setTimeout(
+        () => void runAutomaticUpdateCheck({ force: true }),
+        randomDelay(automaticUpdateStartupDelayRangeMs),
+      );
+    }
+
     function handleVisibilityChange() {
       if (document.visibilityState === "visible") {
         scheduleResumeCheck();
@@ -1015,11 +1046,7 @@ function AppWorkspace() {
     }
 
     void getDesktopUpdaterState().then(setUpdaterState);
-    if (automaticUpdateCheckIsDue()) {
-      scheduleDueCheckAfter(randomDelay(automaticUpdateStartupDelayRangeMs));
-    } else {
-      scheduleNextDueCheck();
-    }
+    scheduleStartupCheck();
     wakeProbeId = window.setInterval(() => {
       const now = Date.now();
       if (now - lastWakeProbeAt > automaticUpdateWakeGapMs) {
@@ -1043,9 +1070,10 @@ function AppWorkspace() {
     };
   }, []);
 
+  const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+      if (acceleratorMatchesEvent(newSourceHotkey, event)) {
         // Don't stack a new dialog on top of an open modal or steal the
         // shortcut while the user is typing in a field.
         const target = event.target;
@@ -1065,7 +1093,7 @@ function AppWorkspace() {
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, []);
+  }, [newSourceHotkey]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1777,7 +1805,7 @@ function AppWorkspace() {
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
-            onDeleteItems={async (itemIds, onProgress) => {
+            onDeleteItems={async (itemIds, onProgress, options) => {
               const deletingIds = new Set(itemIds);
               setData((current) => ({
                 ...current,
@@ -1793,7 +1821,7 @@ function AppWorkspace() {
               onProgress?.(completed, total);
               for (const itemId of itemIds) {
                 try {
-                  await api.deleteItem(itemId);
+                  await api.deleteItem(itemId, options);
                 } catch (error) {
                   failures.push(error);
                 } finally {
@@ -1931,8 +1959,11 @@ function AppWorkspace() {
             settings={data.settings}
             daemonStatus={data.daemonStatus}
             onSettingsChange={async (settings) => {
+              // Rejects if the write fails; saveSettings turns that into a false
+              // result so callers don't report success after a swallowed error.
               await api.updateSettings(settings);
               await refreshCoreData();
+              return true;
             }}
             requestConfirm={requestConfirm}
           />
@@ -4397,6 +4428,7 @@ function LibraryScreen({
   onDeleteItems: (
     itemIds: string[],
     onProgress?: (completed: number, total: number) => void,
+    options?: { keepDiscoverable?: boolean },
   ) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
@@ -4416,8 +4448,13 @@ function LibraryScreen({
     message: string | null;
   }>({ status: "idle", message: null });
   const [entities, setEntities] = useState<api.EntitySummary[]>([]);
+  const [failedCleanupIds, setFailedCleanupIds] = useState<string[]>([]);
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
+  );
+  const itemStatusSignature = useMemo(
+    () => items.map((item) => `${item.id}:${item.status}`).join("|"),
+    [items],
   );
   const normalizedQuery = libraryQuery.trim().toLowerCase();
   const filtersActive =
@@ -4441,6 +4478,7 @@ function LibraryScreen({
   const visibleSelectedCount = filteredItemIds.filter((itemId) => selectedItemIds.has(itemId)).length;
   const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
+  const failedCleanupCount = failedCleanupIds.length;
 
   useEffect(() => {
     const itemIds = new Set(items.map((item) => item.id));
@@ -4549,6 +4587,112 @@ function LibraryScreen({
         await onReindexItems(itemIds);
       }
       setSelectedItemIds(new Set());
+      setBatchState({ status: "idle", message: null });
+    } catch (error) {
+      setBatchState({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  // Page through the API to collect *all* failed item ids, not just the loaded
+  // first page, so the cleanup matches what the button promises.
+  async function collectAllFailedItemIds(): Promise<string[]> {
+    const pageSize = 1000; // MAX_LIST_LIMIT on the core
+    const ids: string[] = [];
+    for (let cursor = 0; ; cursor += pageSize) {
+      const page = await api.listItems({
+        status: "failed",
+        limit: pageSize,
+        cursor,
+        light: true,
+      });
+      for (const item of page) {
+        if (item.status === "failed") {
+          ids.push(item.id);
+        }
+      }
+      if (page.length < pageSize) {
+        break;
+      }
+    }
+    return ids;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!actionsEnabled) {
+      setFailedCleanupIds([]);
+      return;
+    }
+    collectAllFailedItemIds()
+      .then((ids) => {
+        if (!cancelled) {
+          setFailedCleanupIds(ids);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailedCleanupIds([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, itemStatusSignature]);
+
+  // One-click cleanup: remove every failed item from the library. Source media
+  // (the original URL/file) is untouched, and we pass keepDiscoverable so the
+  // rows are deleted WITHOUT an ignored-item tombstone — a transient failure
+  // (rate limit, expired cookies, network blip) can then be re-discovered or
+  // re-imported, matching the confirm dialog's "can be re-imported" promise.
+  async function clearFailedItems() {
+    if (!actionsEnabled) {
+      setBatchState({ status: "error", message: t("common.coreUnreachable") });
+      return;
+    }
+    // The library view only holds the first page of items, so derive the full
+    // failed set from the API across all pages — otherwise older failures beyond
+    // the first page would be silently left behind.
+    let ids: string[];
+    try {
+      ids = await collectAllFailedItemIds();
+    } catch (error) {
+      setBatchState({ status: "error", message: errorMessage(error) });
+      return;
+    }
+    if (ids.length === 0) {
+      setFailedCleanupIds([]);
+      setBatchState({ status: "idle", message: null });
+      return;
+    }
+    const confirmed = await requestConfirm({
+      title: t("library.clearFailed.confirm.title"),
+      body: t("library.clearFailed.confirm.body", { count: ids.length }),
+      confirmLabel: t("library.clearFailed.confirm.label"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    setBatchState({
+      status: "deleting",
+      message: t("library.batch.deletingProgress", { completed: 0, total: ids.length }),
+    });
+    try {
+      await onDeleteItems(
+        ids,
+        (completed, total) => {
+          setBatchState({
+            status: "deleting",
+            message: t("library.batch.deletingProgress", { completed, total }),
+          });
+        },
+        { keepDiscoverable: true },
+      );
+      setSelectedItemIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+      setFailedCleanupIds([]);
       setBatchState({ status: "idle", message: null });
     } catch (error) {
       setBatchState({ status: "error", message: errorMessage(error) });
@@ -4669,6 +4813,18 @@ function LibraryScreen({
                 ? t("library.batch.selectNone")
                 : t("library.batch.selectAll")}
             </span>
+          </button>
+        ) : null}
+        {failedCleanupCount > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost sm"
+            disabled={batchPending || !actionsEnabled}
+            onClick={() => void clearFailedItems()}
+            title={t("library.clearFailed.hint")}
+          >
+            <Trash2 size={14} />
+            <span>{t("library.clearFailed.button", { count: failedCleanupCount })}</span>
           </button>
         ) : null}
       </div>
@@ -5341,11 +5497,24 @@ function SettingsScreen({
   apiStatus: ApiStatus;
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
   onBack: () => void;
 }) {
   const t = useT();
+  // Esc closes Settings (returns to the previous view), matching the detail
+  // screens. Skip when a modal/dialog is open on top so Esc dismisses that first.
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || hasOpenModalSurface()) {
+        return;
+      }
+      event.preventDefault();
+      onBack();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onBack]);
   const sectionIcons: Record<string, LucideIcon> = {
     General: SlidersHorizontal,
     Models: Cpu,
@@ -5391,21 +5560,26 @@ function SettingsScreen({
     return () => window.clearTimeout(timeout);
   }, [saveState.status]);
 
-  async function saveSettings(settingsPatch: api.SettingsMap) {
+  // Returns whether the patch was actually persisted so callers can avoid
+  // reporting success after a swallowed failure (e.g. the storage page must not
+  // claim the download dir moved if the core was offline).
+  async function saveSettings(settingsPatch: api.SettingsMap): Promise<boolean> {
     if (controlsDisabled) {
       setSaveState({
         status: "error",
         message: t("settings.save.unreachable"),
       });
-      return;
+      return false;
     }
 
     setSaveState({ status: "saving", message: t("settings.save.saving") });
     try {
       await onSettingsChange(settingsPatch);
       setSaveState({ status: "saved", message: t("settings.save.saved") });
+      return true;
     } catch (error) {
       setSaveState({ status: "error", message: errorMessage(error) });
+      return false;
     }
   }
 
@@ -5536,7 +5710,11 @@ function SettingsScreen({
           ) : null}
           {activeSection === "Usage" ? <UsageSettings /> : null}
           {activeSection === "Storage" ? (
-            <StorageSettings requestConfirm={requestConfirm} />
+            <StorageSettings
+              settings={settings}
+              onSettingsChange={saveSettings}
+              requestConfirm={requestConfirm}
+            />
           ) : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
@@ -5564,7 +5742,7 @@ function GeneralSettings({
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   onStartAtLoginChange: (enabled: boolean) => Promise<void>;
   onHotkeyChange: (label: string) => Promise<void>;
 }) {
@@ -5572,6 +5750,7 @@ function GeneralSettings({
   const { lang, setLang } = useLang();
   const theme = settingString(settings, "theme", "System");
   const globalHotkey = settingString(settings, "global_hotkey", "Alt+Space");
+  const newSourceHotkey = settingString(settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   const startAtLoginEnabled =
     daemonStatus?.installed ?? settingBoolean(settings, "start_at_login", true);
   // The description explains what the toggle does; transient daemon status
@@ -5661,18 +5840,26 @@ function GeneralSettings({
           label={t("settings.general.globalHotkey")}
           description={t("settings.general.globalHotkey.hint")}
           control={
-            <select
-              className="select"
+            <KeyRecorder
               value={globalHotkey}
+              defaultValue="Alt+Space"
               disabled={disabled}
-              onChange={(event) => void onHotkeyChange(event.currentTarget.value)}
-            >
-              {globalHotkeyOptions.map((option) => (
-                <option key={option} value={option}>
-                  {formatHotkeyLabel(option)}
-                </option>
-              ))}
-            </select>
+              conflicts={{ [newSourceHotkey]: t("settings.shortcuts.newSource") }}
+              onChange={(accelerator) => void onHotkeyChange(accelerator)}
+            />
+          }
+        />
+        <SettingRow
+          label={t("settings.shortcuts.newSource")}
+          description={t("settings.shortcuts.newSource.hint")}
+          control={
+            <KeyRecorder
+              value={newSourceHotkey}
+              defaultValue={NEW_SOURCE_DEFAULT_HOTKEY}
+              disabled={disabled}
+              conflicts={{ [globalHotkey]: t("settings.general.globalHotkey") }}
+              onChange={(accelerator) => void onSettingsChange({ hotkey_new_source: accelerator })}
+            />
           }
         />
         <SettingRow
@@ -5696,10 +5883,17 @@ function IndexingSettings({
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
 }) {
   const t = useT();
-  const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 4);
+  // Mirror MAX_CONCURRENT_JOBS in crates/cerul-api/src/jobs.rs: the scheduler
+  // clamps concurrent_jobs to this ceiling, so a higher value here would be a
+  // setting that silently does nothing.
+  const maxConcurrentJobs = 4;
+  const concurrentJobs = Math.min(
+    Math.max(settingNumber(settings, "concurrent_jobs", 2), 1),
+    maxConcurrentJobs,
+  );
   const webCookieMode = settingString(settings, "web_video_cookie_mode", "browser");
   const webCookieBrowser = settingString(settings, "web_video_cookie_browser", "chrome");
   const webCookiesPath = settingString(settings, "web_video_cookies_path", "");
@@ -5709,11 +5903,17 @@ function IndexingSettings({
   const [cookiesPathDraft, setCookiesPathDraft] = useState<string | null>(null);
   const shownJobs = jobsDraft ?? concurrentJobs;
   const shownCookiesPath = cookiesPathDraft ?? webCookiesPath;
-  const commitJobs = () => {
-    if (jobsDraft !== null && jobsDraft !== concurrentJobs) {
-      void onSettingsChange({ concurrent_jobs: jobsDraft });
-    }
-    setJobsDraft(null);
+  // Optimistic value while clicking; coalesce rapid +/− into one PATCH (a
+  // settings write also triggers a multi-request refresh).
+  const jobsCommitTimer = useRef<number | undefined>(undefined);
+  const setJobs = (next: number) => {
+    const clamped = Math.min(maxConcurrentJobs, Math.max(1, next));
+    setJobsDraft(clamped);
+    window.clearTimeout(jobsCommitTimer.current);
+    jobsCommitTimer.current = window.setTimeout(
+      () => void onSettingsChange({ concurrent_jobs: clamped }),
+      350,
+    );
   };
   const commitCookiesPath = () => {
     if (cookiesPathDraft !== null && cookiesPathDraft !== webCookiesPath) {
@@ -5730,20 +5930,8 @@ function IndexingSettings({
           description={t("settings.indexing.concurrentJobs.description")}
           control={
             <div className="col gap-2" style={{ alignItems: "flex-end" }}>
-              <span className="chip neutral">
-                {shownJobs} {t("settings.indexing.concurrentJobs.unit")}
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={4}
-                value={shownJobs}
-                disabled={disabled}
-                onChange={(event) => setJobsDraft(Number(event.currentTarget.value))}
-                onPointerUp={commitJobs}
-                onKeyUp={commitJobs}
-                onBlur={commitJobs}
-              />
+              <NumberStepper value={shownJobs} min={1} max={maxConcurrentJobs} disabled={disabled} onChange={setJobs} />
+              <span className="settings-help">{t("settings.indexing.concurrentJobs.hint")}</span>
             </div>
           }
         />
@@ -5889,7 +6077,7 @@ function ModelsSettings({
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -6418,7 +6606,7 @@ function InferenceModeSelector({
   processingMode: string;
   usageSummary: api.UsageSummary | null;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
 }) {
   const t = useT();
   // Share of processing that ran on-device (free).
@@ -6836,7 +7024,7 @@ function ProviderConnections({
   error: string | null;
   disabled: boolean;
   onRefresh: () => Promise<void>;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
   localPrep: api.LocalPrepareStatus | null;
   onDownloadLocal: (modelKey?: string) => void;
@@ -7525,6 +7713,21 @@ function UsageValue({
   );
 }
 
+function storageCategoryColor(key: string): string {
+  switch (key) {
+    case "cache":
+      return "var(--accent)";
+    case "models":
+      return "var(--accent-2)";
+    case "index":
+      return "var(--success)";
+    case "database":
+      return "var(--warn)";
+    default:
+      return "var(--surface-3)";
+  }
+}
+
 function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
   const labels: Record<string, string> = {
     database: t("settings.storage.category.database"),
@@ -7532,13 +7735,20 @@ function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
     index: t("settings.storage.category.index"),
     cache: t("settings.storage.category.cache"),
     other: t("settings.storage.category.other"),
+    downloads: t("settings.storage.category.downloads"),
   };
   return labels[key] ?? fallback;
 }
 
 function StorageSettings({
+  settings,
+  onSettingsChange,
   requestConfirm,
 }: {
+  settings: api.SettingsMap;
+  // Resolves true only when the patch was actually persisted, so the download
+  // dir actions don't report success after a swallowed save failure.
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -7553,6 +7763,11 @@ function StorageSettings({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const apparentTotalDiffers =
     usage !== null && usage.total_apparent_bytes !== usage.total_bytes;
+  // The download/media directory is a normal user setting; unset means downloads
+  // land under the app cache. Models, the DB and the index are never relocated.
+  const configuredDownloadDir =
+    typeof settings.media_dir === "string" ? settings.media_dir.trim() : "";
+  const effectiveDownloadDir = configuredDownloadDir || locations?.cache_dir || "";
 
   useEffect(() => {
     let cancelled = false;
@@ -7581,6 +7796,54 @@ function StorageSettings({
       setUsage(await api.storageUsage());
     } catch (error) {
       console.warn("failed to refresh Cerul storage usage", error);
+    }
+  }
+
+  async function changeDownloadDir() {
+    const selected = await openDialog({ multiple: false, directory: true }).catch(() => null);
+    if (typeof selected !== "string" || !selected.trim()) {
+      return;
+    }
+    setAction({ status: "running", message: null });
+    try {
+      const saved = await onSettingsChange({ media_dir: selected.trim() });
+      if (!saved) {
+        // The settings write failed (the save chip already shows why); don't
+        // claim the location moved or refresh against a value that wasn't saved.
+        setAction({ status: "idle", message: null });
+        return;
+      }
+      await refreshStorageUsage();
+      setAction({ status: "done", message: t("settings.storage.message.downloadDirChanged") });
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function resetDownloadDir() {
+    setAction({ status: "running", message: null });
+    try {
+      const saved = await onSettingsChange({ media_dir: "" });
+      if (!saved) {
+        setAction({ status: "idle", message: null });
+        return;
+      }
+      setAction({ status: "done", message: t("settings.storage.message.downloadDirReset") });
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function revealDownloadDir() {
+    if (!effectiveDownloadDir) {
+      return;
+    }
+    setAction({ status: "running", message: null });
+    try {
+      await revealSourcePath(effectiveDownloadDir);
+      setAction({ status: "done", message: t("settings.storage.message.dataOpened") });
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -7635,70 +7898,110 @@ function StorageSettings({
           }}
         />
       ) : null}
-      <SettingsGroup title={t("settings.storage.group.title")}>
-        <SettingRow
-          label={t("settings.storage.dataDir.label")}
-          control={
-            <div className="settings-inline-action">
-              <code>{locations?.data_dir ?? "~/Library/Application Support/Cerul"}</code>
+      <SettingsGroup title={t("settings.storage.location.title")}>
+        <div className="setting-row">
+          <div className="setting-row-label">
+            <span>{t("settings.storage.downloadDir.label")}</span>
+            <small className="mono storage-path">
+              {effectiveDownloadDir || "~/Library/Application Support/Cerul/cache"}
+            </small>
+          </div>
+          <div className="setting-row-control">
+            {configuredDownloadDir ? (
               <button
-                className="btn btn-secondary sm"
+                className="btn btn-ghost sm"
                 type="button"
-                disabled={busy}
-                onClick={() => void runStorageAction("reveal-data")}
+                disabled={busy || !hasDesktopHost()}
+                onClick={() => void resetDownloadDir()}
               >
-                <Folder size={16} />
-                <span>{t("settings.storage.dataDir.reveal")}</span>
+                <span>{t("settings.storage.downloadDir.reset")}</span>
               </button>
-            </div>
-          }
-        />
-        <SettingRow
-          label={t("settings.storage.cacheSize.label")}
-          control={
-            <span className="settings-value col" style={{ alignItems: "flex-end", gap: 2 }}>
-              <span>
-                {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
-              </span>
+            ) : null}
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={busy || !effectiveDownloadDir}
+              onClick={() => void revealDownloadDir()}
+            >
+              <Folder size={16} />
+              <span>{t("settings.storage.dataDir.reveal")}</span>
+            </button>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={busy || !hasDesktopHost()}
+              onClick={() => void changeDownloadDir()}
+            >
+              <span>{t("settings.storage.downloadDir.change")}</span>
+            </button>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="setting-row-label">
+            <span>{t("settings.storage.lockedDirs.label")}</span>
+            <small>{t("settings.storage.lockedDirs.desc")}</small>
+          </div>
+          <div className="setting-row-control">
+            <span className="settings-locked">
+              <Lock size={13} />
+              {t("settings.storage.locked")}
+            </span>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={busy}
+              onClick={() => void runStorageAction("reveal-data")}
+            >
+              <Folder size={16} />
+              <span>{t("settings.storage.dataDir.reveal")}</span>
+            </button>
+          </div>
+        </div>
+      </SettingsGroup>
+      <p className="field-hint" style={{ marginTop: -8 }}>{t("settings.storage.downloadDir.desc")}</p>
+      <SettingsGroup title={t("settings.storage.usage.title")}>
+        <div className="storage-usage">
+          <div className="storage-usage-head">
+            <span>{t("settings.storage.usage.total")}</span>
+            <span className="mono">
+              {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
               {usage && apparentTotalDiffers ? (
-                <span className="faint mono">
+                <span className="faint">
+                  {" · "}
                   {t("settings.storage.logicalSize", {
                     size: formatBytes(usage.total_apparent_bytes),
                   })}
                 </span>
               ) : null}
             </span>
-          }
-        />
-        {usage ? (
-          <div className="storage-breakdown">
-            {usage.categories.map((category) => {
-              const pct =
-                usage.total_bytes > 0
-                  ? Math.min(100, Math.round((category.bytes / usage.total_bytes) * 100))
-                  : 0;
-              return (
-                <div className="storage-row" key={category.key}>
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <span>{storageCategoryLabel(category.key, category.label, t)}</span>
-                    <span className="mono faint">
-                      {formatBytes(category.bytes)}
-                      {category.apparent_bytes !== category.bytes ? (
-                        <span>
-                          {" · "}
-                          {t("settings.storage.logicalSize", {
-                            size: formatBytes(category.apparent_bytes),
-                          })}
-                        </span>
-                      ) : null}
-                    </span>
-                  </div>
-                  <ProgressBar value={pct} />
-                </div>
-              );
-            })}
           </div>
-        ) : null}
+          {usage ? (
+            <>
+              <div className="storage-stack">
+                {usage.categories.map((category) => {
+                  const pct =
+                    usage.total_bytes > 0 ? Math.max(0, (category.bytes / usage.total_bytes) * 100) : 0;
+                  return (
+                    <i
+                      key={category.key}
+                      style={{ width: `${pct}%`, background: storageCategoryColor(category.key) }}
+                      title={storageCategoryLabel(category.key, category.label, t)}
+                    />
+                  );
+                })}
+              </div>
+              <div className="storage-legend">
+                {usage.categories.map((category) => (
+                  <span key={category.key} className="storage-legend-item">
+                    <i className="swatch" style={{ background: storageCategoryColor(category.key) }} />
+                    {storageCategoryLabel(category.key, category.label, t)}
+                    <span className="mono faint">{formatBytes(category.bytes)}</span>
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </div>
       </SettingsGroup>
       <div className="settings-actions">
         <button
@@ -7746,7 +8049,7 @@ function AdvancedSettings({
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
 }) {
   const t = useT();
   const binding = settingString(settings, "api_binding", "127");
@@ -7791,7 +8094,7 @@ function AdvancedSettings({
 
   return (
     <>
-      <SettingsGroup title={t("settings.advanced.localApi.title")}>
+      <SettingsGroup title={t("settings.advanced.group.title")}>
         <SettingRow
           label={t("settings.advanced.binding.label")}
           description={t("settings.advanced.binding.description")}
@@ -7832,8 +8135,6 @@ function AdvancedSettings({
             }
           />
         ) : null}
-      </SettingsGroup>
-      <SettingsGroup title={t("settings.advanced.privacy.title")}>
         <SettingRow
           label={t("settings.advanced.telemetry.label")}
           description={t("settings.advanced.telemetry.description")}
@@ -7858,13 +8159,12 @@ function AdvancedSettings({
             </div>
           }
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("settings.advanced.modelDownload.title")}>
         <SettingRow
           label={t("settings.advanced.modelDownload.source.label")}
           description={t("settings.advanced.modelDownload.source.description")}
           control={
             <select
+              className="select"
               value={modelDownloadSource}
               disabled={disabled}
               onChange={(event) =>
@@ -7878,12 +8178,11 @@ function AdvancedSettings({
             </select>
           }
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("settings.advanced.diagnostics.title")}>
         <SettingRow
           label={t("settings.advanced.logLevel.label")}
           control={
             <select
+              className="select"
               value={logLevel}
               disabled={disabled}
               onChange={(event) => void onSettingsChange({ log_level: event.currentTarget.value })}
@@ -7980,62 +8279,91 @@ function UsageSettings() {
   const localEvents = summary?.local.event_count ?? 0;
   const remoteEvents = summary?.remote.event_count ?? 0;
   const localShare = events > 0 ? Math.round((localEvents / events) * 100) : 0;
+  const eventsLabel = t("settings.usage.spend.events", { count: events });
+  const spendSub =
+    events > 0
+      ? `${eventsLabel} · ${t("settings.usage.split.value", { pct: localShare })}`
+      : eventsLabel;
 
+  // "Calm card" layout: a quiet hero spend figure, a slim local/cloud bar, and a
+  // restrained per-capability list, ending on the local-only reassurance.
   return (
-    <section className="usage-settings">
-      <p className="settings-help">{t("settings.usage.desc")}</p>
+    <section className="usage-b">
       {error ? <InlineNotice tone="error" message={error} /> : null}
-      <div className="usage-account">
-        <div className="usage-account__text">
-          <span className="usage-card__label">{t("settings.usage.account.label")}</span>
-          {signedIn && user ? (
-            <strong className="usage-account__id">{user.email}</strong>
-          ) : (
-            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
-          )}
-        </div>
+      <div className="usage-b__wrap">
         {signedIn && user ? (
-          <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-primary sm"
-            onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
-          >
-            {t("settings.account.signIn")}
-          </button>
-        )}
-      </div>
-      <div className="usage-split">
-        <div className="usage-spend">
-          <span className="usage-card__label">{t("settings.usage.spend.label")}</span>
-          <strong className="usage-card__value mono">{formatUsd(total)}</strong>
-          <span className="usage-card__note">{t("settings.usage.spend.events", { count: events })}</span>
-        </div>
-        <div className="usage-split__head">
-          <span className="usage-card__label">{t("settings.usage.split.label")}</span>
-          <span className="mono">{t("settings.usage.split.value", { pct: localShare })}</span>
-        </div>
-        <div className="usage-split__bar" aria-hidden="true">
-          <div style={{ width: `${localShare}%` }} />
-        </div>
-        <div className="usage-split__legend">
-          <span>{t("settings.usage.split.local", { count: localEvents })}</span>
-          <span>{t("settings.usage.split.cloud", { count: remoteEvents })}</span>
-        </div>
-      </div>
-      {summary?.by_capability.length ? (
-        <div className="usage-breakdown">
-          <span className="usage-card__label">{t("settings.usage.breakdown.label")}</span>
-          {summary.by_capability.map((row) => (
-            <div className="usage-breakdown__row" key={row.key}>
-              <span>{t(`usage.capability.${row.key}`)}</span>
-              <span className="mono">{formatUsd(row.totals.estimated_usd)}</span>
-              <span className="mono faint">{t("settings.usage.spend.events", { count: row.totals.event_count })}</span>
+          <div className="usage-b__acct">
+            <span className="usage-b__avatar" aria-hidden="true">
+              {user.email.charAt(0).toUpperCase()}
+            </span>
+            <div className="usage-b__acct-text">
+              <div className="usage-b__acct-id">{user.email}</div>
+              <div className="usage-b__muted">Cerul Cloud</div>
             </div>
-          ))}
+            <span className={`chip ${user.plan === "free" ? "neutral" : "accent"}`}>
+              {t(`settings.account.plan.${user.plan}`)}
+            </span>
+          </div>
+        ) : (
+          <div className="usage-b__signin">
+            <BrandMark className="usage-b__signin-ic" />
+            <div className="usage-b__signin-text">
+              <strong>Cerul Cloud</strong>
+              <p className="usage-b__muted">{t("settings.usage.account.signedOut")}</p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary sm"
+              onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
+            >
+              {t("settings.account.signIn")}
+            </button>
+          </div>
+        )}
+
+        <div className="usage-b__spend">
+          <span className="usage-b__spend-label">{t("settings.usage.spend.label")}</span>
+          <strong className="usage-b__spend-value mono">{formatUsd(total)}</strong>
+          <span className="usage-b__spend-sub">{spendSub}</span>
         </div>
-      ) : null}
+
+        <div className="usage-b__split">
+          <div className="usage-b__bar" aria-hidden="true">
+            <div style={{ width: `${localShare}%` }} />
+          </div>
+          <div className="usage-b__legend">
+            <span>
+              <span className="usage-b__dot usage-b__dot--local" aria-hidden="true" />
+              {t("settings.usage.split.local", { count: localEvents })}
+            </span>
+            <span>
+              <span className="usage-b__dot usage-b__dot--cloud" aria-hidden="true" />
+              {t("settings.usage.split.cloud", { count: remoteEvents })}
+            </span>
+          </div>
+        </div>
+
+        {summary?.by_capability.length ? (
+          <div className="usage-b__list">
+            {summary.by_capability.map((row) => (
+              <div className="usage-b__row" key={row.key}>
+                <span className="usage-b__row-name">{t(`usage.capability.${row.key}`)}</span>
+                <span className="usage-b__row-val">
+                  <span className="usage-b__row-cost mono">{formatUsd(row.totals.estimated_usd)}</span>
+                  <span className="usage-b__row-runs mono">
+                    {t("settings.usage.spend.events", { count: row.totals.event_count })}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="usage-b__reassure">
+          <ShieldCheck size={13} />
+          <span>{t("settings.usage.localOnly")}</span>
+        </div>
+      </div>
     </section>
   );
 }
@@ -8205,104 +8533,145 @@ function AboutSettings() {
     }
   }
 
+  const inlineUpdateStatus = (() => {
+    if (updateState.status === "running") {
+      return (
+        <span className="about-update-status">
+          <Loader2 size={14} className="about-spin" />
+          {t("settings.about.update.checking")}
+        </span>
+      );
+    }
+    if (updateState.status === "error") {
+      return (
+        <span className="about-update-status is-error">
+          <AlertTriangle size={14} />
+          {updateState.message}
+        </span>
+      );
+    }
+    if (updateState.update) {
+      return (
+        <span className="about-update-status is-available">
+          <span className="about-update-dot" />
+          {updateState.message}
+        </span>
+      );
+    }
+    if (updateState.status === "done" && updateState.message) {
+      return (
+        <span className="about-update-status is-ok">
+          <Check size={14} />
+          {updateState.message}
+        </span>
+      );
+    }
+    return null;
+  })();
+
   return (
     <>
-      <SettingsGroup title={t("settings.about.group.title")}>
-        <SettingRow
-          label={t("settings.about.version.label")}
-          control={<span className="settings-value">{appVersion ?? t("settings.about.version.fallback")}</span>}
-        />
-        <SettingRow
-          label={t("settings.about.license.label")}
-          control={<span className="settings-value">{t("settings.about.license.value")}</span>}
-        />
-        <SettingRow
-          label={t("settings.about.commit.label")}
-          control={<span className="settings-value">{t("settings.about.commit.value")}</span>}
-        />
-        <SettingRow
-          label={t("settings.about.buildDate.label")}
-          control={<span className="settings-value">{t("settings.about.buildDate.value")}</span>}
-        />
-        <div className="settings-actions settings-actions--incard">
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          onClick={() => window.open("https://github.com/cerul-ai/cerul-app", "_blank", "noopener,noreferrer")}
-        >
-          <ExternalLink size={16} />
-          <span>{t("settings.about.github")}</span>
-        </button>
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          onClick={() => window.open("https://cerul.ai/docs", "_blank", "noopener,noreferrer")}
-        >
-          <ExternalLink size={16} />
-          <span>{t("settings.about.docs")}</span>
-        </button>
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          onClick={() => window.open("mailto:support@cerul.ai", "_blank", "noopener,noreferrer")}
-        >
-          <ExternalLink size={16} />
-          <span>{t("settings.about.support")}</span>
-        </button>
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          disabled={updateState.status === "running"}
-          onClick={() => void checkForUpdates()}
-        >
-          {updateState.status === "running" ? <Loader2 size={16} /> : <RefreshCcw size={16} />}
-          <span>{t("settings.about.checkUpdates")}</span>
-        </button>
-        {hasDesktopHost() ? (
-          <button
-            className="btn btn-secondary sm"
-            type="button"
-            disabled={diagnosticsState.status === "running"}
-            onClick={() => void copyUpdateDiagnostics()}
-          >
-            {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
-            <span>{t("settings.about.update.copyDiagnostics")}</span>
-          </button>
-        ) : null}
-        {updateState.update ? (
+      <SettingsGroup>
+        <div className="about-hero">
+          <BrandMark className="about-appicon" />
+          <div className="about-id">
+            <strong>Cerul</strong>
+            <span className="about-tagline">
+              {t("settings.about.version.label")} {appVersion ?? t("settings.about.version.fallback")}
+              {" · "}
+              {t("settings.about.tagline")}
+            </span>
+          </div>
+        </div>
+        <div className="about-sep" />
+        <div className="about-update-row">
           <button
             className="btn btn-primary sm"
             type="button"
-            disabled={
-              updateActionStatus === "running" ||
-              aboutUpdaterState.phase === "downloading" ||
-              aboutUpdaterState.phase === "preparing" ||
-              aboutUpdaterState.phase === "installing"
-            }
-            onClick={() => void activateCheckedUpdate()}
+            disabled={updateState.status === "running"}
+            onClick={() => void checkForUpdates()}
           >
-            {updateActionIcon()}
-            <span>{updateActionLabel()}</span>
+            {updateState.status === "running" ? <Loader2 size={16} /> : <RefreshCcw size={16} />}
+            <span>{t("settings.about.checkUpdates")}</span>
           </button>
-        ) : null}
-        {updateState.update ? (
+          <span className="about-update-fill" />
+          {inlineUpdateStatus}
+          {updateState.update ? (
+            <button
+              className="btn btn-primary sm"
+              type="button"
+              disabled={
+                updateActionStatus === "running" ||
+                aboutUpdaterState.phase === "downloading" ||
+                aboutUpdaterState.phase === "preparing" ||
+                aboutUpdaterState.phase === "installing"
+              }
+              onClick={() => void activateCheckedUpdate()}
+            >
+              {updateActionIcon()}
+              <span>{updateActionLabel()}</span>
+            </button>
+          ) : null}
+        </div>
+        <div className="about-sep" />
+        <div className="about-meta">
+          <span className="k">{t("settings.about.commit.label")}</span>
+          <span className="v">{t("settings.about.commit.value")}</span>
+          <span className="k">{t("settings.about.buildDate.label")}</span>
+          <span className="v">{t("settings.about.buildDate.value")}</span>
+          <span className="k">{t("settings.about.license.label")}</span>
+          <span className="v">{t("settings.about.license.value")}</span>
+        </div>
+        <div className="about-sep" />
+        <div className="settings-actions settings-actions--incard">
           <button
-            className="btn btn-secondary sm"
+            className="btn btn-ghost sm"
             type="button"
-            onClick={() => window.open(updateState.update!.url, "_blank", "noopener,noreferrer")}
+            onClick={() => window.open("https://github.com/cerul-ai/cerul-app", "_blank", "noopener,noreferrer")}
           >
             <ExternalLink size={16} />
-            <span>{t("settings.about.update.openRelease")}</span>
+            <span>{t("settings.about.github")}</span>
           </button>
-        ) : null}
+          <button
+            className="btn btn-ghost sm"
+            type="button"
+            onClick={() => window.open("https://cerul.ai/docs", "_blank", "noopener,noreferrer")}
+          >
+            <ExternalLink size={16} />
+            <span>{t("settings.about.docs")}</span>
+          </button>
+          <button
+            className="btn btn-ghost sm"
+            type="button"
+            onClick={() => window.open("mailto:support@cerul.ai", "_blank", "noopener,noreferrer")}
+          >
+            <ExternalLink size={16} />
+            <span>{t("settings.about.support")}</span>
+          </button>
+          <span className="about-update-fill" />
+          {updateState.update ? (
+            <button
+              className="btn btn-ghost sm"
+              type="button"
+              onClick={() => window.open(updateState.update!.url, "_blank", "noopener,noreferrer")}
+            >
+              <ExternalLink size={16} />
+              <span>{t("settings.about.update.openRelease")}</span>
+            </button>
+          ) : null}
+          {hasDesktopHost() ? (
+            <button
+              className="btn btn-ghost sm"
+              type="button"
+              disabled={diagnosticsState.status === "running"}
+              onClick={() => void copyUpdateDiagnostics()}
+            >
+              {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+              <span>{t("settings.about.update.copyDiagnostics")}</span>
+            </button>
+          ) : null}
         </div>
       </SettingsGroup>
-      {updateState.message ? (
-        <InlineNotice
-          tone={updateState.status === "error" ? "error" : "muted"}
-          message={updateState.message}
-        />
-      ) : null}
       {diagnosticsState.message ? (
         <InlineNotice
           tone={diagnosticsState.status === "error" ? "error" : "muted"}
@@ -8375,6 +8744,162 @@ function Segmented({
   );
 }
 
+// Build an app-format accelerator ("Cmd+Shift+K") from a keydown event, or null
+// while only modifiers are held. Matches the "Cmd"/"Ctrl"/"Alt"/"Shift" tokens
+// the Electron globalShortcut + formatHotkeyLabel already use.
+// Canonical token for a KeyboardEvent.key. "+" becomes "Plus" (the Electron
+// accelerator convention) so the key never collides with the "+" separator —
+// otherwise "Ctrl+Shift++" would split into an empty final key and never match.
+function normalizeKeyToken(key: string): string {
+  if (key === " ") return "Space";
+  if (key === "+") return "Plus";
+  if (key.length === 1) return key.toUpperCase();
+  return key.replace(/^Arrow/, "");
+}
+
+function acceleratorFromEvent(event: globalThis.KeyboardEvent): string | null {
+  const key = event.key;
+  if (key === "Meta" || key === "Control" || key === "Alt" || key === "Shift") {
+    return null;
+  }
+  const parts: string[] = [];
+  if (event.metaKey) parts.push("Cmd");
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  parts.push(normalizeKeyToken(key));
+  return parts.join("+");
+}
+
+function acceleratorMatchesEvent(accelerator: string, event: globalThis.KeyboardEvent): boolean {
+  const parts = accelerator.split("+").map((part) => part.trim());
+  const key = parts[parts.length - 1];
+  const mods = new Set(parts.slice(0, -1));
+  if ((mods.has("Cmd") || mods.has("Command")) !== event.metaKey) return false;
+  if (mods.has("Ctrl") !== event.ctrlKey) return false;
+  if (mods.has("Alt") !== event.altKey) return false;
+  if (mods.has("Shift") !== event.shiftKey) return false;
+  return normalizeKeyToken(event.key) === key;
+}
+
+function KeyRecorder({
+  value,
+  defaultValue,
+  disabled = false,
+  conflicts = {},
+  onChange,
+}: {
+  value: string;
+  defaultValue: string;
+  disabled?: boolean;
+  conflicts?: Record<string, string>;
+  onChange: (accelerator: string) => void;
+}) {
+  const t = useT();
+  const [recording, setRecording] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!recording) {
+      return;
+    }
+    function finish() {
+      setRecording(false);
+      setPreview(null);
+      setConflict(null);
+    }
+    function onKey(event: globalThis.KeyboardEvent) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        finish();
+        return;
+      }
+      const accelerator = acceleratorFromEvent(event);
+      if (!accelerator) {
+        const mods: string[] = [];
+        if (event.metaKey) mods.push("Cmd");
+        if (event.ctrlKey) mods.push("Ctrl");
+        if (event.altKey) mods.push("Alt");
+        if (event.shiftKey) mods.push("Shift");
+        setConflict(null);
+        setPreview(mods.length ? `${mods.join("+")}+…` : "…");
+        return;
+      }
+      // A bindable shortcut must include at least one modifier — a bare key
+      // would fire constantly. Keep recording and nudge the user.
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        setPreview(accelerator);
+        setConflict(t("settings.shortcuts.needsModifier"));
+        return;
+      }
+      const owner = conflicts[accelerator];
+      if (owner && accelerator !== value) {
+        setPreview(accelerator);
+        setConflict(t("settings.shortcuts.conflict", { name: owner }));
+        window.setTimeout(finish, 1500);
+        return;
+      }
+      onChange(accelerator);
+      finish();
+    }
+    function onPointerDown(event: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        finish();
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    document.addEventListener("mousedown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onPointerDown, true);
+    };
+  }, [recording, conflicts, value, onChange, t]);
+
+  const shown = preview ?? value;
+  const caps = formatHotkeyLabel(shown).split(" ").filter(Boolean);
+
+  return (
+    <div className="kbd-recorder-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`kbd-recorder${recording ? " is-recording" : ""}${conflict ? " is-conflict" : ""}`}
+        disabled={disabled}
+        onClick={() => {
+          setConflict(null);
+          setPreview(null);
+          setRecording((current) => !current);
+        }}
+      >
+        {recording && preview === null ? (
+          <span className="kbd-recorder-hint">{t("settings.shortcuts.recordHint")}</span>
+        ) : (
+          <span className="kbd">
+            {caps.map((cap, index) => (
+              <kbd key={index} className="cap">
+                {cap}
+              </kbd>
+            ))}
+          </span>
+        )}
+      </button>
+      {value !== defaultValue && !recording ? (
+        <button
+          type="button"
+          className="btn btn-ghost sm"
+          disabled={disabled}
+          onClick={() => onChange(defaultValue)}
+        >
+          {t("settings.shortcuts.reset")}
+        </button>
+      ) : null}
+      {conflict ? <span className="kbd-conflict">{conflict}</span> : null}
+    </div>
+  );
+}
+
 function Toggle({
   checked = false,
   disabled = false,
@@ -8392,5 +8917,64 @@ function Toggle({
       disabled={disabled}
       onChange={(event) => onChange?.(event.currentTarget.checked)}
     />
+  );
+}
+
+function NumberStepper({
+  value,
+  min = 1,
+  max = 8,
+  disabled = false,
+  onChange,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const t = useT();
+  const [draft, setDraft] = useState<string | null>(null);
+  const clamp = (next: number) => Math.min(max, Math.max(min, next));
+  const commitDraft = () => {
+    if (draft === null) {
+      return;
+    }
+    const parsed = parseInt(draft, 10);
+    onChange(clamp(Number.isNaN(parsed) ? value : parsed));
+    setDraft(null);
+  };
+  return (
+    <div className={disabled ? "stepper is-disabled" : "stepper"}>
+      <button
+        type="button"
+        aria-label={t("settings.stepper.decrease")}
+        disabled={disabled || value <= min}
+        onClick={() => onChange(clamp(value - 1))}
+      >
+        −
+      </button>
+      <input
+        value={draft ?? String(value)}
+        inputMode="numeric"
+        disabled={disabled}
+        onChange={(event) => setDraft(event.currentTarget.value.replace(/[^0-9]/g, ""))}
+        onBlur={commitDraft}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            commitDraft();
+            event.currentTarget.blur();
+          }
+        }}
+      />
+      <button
+        type="button"
+        aria-label={t("settings.stepper.increase")}
+        disabled={disabled || value >= max}
+        onClick={() => onChange(clamp(value + 1))}
+      >
+        +
+      </button>
+    </div>
   );
 }

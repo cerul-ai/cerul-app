@@ -4,6 +4,7 @@ pub mod logs;
 pub mod paths;
 pub mod providers;
 pub mod retrieval;
+pub mod settings;
 pub mod sqlite;
 pub mod usage;
 pub mod vectors;
@@ -30,6 +31,7 @@ pub use retrieval::{
     items_needing_rebuild_count, rebuild_item_retrieval_units, replace_item_retrieval_units,
     retrieval_unit_count, set_item_search_index_status, StorageRetrievalUnit, SEARCH_INDEX_VERSION,
 };
+pub use settings::read_string_setting;
 pub use usage::{
     list_usage_events, record_usage_event, usage_summary, usage_totals_by_item,
     usage_totals_by_item_ids, usage_totals_by_job, usage_totals_by_job_ids, usage_totals_for_item,

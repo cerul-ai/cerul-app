@@ -113,18 +113,34 @@ export function jobDisplayStatus(job: api.JobRecord, t: TFunction) {
 
 // Prefer the localized stage label over the backend's English stage_message so
 // the sheet stays in-language; fall back to stage_message for unknown stages.
-// When the backend appended a "N/M" item count, keep it alongside the localized
-// label (which would otherwise drop the English message and hide the count).
+// Keep a parseable detail alongside the localized label: a "N/M" item count for
+// most stages, or the language-neutral download stats ("45% · 3.2 MB/s · ETA
+// 1:20") the downloader emits — otherwise the localized label would drop the
+// message and hide the live speed/progress.
 export function jobStageMessage(job: api.JobRecord, t: TFunction) {
   if (job.error) {
     return job.error;
   }
   const label = jobStageLabel(job.stage, t);
   if (label) {
-    const count = stageCountSuffix(job.stage_message);
-    return count ? `${label} · ${count}` : label;
+    const detail = stageDetailSuffix(job);
+    return detail ? `${label} · ${detail}` : label;
   }
   return job.stage_message;
+}
+
+// The download stage carries language-neutral stats ("45% · 3.2 MB/s · ETA
+// 1:20") that always lead with a percentage — show those verbatim after the
+// localized label. The same stage also emits English lifecycle strings
+// ("Starting video download", "Download complete"); gate on the leading percent
+// so those never appear raw in a non-English UI (the localized label stands on
+// its own). Other stages only ride a trailing "N/M" item count, when present.
+function stageDetailSuffix(job: api.JobRecord): string | null {
+  if (job.stage === "downloading") {
+    const message = job.stage_message?.trim();
+    return message && /\d%/.test(message) ? message : null;
+  }
+  return stageCountSuffix(job.stage_message);
 }
 
 // Pulls a trailing "N/M" the backend appends to a stage message (e.g. the frame

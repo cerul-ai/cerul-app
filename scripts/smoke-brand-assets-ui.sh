@@ -8,6 +8,8 @@ test -s apps/desktop/public/brand/cerul-mark-light.svg
 test -s apps/desktop/public/brand/cerul-mark-dark.svg
 test -s apps/desktop/public/brand/cerul-mark-white.svg
 test -s apps/desktop/public/brand/cerul-mark-color.svg
+test -s apps/desktop/public/brand/svg/cerul-icon-silver.svg
+test -s apps/desktop/public/brand/svg/cerul-icon-graphite.svg
 test -s apps/desktop/public/brand/cerul-icon-mac-1024.png
 test -s apps/desktop/public/brand/cerul-menubarTemplate.png
 test -s apps/desktop/public/brand/cerul-menubarTemplate@2x.png
@@ -23,10 +25,10 @@ test -s apps/desktop/public/brand/dmg/dmg-background@2x.png
 test -s apps/desktop/public/brand/nsis/installerSidebar.bmp
 test -s apps/desktop/public/brand/nsis/installerHeader.bmp
 
-rg -qF "markLight: \"/brand/cerul-mark-light.svg\"" apps/desktop/src/lib/brand.ts
-rg -qF "markDark: \"/brand/cerul-mark-dark.svg\"" apps/desktop/src/lib/brand.ts
-rg -qF "markWhite: \"/brand/cerul-mark-white.svg\"" apps/desktop/src/lib/brand.ts
-rg -qF "markColor: \"/brand/cerul-mark-color.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markLight: \"/brand/svg/cerul-icon-silver.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markDark: \"/brand/svg/cerul-icon-graphite.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markWhite: \"/brand/svg/cerul-icon-graphite.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markColor: \"/brand/svg/cerul-icon-silver.svg\"" apps/desktop/src/lib/brand.ts
 rg -qF "function BrandMarkAsset" apps/desktop/src/components/brand.tsx
 rg -qF "src={brandAssets.markLight}" apps/desktop/src/components/brand.tsx
 rg -qF "src={brandAssets.markDark}" apps/desktop/src/components/brand.tsx
