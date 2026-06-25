@@ -450,7 +450,8 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
     let v1_routes = Router::new()
         .route("/status", get(v1_status))
         .route("/openapi.json", get(v1_openapi_json))
-        .route("/search", post(v1_search));
+        .route("/search", post(v1_search))
+        .route("/ask", post(v1_ask));
 
     Router::new()
         .nest("/internal", internal_routes)
@@ -945,7 +946,7 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             plan: None,
             credits_remaining: None,
         },
-        capabilities: vec!["status", "openapi", "search"],
+        capabilities: vec!["status", "openapi", "search", "ask"],
     }))
 }
 
@@ -958,12 +959,35 @@ struct V1SearchRequest {
     target: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct V1AskRequest {
+    question: Option<String>,
+    query: Option<String>,
+    q: Option<String>,
+    max_results: Option<usize>,
+    limit: Option<usize>,
+    locale: Option<String>,
+    mode: Option<String>,
+    target: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct V1SearchResponse {
     request_id: String,
     execution: V1Execution,
     results: Vec<V1SearchResult>,
     diagnostics: V1SearchDiagnostics,
+    usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+struct V1AskResponse {
+    request_id: String,
+    execution: V1Execution,
+    mode: &'static str,
+    answer: String,
+    citations: Vec<V1SearchResult>,
+    warnings: Vec<String>,
     usage: V1Usage,
 }
 
@@ -1066,18 +1090,7 @@ async fn v1_search(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
-    let target = req
-        .target
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("local")
-        .to_ascii_lowercase();
-    if !matches!(target.as_str(), "local" | "auto") {
-        return Err(ApiError::bad_request(
-            "only local or auto target is currently supported by /v1/search",
-        ));
-    }
+    validate_v1_local_target(req.target.as_deref())?;
     let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 50);
     let response = search_records(
         &state.paths,
@@ -1118,6 +1131,140 @@ async fn v1_search(
             credits_used: 0,
         },
     }))
+}
+
+async fn v1_ask(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1AskRequest>,
+) -> ApiResult<Json<V1AskResponse>> {
+    let question = req
+        .question
+        .or(req.query)
+        .or(req.q)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("question cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let requested_mode = req
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("extractive")
+        .to_ascii_lowercase();
+    if !matches!(requested_mode.as_str(), "extractive" | "auto") {
+        return Err(ApiError::bad_request(
+            "only extractive mode is currently supported by /v1/ask",
+        ));
+    }
+    let limit = req.max_results.or(req.limit).unwrap_or(6).clamp(1, 8);
+    let response = search_records(
+        &state.paths,
+        cerul_search::SearchRequest {
+            q: question.clone(),
+            limit,
+        },
+    )
+    .await?;
+    let filtered_results = response
+        .results
+        .into_iter()
+        .filter(|result| !result.snippet.trim().is_empty())
+        .take(limit)
+        .collect::<Vec<_>>();
+    let item_metadata = v1_search_item_metadata(&state.paths, &filtered_results)?;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let citations = filtered_results
+        .iter()
+        .map(|result| v1_search_result(result, &item_metadata, &base_url))
+        .collect::<Vec<_>>();
+    let answer = v1_extractive_answer(&question, &citations, req.locale.as_deref());
+
+    Ok(Json(V1AskResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        mode: "extractive",
+        answer,
+        citations,
+        warnings: Vec::new(),
+        usage: V1Usage {
+            billable: false,
+            metered_events: vec![V1MeteredEvent {
+                capability: "local_ask_extractive",
+                quantity: 1,
+                credits: 0,
+            }],
+            credits_used: 0,
+        },
+    }))
+}
+
+fn validate_v1_local_target(target: Option<&str>) -> ApiResult<()> {
+    let target = target
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local")
+        .to_ascii_lowercase();
+    if matches!(target.as_str(), "local" | "auto") {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(
+        "only local or auto target is currently supported by /v1",
+    ))
+}
+
+fn v1_extractive_answer(
+    question: &str,
+    citations: &[V1SearchResult],
+    locale: Option<&str>,
+) -> String {
+    let answer_in_english =
+        locale.is_some_and(|locale| locale.trim().to_ascii_lowercase().starts_with("en"));
+    if citations.is_empty() {
+        if answer_in_english {
+            format!(
+                "I couldn't find a directly related moment for \"{}\" in the local index. Try another keyword or wait for current indexing jobs to finish.",
+                question
+            )
+        } else {
+            format!(
+                "没有在本地索引里找到和「{}」直接相关的片段。可以先换一个关键词，或等当前索引任务完成后再问。",
+                question
+            )
+        }
+    } else {
+        let mut sentences = Vec::new();
+        for citation in citations.iter().take(3) {
+            let timestamp = citation.time.timestamp.as_deref().unwrap_or("0:00");
+            if answer_in_english {
+                sentences.push(format!(
+                    "Around {} in \"{}\", the index says: {}",
+                    timestamp, citation.item.title, citation.text.snippet
+                ));
+            } else {
+                sentences.push(format!(
+                    "在《{}》{} 附近，索引里提到：{}",
+                    citation.item.title, timestamp, citation.text.snippet
+                ));
+            }
+        }
+        if answer_in_english {
+            format!(
+                "{} This answer is extractive and grounded only in the local search hits below.",
+                sentences.join(" ")
+            )
+        } else {
+            format!(
+                "{} 本回答是抽取式回答，只基于下面这些本地检索命中。",
+                sentences.join(" ")
+            )
+        }
+    }
 }
 
 fn v1_search_result(
@@ -5601,6 +5748,7 @@ const V1_API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/status", &["get"]),
     ("/v1/openapi.json", &["get"]),
     ("/v1/search", &["post"]),
+    ("/v1/ask", &["post"]),
 ];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
@@ -6191,7 +6339,7 @@ mod tests {
         assert_eq!(status_json["account"]["signed_in"], false);
         assert_eq!(
             status_json["capabilities"],
-            json!(["status", "openapi", "search"])
+            json!(["status", "openapi", "search", "ask"])
         );
 
         let openapi = app
@@ -6210,18 +6358,16 @@ mod tests {
         assert!(paths.contains_key("/v1/status"));
         assert!(paths.contains_key("/v1/openapi.json"));
         assert!(paths.contains_key("/v1/search"));
+        assert!(paths.contains_key("/v1/ask"));
         assert!(!paths.contains_key("/internal/health"));
         assert!(!paths.contains_key("/health"));
     }
 
-    #[tokio::test]
-    async fn v1_search_returns_agent_friendly_results_with_evidence_urls() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        let raw_path = temp.path().join("video.mp4");
-        fs::write(&raw_path, b"not a real video").unwrap();
+    fn seed_v1_agent_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
+        fs::write(raw_path, b"not a real video").unwrap();
+        let raw_path_string = raw_path.to_string_lossy().to_string();
         {
-            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            let conn = cerul_storage::sqlite::open(paths).unwrap();
             conn.execute(
                 "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
                 [],
@@ -6238,7 +6384,7 @@ mod tests {
                     ?1, 10, 'indexed', '{}'
                 )
                 "#,
-                [raw_path.to_string_lossy().as_ref()],
+                [raw_path_string.as_str()],
             )
             .unwrap();
             conn.execute(
@@ -6274,8 +6420,8 @@ mod tests {
             )
             .unwrap();
         }
-        seed_indexing_schema_version(&paths);
-        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        seed_indexing_schema_version(paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
         let units = vec![cerul_storage::StorageRetrievalUnit {
             id: "item-1:unit:v2:000000".to_string(),
             item_id: "item-1".to_string(),
@@ -6295,9 +6441,9 @@ mod tests {
             index_version: cerul_storage::SEARCH_INDEX_VERSION,
             metadata: Default::default(),
         }];
-        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        cerul_storage::replace_item_retrieval_units(paths, "item-1", &units).unwrap();
         cerul_storage::set_item_search_index_status(
-            &paths,
+            paths,
             "item-1",
             "indexed",
             None,
@@ -6305,6 +6451,14 @@ mod tests {
             0,
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v1_search_returns_agent_friendly_results_with_evidence_urls() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
         let app = router_with_paths(paths);
 
         let response = app
@@ -6387,6 +6541,85 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only local or auto target"));
+    }
+
+    #[tokio::test]
+    async fn v1_ask_returns_extractive_answer_with_evidence_citations() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::HOST, "127.0.0.1:25002")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "question": "scaling laws",
+                            "max_results": 2,
+                            "locale": "en-US"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["request_id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["mode"], "extractive");
+        assert!(body["answer"]
+            .as_str()
+            .unwrap()
+            .contains("This answer is extractive"));
+        assert_eq!(body["citations"][0]["id"], "item-1:transcript:000000");
+        assert_eq!(body["citations"][0]["item"]["title"], "Scaling Talk");
+        assert_eq!(
+            body["citations"][0]["evidence"]["clip"]["url"],
+            "http://127.0.0.1:25002/v1/chunks/item-1%3Atranscript%3A000000/video-clip?before_sec=3&after_sec=5"
+        );
+        assert_eq!(body["warnings"], json!([]));
+        assert_eq!(body["usage"]["billable"], false);
+        assert_eq!(
+            body["usage"]["metered_events"][0],
+            json!({"capability": "local_ask_extractive", "quantity": 1, "credits": 0})
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_ask_rejects_non_extractive_mode_until_rag_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"question": "scaling laws", "mode": "rag"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("only extractive mode"));
     }
 
     #[tokio::test]
