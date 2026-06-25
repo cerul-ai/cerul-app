@@ -5424,6 +5424,19 @@ function SettingsScreen({
   onBack: () => void;
 }) {
   const t = useT();
+  // Esc closes Settings (returns to the previous view), matching the detail
+  // screens. Skip when a modal/dialog is open on top so Esc dismisses that first.
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || hasOpenModalSurface()) {
+        return;
+      }
+      event.preventDefault();
+      onBack();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onBack]);
   const sectionIcons: Record<string, LucideIcon> = {
     General: SlidersHorizontal,
     Models: Cpu,
