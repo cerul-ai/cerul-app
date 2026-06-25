@@ -326,3 +326,23 @@
 .settings-page .storage-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .settings-page .storage-legend-item .swatch { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
 .settings-page .storage-legend-item .mono { color: var(--text-faint); }
+
+/* About: product hero card + inline updater status */
+.settings-page .about-hero { display: flex; align-items: center; gap: 16px; padding: 16px 2px; }
+.settings-page .about-appicon { width: 56px; height: 56px; border-radius: 14px; background: linear-gradient(150deg, #f3f4f6, #cdd2d9); box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255, 255, 255, 0.6); flex-shrink: 0; }
+[data-theme="dark"] .settings-page .about-appicon { background: linear-gradient(155deg, #3a3f49, #15171c); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 24px rgba(0, 0, 0, 0.5); }
+.settings-page .about-id strong { font-size: 18px; font-weight: var(--fw-semibold); display: block; }
+.settings-page .about-tagline { color: var(--text-muted); font-size: var(--fs-meta); }
+.settings-page .about-sep { height: 1px; background: var(--line); }
+.settings-page .about-update-row { display: flex; align-items: center; gap: 10px; padding: 13px 2px; flex-wrap: wrap; }
+.settings-page .about-update-fill { flex: 1; min-width: 12px; }
+.settings-page .about-update-status { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-meta); color: var(--text-muted); }
+.settings-page .about-update-status.is-ok { color: var(--success); }
+.settings-page .about-update-status.is-error { color: var(--danger); }
+.settings-page .about-update-status.is-available { color: var(--accent); }
+.settings-page .about-update-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); }
+.settings-page .about-spin { animation: about-spin 1s linear infinite; }
+@keyframes about-spin { to { transform: rotate(360deg); } }
+.settings-page .about-meta { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; padding: 14px 2px; font-size: var(--fs-meta); }
+.settings-page .about-meta .k { color: var(--text-faint); }
+.settings-page .about-meta .v { color: var(--text); font-family: var(--font-mono); font-size: 12.5px; }

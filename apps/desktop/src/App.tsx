@@ -8396,104 +8396,145 @@ function AboutSettings() {
     }
   }
 
+  const inlineUpdateStatus = (() => {
+    if (updateState.status === "running") {
+      return (
+        <span className="about-update-status">
+          <Loader2 size={14} className="about-spin" />
+          {t("settings.about.update.checking")}
+        </span>
+      );
+    }
+    if (updateState.status === "error") {
+      return (
+        <span className="about-update-status is-error">
+          <AlertTriangle size={14} />
+          {updateState.message}
+        </span>
+      );
+    }
+    if (updateState.update) {
+      return (
+        <span className="about-update-status is-available">
+          <span className="about-update-dot" />
+          {updateState.message}
+        </span>
+      );
+    }
+    if (updateState.status === "done" && updateState.message) {
+      return (
+        <span className="about-update-status is-ok">
+          <Check size={14} />
+          {updateState.message}
+        </span>
+      );
+    }
+    return null;
+  })();
+
   return (
     <>
-      <SettingsGroup title={t("settings.about.group.title")}>
-        <SettingRow
-          label={t("settings.about.version.label")}
-          control={<span className="settings-value">{appVersion ?? t("settings.about.version.fallback")}</span>}
-        />
-        <SettingRow
-          label={t("settings.about.license.label")}
-          control={<span className="settings-value">{t("settings.about.license.value")}</span>}
-        />
-        <SettingRow
-          label={t("settings.about.commit.label")}
-          control={<span className="settings-value">{t("settings.about.commit.value")}</span>}
-        />
-        <SettingRow
-          label={t("settings.about.buildDate.label")}
-          control={<span className="settings-value">{t("settings.about.buildDate.value")}</span>}
-        />
-        <div className="settings-actions settings-actions--incard">
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          onClick={() => window.open("https://github.com/cerul-ai/cerul-app", "_blank", "noopener,noreferrer")}
-        >
-          <ExternalLink size={16} />
-          <span>{t("settings.about.github")}</span>
-        </button>
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          onClick={() => window.open("https://cerul.ai/docs", "_blank", "noopener,noreferrer")}
-        >
-          <ExternalLink size={16} />
-          <span>{t("settings.about.docs")}</span>
-        </button>
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          onClick={() => window.open("mailto:support@cerul.ai", "_blank", "noopener,noreferrer")}
-        >
-          <ExternalLink size={16} />
-          <span>{t("settings.about.support")}</span>
-        </button>
-        <button
-          className="btn btn-secondary sm"
-          type="button"
-          disabled={updateState.status === "running"}
-          onClick={() => void checkForUpdates()}
-        >
-          {updateState.status === "running" ? <Loader2 size={16} /> : <RefreshCcw size={16} />}
-          <span>{t("settings.about.checkUpdates")}</span>
-        </button>
-        {hasDesktopHost() ? (
-          <button
-            className="btn btn-secondary sm"
-            type="button"
-            disabled={diagnosticsState.status === "running"}
-            onClick={() => void copyUpdateDiagnostics()}
-          >
-            {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
-            <span>{t("settings.about.update.copyDiagnostics")}</span>
-          </button>
-        ) : null}
-        {updateState.update ? (
+      <SettingsGroup>
+        <div className="about-hero">
+          <span className="about-appicon" aria-hidden="true" />
+          <div className="about-id">
+            <strong>Cerul</strong>
+            <span className="about-tagline">
+              {t("settings.about.version.label")} {appVersion ?? t("settings.about.version.fallback")}
+              {" · "}
+              {t("settings.about.tagline")}
+            </span>
+          </div>
+        </div>
+        <div className="about-sep" />
+        <div className="about-update-row">
           <button
             className="btn btn-primary sm"
             type="button"
-            disabled={
-              updateActionStatus === "running" ||
-              aboutUpdaterState.phase === "downloading" ||
-              aboutUpdaterState.phase === "preparing" ||
-              aboutUpdaterState.phase === "installing"
-            }
-            onClick={() => void activateCheckedUpdate()}
+            disabled={updateState.status === "running"}
+            onClick={() => void checkForUpdates()}
           >
-            {updateActionIcon()}
-            <span>{updateActionLabel()}</span>
+            {updateState.status === "running" ? <Loader2 size={16} /> : <RefreshCcw size={16} />}
+            <span>{t("settings.about.checkUpdates")}</span>
           </button>
-        ) : null}
-        {updateState.update ? (
+          <span className="about-update-fill" />
+          {inlineUpdateStatus}
+          {updateState.update ? (
+            <button
+              className="btn btn-primary sm"
+              type="button"
+              disabled={
+                updateActionStatus === "running" ||
+                aboutUpdaterState.phase === "downloading" ||
+                aboutUpdaterState.phase === "preparing" ||
+                aboutUpdaterState.phase === "installing"
+              }
+              onClick={() => void activateCheckedUpdate()}
+            >
+              {updateActionIcon()}
+              <span>{updateActionLabel()}</span>
+            </button>
+          ) : null}
+        </div>
+        <div className="about-sep" />
+        <div className="about-meta">
+          <span className="k">{t("settings.about.commit.label")}</span>
+          <span className="v">{t("settings.about.commit.value")}</span>
+          <span className="k">{t("settings.about.buildDate.label")}</span>
+          <span className="v">{t("settings.about.buildDate.value")}</span>
+          <span className="k">{t("settings.about.license.label")}</span>
+          <span className="v">{t("settings.about.license.value")}</span>
+        </div>
+        <div className="about-sep" />
+        <div className="settings-actions settings-actions--incard">
           <button
-            className="btn btn-secondary sm"
+            className="btn btn-ghost sm"
             type="button"
-            onClick={() => window.open(updateState.update!.url, "_blank", "noopener,noreferrer")}
+            onClick={() => window.open("https://github.com/cerul-ai/cerul-app", "_blank", "noopener,noreferrer")}
           >
             <ExternalLink size={16} />
-            <span>{t("settings.about.update.openRelease")}</span>
+            <span>{t("settings.about.github")}</span>
           </button>
-        ) : null}
+          <button
+            className="btn btn-ghost sm"
+            type="button"
+            onClick={() => window.open("https://cerul.ai/docs", "_blank", "noopener,noreferrer")}
+          >
+            <ExternalLink size={16} />
+            <span>{t("settings.about.docs")}</span>
+          </button>
+          <button
+            className="btn btn-ghost sm"
+            type="button"
+            onClick={() => window.open("mailto:support@cerul.ai", "_blank", "noopener,noreferrer")}
+          >
+            <ExternalLink size={16} />
+            <span>{t("settings.about.support")}</span>
+          </button>
+          <span className="about-update-fill" />
+          {updateState.update ? (
+            <button
+              className="btn btn-ghost sm"
+              type="button"
+              onClick={() => window.open(updateState.update!.url, "_blank", "noopener,noreferrer")}
+            >
+              <ExternalLink size={16} />
+              <span>{t("settings.about.update.openRelease")}</span>
+            </button>
+          ) : null}
+          {hasDesktopHost() ? (
+            <button
+              className="btn btn-ghost sm"
+              type="button"
+              disabled={diagnosticsState.status === "running"}
+              onClick={() => void copyUpdateDiagnostics()}
+            >
+              {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+              <span>{t("settings.about.update.copyDiagnostics")}</span>
+            </button>
+          ) : null}
         </div>
       </SettingsGroup>
-      {updateState.message ? (
-        <InlineNotice
-          tone={updateState.status === "error" ? "error" : "muted"}
-          message={updateState.message}
-        />
-      ) : null}
       {diagnosticsState.message ? (
         <InlineNotice
           tone={diagnosticsState.status === "error" ? "error" : "muted"}
