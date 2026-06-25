@@ -7277,8 +7277,9 @@ function ProviderConnections({
         });
         return;
       }
+      const creatingProvider = mode === "create";
       const saved =
-        mode === "create"
+        creatingProvider
           ? await api.createProvider({
               type: form.type,
               label: form.label,
@@ -7291,6 +7292,11 @@ function ProviderConnections({
               base_url: baseUrl,
               ...(apiKey ? { api_key: apiKey } : {}),
             });
+      if (creatingProvider) {
+        setMode("edit");
+        setEditingId(saved.id);
+        setRequiresFreshKey(false);
+      }
       const tested = testAfterSave ? await api.testProvider(saved.id) : saved;
       await onRefresh();
       const shouldBindCapability =
