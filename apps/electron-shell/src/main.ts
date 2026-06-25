@@ -29,8 +29,13 @@ import { pathToFileURL } from "node:url";
 // GitHub-release fallback instead of crashing the main process at load time.
 import type { AppUpdater } from "electron-updater";
 
-const apiBaseUrl = "http://127.0.0.1:7777";
+const defaultApiPort = 23785;
+const apiEndpointFileName = "endpoint.json";
+const apiPort = resolveApiPortForLaunch();
+const apiBaseUrl = apiBaseUrlForPort(apiPort);
 const internalApiBaseUrl = `${apiBaseUrl}/internal`;
+process.env.CERUL_API_PORT = String(apiPort);
+process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
 const appScheme = "app";
 const appHost = "cerul";
 const deepLinkSchemes = ["cerul", "cerul-app"];
@@ -50,9 +55,9 @@ const contentSecurityPolicy = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
-  "img-src 'self' app: http://127.0.0.1:7777 data: blob:",
-  "media-src 'self' http://127.0.0.1:7777 blob:",
-  `connect-src 'self' http://127.0.0.1:7777 ${cloudAccountOrigin}`,
+  `img-src 'self' app: ${apiBaseUrl} data: blob:`,
+  `media-src 'self' ${apiBaseUrl} blob:`,
+  `connect-src 'self' ${apiBaseUrl} ${cloudAccountOrigin}`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'none'",
@@ -3587,6 +3592,43 @@ function appPaths() {
     models_dir: path.join(data, "models"),
     index_dir: path.join(data, "indexes", "qdrant"),
   };
+}
+
+function resolveApiPortForLaunch() {
+  return (
+    parseApiPort(process.env.CERUL_API_PORT) ??
+    readEndpointApiPort() ??
+    defaultApiPort
+  );
+}
+
+function readEndpointApiPort() {
+  try {
+    const raw = fs.readFileSync(path.join(appPaths().data_dir, apiEndpointFileName), "utf8");
+    const parsed = JSON.parse(raw) as { port?: unknown; base_url?: unknown };
+    const port = parseApiPort(parsed.port);
+    if (port) {
+      return port;
+    }
+    if (typeof parsed.base_url === "string") {
+      return parseApiPort(new URL(parsed.base_url).port);
+    }
+  } catch {
+    // Missing or malformed endpoint metadata falls back to the branded default.
+  }
+  return null;
+}
+
+function parseApiPort(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+  const port = Number.parseInt(String(value), 10);
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : null;
+}
+
+function apiBaseUrlForPort(port: number) {
+  return `http://127.0.0.1:${port}`;
 }
 
 function dataBaseDir() {

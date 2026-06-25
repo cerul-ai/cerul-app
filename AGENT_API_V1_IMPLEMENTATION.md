@@ -107,8 +107,8 @@ Evidence should include at least:
 - [x] 1. Planning document added and maintained.
 - [x] 2. Move desktop/internal backend routes from root to `/internal`, leaving no root compatibility routes.
 - [x] 3. Migrate Electron shell, desktop frontend, menubar, CSP, tests, and helpers from root routes to `/internal` or `/v1` as appropriate.
-- [ ] 4. Add configurable API port in backend settings and `configured_addr`, with validation and tests.
-- [ ] 5. Add Settings UI controls and i18n copy for custom local Core port.
+- [x] 4. Add configurable API port in backend settings and `configured_addr`, with validation and tests.
+- [x] 5. Add Settings UI controls and i18n copy for custom local Core port.
 - [ ] 6. Add `/v1/status` and `/v1/openapi.json`.
 - [ ] 7. Add `/v1/search` with agent-friendly request and response fields, including evidence URLs.
 - [ ] 8. Add `/v1/ask` with `mode`, citations, evidence, and usage metadata.
@@ -122,3 +122,4 @@ Evidence should include at least:
 
 - 2026-06-26: Added this implementation plan and marked item 1 complete.
 - 2026-06-26: Moved the existing desktop API surface under `/internal`, removed root compatibility routes, migrated desktop/Electron/menubar calls, and added root-route removal coverage.
+- 2026-06-26: Added configurable Core port support with default `23785`, settings validation, endpoint metadata, dynamic desktop API base URL wiring, and Settings UI controls.

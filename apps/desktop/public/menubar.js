@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://127.0.0.1:7777";
+const API_BASE_URL = window.cerulDesktop?.apiBaseUrl || "http://127.0.0.1:23785";
 const INTERNAL_API_PREFIX = "/internal";
 const REFRESH_MS = 5000;
 const LANG_KEY = "cerul.lang.v1";

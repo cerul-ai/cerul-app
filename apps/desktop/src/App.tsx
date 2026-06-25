@@ -8053,8 +8053,10 @@ function AdvancedSettings({
 }) {
   const t = useT();
   const binding = settingString(settings, "api_binding", "127");
+  const apiPort = settingNumber(settings, "api_port", 23785);
   // The key itself is write-only on the API; we only learn whether one exists.
   const remoteApiKeySet = settings["remote_api_key_set"] === true;
+  const [apiPortDraft, setApiPortDraft] = useState(String(apiPort));
   const [remoteKeyDraft, setRemoteKeyDraft] = useState("");
   const logLevel = settingString(settings, "log_level", "info");
   const modelDownloadSource = settingString(settings, "model_download_source", "auto");
@@ -8067,6 +8069,10 @@ function AdvancedSettings({
     message: string | null;
   }>({ status: "idle", message: null });
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
+
+  useEffect(() => {
+    setApiPortDraft(String(apiPort));
+  }, [apiPort]);
 
   async function openLogsFolder() {
     setLogAction({ status: "running", message: null });
@@ -8092,6 +8098,21 @@ function AdvancedSettings({
     }
   }
 
+  async function commitApiPortDraft() {
+    const trimmed = apiPortDraft.trim();
+    const port = Number.parseInt(trimmed, 10);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535 || String(port) !== trimmed) {
+      setLogAction({ status: "error", message: t("settings.advanced.port.invalid") });
+      setApiPortDraft(String(apiPort));
+      return;
+    }
+    if (port === apiPort) return;
+    const saved = await onSettingsChange({ api_port: port });
+    if (saved) {
+      setLogAction({ status: "done", message: t("settings.advanced.port.saved") });
+    }
+  }
+
   return (
     <>
       <SettingsGroup title={t("settings.advanced.group.title")}>
@@ -8108,6 +8129,23 @@ function AdvancedSettings({
               <option value="127">{t("settings.advanced.binding.localOnly")}</option>
               <option value="0">{t("settings.advanced.binding.allInterfaces")}</option>
             </select>
+          }
+        />
+        <SettingRow
+          label={t("settings.advanced.port.label")}
+          description={t("settings.advanced.port.description")}
+          control={
+            <input
+              className="settings-input"
+              type="number"
+              min={1024}
+              max={65535}
+              step={1}
+              value={apiPortDraft}
+              disabled={disabled}
+              onChange={(event) => setApiPortDraft(event.currentTarget.value)}
+              onBlur={() => void commitApiPortDraft()}
+            />
           }
         />
         {binding === "0" ? (

@@ -1,6 +1,6 @@
-const API_BASE_URL = "http://127.0.0.1:7777";
 const INTERNAL_API_PREFIX = "/internal";
 
+import { localApiBaseUrl } from "./desktopHost";
 import { appLocaleTag } from "./i18n";
 
 function coreUnreachableMessage(): string {
@@ -631,7 +631,7 @@ export async function listItemChunks(id: string) {
 }
 
 export function videoSegmentUrl(chunkId: string) {
-  return `${API_BASE_URL}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/video-segment`;
+  return `${localApiBaseUrl()}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/video-segment`;
 }
 
 export function videoClipUrl(
@@ -642,11 +642,11 @@ export function videoClipUrl(
   if (opts.beforeSec !== undefined) params.set("before_sec", String(opts.beforeSec));
   if (opts.afterSec !== undefined) params.set("after_sec", String(opts.afterSec));
   params.set("padding_sec", String(opts.paddingSec ?? 2));
-  return `${API_BASE_URL}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/video-clip?${params.toString()}`;
+  return `${localApiBaseUrl()}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/video-clip?${params.toString()}`;
 }
 
 export function chunkFrameUrl(chunkId: string) {
-  return `${API_BASE_URL}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/frame`;
+  return `${localApiBaseUrl()}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/frame`;
 }
 
 export async function deleteItem(id: string, options?: { keepDiscoverable?: boolean }) {
@@ -901,7 +901,7 @@ export async function repairLocalModels(modelIds?: string[]) {
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}${INTERNAL_API_PREFIX}${path}`, {
+    response = await fetch(`${localApiBaseUrl()}${INTERNAL_API_PREFIX}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",

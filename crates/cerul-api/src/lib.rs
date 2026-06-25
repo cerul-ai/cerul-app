@@ -43,6 +43,9 @@ const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_LIST_LIMIT: usize = 250;
 const MAX_LIST_LIMIT: usize = 1_000;
 const CORE_LOG_FILE: &str = "cerul-core.log";
+const DEFAULT_API_PORT: u16 = 23785;
+const API_PORT_SETTING: &str = "api_port";
+const API_ENDPOINT_FILE: &str = "endpoint.json";
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -494,6 +497,9 @@ pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Resu
     let _worker = jobs::spawn_default_job_worker(paths.clone());
     let _qdrant_shutdown = QdrantShutdownGuard;
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    if let Err(error) = write_api_endpoint_file(&paths, addr.port()) {
+        tracing::warn!(%error, "failed to write Cerul API endpoint file");
+    }
     axum::serve(
         listener,
         router_with_paths(paths).into_make_service_with_connect_info::<SocketAddr>(),
@@ -634,7 +640,7 @@ async fn shutdown_signal() {
 }
 
 pub fn default_addr() -> SocketAddr {
-    "127.0.0.1:7777"
+    format!("127.0.0.1:{DEFAULT_API_PORT}")
         .parse()
         .expect("default Cerul API address is valid")
 }
@@ -644,8 +650,43 @@ pub fn configured_addr(paths: &AppPaths) -> anyhow::Result<SocketAddr> {
         Some("0") | Some("0.0.0.0") => "0.0.0.0",
         _ => "127.0.0.1",
     };
+    let port = configured_api_port(paths)?;
 
-    Ok(format!("{host}:7777").parse()?)
+    Ok(format!("{host}:{port}").parse()?)
+}
+
+fn configured_api_port(paths: &AppPaths) -> anyhow::Result<u16> {
+    if let Ok(value) = std::env::var("CERUL_API_PORT") {
+        return parse_api_port(&value).ok_or_else(|| {
+            anyhow::anyhow!("CERUL_API_PORT must be an integer from 1024 to 65535")
+        });
+    }
+    match setting_string(paths, API_PORT_SETTING)? {
+        Some(value) => parse_api_port(&value)
+            .ok_or_else(|| anyhow::anyhow!("api_port must be an integer from 1024 to 65535")),
+        None => Ok(DEFAULT_API_PORT),
+    }
+}
+
+fn parse_api_port(value: &str) -> Option<u16> {
+    let port = value.trim().parse::<u16>().ok()?;
+    (1024..=65535).contains(&port).then_some(port)
+}
+
+fn write_api_endpoint_file(paths: &AppPaths, port: u16) -> anyhow::Result<()> {
+    fs::create_dir_all(&paths.data)?;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let payload = json!({
+        "base_url": base_url,
+        "internal_base_url": format!("{base_url}/internal"),
+        "port": port,
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    fs::write(
+        paths.data.join(API_ENDPOINT_FILE),
+        serde_json::to_vec_pretty(&payload)?,
+    )?;
+    Ok(())
 }
 
 async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: Next) -> Response {
@@ -1171,6 +1212,7 @@ struct DiagnosticsItemError {
 
 const DIAGNOSTIC_SETTING_KEYS: &[&str] = &[
     "api_binding",
+    API_PORT_SETTING,
     "asr_model",
     "concurrent_jobs",
     "inference_mode",
@@ -3512,6 +3554,7 @@ async fn update_settings(
 ) -> ApiResult<Json<BTreeMap<String, Value>>> {
     let previous_inference_mode = configured_inference_mode(&state.paths)?;
     let requested_inference_mode = requested_inference_mode(&settings);
+    let mut requested_api_port = None;
     let mut conn = cerul_storage::sqlite::open(&state.paths)?;
     let tx = conn.transaction()?;
     for (key, value) in &settings {
@@ -3522,7 +3565,10 @@ async fn update_settings(
         if is_internal_setting(key) {
             continue;
         }
-        let value = normalize_setting_value(key, value.clone());
+        let value = validate_write_setting_value(key, normalize_setting_value(key, value.clone()))?;
+        if key == API_PORT_SETTING {
+            requested_api_port = value.as_u64().and_then(|value| u16::try_from(value).ok());
+        }
         tx.execute(
             r#"
             INSERT INTO settings (key, value, updated_at)
@@ -3538,6 +3584,9 @@ async fn update_settings(
 
     if let Some(inference_mode) = requested_inference_mode.as_deref() {
         sync_inference_mode_side_effects(&state.paths, &previous_inference_mode, inference_mode)?;
+    }
+    if let Some(port) = requested_api_port {
+        write_api_endpoint_file(&state.paths, port)?;
     }
 
     Ok(Json(
@@ -3586,6 +3635,20 @@ fn normalize_setting_value(key: &str, value: Value) -> Value {
         );
     }
     value
+}
+
+fn validate_write_setting_value(key: &str, value: Value) -> ApiResult<Value> {
+    if key == API_PORT_SETTING {
+        let port = match &value {
+            Value::Number(number) => number.as_u64().and_then(|value| u16::try_from(value).ok()),
+            Value::String(value) => parse_api_port(value),
+            _ => None,
+        }
+        .filter(|port| (1024..=65535).contains(port))
+        .ok_or_else(|| ApiError::bad_request("api_port must be an integer from 1024 to 65535"))?;
+        return Ok(Value::from(port));
+    }
+    Ok(value)
 }
 
 fn requested_inference_mode(settings: &BTreeMap<String, Value>) -> Option<String> {
@@ -5827,7 +5890,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_addr_defaults_to_loopback_and_reads_binding_setting() {
+    fn configured_addr_defaults_to_loopback_and_reads_binding_and_port_settings() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         assert_eq!(configured_addr(&paths).unwrap(), default_addr());
@@ -5844,7 +5907,21 @@ mod tests {
 
         assert_eq!(
             configured_addr(&paths).unwrap(),
-            "0.0.0.0:7777".parse::<SocketAddr>().unwrap()
+            "0.0.0.0:23785".parse::<SocketAddr>().unwrap()
+        );
+
+        conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('api_port', '24001', strftime('%s','now'))
+            "#,
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            configured_addr(&paths).unwrap(),
+            "0.0.0.0:24001".parse::<SocketAddr>().unwrap()
         );
     }
 
@@ -5962,6 +6039,56 @@ mod tests {
         assert!(setting_string(&paths, "cloud_quota_percent")
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn settings_endpoint_validates_api_port_and_writes_endpoint_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths.clone());
+
+        let valid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/internal/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "api_port": 24001 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), StatusCode::OK);
+        let settings = response_json(valid).await;
+        assert_eq!(settings["api_port"], 24001);
+        assert_eq!(
+            setting_string(&paths, "api_port").unwrap().as_deref(),
+            Some("24001")
+        );
+
+        let endpoint: Value =
+            serde_json::from_slice(&std::fs::read(paths.data.join(API_ENDPOINT_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(endpoint["port"], 24001);
+        assert_eq!(endpoint["base_url"], "http://127.0.0.1:24001");
+        assert_eq!(
+            endpoint["internal_base_url"],
+            "http://127.0.0.1:24001/internal"
+        );
+
+        let invalid = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/internal/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "api_port": 80 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
