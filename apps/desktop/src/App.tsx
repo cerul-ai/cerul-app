@@ -7614,6 +7614,21 @@ function UsageValue({
   );
 }
 
+function storageCategoryColor(key: string): string {
+  switch (key) {
+    case "cache":
+      return "var(--accent)";
+    case "models":
+      return "var(--accent-2)";
+    case "index":
+      return "var(--success)";
+    case "database":
+      return "var(--warn)";
+    default:
+      return "var(--surface-3)";
+  }
+}
+
 function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
   const labels: Record<string, string> = {
     database: t("settings.storage.category.database"),
@@ -7771,118 +7786,110 @@ function StorageSettings({
           }}
         />
       ) : null}
-      <SettingsGroup title={t("settings.storage.group.title")}>
-        <SettingRow
-          label={t("settings.storage.dataDir.label")}
-          control={
-            <div className="settings-inline-action">
-              <code>{locations?.data_dir ?? "~/Library/Application Support/Cerul"}</code>
+      <SettingsGroup title={t("settings.storage.location.title")}>
+        <div className="setting-row">
+          <div className="setting-row-label">
+            <span>{t("settings.storage.downloadDir.label")}</span>
+            <small className="mono storage-path">
+              {effectiveDownloadDir || "~/Library/Application Support/Cerul/cache"}
+            </small>
+          </div>
+          <div className="setting-row-control">
+            {configuredDownloadDir ? (
               <button
-                className="btn btn-secondary sm"
+                className="btn btn-ghost sm"
                 type="button"
-                disabled={busy}
-                onClick={() => void runStorageAction("reveal-data")}
+                disabled={busy || !hasDesktopHost()}
+                onClick={() => void resetDownloadDir()}
               >
-                <Folder size={16} />
-                <span>{t("settings.storage.dataDir.reveal")}</span>
+                <span>{t("settings.storage.downloadDir.reset")}</span>
               </button>
-            </div>
-          }
-        />
-        <SettingRow
-          label={t("settings.storage.downloadDir.label")}
-          control={
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "flex-end",
-                gap: 6,
-                minWidth: 0,
-              }}
+            ) : null}
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={busy || !effectiveDownloadDir}
+              onClick={() => void revealDownloadDir()}
             >
-              <code className="clamp1" style={{ maxWidth: 340 }}>
-                {effectiveDownloadDir || "~/Library/Application Support/Cerul/cache"}
-              </code>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                {configuredDownloadDir ? (
-                  <button
-                    className="btn btn-ghost sm"
-                    type="button"
-                    disabled={busy || !hasDesktopHost()}
-                    onClick={() => void resetDownloadDir()}
-                  >
-                    <span>{t("settings.storage.downloadDir.reset")}</span>
-                  </button>
-                ) : null}
-                <button
-                  className="btn btn-secondary sm"
-                  type="button"
-                  disabled={busy || !effectiveDownloadDir}
-                  onClick={() => void revealDownloadDir()}
-                >
-                  <Folder size={16} />
-                  <span>{t("settings.storage.dataDir.reveal")}</span>
-                </button>
-                <button
-                  className="btn btn-secondary sm"
-                  type="button"
-                  disabled={busy || !hasDesktopHost()}
-                  onClick={() => void changeDownloadDir()}
-                >
-                  <span>{t("settings.storage.downloadDir.change")}</span>
-                </button>
-              </div>
-            </div>
-          }
-        />
-        <p className="field-hint">{t("settings.storage.downloadDir.desc")}</p>
-        <SettingRow
-          label={t("settings.storage.cacheSize.label")}
-          control={
-            <span className="settings-value col" style={{ alignItems: "flex-end", gap: 2 }}>
-              <span>
-                {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
-              </span>
+              <Folder size={16} />
+              <span>{t("settings.storage.dataDir.reveal")}</span>
+            </button>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={busy || !hasDesktopHost()}
+              onClick={() => void changeDownloadDir()}
+            >
+              <span>{t("settings.storage.downloadDir.change")}</span>
+            </button>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="setting-row-label">
+            <span>{t("settings.storage.lockedDirs.label")}</span>
+            <small>{t("settings.storage.lockedDirs.desc")}</small>
+          </div>
+          <div className="setting-row-control">
+            <span className="settings-locked">
+              <Lock size={13} />
+              {t("settings.storage.locked")}
+            </span>
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              disabled={busy}
+              onClick={() => void runStorageAction("reveal-data")}
+            >
+              <Folder size={16} />
+              <span>{t("settings.storage.dataDir.reveal")}</span>
+            </button>
+          </div>
+        </div>
+      </SettingsGroup>
+      <p className="field-hint" style={{ marginTop: -8 }}>{t("settings.storage.downloadDir.desc")}</p>
+      <SettingsGroup title={t("settings.storage.usage.title")}>
+        <div className="storage-usage">
+          <div className="storage-usage-head">
+            <span>{t("settings.storage.usage.total")}</span>
+            <span className="mono">
+              {usage ? formatBytes(usage.total_bytes) : t("settings.storage.dataDirLoading")}
               {usage && apparentTotalDiffers ? (
-                <span className="faint mono">
+                <span className="faint">
+                  {" · "}
                   {t("settings.storage.logicalSize", {
                     size: formatBytes(usage.total_apparent_bytes),
                   })}
                 </span>
               ) : null}
             </span>
-          }
-        />
-        {usage ? (
-          <div className="storage-breakdown">
-            {usage.categories.map((category) => {
-              const pct =
-                usage.total_bytes > 0
-                  ? Math.min(100, Math.round((category.bytes / usage.total_bytes) * 100))
-                  : 0;
-              return (
-                <div className="storage-row" key={category.key}>
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <span>{storageCategoryLabel(category.key, category.label, t)}</span>
-                    <span className="mono faint">
-                      {formatBytes(category.bytes)}
-                      {category.apparent_bytes !== category.bytes ? (
-                        <span>
-                          {" · "}
-                          {t("settings.storage.logicalSize", {
-                            size: formatBytes(category.apparent_bytes),
-                          })}
-                        </span>
-                      ) : null}
-                    </span>
-                  </div>
-                  <ProgressBar value={pct} />
-                </div>
-              );
-            })}
           </div>
-        ) : null}
+          {usage ? (
+            <>
+              <div className="storage-stack">
+                {usage.categories.map((category) => {
+                  const pct =
+                    usage.total_bytes > 0 ? Math.max(0, (category.bytes / usage.total_bytes) * 100) : 0;
+                  return (
+                    <i
+                      key={category.key}
+                      style={{ width: `${pct}%`, background: storageCategoryColor(category.key) }}
+                      title={storageCategoryLabel(category.key, category.label, t)}
+                    />
+                  );
+                })}
+              </div>
+              <div className="storage-legend">
+                {usage.categories.map((category) => (
+                  <span key={category.key} className="storage-legend-item">
+                    <i className="swatch" style={{ background: storageCategoryColor(category.key) }} />
+                    {storageCategoryLabel(category.key, category.label, t)}
+                    <span className="mono faint">{formatBytes(category.bytes)}</span>
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </div>
       </SettingsGroup>
       <div className="settings-actions">
         <button

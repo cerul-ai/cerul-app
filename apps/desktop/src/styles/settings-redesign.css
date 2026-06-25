@@ -312,3 +312,17 @@
 }
 .settings-page .stepper input:focus { outline: 0; background: var(--accent-soft); }
 .settings-page .stepper.is-disabled { opacity: 0.55; }
+
+/* Storage: directory rows + horizontal usage bar */
+.settings-page .storage-path { display: block; max-width: 360px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 11.5px; }
+.settings-page .settings-locked { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); color: var(--text-faint); }
+.settings-page .storage-usage { padding: 12px 0; }
+.settings-page .storage-usage-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; font-size: var(--fs-meta); }
+.settings-page .storage-usage-head > span:first-child { font-weight: var(--fw-medium); color: var(--text); }
+.settings-page .storage-usage-head .mono { color: var(--text-muted); }
+.settings-page .storage-stack { display: flex; height: 14px; border-radius: var(--r-pill); overflow: hidden; border: 1px solid var(--line); background: var(--surface-3); }
+.settings-page .storage-stack > i { height: 100%; min-width: 0; }
+.settings-page .storage-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; font-size: var(--fs-caption); color: var(--text-muted); }
+.settings-page .storage-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.settings-page .storage-legend-item .swatch { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+.settings-page .storage-legend-item .mono { color: var(--text-faint); }
