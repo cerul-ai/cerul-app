@@ -4465,6 +4465,7 @@ function LibraryScreen({
   const visibleSelectedCount = filteredItemIds.filter((itemId) => selectedItemIds.has(itemId)).length;
   const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
+  const failedItemIds = items.filter((item) => item.status === "failed").map((item) => item.id);
 
   useEffect(() => {
     const itemIds = new Set(items.map((item) => item.id));
@@ -4573,6 +4574,47 @@ function LibraryScreen({
         await onReindexItems(itemIds);
       }
       setSelectedItemIds(new Set());
+      setBatchState({ status: "idle", message: null });
+    } catch (error) {
+      setBatchState({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  // One-click cleanup: remove every failed item from the library (source media is
+  // untouched, so they can be re-imported). Reuses the batch-delete path.
+  async function clearFailedItems() {
+    if (!actionsEnabled) {
+      setBatchState({ status: "error", message: t("common.coreUnreachable") });
+      return;
+    }
+    const ids = items.filter((item) => item.status === "failed").map((item) => item.id);
+    if (ids.length === 0) {
+      return;
+    }
+    const confirmed = await requestConfirm({
+      title: t("library.clearFailed.confirm.title"),
+      body: t("library.clearFailed.confirm.body", { count: ids.length }),
+      confirmLabel: t("library.clearFailed.confirm.label"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    setBatchState({
+      status: "deleting",
+      message: t("library.batch.deletingProgress", { completed: 0, total: ids.length }),
+    });
+    try {
+      await onDeleteItems(ids, (completed, total) => {
+        setBatchState({
+          status: "deleting",
+          message: t("library.batch.deletingProgress", { completed, total }),
+        });
+      });
+      setSelectedItemIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
       setBatchState({ status: "idle", message: null });
     } catch (error) {
       setBatchState({ status: "error", message: errorMessage(error) });
@@ -4693,6 +4735,18 @@ function LibraryScreen({
                 ? t("library.batch.selectNone")
                 : t("library.batch.selectAll")}
             </span>
+          </button>
+        ) : null}
+        {failedItemIds.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost sm"
+            disabled={batchPending || !actionsEnabled}
+            onClick={() => void clearFailedItems()}
+            title={t("library.clearFailed.hint")}
+          >
+            <Trash2 size={14} />
+            <span>{t("library.clearFailed.button", { count: failedItemIds.length })}</span>
           </button>
         ) : null}
       </div>
