@@ -5794,7 +5794,7 @@ function IndexingSettings({
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 4);
+  const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 8);
   const webCookieMode = settingString(settings, "web_video_cookie_mode", "browser");
   const webCookieBrowser = settingString(settings, "web_video_cookie_browser", "chrome");
   const webCookiesPath = settingString(settings, "web_video_cookies_path", "");
@@ -5804,11 +5804,17 @@ function IndexingSettings({
   const [cookiesPathDraft, setCookiesPathDraft] = useState<string | null>(null);
   const shownJobs = jobsDraft ?? concurrentJobs;
   const shownCookiesPath = cookiesPathDraft ?? webCookiesPath;
-  const commitJobs = () => {
-    if (jobsDraft !== null && jobsDraft !== concurrentJobs) {
-      void onSettingsChange({ concurrent_jobs: jobsDraft });
-    }
-    setJobsDraft(null);
+  // Optimistic value while clicking; coalesce rapid +/− into one PATCH (a
+  // settings write also triggers a multi-request refresh).
+  const jobsCommitTimer = useRef<number | undefined>(undefined);
+  const setJobs = (next: number) => {
+    const clamped = Math.min(8, Math.max(1, next));
+    setJobsDraft(clamped);
+    window.clearTimeout(jobsCommitTimer.current);
+    jobsCommitTimer.current = window.setTimeout(
+      () => void onSettingsChange({ concurrent_jobs: clamped }),
+      350,
+    );
   };
   const commitCookiesPath = () => {
     if (cookiesPathDraft !== null && cookiesPathDraft !== webCookiesPath) {
@@ -5825,20 +5831,8 @@ function IndexingSettings({
           description={t("settings.indexing.concurrentJobs.description")}
           control={
             <div className="col gap-2" style={{ alignItems: "flex-end" }}>
-              <span className="chip neutral">
-                {shownJobs} {t("settings.indexing.concurrentJobs.unit")}
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={4}
-                value={shownJobs}
-                disabled={disabled}
-                onChange={(event) => setJobsDraft(Number(event.currentTarget.value))}
-                onPointerUp={commitJobs}
-                onKeyUp={commitJobs}
-                onBlur={commitJobs}
-              />
+              <NumberStepper value={shownJobs} min={1} max={8} disabled={disabled} onChange={setJobs} />
+              <span className="settings-help">{t("settings.indexing.concurrentJobs.hint")}</span>
             </div>
           }
         />
@@ -8582,5 +8576,64 @@ function Toggle({
       disabled={disabled}
       onChange={(event) => onChange?.(event.currentTarget.checked)}
     />
+  );
+}
+
+function NumberStepper({
+  value,
+  min = 1,
+  max = 8,
+  disabled = false,
+  onChange,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const t = useT();
+  const [draft, setDraft] = useState<string | null>(null);
+  const clamp = (next: number) => Math.min(max, Math.max(min, next));
+  const commitDraft = () => {
+    if (draft === null) {
+      return;
+    }
+    const parsed = parseInt(draft, 10);
+    onChange(clamp(Number.isNaN(parsed) ? value : parsed));
+    setDraft(null);
+  };
+  return (
+    <div className={disabled ? "stepper is-disabled" : "stepper"}>
+      <button
+        type="button"
+        aria-label={t("settings.stepper.decrease")}
+        disabled={disabled || value <= min}
+        onClick={() => onChange(clamp(value - 1))}
+      >
+        −
+      </button>
+      <input
+        value={draft ?? String(value)}
+        inputMode="numeric"
+        disabled={disabled}
+        onChange={(event) => setDraft(event.currentTarget.value.replace(/[^0-9]/g, ""))}
+        onBlur={commitDraft}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            commitDraft();
+            event.currentTarget.blur();
+          }
+        }}
+      />
+      <button
+        type="button"
+        aria-label={t("settings.stepper.increase")}
+        disabled={disabled || value >= max}
+        onClick={() => onChange(clamp(value + 1))}
+      >
+        +
+      </button>
+    </div>
   );
 }
