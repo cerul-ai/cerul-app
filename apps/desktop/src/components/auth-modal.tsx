@@ -189,11 +189,25 @@ export function AuthModal({
         @keyframes ${scope}-in{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
       `}</style>
 
-      {/* backdrop */}
-      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: `radial-gradient(125% 90% at 50% -12%, ${tk.bg2}, ${tk.bg})` }} />
-      <div style={{ position: "absolute", width: 620, height: 620, left: -160, top: -200, borderRadius: "50%", background: `radial-gradient(circle, color-mix(in srgb, ${accent} 24%, transparent), transparent 68%)`, filter: "blur(24px)", pointerEvents: "none" }} />
-      <div style={{ position: "absolute", width: 540, height: 540, right: -180, bottom: -220, borderRadius: "50%", background: `radial-gradient(circle, color-mix(in srgb, ${accent} 14%, transparent), transparent 66%)`, filter: "blur(26px)", pointerEvents: "none" }} />
-      <div style={{ position: "absolute", inset: 0, boxShadow: `inset 0 0 220px 40px ${tk.scrim}`, pointerEvents: "none" }} />
+      {/* backdrop: frost the actual app behind the modal (sense of place when
+          there's a library behind) AND lay an accent aurora over it so it's
+          never blank even over a sparse view; the vignette focuses the card. */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: tk.dark
+            ? "radial-gradient(130% 100% at 50% -10%, rgba(18,23,29,.5), rgba(8,11,15,.72))"
+            : "radial-gradient(130% 100% at 50% -10%, rgba(244,247,250,.42), rgba(221,229,237,.6))",
+          backdropFilter: "blur(26px) saturate(1.2)",
+          WebkitBackdropFilter: "blur(26px) saturate(1.2)",
+        }}
+      />
+      <div style={{ position: "absolute", width: 680, height: 680, left: -180, top: -230, borderRadius: "50%", background: `radial-gradient(circle, color-mix(in srgb, ${accent} 42%, transparent), transparent 66%)`, filter: "blur(34px)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", width: 600, height: 600, right: -200, bottom: -240, borderRadius: "50%", background: `radial-gradient(circle, color-mix(in srgb, ${accent} 30%, transparent), transparent 64%)`, filter: "blur(36px)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", width: 460, height: 460, left: "50%", top: "16%", transform: "translateX(-50%)", borderRadius: "50%", background: `radial-gradient(circle, color-mix(in srgb, ${accent} 18%, transparent), transparent 70%)`, filter: "blur(40px)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", inset: 0, boxShadow: `inset 0 0 240px 50px ${tk.scrim}`, pointerEvents: "none" }} />
 
       {/* panel */}
       <form

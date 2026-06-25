@@ -361,3 +361,49 @@
 /* Select polish: refined chevron + hover, consistent height with other controls */
 .settings-page .select { height: 34px; border-radius: var(--r-md); transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
 .settings-page .select:hover:not(:disabled) { border-color: var(--text-faint); }
+
+/* ============================================================
+   Account & Usage — "calm card" layout (variant B)
+   ============================================================ */
+.settings-page .usage-b__wrap { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.settings-page .usage-b__muted { color: var(--text-muted); font-size: var(--fs-meta); }
+
+/* account row (signed in) */
+.settings-page .usage-b__acct { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
+.settings-page .usage-b__avatar { width: 38px; height: 38px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; font-size: 16px; font-weight: var(--fw-semibold); color: var(--text-on-accent); background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 80%, #fff), var(--accent)); }
+.settings-page .usage-b__acct-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.settings-page .usage-b__acct-id { font-size: 14px; font-weight: var(--fw-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-page .usage-b__acct .chip { flex: none; }
+
+/* account prompt (signed out) */
+.settings-page .usage-b__signin { display: flex; align-items: center; gap: 14px; padding: 16px; border: 1px dashed var(--accent-line); border-radius: var(--r-lg); background: var(--accent-soft); }
+.settings-page .usage-b__signin-ic { width: 40px; height: 40px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; color: var(--text-on-accent); background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 78%, #fff), var(--accent)); }
+.settings-page .usage-b__signin-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.settings-page .usage-b__signin-text strong { font-size: 14px; font-weight: var(--fw-semibold); }
+.settings-page .usage-b__signin .btn { flex: none; }
+
+/* hero spend */
+.settings-page .usage-b__spend { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 2px; padding: 6px 0 2px; }
+.settings-page .usage-b__spend-label { font-size: var(--fs-meta); color: var(--text-muted); }
+.settings-page .usage-b__spend-value { font-size: 46px; line-height: 1.05; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.settings-page .usage-b__spend-sub { font-size: var(--fs-caption); color: var(--text-faint); margin-top: 2px; }
+
+/* local / cloud split bar */
+.settings-page .usage-b__bar { height: 10px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+.settings-page .usage-b__bar > div { height: 100%; border-radius: var(--r-pill); background: var(--accent); }
+.settings-page .usage-b__legend { display: flex; justify-content: space-between; font-size: var(--fs-caption); color: var(--text-muted); margin-top: 9px; }
+.settings-page .usage-b__dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; vertical-align: middle; }
+.settings-page .usage-b__dot--local { background: var(--accent); }
+.settings-page .usage-b__dot--cloud { background: var(--surface-3); }
+
+/* capability list */
+.settings-page .usage-b__list { border-top: 1px solid var(--line); }
+.settings-page .usage-b__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.settings-page .usage-b__row-name { font-size: 13.5px; font-weight: var(--fw-medium); }
+.settings-page .usage-b__row-val { display: flex; flex-direction: column; gap: 1px; text-align: right; }
+.settings-page .usage-b__row-cost { font-size: 13.5px; font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+.settings-page .usage-b__row-runs { font-size: var(--fs-caption); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+/* local-only reassurance */
+.settings-page .usage-b__reassure { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: var(--fs-caption); color: var(--text-faint); }
+.settings-page .usage-b__reassure svg { flex: none; color: var(--success); }

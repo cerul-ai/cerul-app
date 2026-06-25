@@ -60,6 +60,7 @@ import {
   ReceiptText,
   Search,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -8278,62 +8279,93 @@ function UsageSettings() {
   const localEvents = summary?.local.event_count ?? 0;
   const remoteEvents = summary?.remote.event_count ?? 0;
   const localShare = events > 0 ? Math.round((localEvents / events) * 100) : 0;
+  const eventsLabel = t("settings.usage.spend.events", { count: events });
+  const spendSub =
+    events > 0
+      ? `${eventsLabel} · ${t("settings.usage.split.value", { pct: localShare })}`
+      : eventsLabel;
 
+  // "Calm card" layout: a quiet hero spend figure, a slim local/cloud bar, and a
+  // restrained per-capability list, ending on the local-only reassurance.
   return (
-    <section className="usage-settings">
-      <p className="settings-help">{t("settings.usage.desc")}</p>
+    <section className="usage-b">
       {error ? <InlineNotice tone="error" message={error} /> : null}
-      <div className="usage-account">
-        <div className="usage-account__text">
-          <span className="usage-card__label">{t("settings.usage.account.label")}</span>
-          {signedIn && user ? (
-            <strong className="usage-account__id">{user.email}</strong>
-          ) : (
-            <p className="usage-card__note">{t("settings.usage.account.signedOut")}</p>
-          )}
-        </div>
+      <div className="usage-b__wrap">
         {signedIn && user ? (
-          <span className="chip neutral">{t(`settings.account.plan.${user.plan}`)}</span>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-primary sm"
-            onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
-          >
-            {t("settings.account.signIn")}
-          </button>
-        )}
-      </div>
-      <div className="usage-split">
-        <div className="usage-spend">
-          <span className="usage-card__label">{t("settings.usage.spend.label")}</span>
-          <strong className="usage-card__value mono">{formatUsd(total)}</strong>
-          <span className="usage-card__note">{t("settings.usage.spend.events", { count: events })}</span>
-        </div>
-        <div className="usage-split__head">
-          <span className="usage-card__label">{t("settings.usage.split.label")}</span>
-          <span className="mono">{t("settings.usage.split.value", { pct: localShare })}</span>
-        </div>
-        <div className="usage-split__bar" aria-hidden="true">
-          <div style={{ width: `${localShare}%` }} />
-        </div>
-        <div className="usage-split__legend">
-          <span>{t("settings.usage.split.local", { count: localEvents })}</span>
-          <span>{t("settings.usage.split.cloud", { count: remoteEvents })}</span>
-        </div>
-      </div>
-      {summary?.by_capability.length ? (
-        <div className="usage-breakdown">
-          <span className="usage-card__label">{t("settings.usage.breakdown.label")}</span>
-          {summary.by_capability.map((row) => (
-            <div className="usage-breakdown__row" key={row.key}>
-              <span>{t(`usage.capability.${row.key}`)}</span>
-              <span className="mono">{formatUsd(row.totals.estimated_usd)}</span>
-              <span className="mono faint">{t("settings.usage.spend.events", { count: row.totals.event_count })}</span>
+          <div className="usage-b__acct">
+            <span className="usage-b__avatar" aria-hidden="true">
+              {user.email.charAt(0).toUpperCase()}
+            </span>
+            <div className="usage-b__acct-text">
+              <div className="usage-b__acct-id">{user.email}</div>
+              <div className="usage-b__muted">Cerul Cloud</div>
             </div>
-          ))}
+            <span className={`chip ${user.plan === "free" ? "neutral" : "accent"}`}>
+              {t(`settings.account.plan.${user.plan}`)}
+            </span>
+          </div>
+        ) : (
+          <div className="usage-b__signin">
+            <span className="usage-b__signin-ic" aria-hidden="true">
+              <ShieldCheck size={20} />
+            </span>
+            <div className="usage-b__signin-text">
+              <strong>Cerul Cloud</strong>
+              <p className="usage-b__muted">{t("settings.usage.account.signedOut")}</p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary sm"
+              onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
+            >
+              {t("settings.account.signIn")}
+            </button>
+          </div>
+        )}
+
+        <div className="usage-b__spend">
+          <span className="usage-b__spend-label">{t("settings.usage.spend.label")}</span>
+          <strong className="usage-b__spend-value mono">{formatUsd(total)}</strong>
+          <span className="usage-b__spend-sub">{spendSub}</span>
         </div>
-      ) : null}
+
+        <div className="usage-b__split">
+          <div className="usage-b__bar" aria-hidden="true">
+            <div style={{ width: `${localShare}%` }} />
+          </div>
+          <div className="usage-b__legend">
+            <span>
+              <span className="usage-b__dot usage-b__dot--local" aria-hidden="true" />
+              {t("settings.usage.split.local", { count: localEvents })}
+            </span>
+            <span>
+              <span className="usage-b__dot usage-b__dot--cloud" aria-hidden="true" />
+              {t("settings.usage.split.cloud", { count: remoteEvents })}
+            </span>
+          </div>
+        </div>
+
+        {summary?.by_capability.length ? (
+          <div className="usage-b__list">
+            {summary.by_capability.map((row) => (
+              <div className="usage-b__row" key={row.key}>
+                <span className="usage-b__row-name">{t(`usage.capability.${row.key}`)}</span>
+                <span className="usage-b__row-val">
+                  <span className="usage-b__row-cost mono">{formatUsd(row.totals.estimated_usd)}</span>
+                  <span className="usage-b__row-runs mono">
+                    {t("settings.usage.spend.events", { count: row.totals.event_count })}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="usage-b__reassure">
+          <ShieldCheck size={13} />
+          <span>{t("settings.usage.localOnly")}</span>
+        </div>
+      </div>
     </section>
   );
 }
