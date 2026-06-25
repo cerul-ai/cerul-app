@@ -28,6 +28,7 @@ pub struct ClaimedJob {
     pub id: String,
     pub item_id: String,
     pub job_type: String,
+    pub was_indexed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,7 +278,7 @@ impl JobWorker {
 
         if is_job_cancelled(&self.paths, &job.id)? {
             if let Ok(item) = cerul_storage::get_item(&self.paths, &job.item_id) {
-                if item.status == "indexed" {
+                if job.was_indexed {
                     tracing::info!(
                         job_id = %job.id,
                         item_id = %job.item_id,
@@ -989,8 +990,10 @@ fn claim_next_job(paths: &AppPaths, max_running_jobs: usize) -> anyhow::Result<O
     let job = tx
         .query_row(
             r#"
-            SELECT queued.id, queued.item_id, queued.job_type
+            SELECT queued.id, queued.item_id, queued.job_type,
+                   CASE WHEN i.status = 'indexed' OR i.indexed_at IS NOT NULL THEN 1 ELSE 0 END
             FROM jobs AS queued
+            JOIN items i ON i.id = queued.item_id
             WHERE queued.status = 'queued'
               AND queued.item_id IS NOT NULL
               AND NOT EXISTS (
@@ -1009,6 +1012,7 @@ fn claim_next_job(paths: &AppPaths, max_running_jobs: usize) -> anyhow::Result<O
                     id: row.get(0)?,
                     item_id: row.get(1)?,
                     job_type: row.get(2)?,
+                    was_indexed: row.get::<_, i64>(3)? != 0,
                 })
             },
         )
@@ -1213,7 +1217,7 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
     )?;
     if should_delete_item {
         conn.execute("DELETE FROM items WHERE id = ?1", [job.item_id.as_str()])?;
-    } else {
+    } else if job.was_indexed {
         conn.execute(
             r#"
             UPDATE items
@@ -1222,6 +1226,18 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
                 indexed_at = NULL
             WHERE id = ?1
               AND status != 'indexed'
+            "#,
+            [job.item_id.as_str()],
+        )?;
+    } else {
+        conn.execute(
+            r#"
+            UPDATE items
+            SET status = 'discovered',
+                error = NULL,
+                indexed_at = NULL
+            WHERE id = ?1
+              AND status != 'deleting'
             "#,
             [job.item_id.as_str()],
         )?;
@@ -1877,12 +1893,38 @@ mod tests {
             id: "job-1".to_string(),
             item_id: "item-1".to_string(),
             job_type: "index_video".to_string(),
+            was_indexed: false,
         };
 
         mark_job_cancelled_after_processing(&paths, &job).unwrap();
 
         assert_eq!(item_count(&paths, "item-1"), 0);
         assert_eq!(job_count_for_item(&paths, "item-1"), 0);
+    }
+
+    #[test]
+    fn cancelled_newly_indexed_job_restores_item_to_discovered() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "cancelled",
+            "processing",
+        );
+        cerul_storage::mark_indexed(&paths, "item-1").unwrap();
+        let job = ClaimedJob {
+            id: "job-1".to_string(),
+            item_id: "item-1".to_string(),
+            job_type: "index_video".to_string(),
+            was_indexed: false,
+        };
+
+        mark_job_cancelled_after_processing(&paths, &job).unwrap();
+
+        assert_item_status(&paths, "item-1", "discovered", None);
     }
 
     #[tokio::test]

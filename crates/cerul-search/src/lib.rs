@@ -85,6 +85,9 @@ const SOURCE_TEXT: u8 = 1 << 0;
 const SOURCE_TEXT_VECTOR: u8 = 1 << 1;
 const SOURCE_EXACT: u8 = 1 << 2;
 const PER_ITEM_CAP: usize = 3;
+const LEXICAL_ONLY_SCORE_CEILING: f32 = 0.76;
+const VECTOR_ONLY_CONFIDENT_SIMILARITY: f32 = 0.52;
+const VECTOR_ONLY_LOW_CONFIDENCE_CEILING: f32 = 0.32;
 
 pub fn crate_ready() -> bool {
     true
@@ -999,19 +1002,57 @@ fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResul
             })
             .then_with(|| left.playback_chunk_id.cmp(&right.playback_chunk_id))
     });
-    dedupe_results(results, limit)
+    let mut results = dedupe_results(results, limit);
+    apply_match_scores(&mut results);
+    results
 }
 
 fn apply_match_scores(results: &mut [SearchResult]) {
+    let best_lexical_only_score = results
+        .iter()
+        .filter(|result| {
+            result.source_mask & SOURCE_TEXT != 0 && result.source_mask & SOURCE_TEXT_VECTOR == 0
+        })
+        .map(|result| result.score)
+        .filter(|score| score.is_finite() && *score > 0.0)
+        .fold(0.0, f32::max);
     for result in results {
-        result.match_score =
-            unified_match_score(result.score, result.exact_match, result.source_mask);
+        let score = calibrated_score(result, best_lexical_only_score);
+        result.match_score = unified_match_score(
+            score,
+            result.exact_match,
+            result.source_mask,
+            result.similarity_score,
+        );
     }
 }
 
-fn unified_match_score(score: f32, exact_match: bool, source_mask: u8) -> f32 {
+fn calibrated_score(result: &SearchResult, best_lexical_only_score: f32) -> f32 {
+    if result.source_mask & SOURCE_TEXT != 0
+        && result.source_mask & SOURCE_TEXT_VECTOR == 0
+        && best_lexical_only_score > 1.0
+        && result.score > 1.0
+    {
+        return (result.score / best_lexical_only_score * LEXICAL_ONLY_SCORE_CEILING)
+            .clamp(0.0, LEXICAL_ONLY_SCORE_CEILING);
+    }
+    result.score
+}
+
+fn unified_match_score(
+    score: f32,
+    exact_match: bool,
+    source_mask: u8,
+    similarity_score: Option<f32>,
+) -> f32 {
     if exact_match {
         return score.clamp(0.92, 0.98);
+    }
+    if source_mask & SOURCE_TEXT == 0 && source_mask & SOURCE_TEXT_VECTOR != 0 {
+        let similarity = similarity_score.unwrap_or(score);
+        if similarity < VECTOR_ONLY_CONFIDENT_SIMILARITY {
+            return (similarity * 0.65).clamp(0.0, VECTOR_ONLY_LOW_CONFIDENCE_CEILING);
+        }
     }
     let lexical_boost = if source_mask & SOURCE_TEXT != 0 {
         0.03
@@ -1379,10 +1420,11 @@ fn dedupe_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult>
         {
             continue;
         }
-        if kept
-            .iter()
-            .any(|existing| is_near_duplicate(existing, &result))
+        if let Some(existing) = kept
+            .iter_mut()
+            .find(|existing| is_near_duplicate(existing, &result))
         {
+            merge_result_evidence(existing, result);
             continue;
         }
         *per_item_counts.entry(result.item_id.clone()).or_default() += 1;
@@ -1393,6 +1435,17 @@ fn dedupe_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult>
     }
 
     kept
+}
+
+fn merge_result_evidence(existing: &mut SearchResult, duplicate: SearchResult) {
+    existing.source_mask |= duplicate.source_mask;
+    existing.exact_match |= duplicate.exact_match;
+    if duplicate.score > existing.score {
+        existing.score = duplicate.score;
+        existing.similarity_score = duplicate.similarity_score;
+    } else if duplicate.similarity_score > existing.similarity_score {
+        existing.similarity_score = duplicate.similarity_score;
+    }
 }
 
 fn is_near_duplicate(left: &SearchResult, right: &SearchResult) -> bool {
@@ -1502,6 +1555,7 @@ mod tests {
     fn match_score_uses_unified_scores_and_exact_floor() {
         let mut semantic = result("chunk-a", "item-1", "moment", Some(10.0), 0.97);
         semantic.source_mask = SOURCE_TEXT_VECTOR;
+        semantic.similarity_score = Some(0.97);
         let mut lexical = result("chunk-b", "item-2", "moment", Some(20.0), 0.40);
         lexical.source_mask = SOURCE_TEXT;
         let mut exact = result("chunk-c", "item-3", "moment", Some(30.0), 0.01);
@@ -1520,6 +1574,45 @@ mod tests {
         assert!((scored[0].match_score - 0.92).abs() < 0.001);
         assert!((scored[1].match_score - 0.91).abs() < 0.001);
         assert!((scored[2].match_score - 0.43).abs() < 0.001);
+    }
+
+    #[test]
+    fn lexical_only_match_scores_are_normalized_from_bm25() {
+        let mut best = result("chunk-a", "item-1", "transcript", Some(10.0), 12.0);
+        best.source_mask = SOURCE_TEXT;
+        let mut second = result("chunk-b", "item-2", "transcript", Some(20.0), 6.0);
+        second.source_mask = SOURCE_TEXT;
+
+        let scored = finalize_results(vec![best, second], 10);
+
+        assert!(scored[0].match_score <= LEXICAL_ONLY_SCORE_CEILING + 0.03);
+        assert!(scored[1].match_score < scored[0].match_score);
+    }
+
+    #[test]
+    fn vector_only_low_similarity_is_low_confidence() {
+        let mut weak = result("chunk-a", "item-1", "moment", Some(10.0), 0.41);
+        weak.source_mask = SOURCE_TEXT_VECTOR;
+        weak.similarity_score = Some(0.41);
+
+        let scored = finalize_results(vec![weak], 10);
+
+        assert!(scored[0].match_score < 0.48);
+    }
+
+    #[test]
+    fn dedupe_results_merges_cross_chunk_evidence() {
+        let mut semantic = result("chunk-a", "item-1", "moment", Some(10.0), 0.62);
+        semantic.source_mask = SOURCE_TEXT_VECTOR;
+        semantic.similarity_score = Some(0.62);
+        let mut lexical = result("chunk-b", "item-1", "transcript", Some(18.0), 0.20);
+        lexical.source_mask = SOURCE_TEXT;
+
+        let scored = finalize_results(vec![semantic, lexical], 10);
+
+        assert_eq!(scored.len(), 1);
+        assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
+        assert_ne!(scored[0].source_mask & SOURCE_TEXT, 0);
     }
 
     #[test]

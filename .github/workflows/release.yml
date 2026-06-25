@@ -601,7 +601,12 @@ jobs:
           DOWNLOAD_URL: ${{ vars.DOWNLOAD_URL }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: bash scripts/ai-release-notes.sh "$TAG" --out notes
+        run: |
+          bash scripts/ai-release-notes.sh "$TAG" --out notes --channels github
+          bash scripts/ai-release-notes.sh "$TAG" --out notes --channels discord \
+            || echo "Discord notes generation failed; GitHub release notes will still be published."
+          bash scripts/ai-release-notes.sh "$TAG" --out notes --channels tweet \
+            || echo "Tweet draft generation failed; GitHub release notes will still be published."
       - name: Replace GitHub release body with AI notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -609,6 +614,11 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if [ -s notes/notes.github.md ]; then
+            marker="<!-- cerul-discord-announced:${TAG} -->"
+            existing_body="$(gh release view "$TAG" --json body -q .body 2>/dev/null || true)"
+            if printf '%s\n' "$existing_body" | grep -Fq "$marker" && ! grep -Fq "$marker" notes/notes.github.md; then
+              printf '\n%s\n' "$marker" >> notes/notes.github.md
+            fi
             gh release edit "$TAG" --notes-file notes/notes.github.md
             echo "Updated release notes for $TAG."
           else
@@ -617,10 +627,18 @@ jobs:
       - name: Announce on Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           if [ -z "${DISCORD_WEBHOOK_URL:-}" ] || [ ! -s notes/notes.discord.md ]; then
             echo "Webhook or Discord notes missing; skipping Discord announcement."
+            exit 0
+          fi
+          marker="<!-- cerul-discord-announced:${TAG} -->"
+          release_body="$(gh release view "$TAG" --json body -q .body 2>/dev/null || true)"
+          if printf '%s\n' "$release_body" | grep -Fq "$marker"; then
+            echo "Discord announcement for ${TAG} was already recorded; skipping rerun duplicate."
             exit 0
           fi
           desc="$(cat notes/notes.discord.md)"; desc="${desc:0:3800}"
@@ -632,6 +650,8 @@ jobs:
             '{username:"Cerul Releases", content:$content,
               embeds:[{title:$title, url:$url, description:$desc, color:4090781}]}')"
           curl -fsS -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
+          printf '%s\n\n%s\n' "$release_body" "$marker" > notes/release-body-with-discord-marker.md
+          gh release edit "$TAG" --notes-file notes/release-body-with-discord-marker.md
           echo "Announced ${TAG} on Discord."
       - name: Surface tweet draft for manual posting
         if: always()

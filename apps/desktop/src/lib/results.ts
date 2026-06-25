@@ -22,7 +22,7 @@ export function mapResultMatch(
   const confidence = resultConfidence(matchScore, 1);
   const scoreInfo = resultScoreInfo(record, bestScore, t);
   return {
-    playbackChunkId: record.playback_chunk_id,
+    playbackChunkId: resultPlaybackChunkId(record),
     startSec: record.start_sec,
     endSec: record.end_sec,
     timestamp: formatTimestamp(record.start_sec),
@@ -48,7 +48,7 @@ export function mapSearchResult(
   const scoreInfo = resultScoreInfo(record, bestScore, t);
   return {
     itemId: record.item_id,
-    playbackChunkId: record.playback_chunk_id,
+    playbackChunkId: resultPlaybackChunkId(record),
     startSec: record.start_sec,
     endSec: record.end_sec,
     title: item?.title ?? record.item_id,
@@ -164,7 +164,7 @@ function resultMatchScore(record: api.SearchResultRecord, bestScore: number): nu
 
 function resultThumbnailUrl(record: api.SearchResultRecord, item: Item | undefined): string | null {
   if (record.frame_path) {
-    return api.chunkFrameUrl(record.playback_chunk_id);
+    return api.chunkFrameUrl(resultPlaybackChunkId(record));
   }
   if (record.nearest_frame_chunk_id) {
     return api.chunkFrameUrl(record.nearest_frame_chunk_id);
@@ -178,6 +178,10 @@ function resultGroupKey(record: api.SearchResultRecord) {
     return `${record.item_id}:${bucket}`;
   }
   return `${record.item_id}:${record.chunk_type}`;
+}
+
+function resultPlaybackChunkId(record: api.SearchResultRecord) {
+  return record.playback_chunk_id ?? record.chunk_id ?? "";
 }
 
 export function mapChunkRecords(records: api.ChunkRecord[]): TranscriptLine[] {
