@@ -258,7 +258,9 @@ const sidebarParentFor: Partial<Record<View, View>> = {
   "entity-detail": "library",
   "item-detail": "library",
 };
-const globalHotkeyOptions = ["Alt+Space", "Ctrl+Space", "Ctrl+Shift+Space", "Cmd+Shift+Space"];
+const NEW_SOURCE_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
+  ? "Cmd+N"
+  : "Ctrl+N";
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
 const lastOpenedStorageKey = "cerul.lastOpened.v1";
 const lastAutomaticUpdateCheckStorageKey = "cerul.updater.lastAutomaticCheckAt.v1";
@@ -1067,9 +1069,10 @@ function AppWorkspace() {
     };
   }, []);
 
+  const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+      if (acceleratorMatchesEvent(newSourceHotkey, event)) {
         // Don't stack a new dialog on top of an open modal or steal the
         // shortcut while the user is typing in a field.
         const target = event.target;
@@ -1089,7 +1092,7 @@ function AppWorkspace() {
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, []);
+  }, [newSourceHotkey]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -5667,6 +5670,7 @@ function GeneralSettings({
   const { lang, setLang } = useLang();
   const theme = settingString(settings, "theme", "System");
   const globalHotkey = settingString(settings, "global_hotkey", "Alt+Space");
+  const newSourceHotkey = settingString(settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   const startAtLoginEnabled =
     daemonStatus?.installed ?? settingBoolean(settings, "start_at_login", true);
   // The description explains what the toggle does; transient daemon status
@@ -5756,18 +5760,26 @@ function GeneralSettings({
           label={t("settings.general.globalHotkey")}
           description={t("settings.general.globalHotkey.hint")}
           control={
-            <select
-              className="select"
+            <KeyRecorder
               value={globalHotkey}
+              defaultValue="Alt+Space"
               disabled={disabled}
-              onChange={(event) => void onHotkeyChange(event.currentTarget.value)}
-            >
-              {globalHotkeyOptions.map((option) => (
-                <option key={option} value={option}>
-                  {formatHotkeyLabel(option)}
-                </option>
-              ))}
-            </select>
+              conflicts={{ [newSourceHotkey]: t("settings.shortcuts.newSource") }}
+              onChange={(accelerator) => void onHotkeyChange(accelerator)}
+            />
+          }
+        />
+        <SettingRow
+          label={t("settings.shortcuts.newSource")}
+          description={t("settings.shortcuts.newSource.hint")}
+          control={
+            <KeyRecorder
+              value={newSourceHotkey}
+              defaultValue={NEW_SOURCE_DEFAULT_HOTKEY}
+              disabled={disabled}
+              conflicts={{ [globalHotkey]: t("settings.general.globalHotkey") }}
+              onChange={(accelerator) => void onSettingsChange({ hotkey_new_source: accelerator })}
+            />
           }
         />
         <SettingRow
@@ -8603,6 +8615,147 @@ function Segmented({
           {labels?.[option] ?? option}
         </button>
       ))}
+    </div>
+  );
+}
+
+// Build an app-format accelerator ("Cmd+Shift+K") from a keydown event, or null
+// while only modifiers are held. Matches the "Cmd"/"Ctrl"/"Alt"/"Shift" tokens
+// the Electron globalShortcut + formatHotkeyLabel already use.
+function acceleratorFromEvent(event: globalThis.KeyboardEvent): string | null {
+  const key = event.key;
+  if (key === "Meta" || key === "Control" || key === "Alt" || key === "Shift") {
+    return null;
+  }
+  const parts: string[] = [];
+  if (event.metaKey) parts.push("Cmd");
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  let normalized = key;
+  if (normalized === " ") normalized = "Space";
+  else if (normalized.length === 1) normalized = normalized.toUpperCase();
+  else normalized = normalized.replace(/^Arrow/, "");
+  parts.push(normalized);
+  return parts.join("+");
+}
+
+function acceleratorMatchesEvent(accelerator: string, event: globalThis.KeyboardEvent): boolean {
+  const parts = accelerator.split("+").map((part) => part.trim());
+  const key = parts[parts.length - 1];
+  const mods = new Set(parts.slice(0, -1));
+  if ((mods.has("Cmd") || mods.has("Command")) !== event.metaKey) return false;
+  if (mods.has("Ctrl") !== event.ctrlKey) return false;
+  if (mods.has("Alt") !== event.altKey) return false;
+  if (mods.has("Shift") !== event.shiftKey) return false;
+  let evKey = event.key;
+  if (evKey === " ") evKey = "Space";
+  else if (evKey.length === 1) evKey = evKey.toUpperCase();
+  else evKey = evKey.replace(/^Arrow/, "");
+  return evKey === key;
+}
+
+function KeyRecorder({
+  value,
+  defaultValue,
+  disabled = false,
+  conflicts = {},
+  onChange,
+}: {
+  value: string;
+  defaultValue: string;
+  disabled?: boolean;
+  conflicts?: Record<string, string>;
+  onChange: (accelerator: string) => void;
+}) {
+  const t = useT();
+  const [recording, setRecording] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!recording) {
+      return;
+    }
+    function onKey(event: globalThis.KeyboardEvent) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setRecording(false);
+        setPreview(null);
+        setConflict(null);
+        return;
+      }
+      const accelerator = acceleratorFromEvent(event);
+      if (!accelerator) {
+        const mods: string[] = [];
+        if (event.metaKey) mods.push("Cmd");
+        if (event.ctrlKey) mods.push("Ctrl");
+        if (event.altKey) mods.push("Alt");
+        if (event.shiftKey) mods.push("Shift");
+        setPreview(mods.length ? `${mods.join("+")}+…` : "…");
+        return;
+      }
+      const owner = conflicts[accelerator];
+      if (owner && accelerator !== value) {
+        setConflict(owner);
+        setPreview(accelerator);
+        window.setTimeout(() => {
+          setRecording(false);
+          setPreview(null);
+          setConflict(null);
+        }, 1500);
+        return;
+      }
+      onChange(accelerator);
+      setRecording(false);
+      setPreview(null);
+      setConflict(null);
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording, conflicts, value, onChange]);
+
+  const shown = preview ?? value;
+  const caps = formatHotkeyLabel(shown).split(" ").filter(Boolean);
+
+  return (
+    <div className="kbd-recorder-wrap">
+      <button
+        type="button"
+        className={`kbd-recorder${recording ? " is-recording" : ""}${conflict ? " is-conflict" : ""}`}
+        disabled={disabled}
+        onClick={() => {
+          setConflict(null);
+          setPreview(null);
+          setRecording((current) => !current);
+        }}
+      >
+        {recording && preview === null ? (
+          <span className="kbd-recorder-hint">{t("settings.shortcuts.recordHint")}</span>
+        ) : (
+          <span className="kbd">
+            {caps.map((cap, index) => (
+              <kbd key={index} className="cap">
+                {cap}
+              </kbd>
+            ))}
+          </span>
+        )}
+      </button>
+      {value !== defaultValue && !recording ? (
+        <button
+          type="button"
+          className="btn btn-ghost sm"
+          disabled={disabled}
+          onClick={() => onChange(defaultValue)}
+        >
+          {t("settings.shortcuts.reset")}
+        </button>
+      ) : null}
+      {conflict ? (
+        <span className="kbd-conflict">{t("settings.shortcuts.conflict", { name: conflict })}</span>
+      ) : null}
     </div>
   );
 }
