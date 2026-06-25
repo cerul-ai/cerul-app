@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, Write},
     net::SocketAddr,
@@ -449,7 +449,8 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/settings", get(list_settings).patch(update_settings));
     let v1_routes = Router::new()
         .route("/status", get(v1_status))
-        .route("/openapi.json", get(v1_openapi_json));
+        .route("/openapi.json", get(v1_openapi_json))
+        .route("/search", post(v1_search));
 
     Router::new()
         .nest("/internal", internal_routes)
@@ -944,8 +945,391 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             plan: None,
             credits_remaining: None,
         },
-        capabilities: vec!["status", "openapi"],
+        capabilities: vec!["status", "openapi", "search"],
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct V1SearchRequest {
+    query: Option<String>,
+    q: Option<String>,
+    max_results: Option<usize>,
+    limit: Option<usize>,
+    target: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchResponse {
+    request_id: String,
+    execution: V1Execution,
+    results: Vec<V1SearchResult>,
+    diagnostics: V1SearchDiagnostics,
+    usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchResult {
+    id: String,
+    #[serde(rename = "type")]
+    result_type: &'static str,
+    source: &'static str,
+    item: V1SearchItem,
+    time: V1SearchTime,
+    text: V1SearchText,
+    evidence: V1Evidence,
+    score: V1Score,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct V1SearchItem {
+    id: String,
+    title: String,
+    content_type: String,
+    source_type: String,
+    duration_sec: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct V1SearchItemMetadata {
+    item: V1SearchItem,
+    has_raw_path: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchTime {
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchText {
+    snippet: String,
+    quote: String,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Evidence {
+    id: String,
+    kind: &'static str,
+    clip: Option<V1Locator>,
+    preview: Option<V1Locator>,
+    open_in_cerul: String,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Locator {
+    #[serde(rename = "type")]
+    locator_type: &'static str,
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Score {
+    #[serde(rename = "match")]
+    match_score: f32,
+    exact_match: bool,
+    similarity: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchDiagnostics {
+    retrieval_mode: String,
+    fallback_reason: Option<String>,
+    vector_hits: usize,
+    text_hits: usize,
+    result_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Usage {
+    billable: bool,
+    metered_events: Vec<V1MeteredEvent>,
+    credits_used: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct V1MeteredEvent {
+    capability: &'static str,
+    quantity: u64,
+    credits: i64,
+}
+
+async fn v1_search(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1SearchRequest>,
+) -> ApiResult<Json<V1SearchResponse>> {
+    let query = req
+        .query
+        .or(req.q)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    let target = req
+        .target
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local")
+        .to_ascii_lowercase();
+    if !matches!(target.as_str(), "local" | "auto") {
+        return Err(ApiError::bad_request(
+            "only local or auto target is currently supported by /v1/search",
+        ));
+    }
+    let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 50);
+    let response = search_records(
+        &state.paths,
+        cerul_search::SearchRequest { q: query, limit },
+    )
+    .await?;
+    let item_metadata = v1_search_item_metadata(&state.paths, &response.results)?;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let results = response
+        .results
+        .iter()
+        .map(|result| v1_search_result(result, &item_metadata, &base_url))
+        .collect::<Vec<_>>();
+    let result_count = results.len();
+
+    Ok(Json(V1SearchResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        results,
+        diagnostics: V1SearchDiagnostics {
+            retrieval_mode: response.diagnostics.retrieval_mode,
+            fallback_reason: response.diagnostics.fallback_reason,
+            vector_hits: response.diagnostics.vector_hits_count,
+            text_hits: response.diagnostics.fts_hits_count,
+            result_count,
+        },
+        usage: V1Usage {
+            billable: false,
+            metered_events: vec![V1MeteredEvent {
+                capability: "local_search",
+                quantity: 1,
+                credits: 0,
+            }],
+            credits_used: 0,
+        },
+    }))
+}
+
+fn v1_search_result(
+    result: &cerul_search::SearchResult,
+    item_metadata: &HashMap<String, V1SearchItemMetadata>,
+    base_url: &str,
+) -> V1SearchResult {
+    let metadata = item_metadata
+        .get(&result.item_id)
+        .cloned()
+        .unwrap_or_else(|| fallback_v1_search_item_metadata(result));
+    let start_sec = result.start_sec.filter(|value| value.is_finite());
+    let end_sec = result.end_sec.filter(|value| value.is_finite());
+    let preview_chunk_id = result.nearest_frame_chunk_id.as_deref().or_else(|| {
+        result
+            .frame_path
+            .as_ref()
+            .map(|_| result.playback_chunk_id.as_str())
+    });
+    let clip = if metadata.has_raw_path && metadata.item.content_type == "video" {
+        Some(V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/video-clip?before_sec=3&after_sec=5",
+                base_url,
+                encode_path_segment(&result.playback_chunk_id)
+            ),
+        })
+    } else {
+        None
+    };
+    let preview = preview_chunk_id.map(|chunk_id| V1Locator {
+        locator_type: "local",
+        url: format!(
+            "{}/chunks/{}/frame",
+            base_url,
+            encode_path_segment(chunk_id)
+        ),
+    });
+    let evidence_kind = match (clip.is_some(), preview.is_some()) {
+        (true, _) => "video_clip",
+        (false, true) => "frame",
+        (false, false) => "chunk",
+    };
+
+    V1SearchResult {
+        id: result.playback_chunk_id.clone(),
+        result_type: v1_result_type(&result.chunk_type),
+        source: "local_library",
+        item: metadata.item,
+        time: V1SearchTime {
+            start_sec,
+            end_sec,
+            timestamp: start_sec.map(format_playback_timestamp),
+        },
+        text: V1SearchText {
+            snippet: trim_for_answer(&result.snippet, 360),
+            quote: trim_for_answer(&result.snippet, 240),
+        },
+        evidence: V1Evidence {
+            id: result.playback_chunk_id.clone(),
+            kind: evidence_kind,
+            clip,
+            preview,
+            open_in_cerul: v1_open_in_cerul_link(
+                &result.item_id,
+                &result.playback_chunk_id,
+                result.start_sec,
+            ),
+        },
+        score: V1Score {
+            match_score: result.match_score,
+            exact_match: result.exact_match,
+            similarity: result.similarity_score,
+        },
+    }
+}
+
+fn v1_search_item_metadata(
+    paths: &AppPaths,
+    results: &[cerul_search::SearchResult],
+) -> anyhow::Result<HashMap<String, V1SearchItemMetadata>> {
+    let mut item_ids = results
+        .iter()
+        .map(|result| result.item_id.as_str())
+        .collect::<Vec<_>>();
+    item_ids.sort_unstable();
+    item_ids.dedup();
+    if item_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(item_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        r#"
+        SELECT i.id, i.title, i.content_type, s.type, i.duration_sec,
+               CASE WHEN i.raw_path IS NOT NULL AND TRIM(i.raw_path) <> '' THEN 1 ELSE 0 END
+        FROM items i
+        JOIN sources s ON s.id = i.source_id
+        WHERE i.id IN ({placeholders})
+        "#
+    );
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |row| {
+        let id: String = row.get(0)?;
+        let title = row
+            .get::<_, Option<String>>(1)?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Untitled media".to_string());
+        let has_raw_path = row.get::<_, i64>(5)? == 1;
+        Ok((
+            id.clone(),
+            V1SearchItemMetadata {
+                item: V1SearchItem {
+                    id,
+                    title,
+                    content_type: row.get(2)?,
+                    source_type: row.get(3)?,
+                    duration_sec: row.get(4)?,
+                },
+                has_raw_path,
+            },
+        ))
+    })?;
+    let mut metadata = HashMap::with_capacity(item_ids.len());
+    for row in rows {
+        let (id, item) = row?;
+        metadata.insert(id, item);
+    }
+    Ok(metadata)
+}
+
+fn fallback_v1_search_item_metadata(result: &cerul_search::SearchResult) -> V1SearchItemMetadata {
+    V1SearchItemMetadata {
+        item: V1SearchItem {
+            id: result.item_id.clone(),
+            title: result
+                .item_title
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "Untitled media".to_string()),
+            content_type: "unknown".to_string(),
+            source_type: "unknown".to_string(),
+            duration_sec: None,
+        },
+        has_raw_path: false,
+    }
+}
+
+fn v1_result_type(chunk_type: &str) -> &'static str {
+    match chunk_type {
+        "keyframe" | "image" | "ocr" => "visual",
+        "understanding" => "summary",
+        _ => "transcript",
+    }
+}
+
+fn v1_base_url(headers: &HeaderMap, paths: &AppPaths) -> String {
+    if let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.contains('/'))
+    {
+        return format!("http://{host}/v1");
+    }
+    let port = configured_addr(paths)
+        .map(|addr| addr.port())
+        .unwrap_or(DEFAULT_API_PORT);
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+fn v1_open_in_cerul_link(item_id: &str, chunk_id: &str, start_sec: Option<f64>) -> String {
+    let mut link = format!(
+        "cerul://items/{}?chunk={}",
+        encode_path_segment(item_id),
+        encode_path_segment(chunk_id)
+    );
+    if let Some(start_sec) = start_sec.filter(|value| value.is_finite() && *value >= 0.0) {
+        link.push_str("&t=");
+        link.push_str(&format_seconds_param(start_sec));
+    }
+    link
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
+fn format_seconds_param(value: f64) -> String {
+    let mut formatted = format!("{:.3}", value.max(0.0));
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
 }
 
 async fn search(
@@ -5213,8 +5597,11 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/settings", &["get", "patch"]),
 ];
 
-const V1_API_PATHS: &[(&str, &[&str])] =
-    &[("/v1/status", &["get"]), ("/v1/openapi.json", &["get"])];
+const V1_API_PATHS: &[(&str, &[&str])] = &[
+    ("/v1/status", &["get"]),
+    ("/v1/openapi.json", &["get"]),
+    ("/v1/search", &["post"]),
+];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
     "cloud_api_key",
@@ -5802,7 +6189,10 @@ mod tests {
         assert_eq!(status_json["library"]["failed_items"], 1);
         assert_eq!(status_json["indexing"]["queued_jobs"], 1);
         assert_eq!(status_json["account"]["signed_in"], false);
-        assert_eq!(status_json["capabilities"], json!(["status", "openapi"]));
+        assert_eq!(
+            status_json["capabilities"],
+            json!(["status", "openapi", "search"])
+        );
 
         let openapi = app
             .oneshot(
@@ -5819,8 +6209,184 @@ mod tests {
         let paths = openapi_json["paths"].as_object().unwrap();
         assert!(paths.contains_key("/v1/status"));
         assert!(paths.contains_key("/v1/openapi.json"));
+        assert!(paths.contains_key("/v1/search"));
         assert!(!paths.contains_key("/internal/health"));
         assert!(!paths.contains_key("/health"));
+    }
+
+    #[tokio::test]
+    async fn v1_search_returns_agent_friendly_results_with_evidence_urls() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        fs::write(&raw_path, b"not a real video").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, duration_sec,
+                    raw_path, indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Scaling Talk', 120.5,
+                    ?1, 10, 'indexed', '{}'
+                )
+                "#,
+                [raw_path.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+                VALUES (
+                    'item-1:transcript:000000',
+                    'item-1',
+                    'transcript',
+                    12.3,
+                    18.0,
+                    'The talk says scaling laws keep holding across larger training runs.',
+                    '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+                VALUES (
+                    'item-1:keyframe:000012',
+                    'item-1',
+                    'keyframe',
+                    12.0,
+                    12.0,
+                    '/tmp/frame.jpg',
+                    '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(&paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let units = vec![cerul_storage::StorageRetrievalUnit {
+            id: "item-1:unit:v2:000000".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "transcript".to_string(),
+            start_sec: Some(12.3),
+            end_sec: Some(18.0),
+            content_text: "The talk says scaling laws keep holding across larger training runs."
+                .to_string(),
+            transcript_text: Some("scaling laws keep holding".to_string()),
+            ocr_text: None,
+            visual_text: None,
+            summary_text: None,
+            representative_chunk_id: Some("item-1:transcript:000000".to_string()),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id,
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        }];
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            units.len(),
+            0,
+        )
+        .unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25001")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "scaling laws", "max_results": 2}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["request_id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["results"][0]["id"], "item-1:transcript:000000");
+        assert_eq!(body["results"][0]["type"], "transcript");
+        assert_eq!(body["results"][0]["source"], "local_library");
+        assert_eq!(body["results"][0]["item"]["id"], "item-1");
+        assert_eq!(body["results"][0]["item"]["title"], "Scaling Talk");
+        assert_eq!(body["results"][0]["item"]["content_type"], "video");
+        assert_eq!(body["results"][0]["item"]["source_type"], "local");
+        assert_eq!(body["results"][0]["item"]["duration_sec"], 120.5);
+        assert_eq!(body["results"][0]["time"]["start_sec"], 12.3);
+        assert_eq!(body["results"][0]["time"]["end_sec"], 18.0);
+        assert_eq!(body["results"][0]["time"]["timestamp"], "0:12");
+        assert!(body["results"][0]["text"]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("scaling laws"));
+        assert_eq!(body["results"][0]["evidence"]["kind"], "video_clip");
+        assert_eq!(
+            body["results"][0]["evidence"]["clip"]["url"],
+            "http://127.0.0.1:25001/v1/chunks/item-1%3Atranscript%3A000000/video-clip?before_sec=3&after_sec=5"
+        );
+        assert_eq!(
+            body["results"][0]["evidence"]["preview"]["url"],
+            "http://127.0.0.1:25001/v1/chunks/item-1%3Akeyframe%3A000012/frame"
+        );
+        assert_eq!(
+            body["results"][0]["evidence"]["open_in_cerul"],
+            "cerul://items/item-1?chunk=item-1%3Atranscript%3A000000&t=12.3"
+        );
+        assert_eq!(body["results"][0]["score"]["exact_match"], true);
+        assert_eq!(body["usage"]["billable"], false);
+        assert_eq!(
+            body["usage"]["metered_events"][0],
+            json!({"capability": "local_search", "quantity": 1, "credits": 0})
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_search_rejects_cloud_target_until_cloud_proxy_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "scaling laws", "target": "cloud"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("only local or auto target"));
     }
 
     #[tokio::test]
