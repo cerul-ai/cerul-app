@@ -1445,8 +1445,10 @@ fn dedupe_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult>
 }
 
 fn merge_result_evidence(existing: &mut SearchResult, duplicate: SearchResult) {
-    let existing_has_vector = existing.source_mask & SOURCE_TEXT_VECTOR != 0;
-    let duplicate_has_vector = duplicate.source_mask & SOURCE_TEXT_VECTOR != 0;
+    let existing_has_vector =
+        existing.source_mask & SOURCE_TEXT_VECTOR != 0 || existing.similarity_score.is_some();
+    let duplicate_has_vector =
+        duplicate.source_mask & SOURCE_TEXT_VECTOR != 0 || duplicate.similarity_score.is_some();
     let existing_has_text = existing.source_mask & SOURCE_TEXT != 0;
     let duplicate_has_text = duplicate.source_mask & SOURCE_TEXT != 0;
 
@@ -1655,6 +1657,25 @@ mod tests {
         assert_ne!(scored[0].source_mask & SOURCE_TEXT, 0);
         assert!((scored[0].score - 0.62).abs() < 0.001);
         assert!((scored[0].match_score - 0.65).abs() < 0.001);
+    }
+
+    #[test]
+    fn dedupe_results_preserves_stronger_stored_vector_score() {
+        let mut lexical_with_vector = result("chunk-a", "item-1", "transcript", Some(10.0), 0.82);
+        lexical_with_vector.source_mask = SOURCE_TEXT;
+        lexical_with_vector.similarity_score = Some(0.82);
+        let mut weaker_vector = result("chunk-b", "item-1", "moment", Some(18.0), 0.62);
+        weaker_vector.source_mask = SOURCE_TEXT_VECTOR;
+        weaker_vector.similarity_score = Some(0.62);
+
+        let scored = finalize_results(vec![lexical_with_vector, weaker_vector], 10);
+
+        assert_eq!(scored.len(), 1);
+        assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
+        assert_ne!(scored[0].source_mask & SOURCE_TEXT, 0);
+        assert!((scored[0].score - 0.82).abs() < 0.001);
+        assert_eq!(scored[0].similarity_score, Some(0.82));
+        assert!((scored[0].match_score - 0.85).abs() < 0.001);
     }
 
     #[test]
