@@ -2334,9 +2334,20 @@ async fn update_item_playback_position(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct RemoveItemQuery {
+    /// Skip the ignored-item tombstone so source discovery (or a manual re-add)
+    /// can bring the item back later. Used by the library's "clear failed"
+    /// cleanup, whose dialog promises the items can be re-imported — a normal
+    /// delete still tombstones so a removed item isn't re-discovered.
+    #[serde(default)]
+    keep_discoverable: bool,
+}
+
 async fn remove_item(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    Query(query): Query<RemoveItemQuery>,
 ) -> ApiResult<Json<Value>> {
     let item = cerul_storage::get_item(&state.paths, &id)
         .map_err(|_| ApiError::not_found(format!("item not found: {id}")))?;
@@ -2347,7 +2358,9 @@ async fn remove_item(
 
     let mut conn = cerul_storage::sqlite::open(&state.paths)?;
     let tx = conn.transaction()?;
-    remember_removed_item(&tx, &item)?;
+    if !query.keep_discoverable {
+        remember_removed_item(&tx, &item)?;
+    }
     tx.execute(
         r#"
         UPDATE jobs

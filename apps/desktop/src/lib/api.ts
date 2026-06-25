@@ -635,10 +635,14 @@ export function chunkFrameUrl(chunkId: string) {
   return `${API_BASE_URL}/chunks/${encodeURIComponent(chunkId)}/frame`;
 }
 
-export async function deleteItem(id: string) {
-  return fetchJson<{ status: string; id: string }>(`/items/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+export async function deleteItem(id: string, options?: { keepDiscoverable?: boolean }) {
+  // keepDiscoverable skips the backend ignored-item tombstone so the item can be
+  // re-discovered/re-imported (used by the library "clear failed" cleanup).
+  const query = options?.keepDiscoverable ? "?keep_discoverable=true" : "";
+  return fetchJson<{ status: string; id: string }>(
+    `/items/${encodeURIComponent(id)}${query}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function updateItemRawPath(id: string, rawPath: string) {

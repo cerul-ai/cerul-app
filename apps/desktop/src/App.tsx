@@ -1804,7 +1804,7 @@ function AppWorkspace() {
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
             onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
-            onDeleteItems={async (itemIds, onProgress) => {
+            onDeleteItems={async (itemIds, onProgress, options) => {
               const deletingIds = new Set(itemIds);
               setData((current) => ({
                 ...current,
@@ -1820,7 +1820,7 @@ function AppWorkspace() {
               onProgress?.(completed, total);
               for (const itemId of itemIds) {
                 try {
-                  await api.deleteItem(itemId);
+                  await api.deleteItem(itemId, options);
                 } catch (error) {
                   failures.push(error);
                 } finally {
@@ -1958,8 +1958,11 @@ function AppWorkspace() {
             settings={data.settings}
             daemonStatus={data.daemonStatus}
             onSettingsChange={async (settings) => {
+              // Rejects if the write fails; saveSettings turns that into a false
+              // result so callers don't report success after a swallowed error.
               await api.updateSettings(settings);
               await refreshCoreData();
+              return true;
             }}
             requestConfirm={requestConfirm}
           />
@@ -4424,6 +4427,7 @@ function LibraryScreen({
   onDeleteItems: (
     itemIds: string[],
     onProgress?: (completed: number, total: number) => void,
+    options?: { keepDiscoverable?: boolean },
   ) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
@@ -4583,8 +4587,11 @@ function LibraryScreen({
     }
   }
 
-  // One-click cleanup: remove every failed item from the library (source media is
-  // untouched, so they can be re-imported). Reuses the batch-delete path.
+  // One-click cleanup: remove every failed item from the library. Source media
+  // (the original URL/file) is untouched, and we pass keepDiscoverable so the
+  // rows are deleted WITHOUT an ignored-item tombstone — a transient failure
+  // (rate limit, expired cookies, network blip) can then be re-discovered or
+  // re-imported, matching the confirm dialog's "can be re-imported" promise.
   async function clearFailedItems() {
     if (!actionsEnabled) {
       setBatchState({ status: "error", message: t("common.coreUnreachable") });
@@ -4607,12 +4614,16 @@ function LibraryScreen({
       message: t("library.batch.deletingProgress", { completed: 0, total: ids.length }),
     });
     try {
-      await onDeleteItems(ids, (completed, total) => {
-        setBatchState({
-          status: "deleting",
-          message: t("library.batch.deletingProgress", { completed, total }),
-        });
-      });
+      await onDeleteItems(
+        ids,
+        (completed, total) => {
+          setBatchState({
+            status: "deleting",
+            message: t("library.batch.deletingProgress", { completed, total }),
+          });
+        },
+        { keepDiscoverable: true },
+      );
       setSelectedItemIds((prev) => {
         const next = new Set(prev);
         ids.forEach((id) => next.delete(id));
@@ -5422,7 +5433,7 @@ function SettingsScreen({
   apiStatus: ApiStatus;
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
   onBack: () => void;
 }) {
@@ -5485,21 +5496,26 @@ function SettingsScreen({
     return () => window.clearTimeout(timeout);
   }, [saveState.status]);
 
-  async function saveSettings(settingsPatch: api.SettingsMap) {
+  // Returns whether the patch was actually persisted so callers can avoid
+  // reporting success after a swallowed failure (e.g. the storage page must not
+  // claim the download dir moved if the core was offline).
+  async function saveSettings(settingsPatch: api.SettingsMap): Promise<boolean> {
     if (controlsDisabled) {
       setSaveState({
         status: "error",
         message: t("settings.save.unreachable"),
       });
-      return;
+      return false;
     }
 
     setSaveState({ status: "saving", message: t("settings.save.saving") });
     try {
       await onSettingsChange(settingsPatch);
       setSaveState({ status: "saved", message: t("settings.save.saved") });
+      return true;
     } catch (error) {
       setSaveState({ status: "error", message: errorMessage(error) });
+      return false;
     }
   }
 
@@ -5662,7 +5678,7 @@ function GeneralSettings({
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   onStartAtLoginChange: (enabled: boolean) => Promise<void>;
   onHotkeyChange: (label: string) => Promise<void>;
 }) {
@@ -5803,7 +5819,7 @@ function IndexingSettings({
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
 }) {
   const t = useT();
   // Mirror MAX_CONCURRENT_JOBS in crates/cerul-api/src/jobs.rs: the scheduler
@@ -5997,7 +6013,7 @@ function ModelsSettings({
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -6526,7 +6542,7 @@ function InferenceModeSelector({
   processingMode: string;
   usageSummary: api.UsageSummary | null;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
 }) {
   const t = useT();
   // Share of processing that ran on-device (free).
@@ -6944,7 +6960,7 @@ function ProviderConnections({
   error: string | null;
   disabled: boolean;
   onRefresh: () => Promise<void>;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
   localPrep: api.LocalPrepareStatus | null;
   onDownloadLocal: (modelKey?: string) => void;
@@ -7665,7 +7681,9 @@ function StorageSettings({
   requestConfirm,
 }: {
   settings: api.SettingsMap;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  // Resolves true only when the patch was actually persisted, so the download
+  // dir actions don't report success after a swallowed save failure.
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
@@ -7723,7 +7741,13 @@ function StorageSettings({
     }
     setAction({ status: "running", message: null });
     try {
-      await onSettingsChange({ media_dir: selected.trim() });
+      const saved = await onSettingsChange({ media_dir: selected.trim() });
+      if (!saved) {
+        // The settings write failed (the save chip already shows why); don't
+        // claim the location moved or refresh against a value that wasn't saved.
+        setAction({ status: "idle", message: null });
+        return;
+      }
       await refreshStorageUsage();
       setAction({ status: "done", message: t("settings.storage.message.downloadDirChanged") });
     } catch (error) {
@@ -7734,7 +7758,11 @@ function StorageSettings({
   async function resetDownloadDir() {
     setAction({ status: "running", message: null });
     try {
-      await onSettingsChange({ media_dir: "" });
+      const saved = await onSettingsChange({ media_dir: "" });
+      if (!saved) {
+        setAction({ status: "idle", message: null });
+        return;
+      }
       setAction({ status: "done", message: t("settings.storage.message.downloadDirReset") });
     } catch (error) {
       setAction({ status: "error", message: errorMessage(error) });
@@ -7956,7 +7984,7 @@ function AdvancedSettings({
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
-  onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
 }) {
   const t = useT();
   const binding = settingString(settings, "api_binding", "127");
