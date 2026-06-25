@@ -35,7 +35,9 @@ rg -qF "item.thumbnailUrl" apps/desktop/src
 rg -qF "Math.round(item.progress * 100)" apps/desktop/src
 rg -qF "onDeleteItems={async (itemIds" apps/desktop/src
 rg -qF "onReindexItems={async (itemIds)" apps/desktop/src
-rg -qF "api.deleteItem(itemId)" apps/desktop/src
+rg -qF "api.deleteItem(itemId, options)" apps/desktop/src
+rg -qF "keepDiscoverable?: boolean" apps/desktop/src
+rg -qF "{ keepDiscoverable: true }" apps/desktop/src
 rg -qF "api.reindexItem(itemId)" apps/desktop/src
 rg -qF "const filteredItems = items" apps/desktop/src
 rg -qF "sortLibraryItems(a, b, sortKey)" apps/desktop/src

@@ -1590,7 +1590,7 @@ async fn add_source(
 ) -> ApiResult<Json<SourceRecord>> {
     if should_discover_source_async(&req.source_type) {
         let source = create_syncing_source(&state.paths, req)?;
-        spawn_source_discovery(state.paths.clone(), source.id.clone());
+        start_source_discovery(state.paths.clone(), source.id.clone())?;
         return Ok(Json(source));
     }
 
@@ -1672,13 +1672,11 @@ fn create_syncing_source(paths: &AppPaths, req: AddSourceRequest) -> anyhow::Res
     source_by_id(paths, &id)
 }
 
-// Each discovery attempt stamps a fresh token into the source config; only the
-// attempt whose token still matches may write the source's terminal status. This
-// makes "retry discovery" safe while a source is still syncing: the new attempt
-// supersedes the old one, so a stale task (the original finishing late) can
-// neither flip the source to `error` over a newer success nor be overwritten by
-// one. json_set keeps the stamp atomic, so two concurrent attempts can't race on
-// a read-modify-write of the config.
+// Each discovery attempt stamps a fresh token into the source config before its
+// async task is spawned; only the attempt whose token still matches may write
+// the source's terminal status. Stamping synchronously keeps request order and
+// attempt order aligned, so a late-starting older task cannot overwrite a newer
+// retry token.
 fn rotate_discovery_token(paths: &AppPaths, source_id: &str) -> anyhow::Result<String> {
     let token = new_id("disc");
     let conn = cerul_storage::sqlite::open(paths)?;
@@ -1689,15 +1687,14 @@ fn rotate_discovery_token(paths: &AppPaths, source_id: &str) -> anyhow::Result<S
     Ok(token)
 }
 
-fn spawn_source_discovery(paths: AppPaths, source_id: String) {
+fn start_source_discovery(paths: AppPaths, source_id: String) -> anyhow::Result<()> {
+    let token = rotate_discovery_token(&paths, &source_id)?;
+    spawn_source_discovery(paths, source_id, token);
+    Ok(())
+}
+
+fn spawn_source_discovery(paths: AppPaths, source_id: String, token: String) {
     tokio::spawn(async move {
-        let token = match rotate_discovery_token(&paths, &source_id) {
-            Ok(token) => token,
-            Err(error) => {
-                tracing::warn!(source_id, error = %error, "failed to tag source discovery attempt");
-                return;
-            }
-        };
         if let Err(error) = discover_source_items_to_paths(&paths, &source_id, &token).await {
             let message = error.to_string();
             if let Err(mark_error) =
@@ -1727,7 +1724,9 @@ fn resume_interrupted_source_discovery(paths: &AppPaths) {
     };
     for id in ids {
         tracing::info!(source_id = %id, "resuming interrupted source discovery after restart");
-        spawn_source_discovery(paths.clone(), id);
+        if let Err(error) = start_source_discovery(paths.clone(), id.clone()) {
+            tracing::warn!(source_id = %id, error = %error, "failed to resume source discovery");
+        }
     }
 }
 
@@ -2065,7 +2064,7 @@ async fn retry_source_discovery(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     queue_source_discovery_retry(&state.paths, &id)?;
-    spawn_source_discovery(state.paths.clone(), id.clone());
+    start_source_discovery(state.paths.clone(), id.clone())?;
     Ok(Json(json!({ "status": "syncing", "id": id })))
 }
 

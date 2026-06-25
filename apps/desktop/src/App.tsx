@@ -4447,8 +4447,13 @@ function LibraryScreen({
     message: string | null;
   }>({ status: "idle", message: null });
   const [entities, setEntities] = useState<api.EntitySummary[]>([]);
+  const [failedCleanupIds, setFailedCleanupIds] = useState<string[]>([]);
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
+  );
+  const itemStatusSignature = useMemo(
+    () => items.map((item) => `${item.id}:${item.status}`).join("|"),
+    [items],
   );
   const normalizedQuery = libraryQuery.trim().toLowerCase();
   const filtersActive =
@@ -4472,7 +4477,7 @@ function LibraryScreen({
   const visibleSelectedCount = filteredItemIds.filter((itemId) => selectedItemIds.has(itemId)).length;
   const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
-  const failedItemIds = items.filter((item) => item.status === "failed").map((item) => item.id);
+  const failedCleanupCount = failedCleanupIds.length;
 
   useEffect(() => {
     const itemIds = new Set(items.map((item) => item.id));
@@ -4611,6 +4616,28 @@ function LibraryScreen({
     return ids;
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!actionsEnabled) {
+      setFailedCleanupIds([]);
+      return;
+    }
+    collectAllFailedItemIds()
+      .then((ids) => {
+        if (!cancelled) {
+          setFailedCleanupIds(ids);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailedCleanupIds([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, itemStatusSignature]);
+
   // One-click cleanup: remove every failed item from the library. Source media
   // (the original URL/file) is untouched, and we pass keepDiscoverable so the
   // rows are deleted WITHOUT an ignored-item tombstone — a transient failure
@@ -4632,6 +4659,7 @@ function LibraryScreen({
       return;
     }
     if (ids.length === 0) {
+      setFailedCleanupIds([]);
       setBatchState({ status: "idle", message: null });
       return;
     }
@@ -4663,6 +4691,7 @@ function LibraryScreen({
         ids.forEach((id) => next.delete(id));
         return next;
       });
+      setFailedCleanupIds([]);
       setBatchState({ status: "idle", message: null });
     } catch (error) {
       setBatchState({ status: "error", message: errorMessage(error) });
@@ -4785,7 +4814,7 @@ function LibraryScreen({
             </span>
           </button>
         ) : null}
-        {failedItemIds.length > 0 ? (
+        {failedCleanupCount > 0 ? (
           <button
             type="button"
             className="btn btn-ghost sm"
@@ -4794,7 +4823,7 @@ function LibraryScreen({
             title={t("library.clearFailed.hint")}
           >
             <Trash2 size={14} />
-            <span>{t("library.clearFailed.button", { count: failedItemIds.length })}</span>
+            <span>{t("library.clearFailed.button", { count: failedCleanupCount })}</span>
           </button>
         ) : null}
       </div>
