@@ -1672,11 +1672,37 @@ fn create_syncing_source(paths: &AppPaths, req: AddSourceRequest) -> anyhow::Res
     source_by_id(paths, &id)
 }
 
+// Each discovery attempt stamps a fresh token into the source config; only the
+// attempt whose token still matches may write the source's terminal status. This
+// makes "retry discovery" safe while a source is still syncing: the new attempt
+// supersedes the old one, so a stale task (the original finishing late) can
+// neither flip the source to `error` over a newer success nor be overwritten by
+// one. json_set keeps the stamp atomic, so two concurrent attempts can't race on
+// a read-modify-write of the config.
+fn rotate_discovery_token(paths: &AppPaths, source_id: &str) -> anyhow::Result<String> {
+    let token = new_id("disc");
+    let conn = cerul_storage::sqlite::open(paths)?;
+    conn.execute(
+        "UPDATE sources SET config = json_set(config, '$.discovery_token', ?2) WHERE id = ?1",
+        (source_id, &token),
+    )?;
+    Ok(token)
+}
+
 fn spawn_source_discovery(paths: AppPaths, source_id: String) {
     tokio::spawn(async move {
-        if let Err(error) = discover_source_items_to_paths(&paths, &source_id).await {
+        let token = match rotate_discovery_token(&paths, &source_id) {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!(source_id, error = %error, "failed to tag source discovery attempt");
+                return;
+            }
+        };
+        if let Err(error) = discover_source_items_to_paths(&paths, &source_id, &token).await {
             let message = error.to_string();
-            if let Err(mark_error) = mark_source_discovery_error(&paths, &source_id, &message) {
+            if let Err(mark_error) =
+                mark_source_discovery_error(&paths, &source_id, &token, &message)
+            {
                 tracing::warn!(
                     source_id,
                     error = %mark_error,
@@ -1714,7 +1740,11 @@ fn syncing_source_ids(paths: &AppPaths) -> anyhow::Result<Vec<String>> {
     Ok(ids)
 }
 
-async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> anyhow::Result<()> {
+async fn discover_source_items_to_paths(
+    paths: &AppPaths,
+    source_id: &str,
+    token: &str,
+) -> anyhow::Result<()> {
     let source = source_by_id(paths, source_id)?;
     if source.status != "syncing" {
         return Ok(());
@@ -1728,14 +1758,21 @@ async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> an
     let discovered_items = plugin.discover().await?;
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction()?;
-    let current_status = tx
+    // Bail if this attempt is no longer the current one: a newer retry rotated the
+    // token (so persisting our discovery would clobber theirs), or the source has
+    // already left `syncing`.
+    let current = tx
         .query_row(
-            "SELECT status FROM sources WHERE id = ?1",
+            "SELECT status, json_extract(config, '$.discovery_token') FROM sources WHERE id = ?1",
             [source_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .optional()?;
-    if current_status.as_deref() != Some("syncing") {
+    let is_current_attempt = matches!(
+        &current,
+        Some((status, tok)) if status == "syncing" && tok.as_deref() == Some(token)
+    );
+    if !is_current_attempt {
         tx.commit()?;
         return Ok(());
     }
@@ -1751,8 +1788,9 @@ async fn discover_source_items_to_paths(paths: &AppPaths, source_id: &str) -> an
         &mut queued_jobs,
     )?;
     tx.execute(
-        "UPDATE sources SET status = 'active', last_poll_at = strftime('%s','now') WHERE id = ?1",
-        [source_id],
+        "UPDATE sources SET status = 'active', last_poll_at = strftime('%s','now') \
+         WHERE id = ?1 AND status = 'syncing' AND json_extract(config, '$.discovery_token') = ?2",
+        (source_id, token),
     )?;
     tx.commit()?;
     tracing::info!(
@@ -1870,6 +1908,7 @@ fn persist_discovered_items(
 fn mark_source_discovery_error(
     paths: &AppPaths,
     source_id: &str,
+    token: &str,
     error: &str,
 ) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
@@ -1903,13 +1942,14 @@ fn mark_source_discovery_error(
             Value::String(error.to_string()),
         );
     }
-    // Only fail a source that is still discovering. If a concurrent retry already
-    // finished and moved it out of `syncing` (e.g. to `active`), a stale failure
-    // from an earlier task must not clobber that result — mirrors the
-    // status-guarded success path in discover_source_items_to_paths.
+    // Only fail a source that is still this discovery attempt: if a newer retry
+    // rotated the token (or already moved the source out of `syncing`), a stale
+    // failure from an earlier task must not clobber that result — mirrors the
+    // token-guarded success path in discover_source_items_to_paths.
     conn.execute(
-        "UPDATE sources SET status = 'error', config = ?2 WHERE id = ?1 AND status = 'syncing'",
-        (source_id, config.to_string()),
+        "UPDATE sources SET status = 'error', config = ?2 \
+         WHERE id = ?1 AND status = 'syncing' AND json_extract(config, '$.discovery_token') = ?3",
+        (source_id, config.to_string(), token),
     )?;
     Ok(())
 }
@@ -4573,11 +4613,17 @@ fn safe_filename_part(value: &str) -> String {
 }
 
 fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageResponse> {
-    let total = path_usage(&paths.data)?;
+    let data = path_usage(&paths.data)?;
     let database = path_usage(&paths.db)?;
     let models = path_usage(&paths.models)?;
     let index = path_usage(&paths.qdrant)?;
     let cache = path_usage(&paths.cache)?;
+    // Downloads can be redirected to an external disk via the `media_dir` setting.
+    // When that path is outside the data dir, its media is invisible to the
+    // data-dir scan — measure it explicitly so large external downloads don't
+    // silently vanish from the usage total (the disk space is real even if it
+    // isn't under the app data dir).
+    let external_downloads = external_download_usage(paths)?;
     let known_bytes = database
         .bytes
         .saturating_add(models.bytes)
@@ -4588,23 +4634,53 @@ fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageRespo
         .saturating_add(models.apparent_bytes)
         .saturating_add(index.apparent_bytes)
         .saturating_add(cache.apparent_bytes);
+    // "Other" is whatever inside the data dir we didn't attribute; external
+    // downloads sit outside it and get their own category instead.
     let other = PathUsage {
-        bytes: total.bytes.saturating_sub(known_bytes),
-        apparent_bytes: total.apparent_bytes.saturating_sub(known_apparent_bytes),
+        bytes: data.bytes.saturating_sub(known_bytes),
+        apparent_bytes: data.apparent_bytes.saturating_sub(known_apparent_bytes),
     };
+    let total = add_path_usage(data, external_downloads.unwrap_or_default());
+
+    let mut categories = vec![
+        storage_category("database", "Database", database),
+        storage_category("models", "Models", models),
+        storage_category("index", "Search index", index),
+        storage_category("cache", "Cache", cache),
+        storage_category("other", "Other", other),
+    ];
+    if let Some(downloads) = external_downloads {
+        categories.push(storage_category("downloads", "Downloads", downloads));
+    }
 
     Ok(StorageUsageResponse {
         data_dir: paths.data.to_string_lossy().to_string(),
         total_bytes: total.bytes,
         total_apparent_bytes: total.apparent_bytes,
-        categories: vec![
-            storage_category("database", "Database", database),
-            storage_category("models", "Models", models),
-            storage_category("index", "Search index", index),
-            storage_category("cache", "Cache", cache),
-            storage_category("other", "Other", other),
-        ],
+        categories,
     })
+}
+
+// Measures downloaded media when it lives outside the data dir (the `media_dir`
+// setting points at an external location). Returns None when downloads default to
+// the in-data cache (already counted by the data scan) or the directory is
+// missing/empty.
+fn external_download_usage(paths: &AppPaths) -> anyhow::Result<Option<PathUsage>> {
+    let media_dir = match cerul_storage::read_string_setting(paths, "media_dir") {
+        Ok(Some(dir)) if !dir.trim().is_empty() => PathBuf::from(dir.trim()),
+        _ => return Ok(None),
+    };
+    // Downloads are written under `<media_dir>/sources` (see source_download_dir).
+    let downloads_root = media_dir.join("sources");
+    if downloads_root.starts_with(&paths.data) {
+        // Already inside the data dir, so the scan above counts it.
+        return Ok(None);
+    }
+    let usage = path_usage(&downloads_root)?;
+    if usage.bytes == 0 && usage.apparent_bytes == 0 {
+        return Ok(None);
+    }
+    Ok(Some(usage))
 }
 
 fn storage_category(key: &str, label: &str, usage: PathUsage) -> StorageUsageCategory {
@@ -5137,10 +5213,12 @@ mod tests {
             [],
         )
         .unwrap();
+        let token = rotate_discovery_token(&paths, "source-1").unwrap();
 
         mark_source_discovery_error(
             &paths,
             "source-1",
+            &token,
             "yt-dlp author discovery failed: ERROR: [BiliBili] BV1xx: HTTP Error 412: Precondition Failed",
         )
         .unwrap();
@@ -5177,10 +5255,12 @@ mod tests {
             [],
         )
         .unwrap();
+        let token = rotate_discovery_token(&paths, "source-1").unwrap();
 
         mark_source_discovery_error(
             &paths,
             "source-1",
+            &token,
             "RSS feed discovery failed: HTTP Error 401: Unauthorized",
         )
         .unwrap();
@@ -5198,6 +5278,37 @@ mod tests {
         assert!(config["last_error"]
             .as_str()
             .is_some_and(|message| message.contains("401")));
+    }
+
+    #[test]
+    fn stale_discovery_failure_does_not_override_a_retried_source() {
+        // Reproduces the retry race: an original discovery task that fails *after*
+        // the user hits "retry" must not flip the still-syncing source to `error`
+        // and strand the retry. The retry rotates the token, so the original task's
+        // late failure is recognized as stale and ignored.
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'web_video', '{}', 'syncing')",
+            [],
+        )
+        .unwrap();
+
+        let stale = rotate_discovery_token(&paths, "source-1").unwrap();
+        // A retry supersedes the original attempt with a fresh token.
+        let _fresh = rotate_discovery_token(&paths, "source-1").unwrap();
+
+        mark_source_discovery_error(&paths, "source-1", &stale, "late discovery failure").unwrap();
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM sources WHERE id = 'source-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "syncing");
     }
 
     #[test]
@@ -7814,7 +7925,8 @@ mod tests {
         )
         .unwrap();
 
-        discover_source_items_to_paths(&paths, &source.id)
+        let token = rotate_discovery_token(&paths, &source.id).unwrap();
+        discover_source_items_to_paths(&paths, &source.id, &token)
             .await
             .unwrap();
 

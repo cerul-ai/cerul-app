@@ -545,8 +545,21 @@ export async function removeSource(id: string) {
   });
 }
 
-export async function listItems() {
-  return fetchJson<ItemRecord[]>("/items");
+export async function listItems(params?: {
+  status?: string;
+  sourceId?: string;
+  limit?: number;
+  cursor?: number;
+  light?: boolean;
+}) {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.sourceId) qs.set("source_id", params.sourceId);
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.cursor != null) qs.set("cursor", String(params.cursor));
+  if (params?.light) qs.set("light", "true");
+  const suffix = qs.toString();
+  return fetchJson<ItemRecord[]>(`/items${suffix ? `?${suffix}` : ""}`);
 }
 
 export async function listJobs() {

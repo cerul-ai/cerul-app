@@ -4587,6 +4587,30 @@ function LibraryScreen({
     }
   }
 
+  // Page through the API to collect *all* failed item ids, not just the loaded
+  // first page, so the cleanup matches what the button promises.
+  async function collectAllFailedItemIds(): Promise<string[]> {
+    const pageSize = 1000; // MAX_LIST_LIMIT on the core
+    const ids: string[] = [];
+    for (let cursor = 0; ; cursor += pageSize) {
+      const page = await api.listItems({
+        status: "failed",
+        limit: pageSize,
+        cursor,
+        light: true,
+      });
+      for (const item of page) {
+        if (item.status === "failed") {
+          ids.push(item.id);
+        }
+      }
+      if (page.length < pageSize) {
+        break;
+      }
+    }
+    return ids;
+  }
+
   // One-click cleanup: remove every failed item from the library. Source media
   // (the original URL/file) is untouched, and we pass keepDiscoverable so the
   // rows are deleted WITHOUT an ignored-item tombstone — a transient failure
@@ -4597,8 +4621,18 @@ function LibraryScreen({
       setBatchState({ status: "error", message: t("common.coreUnreachable") });
       return;
     }
-    const ids = items.filter((item) => item.status === "failed").map((item) => item.id);
+    // The library view only holds the first page of items, so derive the full
+    // failed set from the API across all pages — otherwise older failures beyond
+    // the first page would be silently left behind.
+    let ids: string[];
+    try {
+      ids = await collectAllFailedItemIds();
+    } catch (error) {
+      setBatchState({ status: "error", message: errorMessage(error) });
+      return;
+    }
     if (ids.length === 0) {
+      setBatchState({ status: "idle", message: null });
       return;
     }
     const confirmed = await requestConfirm({
@@ -7671,6 +7705,7 @@ function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
     index: t("settings.storage.category.index"),
     cache: t("settings.storage.category.cache"),
     other: t("settings.storage.category.other"),
+    downloads: t("settings.storage.category.downloads"),
   };
   return labels[key] ?? fallback;
 }
