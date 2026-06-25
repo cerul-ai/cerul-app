@@ -1438,12 +1438,30 @@ fn dedupe_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult>
 }
 
 fn merge_result_evidence(existing: &mut SearchResult, duplicate: SearchResult) {
+    let existing_has_vector = existing.source_mask & SOURCE_TEXT_VECTOR != 0;
+    let duplicate_has_vector = duplicate.source_mask & SOURCE_TEXT_VECTOR != 0;
+    let existing_has_text = existing.source_mask & SOURCE_TEXT != 0;
+    let duplicate_has_text = duplicate.source_mask & SOURCE_TEXT != 0;
+
     existing.source_mask |= duplicate.source_mask;
     existing.exact_match |= duplicate.exact_match;
-    if duplicate.score > existing.score {
+
+    if duplicate_has_vector && !existing_has_vector {
         existing.score = duplicate.score;
         existing.similarity_score = duplicate.similarity_score;
-    } else if duplicate.similarity_score > existing.similarity_score {
+    } else if duplicate_has_vector && existing_has_vector && duplicate.score > existing.score {
+        existing.score = duplicate.score;
+        existing.similarity_score = duplicate.similarity_score.or(existing.similarity_score);
+    } else if !existing_has_vector
+        && !duplicate_has_vector
+        && duplicate_has_text
+        && existing_has_text
+        && duplicate.score > existing.score
+    {
+        existing.score = duplicate.score;
+    }
+
+    if duplicate.similarity_score > existing.similarity_score {
         existing.similarity_score = duplicate.similarity_score;
     }
 }
@@ -1613,6 +1631,23 @@ mod tests {
         assert_eq!(scored.len(), 1);
         assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
         assert_ne!(scored[0].source_mask & SOURCE_TEXT, 0);
+    }
+
+    #[test]
+    fn dedupe_results_keeps_vector_score_when_merging_bm25_evidence() {
+        let mut semantic = result("chunk-a", "item-1", "moment", Some(10.0), 0.62);
+        semantic.source_mask = SOURCE_TEXT_VECTOR;
+        semantic.similarity_score = Some(0.62);
+        let mut lexical = result("chunk-b", "item-1", "transcript", Some(18.0), 12.0);
+        lexical.source_mask = SOURCE_TEXT;
+
+        let scored = finalize_results(vec![semantic, lexical], 10);
+
+        assert_eq!(scored.len(), 1);
+        assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
+        assert_ne!(scored[0].source_mask & SOURCE_TEXT, 0);
+        assert!((scored[0].score - 0.62).abs() < 0.001);
+        assert!((scored[0].match_score - 0.65).abs() < 0.001);
     }
 
     #[test]

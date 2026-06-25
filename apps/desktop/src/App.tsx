@@ -6309,7 +6309,7 @@ function ModelsSettings({
   };
   const providerForAsrModel = (modelId: string) => {
     const allowedTypes: api.ProviderType[] = isGeminiAsrModelId(modelId)
-      ? ["gemini"]
+      ? ["gemini", "openai-compatible"]
       : ["openai", "openai-compatible"];
     return providerFor(selectedAsrProvider, "env-asr", allowedTypes);
   };
@@ -6332,7 +6332,7 @@ function ModelsSettings({
       "Qwen3-VL Embedding local"
     : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
   const remoteAsrProviderTypes: api.ProviderType[] = isGeminiAsrModelId(activeRemoteAsr)
-    ? ["gemini"]
+    ? ["gemini", "openai-compatible"]
     : ["openai", "openai-compatible"];
   const preferredAsrProviderType: RemoteProviderType = isGeminiAsrModelId(activeRemoteAsr)
     ? "gemini"

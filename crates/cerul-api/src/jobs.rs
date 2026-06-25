@@ -11,7 +11,7 @@ use cerul_pipeline::run::{Embedder, OcrEngine, PipelineProgress, Transcriber, Vi
 use cerul_storage::AppPaths;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
 static DEFAULT_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
@@ -1200,9 +1200,10 @@ fn is_job_cancelled(paths: &AppPaths, job_id: &str) -> anyhow::Result<bool> {
 }
 
 fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()> {
-    let conn = cerul_storage::sqlite::open(paths)?;
-    let should_delete_item = item_has_delete_intent(&conn, &job.item_id)?;
-    conn.execute(
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let should_delete_item = item_has_delete_intent(&tx, &job.item_id)?;
+    tx.execute(
         r#"
         UPDATE jobs
         SET status = 'cancelled',
@@ -1216,9 +1217,9 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
         [job.id.as_str()],
     )?;
     if should_delete_item {
-        conn.execute("DELETE FROM items WHERE id = ?1", [job.item_id.as_str()])?;
+        tx.execute("DELETE FROM items WHERE id = ?1", [job.item_id.as_str()])?;
     } else if job.was_indexed {
-        conn.execute(
+        tx.execute(
             r#"
             UPDATE items
             SET status = 'discovered',
@@ -1230,7 +1231,8 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
             [job.item_id.as_str()],
         )?;
     } else {
-        conn.execute(
+        clear_cancelled_new_item_index_artifacts(&tx, &job.item_id)?;
+        tx.execute(
             r#"
             UPDATE items
             SET status = 'discovered',
@@ -1242,6 +1244,51 @@ fn mark_job_cancelled_after_processing(paths: &AppPaths, job: &ClaimedJob) -> an
             [job.item_id.as_str()],
         )?;
     }
+    tx.commit()?;
+    Ok(())
+}
+
+fn clear_cancelled_new_item_index_artifacts(
+    tx: &rusqlite::Transaction<'_>,
+    item_id: &str,
+) -> anyhow::Result<()> {
+    tx.execute("DELETE FROM chunks WHERE item_id = ?1", [item_id])?;
+    crate::clear_item_unified_search_index_with_tx(tx, item_id)?;
+
+    let current_metadata = tx
+        .query_row(
+            "SELECT metadata FROM items WHERE id = ?1",
+            [item_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let mut metadata = match current_metadata {
+        Some(value) if !value.trim().is_empty() => serde_json::from_str::<Value>(&value)?,
+        _ => Value::Object(Default::default()),
+    };
+    if !metadata.is_object() {
+        metadata = Value::Object(Default::default());
+    }
+    if let Some(object) = metadata.as_object_mut() {
+        for key in [
+            "embedding_index_status",
+            "transcript_index_status",
+            "visual_index_status",
+            "visual_sampled_frames",
+            "visual_indexed_frames",
+            "visual_index_error",
+            "ocr_index_status",
+            "ocr_indexed_chunks",
+            "ocr_index_error",
+        ] {
+            object.remove(key);
+        }
+    }
+    tx.execute(
+        "UPDATE items SET metadata = ?2 WHERE id = ?1",
+        params![item_id, serde_json::to_string(&metadata)?],
+    )?;
     Ok(())
 }
 
@@ -1915,6 +1962,54 @@ mod tests {
             "processing",
         );
         cerul_storage::mark_indexed(&paths, "item-1").unwrap();
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+                VALUES ('chunk-1', 'item-1', 'transcript', 0, 5, 'cancelled text', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        cerul_storage::replace_item_retrieval_units(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageRetrievalUnit {
+                id: "item-1:unit:v2:000000".to_string(),
+                item_id: "item-1".to_string(),
+                unit_index: 0,
+                unit_kind: "transcript".to_string(),
+                start_sec: Some(0.0),
+                end_sec: Some(5.0),
+                content_text: "cancelled text".to_string(),
+                transcript_text: Some("cancelled text".to_string()),
+                ocr_text: None,
+                visual_text: None,
+                summary_text: None,
+                representative_chunk_id: Some("chunk-1".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id,
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        )
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 1)
+            .unwrap();
+        cerul_storage::update_item_metadata(&paths, "item-1", |metadata| {
+            metadata.insert(
+                "embedding_index_status".to_string(),
+                Value::String("indexed".to_string()),
+            );
+            metadata.insert(
+                "transcript_index_status".to_string(),
+                Value::String("indexed".to_string()),
+            );
+        })
+        .unwrap();
         let job = ClaimedJob {
             id: "job-1".to_string(),
             item_id: "item-1".to_string(),
@@ -1925,6 +2020,38 @@ mod tests {
         mark_job_cancelled_after_processing(&paths, &job).unwrap();
 
         assert_item_status(&paths, "item-1", "discovered", None);
+        let conn = sqlite::open(&paths).unwrap();
+        assert_eq!(chunk_count(&conn, "item-1", "transcript"), 0);
+        let retrieval_units: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retrieval_units, 0);
+        let (search_status, search_units, search_vectors, metadata): (
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count, metadata
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(search_status.as_deref(), Some("pending"));
+        assert_eq!(search_units, Some(0));
+        assert_eq!(search_vectors, Some(0));
+        let metadata: Value = serde_json::from_str(metadata.as_deref().unwrap_or("{}")).unwrap();
+        assert!(metadata.get("embedding_index_status").is_none());
+        assert!(metadata.get("transcript_index_status").is_none());
     }
 
     #[tokio::test]
