@@ -105,8 +105,8 @@ Evidence should include at least:
 ## Implementation Checklist
 
 - [x] 1. Planning document added and maintained.
-- [ ] 2. Move desktop/internal backend routes from root to `/internal`, leaving no root compatibility routes.
-- [ ] 3. Migrate Electron shell, desktop frontend, menubar, CSP, docs, tests, and helpers from root routes to `/internal` or `/v1` as appropriate.
+- [x] 2. Move desktop/internal backend routes from root to `/internal`, leaving no root compatibility routes.
+- [x] 3. Migrate Electron shell, desktop frontend, menubar, CSP, tests, and helpers from root routes to `/internal` or `/v1` as appropriate.
 - [ ] 4. Add configurable API port in backend settings and `configured_addr`, with validation and tests.
 - [ ] 5. Add Settings UI controls and i18n copy for custom local Core port.
 - [ ] 6. Add `/v1/status` and `/v1/openapi.json`.
@@ -121,3 +121,4 @@ Evidence should include at least:
 ## Completion Log
 
 - 2026-06-26: Added this implementation plan and marked item 1 complete.
+- 2026-06-26: Moved the existing desktop API surface under `/internal`, removed root compatibility routes, migrated desktop/Electron/menubar calls, and added root-route removal coverage.

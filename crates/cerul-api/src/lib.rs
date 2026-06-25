@@ -345,7 +345,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
     }
     let state = ApiState { paths };
 
-    Router::new()
+    let internal_routes = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
@@ -443,7 +443,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             "/providers/:id/models",
             get(providers::discover_provider_models),
         )
-        .route("/settings", get(list_settings).patch(update_settings))
+        .route("/settings", get(list_settings).patch(update_settings));
+
+    Router::new()
+        .nest("/internal", internal_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_remote_auth,
@@ -4982,57 +4985,57 @@ impl From<std::io::Error> for ApiError {
 }
 
 const API_PATHS: &[(&str, &[&str])] = &[
-    ("/health", &["get"]),
-    ("/metrics", &["get"]),
-    ("/openapi.json", &["get"]),
-    ("/diagnostics", &["get"]),
-    ("/diagnostics/indexing", &["get"]),
-    ("/search", &["post"]),
-    ("/search/diagnostics", &["get"]),
-    ("/search/rebuild", &["post"]),
-    ("/ask", &["post"]),
-    ("/sources", &["get", "post"]),
-    ("/sources/preview/rss", &["post"]),
-    ("/sources/{id}", &["delete"]),
-    ("/sources/{id}/pause", &["post"]),
-    ("/sources/{id}/resume", &["post"]),
-    ("/sources/{id}/retry-failed", &["post"]),
-    ("/sources/{id}/retry-discovery", &["post"]),
-    ("/moments", &["get", "post"]),
-    ("/moments/{id}", &["delete"]),
-    ("/entities", &["get"]),
-    ("/entities/{id}", &["get"]),
-    ("/weekly-review", &["get"]),
-    ("/items", &["get"]),
-    ("/items/{id}", &["get", "delete"]),
-    ("/items/{id}/playback", &["get", "patch"]),
-    ("/items/{id}/reindex", &["post"]),
-    ("/items/{id}/chunks", &["get"]),
-    ("/items/{id}/understanding", &["get", "post"]),
-    ("/chunks/{id}/frame", &["get"]),
-    ("/chunks/{id}/video-segment", &["get"]),
-    ("/chunks/{id}/video-clip", &["get"]),
-    ("/jobs", &["get"]),
-    ("/usage/events", &["get"]),
-    ("/usage/summary", &["get"]),
-    ("/storage/usage", &["get"]),
-    ("/models/catalog", &["get"]),
-    ("/models/whisper", &["get"]),
-    ("/models/whisper/{id}/download", &["post"]),
-    ("/models/whisper/auto-download-status", &["get"]),
-    ("/models/embed/status", &["get"]),
-    ("/models/embed/prepare", &["post"]),
-    ("/models/local/capability", &["get"]),
-    ("/models/local/prepare", &["post"]),
-    ("/models/local/prepare-status", &["get"]),
-    ("/models/local/prepare-cancel", &["post"]),
-    ("/models/local/delete", &["post"]),
-    ("/models/local/repair", &["post"]),
-    ("/providers", &["get", "post"]),
-    ("/providers/{id}", &["patch", "delete"]),
-    ("/providers/{id}/test", &["post"]),
-    ("/providers/{id}/models", &["get"]),
-    ("/settings", &["get", "patch"]),
+    ("/internal/health", &["get"]),
+    ("/internal/metrics", &["get"]),
+    ("/internal/openapi.json", &["get"]),
+    ("/internal/diagnostics", &["get"]),
+    ("/internal/diagnostics/indexing", &["get"]),
+    ("/internal/search", &["post"]),
+    ("/internal/search/diagnostics", &["get"]),
+    ("/internal/search/rebuild", &["post"]),
+    ("/internal/ask", &["post"]),
+    ("/internal/sources", &["get", "post"]),
+    ("/internal/sources/preview/rss", &["post"]),
+    ("/internal/sources/{id}", &["delete"]),
+    ("/internal/sources/{id}/pause", &["post"]),
+    ("/internal/sources/{id}/resume", &["post"]),
+    ("/internal/sources/{id}/retry-failed", &["post"]),
+    ("/internal/sources/{id}/retry-discovery", &["post"]),
+    ("/internal/moments", &["get", "post"]),
+    ("/internal/moments/{id}", &["delete"]),
+    ("/internal/entities", &["get"]),
+    ("/internal/entities/{id}", &["get"]),
+    ("/internal/weekly-review", &["get"]),
+    ("/internal/items", &["get"]),
+    ("/internal/items/{id}", &["get", "delete"]),
+    ("/internal/items/{id}/playback", &["get", "patch"]),
+    ("/internal/items/{id}/reindex", &["post"]),
+    ("/internal/items/{id}/chunks", &["get"]),
+    ("/internal/items/{id}/understanding", &["get", "post"]),
+    ("/internal/chunks/{id}/frame", &["get"]),
+    ("/internal/chunks/{id}/video-segment", &["get"]),
+    ("/internal/chunks/{id}/video-clip", &["get"]),
+    ("/internal/jobs", &["get"]),
+    ("/internal/usage/events", &["get"]),
+    ("/internal/usage/summary", &["get"]),
+    ("/internal/storage/usage", &["get"]),
+    ("/internal/models/catalog", &["get"]),
+    ("/internal/models/whisper", &["get"]),
+    ("/internal/models/whisper/{id}/download", &["post"]),
+    ("/internal/models/whisper/auto-download-status", &["get"]),
+    ("/internal/models/embed/status", &["get"]),
+    ("/internal/models/embed/prepare", &["post"]),
+    ("/internal/models/local/capability", &["get"]),
+    ("/internal/models/local/prepare", &["post"]),
+    ("/internal/models/local/prepare-status", &["get"]),
+    ("/internal/models/local/prepare-cancel", &["post"]),
+    ("/internal/models/local/delete", &["post"]),
+    ("/internal/models/local/repair", &["post"]),
+    ("/internal/providers", &["get", "post"]),
+    ("/internal/providers/{id}", &["patch", "delete"]),
+    ("/internal/providers/{id}/test", &["post"]),
+    ("/internal/providers/{id}/models", &["get"]),
+    ("/internal/settings", &["get", "patch"]),
 ];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
@@ -5451,7 +5454,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources/source-1/retry-failed")
+                    .uri("/internal/sources/source-1/retry-failed")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5532,7 +5535,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/health")
+                    .uri("/internal/health")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5546,7 +5549,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/openapi.json")
+                    .uri("/internal/openapi.json")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5555,6 +5558,35 @@ mod tests {
         assert_eq!(openapi.status(), StatusCode::OK);
         let openapi_json = response_json(openapi).await;
         assert!(openapi_json["paths"].as_object().unwrap().len() >= 19);
+    }
+
+    #[tokio::test]
+    async fn root_routes_are_not_retained_as_compatibility_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        for (method, path) in [
+            (Method::GET, "/health"),
+            (Method::POST, "/search"),
+            (Method::POST, "/ask"),
+            (Method::GET, "/items"),
+            (Method::GET, "/chunks/chunk-1/frame"),
+            (Method::GET, "/settings"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        }
     }
 
     #[tokio::test]
@@ -5616,7 +5648,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/diagnostics")
+                    .uri("/internal/diagnostics")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5685,7 +5717,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/diagnostics/indexing")
+                    .uri("/internal/diagnostics/indexing")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5712,7 +5744,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/models/local/capability")
+                    .uri("/internal/models/local/capability")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5826,7 +5858,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/models/whisper")
+                    .uri("/internal/models/whisper")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5861,7 +5893,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/models/catalog")
+                    .uri("/internal/models/catalog")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5911,7 +5943,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5970,7 +6002,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "inference_mode": "remote" }).to_string(),
@@ -6130,7 +6162,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "inference_mode": "remote" }).to_string(),
@@ -6252,7 +6284,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6277,7 +6309,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(create_body.to_string()))
                     .unwrap(),
@@ -6296,7 +6328,7 @@ mod tests {
                 Request::builder()
                     .method(Method::PATCH)
                     .uri(format!(
-                        "/providers/{}",
+                        "/internal/providers/{}",
                         created_json["id"].as_str().unwrap()
                     ))
                     .header(header::CONTENT_TYPE, "application/json")
@@ -6326,7 +6358,7 @@ mod tests {
                 Request::builder()
                     .method(Method::GET)
                     .uri(format!(
-                        "/providers/{}/models",
+                        "/internal/providers/{}/models",
                         created_json["id"].as_str().unwrap()
                     ))
                     .body(Body::empty())
@@ -6341,7 +6373,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/providers/local/models")
+                    .uri("/internal/providers/local/models")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6354,7 +6386,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/providers/local")
+                    .uri("/internal/providers/local")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(json!({"label": "Other"}).to_string()))
                     .unwrap(),
@@ -6368,7 +6400,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::DELETE)
-                    .uri("/providers/local")
+                    .uri("/internal/providers/local")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6380,7 +6412,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers/local/test")
+                    .uri("/internal/providers/local/test")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6404,7 +6436,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -6426,7 +6458,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -6541,7 +6573,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -6559,7 +6591,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6581,7 +6613,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs")
+                    .uri("/internal/jobs")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6598,7 +6630,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri(format!("/sources/{id}/pause"))
+                    .uri(format!("/internal/sources/{id}/pause"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6674,7 +6706,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/items/item-1/reindex")
+                    .uri("/internal/items/item-1/reindex")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6738,7 +6770,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::DELETE)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6840,7 +6872,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/items/item-1/reindex")
+                    .uri("/internal/items/item-1/reindex")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6908,7 +6940,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/items/item-1/reindex")
+                    .uri("/internal/items/item-1/reindex")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6929,7 +6961,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri(format!("/jobs/{job_id}/cancel"))
+                    .uri(format!("/internal/jobs/{job_id}/cancel"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6985,7 +7017,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::DELETE)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7178,7 +7210,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7241,7 +7273,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/jobs/job-1/cancel")
+                    .uri("/internal/jobs/job-1/cancel")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7299,7 +7331,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -7358,7 +7390,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/items/item-1/playback")
+                    .uri("/internal/items/item-1/playback")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "position_sec": 75.4, "chunk_id": "chunk-1" }).to_string(),
@@ -7379,7 +7411,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items/item-1/playback")
+                    .uri("/internal/items/item-1/playback")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7393,7 +7425,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7427,7 +7459,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/storage/usage")
+                    .uri("/internal/storage/usage")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7494,7 +7526,7 @@ mod tests {
         let request = |item_id: &str| {
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/items/{item_id}/reindex"))
+                .uri(format!("/internal/items/{item_id}/reindex"))
                 .body(Body::empty())
                 .unwrap()
         };
@@ -7570,7 +7602,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7584,7 +7616,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7643,7 +7675,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-png/frame")
+                    .uri("/internal/chunks/chunk-png/frame")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7665,7 +7697,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-missing/frame")
+                    .uri("/internal/chunks/chunk-missing/frame")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7713,7 +7745,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-1/video-segment")
+                    .uri("/internal/chunks/chunk-1/video-segment")
                     .header(header::RANGE, "bytes=2-5")
                     .body(Body::empty())
                     .unwrap(),
@@ -7741,7 +7773,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-1/video-segment")
+                    .uri("/internal/chunks/chunk-1/video-segment")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7759,7 +7791,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-1/video-segment")
+                    .uri("/internal/chunks/chunk-1/video-segment")
                     .header(header::RANGE, "bytes=20-30")
                     .body(Body::empty())
                     .unwrap(),
@@ -7881,7 +7913,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -8095,7 +8127,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources/preview/rss")
+                    .uri("/internal/sources/preview/rss")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "url": feed.to_string_lossy() }).to_string(),
@@ -8165,7 +8197,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/usage/summary")
+                    .uri("/internal/usage/summary")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8186,7 +8218,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/usage/events?limit=1")
+                    .uri("/internal/usage/events?limit=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8203,7 +8235,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8218,7 +8250,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs")
+                    .uri("/internal/jobs")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8269,7 +8301,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items?source_id=source-a&status=indexed&limit=1&cursor=1&light=true")
+                    .uri("/internal/items?source_id=source-a&status=indexed&limit=1&cursor=1&light=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8327,7 +8359,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs?source_id=source-a&status=queued,running&limit=1&light=true")
+                    .uri("/internal/jobs?source_id=source-a&status=queued,running&limit=1&light=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8432,7 +8464,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs?scope=drawer&light=true&limit=10")
+                    .uri("/internal/jobs?scope=drawer&light=true&limit=10")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8471,7 +8503,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::ORIGIN, "http://127.0.0.1:1420")
                     .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                     .body(Body::empty())
@@ -8499,7 +8531,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::ORIGIN, "https://evil.example")
                     .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                     .body(Body::empty())
@@ -8518,7 +8550,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .header(header::ORIGIN, "https://evil.example")
                     .body(Body::empty())
                     .unwrap(),
@@ -8547,7 +8579,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8635,7 +8667,7 @@ exit 1
     fn remote_request(remote_addr: &str, token: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method(Method::GET)
-            .uri("/health")
+            .uri("/internal/health")
             .extension(ConnectInfo(
                 remote_addr
                     .parse::<SocketAddr>()

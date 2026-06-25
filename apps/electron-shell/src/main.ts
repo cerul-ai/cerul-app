@@ -30,6 +30,7 @@ import { pathToFileURL } from "node:url";
 import type { AppUpdater } from "electron-updater";
 
 const apiBaseUrl = "http://127.0.0.1:7777";
+const internalApiBaseUrl = `${apiBaseUrl}/internal`;
 const appScheme = "app";
 const appHost = "cerul";
 const deepLinkSchemes = ["cerul", "cerul-app"];
@@ -857,7 +858,7 @@ async function fetchApiJson(pathname: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(`${apiBaseUrl}${pathname}`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}${pathname}`, { signal: controller.signal });
     if (!response.ok) {
       return null;
     }
@@ -1436,7 +1437,7 @@ function collectApiStartupDiagnostics({
   const pid = child.pid;
   const lines = [
     "Cerul Core startup diagnostics:",
-    `  health_url=${apiBaseUrl}/health`,
+    `  health_url=${internalApiBaseUrl}/health`,
     `  startup_timeout_ms=${apiStartupTimeoutMs}`,
     `  pid=${pid ?? "unknown"}`,
     `  binary=${binary}`,
@@ -1760,7 +1761,7 @@ async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null
     const observedExit = exitInfo?.();
     if (observedExit) {
       throw new Error(
-        `Cerul Core exited before becoming healthy at ${apiBaseUrl} (${formatApiExit(observedExit)})`,
+        `Cerul Core exited before becoming healthy at ${internalApiBaseUrl}/health (${formatApiExit(observedExit)})`,
       );
     }
     if (await apiIsHealthy(750)) {
@@ -1769,7 +1770,7 @@ async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null
     await delay(250);
   }
   throw new Error(
-    `Cerul Core did not become healthy at ${apiBaseUrl} within ${timeoutMs}ms`,
+    `Cerul Core did not become healthy at ${internalApiBaseUrl}/health within ${timeoutMs}ms`,
   );
 }
 
@@ -1777,7 +1778,7 @@ async function apiIsHealthy(timeoutMs: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${apiBaseUrl}/health`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}/health`, { signal: controller.signal });
     return response.ok;
   } catch {
     return false;
@@ -1814,7 +1815,7 @@ async function readApiSettings() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(`${apiBaseUrl}/settings`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}/settings`, { signal: controller.signal });
     if (!response.ok) {
       return {};
     }
