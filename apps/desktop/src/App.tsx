@@ -8306,9 +8306,7 @@ function UsageSettings() {
           </div>
         ) : (
           <div className="usage-b__signin">
-            <span className="usage-b__signin-ic" aria-hidden="true">
-              <ShieldCheck size={20} />
-            </span>
+            <BrandMark className="usage-b__signin-ic" />
             <div className="usage-b__signin-text">
               <strong>Cerul Cloud</strong>
               <p className="usage-b__muted">{t("settings.usage.account.signedOut")}</p>

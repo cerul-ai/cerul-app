@@ -377,7 +377,8 @@
 
 /* account prompt (signed out) */
 .settings-page .usage-b__signin { display: flex; align-items: center; gap: 14px; padding: 15px 18px; border: 1px solid var(--accent-line); border-radius: var(--r-lg); background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent-soft) 50%, var(--surface))); }
-.settings-page .usage-b__signin-ic { width: 38px; height: 38px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; color: var(--text-on-accent); background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 78%, #fff), var(--accent)); box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--accent) 55%, transparent); }
+.settings-page .usage-b__signin-ic { width: 40px; height: 40px; flex: none; }
+.settings-page .usage-b__signin-ic .brandmark-img { border-radius: var(--r-md); }
 .settings-page .usage-b__signin-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .settings-page .usage-b__signin-text strong { font-size: 14px; font-weight: var(--fw-semibold); line-height: 1.25; }
 .settings-page .usage-b__signin .btn { flex: none; }
