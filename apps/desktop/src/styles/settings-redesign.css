@@ -366,7 +366,7 @@
    Account & Usage — "calm card" layout (variant B)
    ============================================================ */
 .settings-page .usage-b__wrap { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
-.settings-page .usage-b__muted { color: var(--text-muted); font-size: var(--fs-meta); }
+.settings-page .usage-b__muted { margin: 0; color: var(--text-muted); font-size: var(--fs-meta); line-height: 1.5; }
 
 /* account row (signed in) */
 .settings-page .usage-b__acct { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
@@ -376,10 +376,10 @@
 .settings-page .usage-b__acct .chip { flex: none; }
 
 /* account prompt (signed out) */
-.settings-page .usage-b__signin { display: flex; align-items: center; gap: 14px; padding: 16px; border: 1px dashed var(--accent-line); border-radius: var(--r-lg); background: var(--accent-soft); }
-.settings-page .usage-b__signin-ic { width: 40px; height: 40px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; color: var(--text-on-accent); background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 78%, #fff), var(--accent)); }
+.settings-page .usage-b__signin { display: flex; align-items: center; gap: 14px; padding: 15px 18px; border: 1px solid var(--accent-line); border-radius: var(--r-lg); background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent-soft) 50%, var(--surface))); }
+.settings-page .usage-b__signin-ic { width: 38px; height: 38px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; color: var(--text-on-accent); background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 78%, #fff), var(--accent)); box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--accent) 55%, transparent); }
 .settings-page .usage-b__signin-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.settings-page .usage-b__signin-text strong { font-size: 14px; font-weight: var(--fw-semibold); }
+.settings-page .usage-b__signin-text strong { font-size: 14px; font-weight: var(--fw-semibold); line-height: 1.25; }
 .settings-page .usage-b__signin .btn { flex: none; }
 
 /* hero spend */
