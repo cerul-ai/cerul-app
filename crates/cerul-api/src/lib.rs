@@ -1903,8 +1903,12 @@ fn mark_source_discovery_error(
             Value::String(error.to_string()),
         );
     }
+    // Only fail a source that is still discovering. If a concurrent retry already
+    // finished and moved it out of `syncing` (e.g. to `active`), a stale failure
+    // from an earlier task must not clobber that result — mirrors the
+    // status-guarded success path in discover_source_items_to_paths.
     conn.execute(
-        "UPDATE sources SET status = 'error', config = ?2 WHERE id = ?1",
+        "UPDATE sources SET status = 'error', config = ?2 WHERE id = ?1 AND status = 'syncing'",
         (source_id, config.to_string()),
     )?;
     Ok(())

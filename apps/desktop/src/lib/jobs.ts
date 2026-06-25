@@ -129,13 +129,16 @@ export function jobStageMessage(job: api.JobRecord, t: TFunction) {
   return job.stage_message;
 }
 
-// The download stage carries its whole message as language-neutral stats
-// ("45% · 3.2 MB/s · ETA 1:20"); show it verbatim after the localized label.
-// Other stages only ride a trailing "N/M" item count, when present.
+// The download stage carries language-neutral stats ("45% · 3.2 MB/s · ETA
+// 1:20") that always lead with a percentage — show those verbatim after the
+// localized label. The same stage also emits English lifecycle strings
+// ("Starting video download", "Download complete"); gate on the leading percent
+// so those never appear raw in a non-English UI (the localized label stands on
+// its own). Other stages only ride a trailing "N/M" item count, when present.
 function stageDetailSuffix(job: api.JobRecord): string | null {
   if (job.stage === "downloading") {
     const message = job.stage_message?.trim();
-    return message ? message : null;
+    return message && /\d%/.test(message) ? message : null;
   }
   return stageCountSuffix(job.stage_message);
 }

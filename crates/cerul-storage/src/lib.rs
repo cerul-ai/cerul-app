@@ -25,13 +25,13 @@ pub use items::{
 };
 pub use logs::{append_jsonl_event, log_file_path};
 pub use paths::AppPaths;
-pub use settings::read_string_setting;
 pub use retrieval::{
     best_sub_unit_for_query, best_visual_sub_unit_for_query, clear_item_search_index,
     indexed_item_count, item_has_retrieval_units, item_retrieval_unit_count,
     items_needing_rebuild_count, rebuild_item_retrieval_units, replace_item_retrieval_units,
     retrieval_unit_count, set_item_search_index_status, StorageRetrievalUnit, SEARCH_INDEX_VERSION,
 };
+pub use settings::read_string_setting;
 pub use usage::{
     list_usage_events, record_usage_event, usage_summary, usage_totals_by_item,
     usage_totals_by_item_ids, usage_totals_by_job, usage_totals_by_job_ids, usage_totals_for_item,

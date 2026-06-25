@@ -2435,11 +2435,8 @@ mod tests {
         )
         .unwrap();
 
-        let config = source_config_with_app_cache(
-            &paths,
-            "web_video",
-            serde_json::json!({ "url": "u" }),
-        );
+        let config =
+            source_config_with_app_cache(&paths, "web_video", serde_json::json!({ "url": "u" }));
         let expected = media
             .join("sources")
             .join("web_video")

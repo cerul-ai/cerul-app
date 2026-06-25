@@ -5806,7 +5806,14 @@ function IndexingSettings({
   onSettingsChange: (settings: api.SettingsMap) => Promise<void>;
 }) {
   const t = useT();
-  const concurrentJobs = Math.min(Math.max(settingNumber(settings, "concurrent_jobs", 2), 1), 8);
+  // Mirror MAX_CONCURRENT_JOBS in crates/cerul-api/src/jobs.rs: the scheduler
+  // clamps concurrent_jobs to this ceiling, so a higher value here would be a
+  // setting that silently does nothing.
+  const maxConcurrentJobs = 4;
+  const concurrentJobs = Math.min(
+    Math.max(settingNumber(settings, "concurrent_jobs", 2), 1),
+    maxConcurrentJobs,
+  );
   const webCookieMode = settingString(settings, "web_video_cookie_mode", "browser");
   const webCookieBrowser = settingString(settings, "web_video_cookie_browser", "chrome");
   const webCookiesPath = settingString(settings, "web_video_cookies_path", "");
@@ -5820,7 +5827,7 @@ function IndexingSettings({
   // settings write also triggers a multi-request refresh).
   const jobsCommitTimer = useRef<number | undefined>(undefined);
   const setJobs = (next: number) => {
-    const clamped = Math.min(8, Math.max(1, next));
+    const clamped = Math.min(maxConcurrentJobs, Math.max(1, next));
     setJobsDraft(clamped);
     window.clearTimeout(jobsCommitTimer.current);
     jobsCommitTimer.current = window.setTimeout(
@@ -5843,7 +5850,7 @@ function IndexingSettings({
           description={t("settings.indexing.concurrentJobs.description")}
           control={
             <div className="col gap-2" style={{ alignItems: "flex-end" }}>
-              <NumberStepper value={shownJobs} min={1} max={8} disabled={disabled} onChange={setJobs} />
+              <NumberStepper value={shownJobs} min={1} max={maxConcurrentJobs} disabled={disabled} onChange={setJobs} />
               <span className="settings-help">{t("settings.indexing.concurrentJobs.hint")}</span>
             </div>
           }
@@ -8618,6 +8625,16 @@ function Segmented({
 // Build an app-format accelerator ("Cmd+Shift+K") from a keydown event, or null
 // while only modifiers are held. Matches the "Cmd"/"Ctrl"/"Alt"/"Shift" tokens
 // the Electron globalShortcut + formatHotkeyLabel already use.
+// Canonical token for a KeyboardEvent.key. "+" becomes "Plus" (the Electron
+// accelerator convention) so the key never collides with the "+" separator —
+// otherwise "Ctrl+Shift++" would split into an empty final key and never match.
+function normalizeKeyToken(key: string): string {
+  if (key === " ") return "Space";
+  if (key === "+") return "Plus";
+  if (key.length === 1) return key.toUpperCase();
+  return key.replace(/^Arrow/, "");
+}
+
 function acceleratorFromEvent(event: globalThis.KeyboardEvent): string | null {
   const key = event.key;
   if (key === "Meta" || key === "Control" || key === "Alt" || key === "Shift") {
@@ -8628,11 +8645,7 @@ function acceleratorFromEvent(event: globalThis.KeyboardEvent): string | null {
   if (event.ctrlKey) parts.push("Ctrl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  let normalized = key;
-  if (normalized === " ") normalized = "Space";
-  else if (normalized.length === 1) normalized = normalized.toUpperCase();
-  else normalized = normalized.replace(/^Arrow/, "");
-  parts.push(normalized);
+  parts.push(normalizeKeyToken(key));
   return parts.join("+");
 }
 
@@ -8644,11 +8657,7 @@ function acceleratorMatchesEvent(accelerator: string, event: globalThis.Keyboard
   if (mods.has("Ctrl") !== event.ctrlKey) return false;
   if (mods.has("Alt") !== event.altKey) return false;
   if (mods.has("Shift") !== event.shiftKey) return false;
-  let evKey = event.key;
-  if (evKey === " ") evKey = "Space";
-  else if (evKey.length === 1) evKey = evKey.toUpperCase();
-  else evKey = evKey.replace(/^Arrow/, "");
-  return evKey === key;
+  return normalizeKeyToken(event.key) === key;
 }
 
 function KeyRecorder({

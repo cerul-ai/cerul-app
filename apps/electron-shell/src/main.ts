@@ -2172,7 +2172,12 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("cerul:updater-check", async (event, options?: UpdaterCheckOptions) => {
     assertTrustedIpcSender(event);
-    await runDesktopUpdateCheck(options);
+    const reached = await runDesktopUpdateCheck(options);
+    if (!reached) {
+      // Reject so the renderer treats this as a transient failure (retry soon,
+      // don't advance the throttle) rather than a successful "no update" result.
+      throw new Error("update-check-failed");
+    }
     return latestUpdaterState;
   });
   ipcMain.handle("cerul:updater-get-state", async (event) => {
@@ -2754,13 +2759,16 @@ function wireAutoUpdater(updater: AppUpdater) {
 // Signing-independent detection (GitHub releases API) that works on today's
 // ad-hoc builds. Drives the "available" pill; never clobbers an in-flight
 // download/installed state.
-async function refreshManualUpdateState() {
+// Returns false when the release probe could not reach a conclusion (network or
+// server error). Callers use this to avoid reporting a false "up to date" and to
+// retry soon instead of advancing the check throttle.
+async function refreshManualUpdateState(): Promise<boolean> {
   let info: DesktopUpdateInfo | null = null;
   try {
     info = await checkForGitHubReleaseUpdate();
   } catch (error) {
     console.error("github update check failed", error);
-    return;
+    return false;
   }
   if (info) {
     if (latestUpdaterState.phase === "idle" || latestUpdaterState.phase === "available") {
@@ -2774,9 +2782,14 @@ async function refreshManualUpdateState() {
   } else if (latestUpdaterState.phase === "available") {
     setUpdaterState({ phase: "idle" });
   }
+  return true;
 }
 
-async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
+// Resolves true when the check reached a definitive answer (update found or
+// confirmed up to date), false when it failed to reach the update server. The
+// IPC handler rejects on false so the renderer's automatic-check retry path and
+// the About page surface the failure instead of a misleading "up to date".
+async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}): Promise<boolean> {
   const installWhenDownloaded = options.installWhenDownloaded === true;
 
   // Dev demo hook: CERUL_FAKE_UPDATE=<version> renders the pill without a real
@@ -2789,7 +2802,7 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
       releaseUrl: releasesPageUrl(),
       canAutoInstall: false,
     });
-    return;
+    return true;
   }
 
   if (
@@ -2807,21 +2820,21 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
         await installDesktopUpdate(latestUpdaterState.version);
       }
     }
-    return;
+    return true;
   }
 
-  await refreshManualUpdateState();
+  const githubOk = await refreshManualUpdateState();
 
   // Opportunistic in-place updater — dormant until releases ship signed +
   // notarized with a latest-mac.yml that Squirrel.Mac can apply. When that
   // lands, these events upgrade the pill from "open download page" to a
   // one-click download followed by an automatic restart-to-install.
   if (!app.isPackaged) {
-    return;
+    return githubOk;
   }
   const updater = getAutoUpdater();
   if (!updater) {
-    return;
+    return githubOk;
   }
   try {
     wireAutoUpdater(updater);
@@ -2829,12 +2842,14 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
       updaterCheckInstallRequested = true;
     }
     await updater.checkForUpdates();
+    return true;
   } catch (error) {
     if (installWhenDownloaded) {
       updaterCheckInstallRequested = false;
       updateInstallRequested = false;
     }
     console.error("electron-updater check failed; release-page fallback active", error);
+    return githubOk;
   }
 }
 
@@ -2843,12 +2858,25 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}) {
 // shows a dialog (otherwise a silent check looks broken), while a found update
 // brings the window forward so the rail "Update" pill is visible.
 async function handleManualUpdateCheck() {
-  await runDesktopUpdateCheck();
+  const reached = await runDesktopUpdateCheck();
   if (latestUpdaterState.phase !== "idle") {
     focusMainWindow();
     return;
   }
   const zh = app.getLocale().toLowerCase().startsWith("zh");
+  if (!reached) {
+    // The probe couldn't reach the update server — surface that instead of a
+    // misleading "up to date" so the user knows to retry.
+    void dialog.showMessageBox({
+      type: "warning",
+      buttons: ["OK"],
+      message: zh ? "无法检查更新" : "Couldn't check for updates",
+      detail: zh
+        ? "暂时无法连接更新服务器，请稍后再试。"
+        : "Couldn't reach the update server. Please try again in a moment.",
+    });
+    return;
+  }
   void dialog.showMessageBox({
     type: "info",
     buttons: ["OK"],
