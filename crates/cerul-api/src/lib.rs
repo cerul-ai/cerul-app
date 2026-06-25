@@ -7265,10 +7265,24 @@ mod tests {
 
         for (method, path) in [
             (Method::GET, "/health"),
+            (Method::GET, "/metrics"),
+            (Method::GET, "/diagnostics"),
+            (Method::GET, "/diagnostics/indexing"),
             (Method::POST, "/search"),
+            (Method::GET, "/search/diagnostics"),
+            (Method::POST, "/search/rebuild"),
             (Method::POST, "/ask"),
+            (Method::GET, "/sources"),
             (Method::GET, "/items"),
+            (Method::GET, "/items/item-1"),
+            (Method::GET, "/items/item-1/chunks"),
             (Method::GET, "/chunks/chunk-1/frame"),
+            (Method::GET, "/chunks/chunk-1/video-segment"),
+            (Method::GET, "/chunks/chunk-1/video-clip"),
+            (Method::GET, "/jobs"),
+            (Method::GET, "/usage/summary"),
+            (Method::GET, "/storage/usage"),
+            (Method::GET, "/providers"),
             (Method::GET, "/settings"),
             (Method::GET, "/openapi.json"),
         ] {
@@ -7285,6 +7299,122 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
         }
+    }
+
+    #[tokio::test]
+    async fn internal_product_routes_remain_available_after_root_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let frame = temp.path().join("frame.jpg");
+        std::fs::write(&frame, b"jpg-bytes").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+                VALUES ('chunk-frame', 'item-1', 'keyframe', 2, 2, ?1, '{}')
+                "#,
+                [frame.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let settings = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settings.status(), StatusCode::OK);
+
+        let items = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/items")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert_eq!(items[0]["id"], "item-1");
+
+        let item = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/items/item-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(item.status(), StatusCode::OK);
+
+        let chunks = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/items/item-1/chunks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chunks.status(), StatusCode::OK);
+        let chunks = response_json(chunks).await;
+        assert_eq!(chunks[0]["id"], "chunk-frame");
+
+        let frame = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/chunks/chunk-frame/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(frame.status(), StatusCode::OK);
     }
 
     #[tokio::test]

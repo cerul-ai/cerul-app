@@ -114,8 +114,8 @@ Evidence should include at least:
 - [x] 8. Add `/v1/ask` with `mode`, citations, evidence, and usage metadata.
 - [x] 9. Add `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` agent responses.
 - [x] 10. Add `/v1/chunks/:id/frame`, `/v1/chunks/:id/video-segment`, and `/v1/chunks/:id/video-clip`.
-- [ ] 11. Add or update tests proving root routes are gone and product routes still work.
-- [ ] 12. Update README and API examples to use `/v1` and the configured port.
+- [x] 11. Add or update tests proving root routes are gone and product routes still work.
+- [ ] 12. Update README, API examples, and smoke scripts to use `/v1`, `/internal`, and the configured port.
 - [ ] 13. Push each completed item, open/update the PR, comment `@codex review`, and monitor review feedback for up to 30 minutes after each push.
 
 ## Completion Log
@@ -128,3 +128,4 @@ Evidence should include at least:
 - 2026-06-26: Added `/v1/ask` as extractive mode with shared v1 citation/evidence shape, local usage metadata, and mode validation.
 - 2026-06-26: Added `/v1/items`, `/v1/items/:id`, and `/v1/items/:id/chunks` with stable item metadata, chunk context, pagination, local evidence locators, and privacy-preserving field selection.
 - 2026-06-26: Added `/v1/chunks/:id/frame`, `/v1/chunks/:id/video-segment`, and `/v1/chunks/:id/video-clip` by exposing the existing local binary evidence handlers under the agent v1 namespace with route coverage.
+- 2026-06-26: Expanded route regression coverage so removed root API routes return 404 and representative desktop `/internal` product routes remain available.
