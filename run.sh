@@ -47,6 +47,7 @@ if [ -n "${CERUL_API_PORT:-}" ]; then
 else
   API_PORT="$(saved_api_port)"
   API_PORT="${API_PORT:-23785}"
+  export CERUL_API_PORT="$API_PORT"
 fi
 
 host_target() {

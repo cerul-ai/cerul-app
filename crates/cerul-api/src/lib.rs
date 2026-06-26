@@ -1184,6 +1184,57 @@ struct V1MeteredEvent {
     credits: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V1QueryExecution {
+    LocalOnly,
+    RemoteEmbedding,
+}
+
+impl V1QueryExecution {
+    fn execution(self) -> V1Execution {
+        V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: match self {
+                Self::LocalOnly => "local_only",
+                Self::RemoteEmbedding => "local_library_remote_query",
+            },
+        }
+    }
+
+    fn search_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_search",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+
+    fn ask_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_ask_extractive",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+}
+
 async fn v1_search(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -1192,6 +1243,7 @@ async fn v1_search(
     let query = first_non_empty_text([req.query, req.q])
         .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
     validate_v1_local_target(req.target.as_deref())?;
+    let query_execution = v1_query_execution(&state.paths);
     let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 50);
     let response = search_records(
         &state.paths,
@@ -1199,21 +1251,26 @@ async fn v1_search(
     )
     .await?;
     let item_metadata = v1_search_item_metadata(&state.paths, &response.results)?;
+    let existing_preview_chunk_ids =
+        v1_existing_preview_chunk_ids(&state.paths, &response.results)?;
     let base_url = v1_base_url(&headers, &state.paths);
     let results = response
         .results
         .iter()
-        .map(|result| v1_search_result(result, &item_metadata, &base_url))
+        .map(|result| {
+            v1_search_result(
+                result,
+                &item_metadata,
+                &existing_preview_chunk_ids,
+                &base_url,
+            )
+        })
         .collect::<Vec<_>>();
     let result_count = results.len();
 
     Ok(Json(V1SearchResponse {
         request_id: new_id("req"),
-        execution: V1Execution {
-            target: "local",
-            account_id: None,
-            privacy: "local_only",
-        },
+        execution: query_execution.execution(),
         results,
         diagnostics: V1SearchDiagnostics {
             retrieval_mode: response.diagnostics.retrieval_mode,
@@ -1224,11 +1281,7 @@ async fn v1_search(
         },
         usage: V1Usage {
             billable: false,
-            metered_events: vec![V1MeteredEvent {
-                capability: "local_search",
-                quantity: 1,
-                credits: 0,
-            }],
+            metered_events: query_execution.search_events(),
             credits_used: 0,
         },
     }))
@@ -1242,6 +1295,7 @@ async fn v1_ask(
     let question = first_non_empty_text([req.question, req.query, req.q])
         .ok_or_else(|| ApiError::bad_request("question cannot be empty"))?;
     validate_v1_local_target(req.target.as_deref())?;
+    let query_execution = v1_query_execution(&state.paths);
     let requested_mode = req
         .mode
         .as_deref()
@@ -1270,31 +1324,32 @@ async fn v1_ask(
         .take(limit)
         .collect::<Vec<_>>();
     let item_metadata = v1_search_item_metadata(&state.paths, &filtered_results)?;
+    let existing_preview_chunk_ids =
+        v1_existing_preview_chunk_ids(&state.paths, &filtered_results)?;
     let base_url = v1_base_url(&headers, &state.paths);
     let citations = filtered_results
         .iter()
-        .map(|result| v1_search_result(result, &item_metadata, &base_url))
+        .map(|result| {
+            v1_search_result(
+                result,
+                &item_metadata,
+                &existing_preview_chunk_ids,
+                &base_url,
+            )
+        })
         .collect::<Vec<_>>();
     let answer = v1_extractive_answer(&question, &citations, req.locale.as_deref());
 
     Ok(Json(V1AskResponse {
         request_id: new_id("req"),
-        execution: V1Execution {
-            target: "local",
-            account_id: None,
-            privacy: "local_only",
-        },
+        execution: query_execution.execution(),
         mode: "extractive",
         answer,
         citations,
         warnings: Vec::new(),
         usage: V1Usage {
             billable: false,
-            metered_events: vec![V1MeteredEvent {
-                capability: "local_ask_extractive",
-                quantity: 1,
-                credits: 0,
-            }],
+            metered_events: query_execution.ask_events(),
             credits_used: 0,
         },
     }))
@@ -1536,6 +1591,17 @@ fn local_source_file_exists(raw_path: &str) -> bool {
     !raw_path.is_empty() && FsPath::new(raw_path).is_file()
 }
 
+fn v1_query_execution(paths: &AppPaths) -> V1QueryExecution {
+    match api_models::effective_query_inference_mode(paths) {
+        Ok(mode) if mode == "remote" => V1QueryExecution::RemoteEmbedding,
+        Ok(_) => V1QueryExecution::LocalOnly,
+        Err(error) => {
+            tracing::debug!(%error, "could not resolve v1 query execution mode; assuming local-only fallback");
+            V1QueryExecution::LocalOnly
+        }
+    }
+}
+
 fn v1_load_item(paths: &AppPaths, id: &str) -> anyhow::Result<Option<V1ItemRow>> {
     let conn = cerul_storage::sqlite::open(paths)?;
     let sql = format!(
@@ -1689,7 +1755,7 @@ fn v1_chunk_evidence(
     };
     let preview = frame_path
         .map(str::trim)
-        .filter(|path| !path.is_empty())
+        .filter(|path| local_source_file_exists(path))
         .map(|_| V1Locator {
             locator_type: "local",
             url: format!(
@@ -1784,7 +1850,7 @@ fn v1_extractive_answer(
     locale: Option<&str>,
 ) -> String {
     let answer_in_english =
-        locale.is_some_and(|locale| locale.trim().to_ascii_lowercase().starts_with("en"));
+        !locale.is_some_and(|locale| locale.trim().to_ascii_lowercase().starts_with("zh"));
     if citations.is_empty() {
         if answer_in_english {
             format!(
@@ -1830,6 +1896,7 @@ fn v1_extractive_answer(
 fn v1_search_result(
     result: &cerul_search::SearchResult,
     item_metadata: &HashMap<String, V1SearchItemMetadata>,
+    existing_preview_chunk_ids: &HashSet<String>,
     base_url: &str,
 ) -> V1SearchResult {
     let metadata = item_metadata
@@ -1856,13 +1923,17 @@ fn v1_search_result(
     } else {
         None
     };
-    let preview = preview_chunk_id.map(|chunk_id| V1Locator {
-        locator_type: "local",
-        url: format!(
-            "{}/chunks/{}/frame",
-            base_url,
-            encode_path_segment(chunk_id)
-        ),
+    let preview = preview_chunk_id.and_then(|chunk_id| {
+        existing_preview_chunk_ids
+            .contains(chunk_id)
+            .then(|| V1Locator {
+                locator_type: "local",
+                url: format!(
+                    "{}/chunks/{}/frame",
+                    base_url,
+                    encode_path_segment(chunk_id)
+                ),
+            })
     });
     let evidence_kind = match (clip.is_some(), preview.is_some()) {
         (true, _) => "video_clip",
@@ -1959,6 +2030,55 @@ fn v1_search_item_metadata(
         metadata.insert(id, item);
     }
     Ok(metadata)
+}
+
+fn v1_existing_preview_chunk_ids(
+    paths: &AppPaths,
+    results: &[cerul_search::SearchResult],
+) -> anyhow::Result<HashSet<String>> {
+    let mut chunk_ids = results
+        .iter()
+        .filter_map(|result| {
+            result.nearest_frame_chunk_id.as_deref().or_else(|| {
+                result
+                    .frame_path
+                    .as_ref()
+                    .map(|_| result.playback_chunk_id.as_str())
+            })
+        })
+        .collect::<Vec<_>>();
+    chunk_ids.sort_unstable();
+    chunk_ids.dedup();
+    if chunk_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(chunk_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        r#"
+        SELECT id, frame_path
+        FROM chunks
+        WHERE id IN ({placeholders})
+          AND frame_path IS NOT NULL
+          AND TRIM(frame_path) <> ''
+        "#
+    );
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut existing = HashSet::new();
+    for row in rows {
+        let (id, frame_path) = row?;
+        if local_source_file_exists(&frame_path) {
+            existing.insert(id);
+        }
+    }
+    Ok(existing)
 }
 
 fn fallback_v1_search_item_metadata(result: &cerul_search::SearchResult) -> V1SearchItemMetadata {
@@ -6943,6 +7063,9 @@ mod tests {
     fn seed_v1_agent_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
         fs::write(raw_path, b"not a real video").unwrap();
         let raw_path_string = raw_path.to_string_lossy().to_string();
+        let frame_path = raw_path.with_file_name("frame.jpg");
+        fs::write(&frame_path, b"not a real frame").unwrap();
+        let frame_path_string = frame_path.to_string_lossy().to_string();
         {
             let conn = cerul_storage::sqlite::open(paths).unwrap();
             conn.execute(
@@ -6989,11 +7112,11 @@ mod tests {
                     'keyframe',
                     12.0,
                     12.0,
-                    '/tmp/frame.jpg',
+                    ?1,
                     '{}'
                 )
                 "#,
-                [],
+                [frame_path_string.as_str()],
             )
             .unwrap();
         }
@@ -7120,6 +7243,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_search_marks_remote_embedding_privacy_when_remote_query_mode_is_selected() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('inference_mode', '"remote"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"query": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["execution"]["privacy"], "local_library_remote_query");
+        assert_eq!(
+            body["usage"]["metered_events"],
+            json!([
+                {"capability": "local_search", "quantity": 1, "credits": 0},
+                {"capability": "remote_embedding_query", "quantity": 1, "credits": 0}
+            ])
+        );
+    }
+
+    #[tokio::test]
     async fn v1_search_does_not_advertise_clip_when_source_file_is_missing() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -7150,6 +7317,40 @@ mod tests {
             evidence["preview"]["url"],
             "http://127.0.0.1:25005/v1/chunks/item-1%3Akeyframe%3A000012/frame"
         );
+    }
+
+    #[tokio::test]
+    async fn v1_search_does_not_advertise_preview_when_frame_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        let frame_path = temp.path().join("frame.jpg");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        fs::remove_file(frame_path).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25006")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"query": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let evidence = &body["results"][0]["evidence"];
+        assert_eq!(evidence["kind"], "video_clip");
+        assert!(evidence["clip"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("/v1/chunks/item-1%3Atranscript%3A000000/video-clip"));
+        assert_eq!(evidence["preview"], Value::Null);
     }
 
     #[tokio::test]
@@ -7229,6 +7430,33 @@ mod tests {
             body["usage"]["metered_events"][0],
             json!({"capability": "local_ask_extractive", "quantity": 1, "credits": 0})
         );
+    }
+
+    #[tokio::test]
+    async fn v1_ask_defaults_to_english_without_locale() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"question": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let answer = body["answer"].as_str().unwrap();
+        assert!(answer.contains("This answer is extractive"));
+        assert!(!answer.contains("本回答"));
     }
 
     #[tokio::test]

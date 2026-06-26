@@ -201,7 +201,7 @@ fn local_embedding_model_cached(paths: &AppPaths) -> anyhow::Result<bool> {
     ))
 }
 
-fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
+pub(crate) fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
     let runtime = crate::models::model_runtime_status(paths);
     query_inference_mode(paths, &runtime)
 }

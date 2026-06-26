@@ -145,3 +145,4 @@ Evidence should include at least:
 - 2026-06-26: Updated README examples and current smoke scripts to use `/v1`, `/internal`, default port `23785`, and configured-port helpers; added `v1_base_url` to local endpoint discovery metadata.
 - 2026-06-26: Addressed review feedback by documenting the desktop item read routes and model setup mutation routes preserved under `/internal`.
 - 2026-06-26: Addressed review feedback by aligning v1 deep links with the Electron router, checking local source files before returning clip evidence, translating public chunk type filters, preserving saved API ports in `run.sh`, and trimming request aliases before fallback.
+- 2026-06-26: Addressed follow-up review feedback by exporting the resolved saved port for dev cleanup, defaulting `/v1/ask` to English unless Chinese is explicitly requested, omitting stale frame preview locators, and marking remote query embedding in v1 execution/usage metadata.
