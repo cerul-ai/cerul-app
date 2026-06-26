@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      /* ============================================================
+         Aside-style replica — a faithful study of the Apple/Linear
+         "product launch" motion language, built entirely in HTML+GSAP.
+         Signature moves reproduced:
+           S1  word-by-word "karaoke" kinetic type (dark)
+           S2  big line with an inline icon (light, hard tonal flip)
+           S3  benchmark bars grow + numbers count up (dark, data-in-motion)
+           S4  logo sting (mark + wordmark)
+         Colours are deliberate (graphite / off-white / electric cyan)
+         to match the reference; swap the tokens for any brand. ========= */
+      :root {
+        --ink-dark: #161618;      /* graphite background        */
+        --ink-light: #f6f6f4;     /* paper background           */
+        --fg-on-dark: #f5f5f7;    /* apple off-white            */
+        --fg-on-light: #0a0a0b;
+        --dim: rgba(245, 245, 247, 0.24); /* unspoken word      */
+        --accent: #34d3ee;        /* electric cyan (the winner) */
+        --bar-rest: #4d4d52;      /* the also-rans              */
+        --label-dim: #9a9aa1;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1920px; height: 1080px; overflow: hidden;
+        background: var(--ink-dark);
+      }
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: geometricPrecision;
+      }
+
+      /* ---------- scene scaffold ---------- */
+      .scene { position: absolute; inset: 0; display: flex;
+        align-items: center; justify-content: center; }
+      .dark  { background: var(--ink-dark);  color: var(--fg-on-dark); }
+      .light { background: var(--ink-light); color: var(--fg-on-light); }
+      /* localized glow on dark scenes (radial — no banding) */
+      .dark::before {
+        content: ""; position: absolute; left: 50%; top: 42%;
+        width: 1500px; height: 1100px; transform: translate(-50%, -50%);
+        background: radial-gradient(circle, rgba(52, 211, 238, 0.10), transparent 60%);
+        pointer-events: none;
+      }
+
+      /* ============ S1 — kinetic karaoke type ============ */
+      .s1 .line {
+        max-width: 1350px; text-align: center;
+        font-size: 96px; font-weight: 600; line-height: 1.22;
+        letter-spacing: -0.02em;
+      }
+      .s1 .w { color: var(--fg-on-dark); display: inline-block; }
+
+      /* ============ S2 — light, inline-icon headline ============ */
+      .s2 .line {
+        max-width: 1500px; text-align: center;
+        font-size: 110px; font-weight: 600; line-height: 1.1;
+        letter-spacing: -0.025em;
+        display: flex; flex-wrap: wrap; align-items: center;
+        justify-content: center; gap: 0 30px;
+      }
+      .s2 .w { display: inline-block; }
+      .s2 .icon {
+        display: inline-flex; width: 92px; height: 92px;
+        vertical-align: -16px;
+      }
+      .s2 .icon svg { width: 100%; height: 100%; }
+
+      /* ============ S3 — benchmark ============ */
+      .bench { width: 1180px; }
+      .bench .eyebrow {
+        font-size: 24px; font-weight: 600; letter-spacing: 0.26em;
+        color: var(--label-dim); text-transform: uppercase;
+        margin-bottom: 46px;
+      }
+      .row {
+        display: grid; grid-template-columns: 392px 1fr 96px;
+        align-items: center; gap: 30px; height: 58px;
+      }
+      .row .name { text-align: right; }
+      .row .name b { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
+      .row .name span { display: block; font-size: 18px; color: var(--label-dim);
+        font-weight: 500; margin-top: 3px; letter-spacing: 0.01em; }
+      .track {
+        position: relative; height: 22px; border-radius: 999px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+      .fill {
+        position: absolute; left: 0; top: 0; height: 100%;
+        border-radius: 999px; transform-origin: left center;
+        background: var(--bar-rest);
+      }
+      .row.win .name b { color: var(--accent); }
+      .row.win .fill {
+        background: linear-gradient(90deg, #1f9fc4, var(--accent));
+        box-shadow: 0 0 26px rgba(52, 211, 238, 0.55);
+      }
+      .val {
+        text-align: right; font-size: 30px; font-weight: 600;
+        font-variant-numeric: tabular-nums; color: var(--fg-on-dark);
+      }
+      .row:not(.win) .val { color: var(--label-dim); }
+
+      /* ============ S4 — logo sting ============ */
+      .lockup { display: flex; align-items: center; gap: 30px; }
+      .lockup .mark { width: 124px; height: 124px; }
+      .lockup .mark svg { width: 100%; height: 100%; }
+      .lockup .word {
+        font-size: 108px; font-weight: 600; letter-spacing: -0.02em;
+        color: var(--fg-on-dark);
+      }
+      #s4-halo {
+        position: absolute; left: 50%; top: 50%;
+        width: 1000px; height: 1000px; transform: translate(-50%, -50%);
+        background: radial-gradient(circle, rgba(52, 211, 238, 0.18), transparent 62%);
+        filter: blur(8px);
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="17"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- ============ S1 — kinetic karaoke type ============ -->
+      <div class="scene dark s1 clip" id="s1" data-start="0" data-duration="4.4" data-track-index="1">
+        <div class="line">
+          <span class="w">They</span> <span class="w">promised</span> <span class="w">us</span>
+          <span class="w">agents</span> <span class="w">that</span> <span class="w">do</span>
+          <span class="w">the</span> <span class="w">work.</span>
+        </div>
+      </div>
+
+      <!-- ============ S2 — light, inline-icon headline ============ -->
+      <div class="scene light s2 clip" id="s2" data-start="4" data-duration="4.4" data-track-index="2">
+        <div class="line">
+          <span class="w">Anything</span><span class="w">you</span><span class="w">can</span>
+          <span class="w">do</span><span class="w">in</span><span class="w">a</span>
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9.2" />
+              <path d="M2.8 12h18.4" />
+              <ellipse cx="12" cy="12" rx="4" ry="9.2" />
+            </svg>
+          </span><span class="w">browser.</span>
+        </div>
+      </div>
+
+      <!-- ============ S3 — benchmark bars ============ -->
+      <div class="scene dark s3 clip" id="s3" data-start="8" data-duration="5.4" data-track-index="3">
+        <div class="bench">
+          <div class="eyebrow">Browsing Agent Benchmark</div>
+
+          <div class="row win">
+            <div class="name"><b>Aside</b><span>GPT-5.5</span></div>
+            <div class="track"><div class="fill" style="width: 99%;"></div></div>
+            <div class="val" id="v0">0%</div>
+          </div>
+          <div style="height: 18px;"></div>
+          <div class="row">
+            <div class="name"><b>Browser Use</b><span>agent harness</span></div>
+            <div class="track"><div class="fill" style="width: 97%;"></div></div>
+            <div class="val" id="v1">0%</div>
+          </div>
+          <div style="height: 18px;"></div>
+          <div class="row">
+            <div class="name"><b>GPT-5.4</b><span>computer use</span></div>
+            <div class="track"><div class="fill" style="width: 92%;"></div></div>
+            <div class="val" id="v2">0%</div>
+          </div>
+          <div style="height: 18px;"></div>
+          <div class="row">
+            <div class="name"><b>Claude Opus 4.7</b><span>computer use</span></div>
+            <div class="track"><div class="fill" style="width: 86%;"></div></div>
+            <div class="val" id="v3">0%</div>
+          </div>
+          <div style="height: 18px;"></div>
+          <div class="row">
+            <div class="name"><b>ChatGPT Atlas</b><span>browser agent</span></div>
+            <div class="track"><div class="fill" style="width: 70%;"></div></div>
+            <div class="val" id="v4">0%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ S4 — logo sting ============ -->
+      <div class="scene dark s4 clip" id="s4" data-start="13" data-duration="4" data-track-index="4">
+        <div id="s4-halo"></div>
+        <div class="lockup">
+          <span class="mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                 style="color: var(--fg-on-dark);">
+              <circle cx="24" cy="24" r="20" />
+              <path d="M33 15 L17 23 L24 26 L27 33 Z" fill="currentColor" stroke="none" />
+              <path d="M14 34 L34 14" stroke="var(--accent)" />
+            </svg>
+          </span>
+          <span class="word">Aside</span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+      /* crossfade transition between scenes (scene wrapper IS the exit) */
+      function fade(sel, tIn, tOut) {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, tIn);
+        if (tOut != null) tl.to(sel, { opacity: 0, duration: 0.4, ease: "power2.in" }, tOut);
+      }
+
+      /* ===== S1 — words illuminate one by one (0 → 4.4) ===== */
+      fade("#s1", 0.1, 3.9);
+      tl.fromTo("#s1 .w",
+        { opacity: 0.16, y: 18 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power3.out", stagger: 0.16 }, 0.35);
+
+      /* ===== S2 — light headline + inline globe (4 → 8.4) ===== */
+      fade("#s2", 4.05, 7.95);
+      tl.fromTo("#s2 .w",
+        { opacity: 0, y: 34 },
+        { opacity: 1, y: 0, duration: 0.55, ease: "power3.out", stagger: 0.085 }, 4.3);
+      tl.fromTo("#s2 .icon",
+        { opacity: 0, scale: 0.4, rotation: -35 },
+        { opacity: 1, scale: 1, rotation: 0, duration: 0.6, ease: "back.out(1.7)" }, 5.0);
+
+      /* ===== S3 — benchmark bars grow + count up (8 → 13.4) ===== */
+      fade("#s3", 8.05, 13.0);
+      tl.fromTo("#s3 .eyebrow", { opacity: 0, y: -14 }, { opacity: 1, y: 0, duration: 0.5 }, 8.2);
+      tl.fromTo("#s3 .row", { opacity: 0, x: -26 },
+        { opacity: 1, x: 0, duration: 0.5, ease: "power3.out", stagger: 0.1 }, 8.35);
+      tl.fromTo("#s3 .fill", { scaleX: 0 },
+        { scaleX: 1, duration: 0.95, ease: "power2.out", stagger: 0.1 }, 8.55);
+      /* winner bar gets a confident glow pulse once it lands */
+      tl.fromTo("#s3 .win .fill",
+        { filter: "drop-shadow(0 0 0 rgba(52,211,238,0))" },
+        { filter: "drop-shadow(0 0 16px rgba(52,211,238,0.6))", duration: 0.5, ease: "sine.out" }, 9.6);
+
+      /* deterministic, seek-safe count-up via a GSAP-driven proxy */
+      [["#v0", 99], ["#v1", 97], ["#v2", 92], ["#v3", 86], ["#v4", 70]].forEach(function (r, i) {
+        const el = document.querySelector(r[0]);
+        const o = { v: 0 };
+        const at = 8.55 + i * 0.1;
+        tl.to(o, {
+          v: r[1], duration: 0.95, ease: "power1.out",
+          onUpdate: function () { el.textContent = Math.round(o.v) + "%"; }
+        }, at);
+        tl.set(el, { textContent: r[1] + "%" }, at + 0.95); /* pin final value */
+      });
+
+      /* ===== S4 — logo sting (13 → 17, final) ===== */
+      fade("#s4", 13.05, null);
+      tl.fromTo("#s4-halo", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 1.0 }, 13.1);
+      tl.fromTo("#s4 .mark", { opacity: 0, scale: 0.5, rotation: -20 },
+        { opacity: 1, scale: 1, rotation: 0, duration: 0.7, ease: "back.out(1.5)" }, 13.25);
+      tl.fromTo("#s4 .word", { opacity: 0, x: -24 },
+        { opacity: 1, x: 0, duration: 0.6, ease: "power3.out" }, 13.55);
+      tl.to("#s4-halo", { scale: 1.06, duration: 2.2, ease: "sine.inOut" }, 14.15);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

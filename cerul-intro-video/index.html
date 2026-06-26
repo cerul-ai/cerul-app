@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      /* Self-contained subset of Noto Sans SC (variable, 100–900) — renders
+         Simplified Chinese deterministically with no network/font fallback. */
+      @font-face {
+        font-family: "Noto Sans SC";
+        src: url("assets/fonts/NotoSansSC-subset.woff2") format("woff2");
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: block;
+      }
+      /* ---------- Cerul brand tokens (Graphite Glass / Brushed Silver) ---------- */
+      :root {
+        --bg-0: #0c1015;
+        --bg-1: #11161d;
+        --ink: #e9eef5;          /* brushed silver */
+        --ink-2: #aab6c4;
+        --ink-3: #6c7886;
+        --accent: #3e6b9d;       /* canonical steel blue */
+        --accent-2: #6fa0d6;     /* lighter glint for dark bg */
+        --line: rgba(255, 255, 255, 0.1);
+        --glass-top: rgba(255, 255, 255, 0.06);
+        --glass-bot: rgba(255, 255, 255, 0.02);
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg-0);
+      }
+      body {
+        font-family: "Noto Sans SC", sans-serif;
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+      }
+      .mono {
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      /* ---------- scene scaffold ---------- */
+      .scene { position: absolute; inset: 0; }
+      .pad { position: absolute; inset: 0; padding: 0 150px; }
+      .center { display: flex; flex-direction: column; align-items: center;
+        justify-content: center; text-align: center; }
+      .cap {
+        display: grid; grid-template-columns: 1.05fr 0.95fr;
+        align-items: center; gap: 90px; height: 100%;
+      }
+
+      /* ---------- background ---------- */
+      #bg {
+        position: absolute; inset: -8%;
+        background:
+          radial-gradient(1200px 760px at 24% 16%, rgba(62, 107, 157, 0.34), transparent 60%),
+          radial-gradient(900px 620px at 84% 90%, rgba(111, 160, 214, 0.16), transparent 55%),
+          linear-gradient(158deg, #0d1219 0%, #11171f 52%, #0a0d12 100%);
+      }
+      #bg-glow {
+        position: absolute; left: 12%; top: 8%;
+        width: 760px; height: 760px; border-radius: 50%;
+        background: radial-gradient(circle, rgba(62, 107, 157, 0.30), transparent 62%);
+        filter: blur(8px);
+      }
+      #vignette {
+        position: absolute; inset: 0; pointer-events: none;
+        background: radial-gradient(120% 90% at 50% 46%, transparent 55%, rgba(0, 0, 0, 0.46) 100%);
+      }
+
+      /* ---------- typography ---------- */
+      .eyebrow {
+        display: inline-flex; align-items: center; gap: 14px;
+        color: var(--accent-2); font-size: 23px; font-weight: 600;
+        letter-spacing: 0.06em;
+      }
+      .eyebrow .num {
+        font-size: 20px; letter-spacing: 0.2em; opacity: 0.85;
+        padding: 4px 11px; border: 1px solid rgba(111, 160, 214, 0.4);
+        border-radius: 8px;
+      }
+      .h-cn { font-size: 78px; font-weight: 700; line-height: 1.16;
+        letter-spacing: 0.01em; }
+      .sub-en { font-size: 27px; font-weight: 400; color: var(--ink-2);
+        letter-spacing: 0.01em; margin-top: 22px; }
+
+      /* ---------- glass card ---------- */
+      .glass {
+        position: relative; border-radius: 26px;
+        background: linear-gradient(180deg, var(--glass-top), var(--glass-bot));
+        border: 1px solid var(--line);
+        box-shadow: 0 36px 90px rgba(0, 0, 0, 0.5),
+          inset 0 1px 0 rgba(255, 255, 255, 0.14);
+      }
+      .card-head {
+        display: flex; align-items: center; gap: 9px;
+        padding: 22px 26px; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      .dot { width: 11px; height: 11px; border-radius: 50%;
+        background: rgba(255, 255, 255, 0.18); }
+      .card-title { margin-left: 10px; font-size: 17px; color: var(--ink-3);
+        letter-spacing: 0.04em; }
+      .chip {
+        display: inline-flex; align-items: center; gap: 8px;
+        background: rgba(62, 107, 157, 0.18);
+        border: 1px solid rgba(111, 160, 214, 0.4);
+        color: #d4e3f5; border-radius: 999px;
+        font-size: 19px; font-weight: 500; padding: 9px 16px;
+      }
+      .live { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2);
+        box-shadow: 0 0 12px var(--accent-2); }
+
+      /* ---------- brand scene ---------- */
+      #b-halo {
+        position: absolute; left: 50%; top: 47%; width: 980px; height: 980px;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(circle, rgba(62, 107, 157, 0.4), transparent 60%);
+        filter: blur(10px);
+      }
+      #b-word {
+        font-size: 158px; font-weight: 900; letter-spacing: -0.02em;
+        background: linear-gradient(180deg, #ffffff, #c4cedb 64%, #97a6b8);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+        text-shadow: 0 0 60px rgba(62, 107, 157, 0.3);
+      }
+      #b-rule { width: 220px; height: 3px; margin: 30px 0 28px;
+        background: linear-gradient(90deg, transparent, var(--accent-2), transparent);
+        transform-origin: center; }
+      #b-cn { font-size: 60px; font-weight: 600; letter-spacing: 0.14em; }
+      #b-en { font-size: 28px; color: var(--ink-2); letter-spacing: 0.18em;
+        margin-top: 18px; }
+
+      /* ---------- search card ---------- */
+      .q-row {
+        margin: 26px; display: flex; align-items: center; gap: 14px;
+        background: rgba(0, 0, 0, 0.28); border: 1px solid var(--line);
+        border-radius: 14px; padding: 18px 20px;
+      }
+      .q-icon { width: 22px; height: 22px; border: 2.5px solid var(--accent-2);
+        border-radius: 50%; position: relative; flex: none; }
+      .q-icon::after { content: ""; position: absolute; right: -7px; bottom: -6px;
+        width: 11px; height: 2.5px; background: var(--accent-2); transform: rotate(45deg);
+        border-radius: 2px; }
+      .q-text { font-size: 24px; color: var(--ink); }
+      .tline { margin: 0 26px; font-size: 23px; line-height: 1.85; color: var(--ink-2); }
+      .ph { position: relative; color: var(--ink); padding: 1px 4px; white-space: nowrap; }
+      .ph .hl { position: absolute; inset: 0; border-radius: 5px;
+        background: rgba(62, 107, 157, 0.42); transform-origin: left center; z-index: -1; }
+      .frame {
+        position: relative; border-radius: 12px; overflow: hidden;
+        background: linear-gradient(135deg, #1c2530, #121922);
+        border: 1px solid var(--line);
+      }
+      .frame .play { position: absolute; left: 50%; top: 50%;
+        transform: translate(-44%, -50%);
+        border-style: solid; border-width: 13px 0 13px 22px;
+        border-color: transparent transparent transparent rgba(233, 238, 245, 0.92); }
+      .ts { position: absolute; right: 9px; bottom: 9px;
+        background: rgba(0, 0, 0, 0.6); border-radius: 6px; padding: 3px 9px;
+        font-size: 16px; color: var(--ink); }
+
+      /* ---------- local card ---------- */
+      .vault { margin: 26px; border: 1px dashed rgba(111, 160, 214, 0.45);
+        border-radius: 16px; padding: 24px; position: relative; }
+      .vault-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+      .lo-cell { height: 64px; border-radius: 11px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+        border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
+      .lo-cell i { width: 26px; height: 6px; border-radius: 3px; background: rgba(170, 182, 196, 0.55); }
+      .shield { position: absolute; right: 20px; top: -22px; width: 46px; height: 46px;
+        border-radius: 12px; background: rgba(62, 107, 157, 0.9);
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 10px 30px rgba(62, 107, 157, 0.5); }
+      .shield::after { content: ""; width: 18px; height: 10px;
+        border-left: 3px solid #fff; border-bottom: 3px solid #fff;
+        transform: rotate(-45deg) translate(1px, -2px); }
+
+      /* ---------- provenance card ---------- */
+      .ans { margin: 26px 26px 0; background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; }
+      .ans .l { height: 16px; border-radius: 6px; background: rgba(170, 182, 196, 0.45); }
+      .ans .key { background: rgba(111, 160, 214, 0.6); }
+      .cite { margin: 18px 26px 0; display: flex; align-items: center; gap: 16px; }
+      .conn { height: 2px; flex: 1; background: linear-gradient(90deg, var(--accent-2), transparent);
+        transform-origin: left center; }
+
+      /* ---------- cta scene ---------- */
+      #c-halo { position: absolute; left: 50%; top: 50%; width: 1100px; height: 1100px;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(circle, rgba(62, 107, 157, 0.32), transparent 62%);
+        filter: blur(10px); }
+      #c-word { font-size: 92px; font-weight: 900; letter-spacing: -0.01em;
+        display: flex; align-items: center; gap: 18px;
+        background: linear-gradient(180deg, #ffffff, #c4cedb 64%, #97a6b8);
+        -webkit-background-clip: text; background-clip: text; color: transparent; }
+      #c-word .mk { width: 16px; height: 16px; border-radius: 50%;
+        background: var(--accent-2); box-shadow: 0 0 22px var(--accent-2);
+        -webkit-text-fill-color: initial; }
+      #c-cn { font-size: 54px; font-weight: 600; letter-spacing: 0.14em; margin-top: 30px; }
+      #c-en { font-size: 26px; color: var(--ink-2); letter-spacing: 0.16em; margin-top: 14px; }
+      .c-chips { display: flex; gap: 18px; margin-top: 40px; }
+      #c-url { margin-top: 40px; font-size: 30px; letter-spacing: 0.16em; color: var(--ink); }
+      #c-rule { width: 0; height: 2px; margin-top: 16px;
+        background: linear-gradient(90deg, transparent, var(--accent-2), transparent);
+        align-self: center; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="19.5"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- ============ background (whole video) ============ -->
+      <div id="bg" class="clip" data-start="0" data-duration="19.5" data-track-index="0">
+        <div id="bg-glow"></div>
+      </div>
+      <div id="vignette" class="clip" data-start="0" data-duration="19.5" data-track-index="7"></div>
+
+      <!-- ============ Scene 1 — brand ============ -->
+      <div id="s-brand" class="scene clip" data-start="0" data-duration="4.3" data-track-index="1">
+        <div id="b-halo"></div>
+        <div id="b-inner" class="pad center" style="inset: 0;">
+          <div id="b-word">Cerul</div>
+          <div id="b-rule"></div>
+          <div id="b-cn">视听第二大脑</div>
+          <div id="b-en">A second brain for video &amp; audio</div>
+        </div>
+      </div>
+
+      <!-- ============ Scene 2 — grounded search ============ -->
+      <div id="s-search" class="scene clip" data-start="3.9" data-duration="4.1" data-track-index="2">
+        <div class="pad cap">
+          <div class="txt">
+            <div id="se-eyebrow" class="eyebrow"><span class="num">01</span> 检索 · SEARCH</div>
+            <div id="se-h" class="h-cn" style="margin-top: 24px;">搜到那一句，<br />那一帧</div>
+            <div id="se-en" class="sub-en">Find the exact line — and the exact frame.</div>
+          </div>
+          <div id="se-card" class="glass">
+            <div class="card-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="card-title">cerul · 检索</span></div>
+            <div id="se-query" class="q-row">
+              <span class="q-icon"></span>
+              <span class="q-text">关于定价，他说了什么？</span>
+            </div>
+            <div class="tline">…所以我们改成了
+              <span class="ph">按用量计费<i id="se-hl" class="hl"></i></span>
+              ，这样客户……</div>
+            <div style="display: flex; align-items: center; gap: 16px; margin: 22px 26px 28px;">
+              <div id="se-thumb" class="frame" style="width: 150px; height: 86px;">
+                <span class="play"></span><span class="ts mono">12:34</span>
+              </div>
+              <span id="se-chip" class="chip"><span class="live"></span>定位到 12:34</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Scene 3 — local first ============ -->
+      <div id="s-local" class="scene clip" data-start="7.7" data-duration="4.1" data-track-index="3">
+        <div class="pad cap">
+          <div class="txt">
+            <div id="lo-eyebrow" class="eyebrow"><span class="num">02</span> 本地 · PRIVATE</div>
+            <div id="lo-h" class="h-cn" style="margin-top: 24px;">本地优先，<br />数据归你</div>
+            <div id="lo-en" class="sub-en">Local-first. Your library stays yours.</div>
+          </div>
+          <div id="lo-card" class="glass">
+            <div class="card-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="card-title">cerul · 资料库</span>
+              <span id="lo-pill" class="chip" style="margin-left: auto;"><span class="live"></span>本地 · On device</span></div>
+            <div class="vault">
+              <div class="shield"></div>
+              <div class="vault-grid">
+                <div class="lo-cell"><i></i></div><div class="lo-cell"><i></i></div><div class="lo-cell"><i></i></div>
+                <div class="lo-cell"><i></i></div><div class="lo-cell"><i></i></div><div class="lo-cell"><i></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Scene 4 — provenance ============ -->
+      <div id="s-prov" class="scene clip" data-start="11.5" data-duration="4.1" data-track-index="4">
+        <div class="pad cap">
+          <div class="txt">
+            <div id="pr-eyebrow" class="eyebrow"><span class="num">03</span> 溯源 · CITED</div>
+            <div id="pr-h" class="h-cn" style="margin-top: 24px;">每个答案，<br />都能溯源</div>
+            <div id="pr-en" class="sub-en">Every answer carries its source.</div>
+          </div>
+          <div id="pr-card" class="glass">
+            <div class="card-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="card-title">cerul · 回答</span></div>
+            <div class="ans">
+              <div class="l" style="width: 92%;"></div>
+              <div class="l key" style="width: 54%; margin-top: 14px;"></div>
+            </div>
+            <div class="cite">
+              <span id="pr-cite" class="chip">↳ 来源 · 财报电话会</span>
+              <span id="pr-conn" class="conn"></span>
+              <div id="pr-thumb" class="frame" style="width: 132px; height: 76px; flex: none;">
+                <span class="play"></span><span class="ts mono">12:34</span>
+              </div>
+            </div>
+            <div style="height: 26px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Scene 5 — CTA ============ -->
+      <div id="s-cta" class="scene clip" data-start="15.3" data-duration="4.2" data-track-index="5">
+        <div id="c-halo"></div>
+        <div class="pad center" style="inset: 0;">
+          <div id="c-word">Cerul <span class="mk"></span></div>
+          <div id="c-cn">视听第二大脑</div>
+          <div id="c-en">A second brain for video &amp; audio</div>
+          <div class="c-chips">
+            <span class="c-chip chip">看得见的检索</span>
+            <span class="c-chip chip">本地优先</span>
+            <span class="c-chip chip">出处可溯</span>
+          </div>
+          <div id="c-url" class="mono">app.cerul.ai</div>
+          <div id="c-rule"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+      const ENTRY = "back.out(1.4)";
+
+      /* ---- background: one slow continuous camera move (whole video) ---- */
+      tl.fromTo("#bg", { scale: 1.06 }, { scale: 1.16, duration: 19.5, ease: "none" }, 0);
+      tl.fromTo("#bg-glow", { x: -40, y: -20 }, { x: 60, y: 40, duration: 19.5, ease: "sine.inOut" }, 0);
+
+      /* helper: crossfade a scene wrapper in (and optionally out) */
+      function fade(sel, tIn, tOut) {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.55, ease: "power2.out" }, tIn);
+        if (tOut != null) tl.to(sel, { opacity: 0, duration: 0.4, ease: "power2.in" }, tOut);
+      }
+
+      /* ============ Scene 1 — brand (0 → 4.3) ============ */
+      fade("#s-brand", 0.15, 3.8);
+      tl.fromTo("#b-inner", { y: 16 }, { y: -10, duration: 3.7, ease: "none" }, 0.15);
+      tl.fromTo("#b-halo", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 1.1 }, 0.2);
+      tl.fromTo("#b-word", { opacity: 0, y: 36, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.8, ease: ENTRY }, 0.35);
+      tl.fromTo("#b-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.6 }, 0.95);
+      tl.fromTo("#b-cn", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.6 }, 1.15);
+      tl.fromTo("#b-en", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.5 }, 1.5);
+      tl.to("#b-halo", { scale: 1.08, duration: 2.4, ease: "sine.inOut" }, 1.4); /* idle breath */
+
+      /* ============ Scene 2 — grounded search (3.9 → 8.0) ============ */
+      fade("#s-search", 3.95, 7.5);
+      tl.fromTo("#se-card", { opacity: 0, y: 34, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.8 }, 4.05);
+      tl.fromTo("#se-eyebrow", { opacity: 0, x: -22 }, { opacity: 1, x: 0, duration: 0.5 }, 4.15);
+      tl.fromTo("#se-h", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.6 }, 4.3);
+      tl.fromTo("#se-en", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.5 }, 4.6);
+      /* development: query lands → phrase highlights → frame + chip pop */
+      tl.fromTo("#se-query", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.45 }, 4.75);
+      tl.fromTo("#se-hl", { scaleX: 0 }, { scaleX: 1, duration: 0.5 }, 5.3);
+      tl.fromTo("#se-thumb", { opacity: 0, scale: 0.88 }, { opacity: 1, scale: 1, duration: 0.5 }, 5.65);
+      tl.fromTo("#se-chip", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.5, ease: ENTRY }, 5.95);
+      tl.to("#se-card", { y: -7, duration: 1.4, ease: "sine.inOut" }, 6.2); /* settle drift */
+
+      /* ============ Scene 3 — local first (7.7 → 11.8) ============ */
+      fade("#s-local", 7.75, 11.3);
+      tl.fromTo("#lo-card", { opacity: 0, y: 34, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.8 }, 7.85);
+      tl.fromTo("#lo-eyebrow", { opacity: 0, x: -22 }, { opacity: 1, x: 0, duration: 0.5 }, 7.95);
+      tl.fromTo("#lo-h", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.6 }, 8.1);
+      tl.fromTo("#lo-en", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.5 }, 8.4);
+      /* development: data settles into the vault → shield + on-device pill */
+      tl.fromTo(".lo-cell", { opacity: 0, scale: 0.6, y: 14 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.5, ease: ENTRY, stagger: 0.07 }, 8.55);
+      tl.fromTo(".shield", { opacity: 0, scale: 0.4, y: 10 }, { opacity: 1, scale: 1, y: 0, duration: 0.5, ease: ENTRY }, 9.1);
+      tl.fromTo("#lo-pill", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.45, ease: ENTRY }, 9.35);
+      tl.to("#lo-card", { y: -7, duration: 1.4, ease: "sine.inOut" }, 9.7);
+
+      /* ============ Scene 4 — provenance (11.5 → 15.6) ============ */
+      fade("#s-prov", 11.55, 15.1);
+      tl.fromTo("#pr-card", { opacity: 0, y: 34, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.8 }, 11.65);
+      tl.fromTo("#pr-eyebrow", { opacity: 0, x: -22 }, { opacity: 1, x: 0, duration: 0.5 }, 11.75);
+      tl.fromTo("#pr-h", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.6 }, 11.9);
+      tl.fromTo("#pr-en", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.5 }, 12.2);
+      /* development: answer lines → citation chip → connector draws → source frame */
+      tl.fromTo(".ans .l", { opacity: 0, x: -16 }, { opacity: 1, x: 0, duration: 0.45, stagger: 0.12 }, 12.45);
+      tl.fromTo("#pr-cite", { opacity: 0, x: -18 }, { opacity: 1, x: 0, duration: 0.5 }, 12.95);
+      tl.fromTo("#pr-conn", { scaleX: 0 }, { scaleX: 1, duration: 0.45 }, 13.25);
+      tl.fromTo("#pr-thumb", { opacity: 0, scale: 0.82 }, { opacity: 1, scale: 1, duration: 0.5, ease: ENTRY }, 13.55);
+      tl.to("#pr-card", { y: -7, duration: 1.3, ease: "sine.inOut" }, 13.9);
+
+      /* ============ Scene 5 — CTA (15.3 → 19.5) ============ */
+      fade("#s-cta", 15.35, null);
+      tl.fromTo("#c-halo", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 1.0 }, 15.4);
+      tl.fromTo("#c-word", { opacity: 0, scale: 1.16 }, { opacity: 1, scale: 1, duration: 0.7, ease: "back.out(1.3)" }, 15.5);
+      tl.fromTo("#c-cn", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.55 }, 15.9);
+      tl.fromTo("#c-en", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.5 }, 16.15);
+      tl.fromTo(".c-chip", { opacity: 0, y: 16, scale: 0.9 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.5, ease: ENTRY, stagger: 0.1 }, 16.4);
+      tl.fromTo("#c-url", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5 }, 16.85);
+      tl.fromTo("#c-rule", { width: 0 }, { width: 320, duration: 0.7 }, 17.0);
+      tl.to("#c-halo", { scale: 1.07, duration: 2.0, ease: "sine.inOut" }, 17.3); /* idle breath, holds to end */
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

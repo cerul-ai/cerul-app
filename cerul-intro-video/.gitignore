@@ -1,0 +1,9 @@
+# HyperFrames build & verification artifacts
+node_modules/
+snapshots/
+*.log
+.DS_Store
+
+# Vendored HyperFrames agent skills (7.9M) — reinstall with `npx hyperframes skills`
+# (versions pinned in skills-lock.json)
+.claude/
