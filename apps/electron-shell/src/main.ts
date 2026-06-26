@@ -1008,7 +1008,8 @@ function routeDeepLink(url?: string) {
   if (parsed.hostname === "item") {
     const itemId = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
     const timestamp = parsed.searchParams.get("t") ?? "";
-    const playbackChunkId = parsed.searchParams.get("playbackChunkId") ?? "";
+    const playbackChunkId = parsed.searchParams.get("playbackChunkId") ?? parsed.searchParams.get("chunkId") ?? "";
+    const view = parsed.searchParams.get("view");
     const routeParams = new URLSearchParams();
     routeParams.set("itemId", itemId);
     if (timestamp) {
@@ -1017,7 +1018,15 @@ function routeDeepLink(url?: string) {
     if (playbackChunkId) {
       routeParams.set("playbackChunkId", playbackChunkId);
     }
-    openMainRoute(`${playbackChunkId ? "result-detail" : "item-detail"}?${routeParams.toString()}`);
+    const targetView =
+      view === "item-detail"
+        ? "item-detail"
+        : view === "result-detail"
+          ? "result-detail"
+          : playbackChunkId
+            ? "result-detail"
+            : "item-detail";
+    openMainRoute(`${targetView}?${routeParams.toString()}`);
   } else if (parsed.hostname === "settings") {
     const section = parsed.searchParams.get("section");
     openMainRoute(section ? `settings?section=${encodeURIComponent(section)}` : "settings");
@@ -3382,6 +3391,9 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
       return scheduleLocalDataReset();
     case "set_global_hotkey":
       registerGlobalHotkey(String(args.label ?? defaultHotkey));
+      return null;
+    case "sync_native_theme":
+      await syncNativeThemeFromSettings();
       return null;
     case "hide_overlay":
       overlayWindow?.hide();

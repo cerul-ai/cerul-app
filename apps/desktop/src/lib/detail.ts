@@ -2,10 +2,18 @@
 
 import type { Item } from "./types";
 
-export function timestampDeepLink(itemId: string, timestamp: string, playbackChunkId?: string | null) {
+export function timestampDeepLink(
+  itemId: string,
+  timestamp: string,
+  playbackChunkId?: string | null,
+  view?: "item-detail" | "result-detail",
+) {
   const params = new URLSearchParams({ t: timestamp });
   if (playbackChunkId) {
     params.set("playbackChunkId", playbackChunkId);
+  }
+  if (view) {
+    params.set("view", view);
   }
   return `cerul-app://item/${encodeURIComponent(itemId)}?${params.toString()}`;
 }

@@ -801,11 +801,12 @@ function mapOverlayResult(
 ): OverlayResult {
   const item = items.find((candidate) => candidate.id === record.item_id);
   const source = item ? sources.find((candidate) => candidate.id === item.source_id) : undefined;
+  const playbackChunkId = record.playback_chunk_id ?? record.chunk_id ?? "";
 
   // New search results provide a representative frame chunk id. Keep the direct
   // frame_path branch for older local cores during development.
   const thumbnailUrl = record.frame_path
-    ? api.chunkFrameUrl(record.playback_chunk_id)
+    ? api.chunkFrameUrl(playbackChunkId)
     : record.nearest_frame_chunk_id
       ? api.chunkFrameUrl(record.nearest_frame_chunk_id)
       : item?.thumbnail_chunk_id
@@ -814,7 +815,7 @@ function mapOverlayResult(
 
   return {
     itemId: record.item_id,
-    playbackChunkId: record.playback_chunk_id,
+    playbackChunkId,
     // Prefer the title the backend joins into the result; the locally-fetched
     // items list can be empty/stale and leave the row showing a raw id.
     title: cleanMediaTitle(

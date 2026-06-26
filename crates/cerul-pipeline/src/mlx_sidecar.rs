@@ -36,6 +36,7 @@ pub const DEFAULT_WHISPER_MODEL: &str = "mlx-community/whisper-large-v3-turbo";
 /// "4bit" minimises RAM (~-70%); "8bit" is near-lossless; "none" keeps fp16.
 pub const DEFAULT_ASR_QUANTIZATION: &str = "4bit";
 const EXTERNAL_RUNTIME_READY_MARKER: &str = ".cerul-mlx-runtime-ready.json";
+const MIN_FALLBACK_TRANSCRIPT_DURATION_SEC: f64 = 0.001;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExternalMlxRuntimeManifest {
@@ -617,7 +618,7 @@ impl TranscribeResponse {
         }
         vec![Segment {
             start: 0.0,
-            end: fallback_duration_sec.max(0.001),
+            end: fallback_duration_sec.max(MIN_FALLBACK_TRANSCRIPT_DURATION_SEC),
             text: text.to_string(),
         }]
     }

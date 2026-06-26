@@ -30,7 +30,7 @@ export function readRouteState(): RouteState {
   return {
     view: VIEW_IDS.includes(id as View) ? (id as View) : "home",
     itemId: params.get("itemId"),
-    playbackChunkId: params.get("playbackChunkId"),
+    playbackChunkId: params.get("playbackChunkId") ?? params.get("chunkId"),
     timestamp: params.get("t"),
     settingsSection: params.get("section"),
     oauthProvider: params.get("provider"),

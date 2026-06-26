@@ -5565,18 +5565,20 @@ fn upsert_discovered_item(
     let content_type = content_type_value(content_type);
     let raw_path = item.metadata.get("raw_path").and_then(Value::as_str);
     let metadata = item.metadata.to_string();
-    if let Some(existing) = existing_item_for_raw_path(tx, raw_path)? {
-        let external_id_changed =
-            existing.external_id.as_deref() != Some(item.external_id.as_str());
-        if external_id_changed {
+    let has_exact_existing = existing_item_for_source_external(tx, source_id, &item.external_id)?;
+    if !has_exact_existing {
+        if let Some(existing) = existing_item_for_raw_path(tx, source_id, raw_path)? {
+            let external_id_changed =
+                existing.external_id.as_deref() != Some(item.external_id.as_str());
+            if external_id_changed {
+                tx.execute(
+                    "DELETE FROM chunks WHERE item_id = ?1",
+                    [existing.id.as_str()],
+                )?;
+                clear_item_unified_search_index_with_tx(tx, &existing.id)?;
+            }
             tx.execute(
-                "DELETE FROM chunks WHERE item_id = ?1",
-                [existing.id.as_str()],
-            )?;
-            clear_item_unified_search_index_with_tx(tx, &existing.id)?;
-        }
-        tx.execute(
-            r#"
+                r#"
             UPDATE items
             SET content_type = ?2,
                 external_id = ?3,
@@ -5598,17 +5600,18 @@ fn upsert_discovered_item(
             WHERE id = ?1
               AND status != 'deleting'
             "#,
-            (
-                existing.id.as_str(),
-                content_type,
-                item.external_id.as_str(),
-                item.title.as_deref(),
-                item.duration_sec,
-                raw_path,
-                metadata.as_str(),
-            ),
-        )?;
-        return Ok(Some(existing.id));
+                (
+                    existing.id.as_str(),
+                    content_type,
+                    item.external_id.as_str(),
+                    item.title.as_deref(),
+                    item.duration_sec,
+                    raw_path,
+                    metadata.as_str(),
+                ),
+            )?;
+            return Ok(Some(existing.id));
+        }
     }
 
     let item_id = new_id("item");
@@ -5667,6 +5670,7 @@ struct ExistingItemForRawPath {
 
 fn existing_item_for_raw_path(
     tx: &Transaction<'_>,
+    source_id: &str,
     raw_path: Option<&str>,
 ) -> anyhow::Result<Option<ExistingItemForRawPath>> {
     let Some(raw_path) = raw_path.map(str::trim).filter(|path| !path.is_empty()) else {
@@ -5678,6 +5682,7 @@ fn existing_item_for_raw_path(
             SELECT id, external_id
             FROM items
             WHERE raw_path = ?1
+              AND source_id = ?2
               AND status != 'deleting'
             ORDER BY
                 CASE status
@@ -5689,7 +5694,7 @@ fn existing_item_for_raw_path(
                 id ASC
             LIMIT 1
             "#,
-            [raw_path],
+            (raw_path, source_id),
             |row| {
                 Ok(ExistingItemForRawPath {
                     id: row.get(0)?,
@@ -5698,6 +5703,25 @@ fn existing_item_for_raw_path(
             },
         )
         .optional()?)
+}
+
+fn existing_item_for_source_external(
+    tx: &Transaction<'_>,
+    source_id: &str,
+    external_id: &str,
+) -> anyhow::Result<bool> {
+    let count: i64 = tx.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM items
+        WHERE source_id = ?1
+          AND external_id = ?2
+          AND status != 'deleting'
+        "#,
+        (source_id, external_id),
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn is_discovered_item_ignored(
@@ -9714,6 +9738,55 @@ mod tests {
             queued,
             "changed raw_path signature should queue a fresh index job"
         );
+    }
+
+    #[tokio::test]
+    async fn raw_path_reuse_is_scoped_to_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("clip.mp4").to_string_lossy().into_owned();
+        let mut conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active'), ('source-2', 'folder_video', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (
+                id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
+            )
+            VALUES ('item-source-1', 'source-1', 'video', 'clip-a', 'A', ?1, 10, 'indexed', '{}')
+            "#,
+            [raw_path.as_str()],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let item_id = upsert_discovered_item(
+            &tx,
+            "source-2",
+            ContentType::Video,
+            &DiscoveredItem {
+                external_id: "clip-b".to_string(),
+                title: Some("B".to_string()),
+                duration_sec: Some(12.0),
+                metadata: json!({ "raw_path": raw_path.as_str() }),
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        assert_ne!(item_id.as_deref(), Some("item-source-1"));
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let source_2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE source_id = 'source-2' AND raw_path = ?1",
+                [raw_path.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_2_count, 1);
     }
 
     #[tokio::test]
