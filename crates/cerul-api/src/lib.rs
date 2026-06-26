@@ -1750,6 +1750,10 @@ fn v1_item_chunk(chunk: &ChunkRecord, item: &V1ItemRow, base_url: &str) -> V1Ite
     }
 }
 
+fn has_timed_video_clip_start(start_sec: Option<f64>) -> bool {
+    start_sec.is_some_and(|value| value.is_finite() && value >= 0.0)
+}
+
 fn v1_chunk_evidence(
     chunk_id: &str,
     item: &V1ItemRow,
@@ -1757,7 +1761,10 @@ fn v1_chunk_evidence(
     frame_path: Option<&str>,
     base_url: &str,
 ) -> V1Evidence {
-    let clip = if item.source_file_exists && item.content_type == "video" {
+    let clip = if item.source_file_exists
+        && item.content_type == "video"
+        && has_timed_video_clip_start(start_sec)
+    {
         Some(V1Locator {
             locator_type: "local",
             url: format!(
@@ -1927,7 +1934,10 @@ fn v1_search_result(
             .as_ref()
             .map(|_| result.playback_chunk_id.as_str())
     });
-    let clip = if metadata.source_file_exists && metadata.item.content_type == "video" {
+    let clip = if metadata.source_file_exists
+        && metadata.item.content_type == "video"
+        && has_timed_video_clip_start(start_sec)
+    {
         Some(V1Locator {
             locator_type: "local",
             url: format!(
@@ -1979,7 +1989,7 @@ fn v1_search_result(
             open_in_cerul: v1_open_in_cerul_link(
                 &result.item_id,
                 &result.playback_chunk_id,
-                result.start_sec,
+                start_sec,
             ),
         },
         score: V1Score {
@@ -5933,6 +5943,9 @@ fn video_clip_source_for_chunk(
             let title: Option<String> = row.get(1)?;
             let start_sec: Option<f64> = row.get(2)?;
             let end_sec: Option<f64> = row.get(3)?;
+            if !has_timed_video_clip_start(start_sec) {
+                return Ok(None);
+            }
             Ok(raw_path.map(|raw_path| VideoClipSource {
                 raw_path,
                 title,
@@ -7166,6 +7179,77 @@ mod tests {
         .unwrap();
     }
 
+    fn seed_v1_untimed_summary_fixture(paths: &AppPaths, raw_path: &FsPath) {
+        fs::write(raw_path, b"not a real video").unwrap();
+        let raw_path_string = raw_path.to_string_lossy().to_string();
+        {
+            let conn = cerul_storage::sqlite::open(paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, duration_sec,
+                    raw_path, indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Summary Talk', 120.5,
+                    ?1, 10, 'indexed', '{}'
+                )
+                "#,
+                [raw_path_string.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, text, metadata)
+                VALUES (
+                    'item-1:understanding:summary',
+                    'item-1',
+                    'understanding',
+                    'Untimed executive summary about launch planning.',
+                    '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+        let units = vec![cerul_storage::StorageRetrievalUnit {
+            id: "item-1:unit:v2:summary".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "understanding".to_string(),
+            start_sec: None,
+            end_sec: None,
+            content_text: "Untimed executive summary about launch planning.".to_string(),
+            transcript_text: None,
+            ocr_text: None,
+            visual_text: None,
+            summary_text: Some("Untimed executive summary about launch planning.".to_string()),
+            representative_chunk_id: Some("item-1:understanding:summary".to_string()),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id,
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        }];
+        cerul_storage::replace_item_retrieval_units(paths, "item-1", &units).unwrap();
+        cerul_storage::set_item_search_index_status(
+            paths,
+            "item-1",
+            "indexed",
+            None,
+            units.len(),
+            0,
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn v1_items_omit_thumbnail_when_frame_file_is_missing() {
         let temp = tempfile::tempdir().unwrap();
@@ -7436,6 +7520,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_search_does_not_advertise_clip_for_untimed_summary_hit() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_untimed_summary_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25007")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "untimed executive summary"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let evidence = &body["results"][0]["evidence"];
+        assert_eq!(body["results"][0]["id"], "item-1:understanding:summary");
+        assert_eq!(body["results"][0]["time"]["start_sec"], Value::Null);
+        assert_eq!(evidence["kind"], "chunk");
+        assert_eq!(evidence["clip"], Value::Null);
+        assert_eq!(evidence["preview"], Value::Null);
+        assert_eq!(
+            evidence["open_in_cerul"],
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Aunderstanding%3Asummary"
+        );
+    }
+
+    #[tokio::test]
     async fn v1_search_rejects_cloud_target_until_cloud_proxy_exists() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -7691,6 +7812,40 @@ mod tests {
             "cerul-app://item/item-1?playbackChunkId=item-1%3Atranscript%3A000000&t=12.3"
         );
         assert_eq!(body["page"], json!({"limit": 5, "next_cursor": null}));
+    }
+
+    #[tokio::test]
+    async fn v1_item_chunks_do_not_advertise_clip_for_untimed_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_untimed_summary_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=summary")
+                    .header(header::HOST, "127.0.0.1:25008")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let chunk = &body["chunks"][0];
+        assert_eq!(chunk["id"], "item-1:understanding:summary");
+        assert_eq!(chunk["time"]["start_sec"], Value::Null);
+        assert_eq!(chunk["evidence"]["kind"], "chunk");
+        assert_eq!(chunk["evidence"]["clip"], Value::Null);
+        assert_eq!(chunk["evidence"]["preview"], Value::Null);
+        assert_eq!(
+            chunk["evidence"]["open_in_cerul"],
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Aunderstanding%3Asummary"
+        );
     }
 
     #[tokio::test]
@@ -10347,6 +10502,11 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO chunks (id, item_id, chunk_type, text, metadata) VALUES ('untimed-video-chunk', 'video-1', 'understanding', 'summary', '{}')",
+            [],
+        )
+        .unwrap();
 
         assert!(video_clip_source_for_chunk(&paths, "image-chunk")
             .unwrap()
@@ -10354,6 +10514,9 @@ mod tests {
         assert!(video_clip_source_for_chunk(&paths, "video-chunk")
             .unwrap()
             .is_some());
+        assert!(video_clip_source_for_chunk(&paths, "untimed-video-chunk")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

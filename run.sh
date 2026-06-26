@@ -47,7 +47,7 @@ if [ -n "${CERUL_API_PORT:-}" ]; then
 else
   API_PORT="$(saved_api_port)"
   API_PORT="${API_PORT:-23785}"
-  export CERUL_API_PORT="$API_PORT"
+  unset CERUL_API_PORT
 fi
 
 host_target() {
@@ -131,5 +131,5 @@ elif needs_bundled_binaries "$TARGET_TRIPLE"; then
   fi
 fi
 
-bash scripts/clean-dev-runtime.sh
+CERUL_API_PORT="$API_PORT" bash scripts/clean-dev-runtime.sh
 pnpm --filter @cerul/electron-shell dev 2> >(grep -v 'representedObject is not a WeakPtrToElectronMenuModelAsNSObject' >&2)

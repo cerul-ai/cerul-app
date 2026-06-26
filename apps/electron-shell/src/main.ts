@@ -31,10 +31,15 @@ import type { AppUpdater } from "electron-updater";
 
 const defaultApiPort = 23785;
 const apiEndpointFileName = "endpoint.json";
-const apiPort = resolveApiPortForLaunch();
-const apiBaseUrl = apiBaseUrlForPort(apiPort);
-const internalApiBaseUrl = `${apiBaseUrl}/internal`;
-process.env.CERUL_API_PORT = String(apiPort);
+const explicitApiPort = parseApiPort(process.env.CERUL_API_PORT);
+let apiPort = explicitApiPort ?? resolveApiPortForLaunch();
+let apiBaseUrl = apiBaseUrlForPort(apiPort);
+let internalApiBaseUrl = `${apiBaseUrl}/internal`;
+if (explicitApiPort) {
+  process.env.CERUL_API_PORT = String(explicitApiPort);
+} else {
+  delete process.env.CERUL_API_PORT;
+}
 process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
 const appScheme = "app";
 const appHost = "cerul";
@@ -50,20 +55,6 @@ const packagedMlxRuntimeManifestName = "mlx-runtime-manifest.json";
 const packagedMlxRuntimeReadyMarker = ".cerul-mlx-runtime-ready.json";
 const apiStartupTimeoutMs = positiveIntegerEnv("CERUL_API_STARTUP_TIMEOUT_MS", 90_000);
 const apiOutputTailBytes = 32 * 1024;
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "font-src 'self' data:",
-  `img-src 'self' app: ${apiBaseUrl} data: blob:`,
-  `media-src 'self' ${apiBaseUrl} blob:`,
-  `connect-src 'self' ${apiBaseUrl} ${cloudAccountOrigin}`,
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join("; ");
-
 let mainWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
 let menuBarWindow: BrowserWindow | null = null;
@@ -403,7 +394,7 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
     return response;
   }
   const headers = new Headers(response.headers);
-  headers.set("Content-Security-Policy", contentSecurityPolicy);
+  headers.set("Content-Security-Policy", contentSecurityPolicy());
   // Never cache index.html so it always references the current (content-hashed)
   // assets after a rebuild; the hashed assets themselves remain cacheable.
   headers.set("Cache-Control", "no-store");
@@ -412,6 +403,22 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
     statusText: response.statusText,
     headers,
   });
+}
+
+function contentSecurityPolicy() {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    `img-src 'self' app: ${apiBaseUrl} data: blob:`,
+    `media-src 'self' ${apiBaseUrl} blob:`,
+    `connect-src 'self' ${apiBaseUrl} ${cloudAccountOrigin}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
 }
 
 function rendererDiagnosticsLogPath() {
@@ -1769,6 +1776,7 @@ async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null
         `Cerul Core exited before becoming healthy at ${internalApiBaseUrl}/health (${formatApiExit(observedExit)})`,
       );
     }
+    refreshApiPortFromEndpoint();
     if (await apiIsHealthy(750)) {
       return;
     }
@@ -3595,11 +3603,26 @@ function appPaths() {
 }
 
 function resolveApiPortForLaunch() {
-  return (
-    parseApiPort(process.env.CERUL_API_PORT) ??
-    readEndpointApiPort() ??
-    defaultApiPort
-  );
+  return readEndpointApiPort() ?? defaultApiPort;
+}
+
+function refreshApiPortFromEndpoint() {
+  if (explicitApiPort) {
+    return false;
+  }
+  const endpointPort = readEndpointApiPort();
+  if (!endpointPort || endpointPort === apiPort) {
+    return false;
+  }
+  setApiPort(endpointPort);
+  return true;
+}
+
+function setApiPort(port: number) {
+  apiPort = port;
+  apiBaseUrl = apiBaseUrlForPort(port);
+  internalApiBaseUrl = `${apiBaseUrl}/internal`;
+  process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
 }
 
 function readEndpointApiPort() {
