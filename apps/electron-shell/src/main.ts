@@ -3727,12 +3727,17 @@ function clearCache() {
 
 type LocalDataResetKind = "library" | "factory";
 
+type CoreLibraryResetResponse = {
+  download_targets?: unknown;
+};
+
 async function scheduleLocalDataReset(kind: LocalDataResetKind) {
-  const preflight = await assertCanResetActiveCore(kind);
+  const preflight = kind === "library" ? await assertCanResetActiveCore() : { mediaDir: null };
+  let coreReset: CoreLibraryResetResponse | null = null;
   if (kind === "library") {
-    await resetCoreLocalLibrary();
+    coreReset = await resetCoreLocalLibrary();
   }
-  const targets = resetLocalDataTargets(kind, preflight.mediaDir);
+  const targets = resetLocalDataTargets(kind, preflight.mediaDir, resetDownloadTargets(coreReset));
   const scriptPath = path.join(os.tmpdir(), `cerul-reset-${process.pid}-${Date.now()}.sh`);
   const relaunchLine = relaunchShellLine();
   const lines = [
@@ -3763,7 +3768,7 @@ async function scheduleLocalDataReset(kind: LocalDataResetKind) {
   };
 }
 
-async function assertCanResetActiveCore(kind: LocalDataResetKind) {
+async function assertCanResetActiveCore() {
   const expectedDataDir = path.resolve(appPaths().data_dir);
   const actualDataDir = path.resolve(await activeCoreDataDir());
   if (!pathsMatch(actualDataDir, expectedDataDir)) {
@@ -3783,13 +3788,10 @@ async function assertCanResetActiveCore(kind: LocalDataResetKind) {
       ].join("\n"),
     );
   }
-  if (kind === "library") {
-    const settings = await readApiSettingsOrThrow(10_000);
-    const mediaDir = typeof settings.media_dir === "string" ? settings.media_dir : null;
-    assertTargetsPreservePath(resetLocalDataTargets("library", mediaDir), appPaths().models_dir, "models");
-    return { mediaDir };
-  }
-  return { mediaDir: null };
+  const settings = await readApiSettingsOrThrow(10_000);
+  const mediaDir = typeof settings.media_dir === "string" ? settings.media_dir : null;
+  assertTargetsPreservePath(resetLocalDataTargets("library", mediaDir), appPaths().models_dir, "models");
+  return { mediaDir };
 }
 
 async function activeCoreDataDir() {
@@ -3813,13 +3815,17 @@ async function activeCoreDataDir() {
   }
 }
 
-function resetLocalDataTargets(kind: LocalDataResetKind, mediaDir: string | null) {
+function resetLocalDataTargets(
+  kind: LocalDataResetKind,
+  mediaDir: string | null,
+  downloadTargets: string[] = [],
+) {
   const paths = appPaths();
   const userData = app.getPath("userData");
   const targets: ResetTarget[] =
     kind === "factory"
       ? factoryResetTargets(paths, userData, app.isPackaged)
-      : localLibraryResetTargets(paths, mediaDir);
+      : localLibraryResetTargets(paths, mediaDir, downloadTargets);
   const normalized = normalizeResetTargets(targets, {
     homeDir: os.homedir(),
     dataBaseDir: dataBaseDir(),
@@ -3830,13 +3836,10 @@ function resetLocalDataTargets(kind: LocalDataResetKind, mediaDir: string | null
   return normalized;
 }
 
-async function resetCoreLocalLibrary() {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+async function resetCoreLocalLibrary(): Promise<CoreLibraryResetResponse> {
   try {
     const response = await fetch(`${internalApiBaseUrl}/storage/reset-library`, {
       method: "POST",
-      signal: controller.signal,
     });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
@@ -3846,9 +3849,18 @@ async function resetCoreLocalLibrary() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Could not clear Cerul library data before reset: ${message}`);
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+function resetDownloadTargets(response: CoreLibraryResetResponse | null) {
+  const targets = response?.download_targets;
+  if (!Array.isArray(targets)) {
+    return [];
+  }
+  return targets
+    .filter((target): target is string => typeof target === "string")
+    .map((target) => target.trim())
+    .filter((target) => !!target);
 }
 
 function relaunchShellLine() {

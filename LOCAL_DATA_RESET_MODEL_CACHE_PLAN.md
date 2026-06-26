@@ -154,7 +154,8 @@ data_dir/indexes
 data_dir/cache
 data_dir/logs/pipeline-jobs.jsonl (optional)
 data_dir/endpoint.json
-<media_dir>/sources when downloads were redirected outside data_dir
+current `<media_dir>/sources`, even when it is under `data_dir`
+historical downloaded-media roots inferred from item `raw_path`, such as old `<media_dir>/sources`
 ```
 
 Preserve:

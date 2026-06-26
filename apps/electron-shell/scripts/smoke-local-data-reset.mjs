@@ -66,6 +66,31 @@ try {
     true,
   );
 
+  const inDataTargets = reset.normalizeResetTargets(
+    reset.localLibraryResetTargets(paths, path.join(paths.data_dir, "Downloads")),
+    safety,
+  );
+  assert.equal(
+    inDataTargets.some(
+      (target) =>
+        target.label === "downloads" &&
+        target.path === path.join(paths.data_dir, "Downloads", "sources"),
+    ),
+    true,
+  );
+
+  const previousDownloads = path.join(temp, "OldMedia", "sources");
+  const previousTargets = reset.normalizeResetTargets(
+    reset.localLibraryResetTargets(paths, null, [previousDownloads]),
+    safety,
+  );
+  assert.equal(
+    previousTargets.some(
+      (target) => target.label === "downloads" && target.path === previousDownloads,
+    ),
+    true,
+  );
+
   const factoryTargets = reset.normalizeResetTargets(
     reset.factoryResetTargets(paths, path.join(temp, "ElectronUserData"), true),
     safety,

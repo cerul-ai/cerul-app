@@ -19,15 +19,22 @@ export type SafetyContext = {
 
 const endpointFileName = "endpoint.json";
 
-export function localLibraryResetTargets(paths: StoragePaths, mediaDir?: string | null): ResetTarget[] {
+export function localLibraryResetTargets(
+  paths: StoragePaths,
+  mediaDir?: string | null,
+  downloadTargets: string[] = [],
+): ResetTarget[] {
   const targets = [
     { label: "indexes", path: path.join(paths.data_dir, "indexes") },
     { label: "cache", path: paths.cache_dir },
     { label: "endpoint", path: path.join(paths.data_dir, endpointFileName) },
     { label: "pipelineJobsLog", path: path.join(paths.data_dir, "logs", "pipeline-jobs.jsonl") },
   ];
-  const externalDownloads = externalDownloadsTarget(paths, mediaDir);
-  return externalDownloads ? [...targets, externalDownloads] : targets;
+  const downloadsTargets = [
+    downloadsTargetFromMediaDir(mediaDir),
+    ...downloadTargets.map((target) => ({ label: "downloads", path: target })),
+  ].filter((target): target is ResetTarget => !!target);
+  return [...targets, ...downloadsTargets];
 }
 
 export function factoryResetTargets(
@@ -107,15 +114,11 @@ function targetRemovesPath(targetPath: string, candidatePath: string) {
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function externalDownloadsTarget(paths: StoragePaths, mediaDir?: string | null): ResetTarget | null {
+function downloadsTargetFromMediaDir(mediaDir?: string | null): ResetTarget | null {
   const cleaned = mediaDir?.trim();
   if (!cleaned) {
     return null;
   }
   const downloadsRoot = path.resolve(cleaned, "sources");
-  const dataDir = path.resolve(paths.data_dir);
-  if (downloadsRoot === dataDir || downloadsRoot.startsWith(`${dataDir}${path.sep}`)) {
-    return null;
-  }
   return { label: "downloads", path: downloadsRoot };
 }
