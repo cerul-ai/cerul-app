@@ -316,7 +316,9 @@ function readLastOpened(): { itemId: string; timestamp: string | null; at: numbe
 function hasOpenModalSurface() {
   // Every transient surface must be reachable from this selector, otherwise
   // page-level Escape handlers fire underneath it (e.g. detail "back").
-  return Boolean(document.querySelector(".scrim, .account-pop, .menu, [role='dialog']"));
+  return Boolean(
+    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
+  );
 }
 
 function syncVideoToTimestamp(
@@ -506,6 +508,10 @@ async function resetLocalDataAndRestart() {
 
 async function setGlobalHotkey(label: string) {
   await invokeHostCommand("set_global_hotkey", { label });
+}
+
+async function syncNativeTheme() {
+  await invokeHostCommand("sync_native_theme");
 }
 
 function readRecentSearches() {
@@ -3386,7 +3392,12 @@ function ResultDetail({
     item.contentType === "video" && mediaState.chunkId
       ? api.videoSegmentUrl(mediaState.chunkId)
       : null;
-  const timestampLink = timestampDeepLink(item.id, currentTimestamp, mediaState.chunkId);
+  const timestampLink = timestampDeepLink(
+    item.id,
+    currentTimestamp,
+    mediaState.chunkId,
+    "result-detail",
+  );
   const transcriptPartial = item.status === "indexing";
   const itemBusy =
     itemAction.status === "locating" ||
@@ -4456,6 +4467,10 @@ function LibraryScreen({
     () => items.map((item) => `${item.id}:${item.status}`).join("|"),
     [items],
   );
+  const jobStatusSignature = useMemo(
+    () => jobs.map((job) => `${job.id}:${job.item_id ?? ""}:${job.status}`).join("|"),
+    [jobs],
+  );
   const normalizedQuery = libraryQuery.trim().toLowerCase();
   const filtersActive =
     normalizedQuery !== "" ||
@@ -4603,10 +4618,9 @@ function LibraryScreen({
         status: "failed",
         limit: pageSize,
         cursor,
-        light: true,
       });
       for (const item of page) {
-        if (item.status === "failed") {
+        if (itemStatus(item) === "failed") {
           ids.push(item.id);
         }
       }
@@ -4637,7 +4651,7 @@ function LibraryScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, itemStatusSignature]);
+  }, [actionsEnabled, itemStatusSignature, jobStatusSignature]);
 
   // One-click cleanup: remove every failed item from the library. Source media
   // (the original URL/file) is untouched, and we pass keepDiscoverable so the
@@ -5026,7 +5040,7 @@ function ItemDetail({
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting" ||
     itemAction.status === "locating";
-  const timestampLink = timestampDeepLink(item.id, currentTimestamp, playableChunkId);
+  const timestampLink = timestampDeepLink(item.id, currentTimestamp, playableChunkId, "item-detail");
   // Resolve the chunk to clip from the LIVE playhead when the export popover
   // opens (falls back to currentTimestamp / the thumbnail chunk).
   function resolveClipTarget(): ClipTarget | null {
@@ -5575,6 +5589,11 @@ function SettingsScreen({
     setSaveState({ status: "saving", message: t("settings.save.saving") });
     try {
       await onSettingsChange(settingsPatch);
+      if (Object.prototype.hasOwnProperty.call(settingsPatch, "theme")) {
+        void syncNativeTheme().catch((error) => {
+          console.warn("failed to sync native theme", error);
+        });
+      }
       setSaveState({ status: "saved", message: t("settings.save.saved") });
       return true;
     } catch (error) {
@@ -5906,15 +5925,45 @@ function IndexingSettings({
   // Optimistic value while clicking; coalesce rapid +/− into one PATCH (a
   // settings write also triggers a multi-request refresh).
   const jobsCommitTimer = useRef<number | undefined>(undefined);
+  const pendingJobsRef = useRef<number | null>(null);
+  const concurrentJobsRef = useRef(concurrentJobs);
+  const onSettingsChangeRef = useRef(onSettingsChange);
+  useEffect(() => {
+    concurrentJobsRef.current = concurrentJobs;
+  }, [concurrentJobs]);
+  useEffect(() => {
+    onSettingsChangeRef.current = onSettingsChange;
+  }, [onSettingsChange]);
+  const flushJobsDraft = (clearDraft: boolean) => {
+    const pending = pendingJobsRef.current;
+    if (pending === null) {
+      return;
+    }
+    window.clearTimeout(jobsCommitTimer.current);
+    jobsCommitTimer.current = undefined;
+    pendingJobsRef.current = null;
+    if (pending === concurrentJobsRef.current) {
+      if (clearDraft) {
+        setJobsDraft(null);
+      }
+      return;
+    }
+    void onSettingsChangeRef.current({ concurrent_jobs: pending }).finally(() => {
+      if (clearDraft) {
+        setJobsDraft(null);
+      }
+    });
+  };
   const setJobs = (next: number) => {
     const clamped = Math.min(maxConcurrentJobs, Math.max(1, next));
     setJobsDraft(clamped);
+    pendingJobsRef.current = clamped;
     window.clearTimeout(jobsCommitTimer.current);
-    jobsCommitTimer.current = window.setTimeout(
-      () => void onSettingsChange({ concurrent_jobs: clamped }),
-      350,
-    );
+    jobsCommitTimer.current = window.setTimeout(() => {
+      flushJobsDraft(true);
+    }, 350);
   };
+  useEffect(() => () => flushJobsDraft(false), []);
   const commitCookiesPath = () => {
     if (cookiesPathDraft !== null && cookiesPathDraft !== webCookiesPath) {
       void onSettingsChange({ web_video_cookies_path: cookiesPathDraft });
@@ -6285,6 +6334,19 @@ function ModelsSettings({
       null
     );
   };
+  const providerForAsrModel = (modelId: string) => {
+    const allowedTypes: api.ProviderType[] = isGeminiAsrModelId(modelId)
+      ? ["gemini", "openai-compatible"]
+      : ["openai", "openai-compatible"];
+    return providerFor(selectedAsrProvider, "env-asr", allowedTypes);
+  };
+  function saveAsrModel(modelId: string) {
+    const provider = providerForAsrModel(modelId);
+    void onSettingsChange({
+      asr_model: modelId,
+      ...(provider ? { asr_provider_id: provider.id } : {}),
+    });
+  }
   const toComboOptions = (
     list: { id: string; label: string; size_label?: string }[],
   ): ModelComboOption[] => list.map((m) => ({ id: m.id, label: m.label, hint: m.size_label }));
@@ -6297,7 +6359,7 @@ function ModelsSettings({
       "Qwen3-VL Embedding local"
     : embeddingModels.find((model) => model.tier !== "local")?.label ?? "Gemini Embedding 2";
   const remoteAsrProviderTypes: api.ProviderType[] = isGeminiAsrModelId(activeRemoteAsr)
-    ? ["gemini"]
+    ? ["gemini", "openai-compatible"]
     : ["openai", "openai-compatible"];
   const preferredAsrProviderType: RemoteProviderType = isGeminiAsrModelId(activeRemoteAsr)
     ? "gemini"
@@ -6313,7 +6375,7 @@ function ModelsSettings({
       localLabel: localAsrLabel,
       modelValue: activeRemoteAsr,
       modelOptions: toComboOptions(remoteAsrOptions),
-      onSelectModel: (id) => void onSettingsChange({ asr_model: id }),
+      onSelectModel: saveAsrModel,
       provider: providerFor(selectedAsrProvider, "env-asr", remoteAsrProviderTypes),
       providerSettingKey: "asr_provider_id",
       preferredProviderType: preferredAsrProviderType,
@@ -7045,6 +7107,7 @@ function ProviderConnections({
   const [mode, setMode] = useState<"create" | "edit" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingCapability, setEditingCapability] = useState<CapabilityRowModel | null>(null);
+  const [requiresFreshKey, setRequiresFreshKey] = useState(false);
   const [form, setForm] = useState({
     type: "gemini" as RemoteProviderType,
     label: "Gemini",
@@ -7106,6 +7169,7 @@ function ProviderConnections({
     setMode("create");
     setEditingId(null);
     setEditingCapability(capability ?? null);
+    setRequiresFreshKey(false);
     setForm({
       type,
       label: defaultProviderLabel(type, capability?.key),
@@ -7123,9 +7187,10 @@ function ProviderConnections({
     const lockedType = capability?.providerTypeLocked ? capability.preferredProviderType : null;
     const type = lockedType ?? provider.type;
     const retargetingLockedProvider = lockedType !== null && provider.type !== lockedType;
-    setMode("edit");
-    setEditingId(provider.id);
+    setMode(retargetingLockedProvider ? "create" : "edit");
+    setEditingId(retargetingLockedProvider ? null : provider.id);
     setEditingCapability(capability ?? null);
+    setRequiresFreshKey(retargetingLockedProvider);
     setForm({
       type,
       label: retargetingLockedProvider
@@ -7144,6 +7209,7 @@ function ProviderConnections({
     setMode(null);
     setEditingId(null);
     setEditingCapability(null);
+    setRequiresFreshKey(false);
     setAction({ status: "idle", message: null });
   }
 
@@ -7203,8 +7269,16 @@ function ProviderConnections({
     try {
       const apiKey = form.api_key.trim();
       const baseUrl = form.base_url.trim();
+      if (requiresFreshKey && !apiKey) {
+        setAction({
+          status: "error",
+          message: t("settings.models.providers.error.apiKeyRequired"),
+        });
+        return;
+      }
+      const creatingProvider = mode === "create";
       const saved =
-        mode === "create"
+        creatingProvider
           ? await api.createProvider({
               type: form.type,
               label: form.label,
@@ -7217,6 +7291,11 @@ function ProviderConnections({
               base_url: baseUrl,
               ...(apiKey ? { api_key: apiKey } : {}),
             });
+      if (creatingProvider) {
+        setMode("edit");
+        setEditingId(saved.id);
+        setRequiresFreshKey(false);
+      }
       const tested = testAfterSave ? await api.testProvider(saved.id) : saved;
       await onRefresh();
       const shouldBindCapability =
@@ -7828,6 +7907,7 @@ function StorageSettings({
         setAction({ status: "idle", message: null });
         return;
       }
+      await refreshStorageUsage();
       setAction({ status: "done", message: t("settings.storage.message.downloadDirReset") });
     } catch (error) {
       setAction({ status: "error", message: errorMessage(error) });

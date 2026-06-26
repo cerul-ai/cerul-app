@@ -284,7 +284,10 @@ export type VideoUnderstandingRecord = {
 };
 
 export type SearchResultRecord = {
-  playback_chunk_id: string;
+  playback_chunk_id?: string | null;
+  // Older local cores returned the selected chunk as chunk_id. Keep accepting it
+  // so a freshly updated desktop can still search against a stale core process.
+  chunk_id?: string | null;
   item_id: string;
   chunk_type: string;
   start_sec: number | null;

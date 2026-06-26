@@ -22,9 +22,6 @@ import type {
 
 export function itemStatus(record: api.ItemRecord): ItemStatus {
   const { status, indexed_at: indexedAt } = record;
-  if (status === "failed" || status === "error") {
-    return "failed";
-  }
   const hasIndexedArtifacts =
     metadataString(record.metadata, "embedding_index_status") === "indexed" ||
     metadataString(record.metadata, "transcript_index_status") === "indexed" ||
@@ -35,6 +32,9 @@ export function itemStatus(record: api.ItemRecord): ItemStatus {
   }
   if (hasIndexedArtifacts && status !== "deleting") {
     return "indexed";
+  }
+  if (status === "failed" || status === "error") {
+    return "failed";
   }
   return "indexing";
 }

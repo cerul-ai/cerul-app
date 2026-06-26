@@ -253,8 +253,8 @@ export function AuthModal({
         {/* segmented tabs */}
         <div style={{ position: "relative", display: "flex", marginTop: 22, background: tk.tabBg, border: `1px solid ${tk.line}`, borderRadius: 12, padding: 4 }}>
           <div style={{ position: "absolute", top: 4, left: isLogin ? 4 : "50%", width: "calc(50% - 4px)", height: "calc(100% - 8px)", background: tk.panel, borderRadius: 9, boxShadow: "0 1px 3px rgba(20,30,45,.12), 0 0 0 1px rgba(20,30,45,.03)", transition: "left .28s cubic-bezier(.3,.8,.3,1)" }} />
-          <div onClick={() => onModeChange("signin")} style={{ position: "relative", zIndex: 1, flex: 1, textAlign: "center", font: "600 13px system-ui", color: isLogin ? tk.ink : tk.muted, padding: "8px 0", borderRadius: 9, cursor: "pointer" }}>{t("settings.account.signIn")}</div>
-          <div onClick={() => onModeChange("register")} style={{ position: "relative", zIndex: 1, flex: 1, textAlign: "center", font: "600 13px system-ui", color: !isLogin ? tk.ink : tk.muted, padding: "8px 0", borderRadius: 9, cursor: "pointer" }}>{t("settings.account.createAccount")}</div>
+          <button type="button" onClick={() => onModeChange("signin")} aria-pressed={isLogin} style={{ position: "relative", zIndex: 1, flex: 1, textAlign: "center", font: "600 13px system-ui", color: isLogin ? tk.ink : tk.muted, padding: "8px 0", borderRadius: 9, cursor: "pointer", border: 0, background: "transparent" }}>{t("settings.account.signIn")}</button>
+          <button type="button" onClick={() => onModeChange("register")} aria-pressed={!isLogin} style={{ position: "relative", zIndex: 1, flex: 1, textAlign: "center", font: "600 13px system-ui", color: !isLogin ? tk.ink : tk.muted, padding: "8px 0", borderRadius: 9, cursor: "pointer", border: 0, background: "transparent" }}>{t("settings.account.createAccount")}</button>
         </div>
 
         {/* fields */}
