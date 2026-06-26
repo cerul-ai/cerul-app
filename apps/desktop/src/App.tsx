@@ -501,8 +501,14 @@ async function clearCacheDirectory() {
 }
 
 async function resetLocalDataAndRestart() {
-  return invokeHostCommand<{ scheduled: boolean; targets: Array<{ label: string; path: string }> }>(
+  return invokeHostCommand<{ scheduled: boolean; kind: string; targets: Array<{ label: string; path: string }> }>(
     "reset_local_data",
+  );
+}
+
+async function factoryResetLocalDataAndRestart() {
+  return invokeHostCommand<{ scheduled: boolean; kind: string; targets: Array<{ label: string; path: string }> }>(
+    "factory_reset_local_data",
   );
 }
 
@@ -7966,6 +7972,23 @@ function StorageSettings({
     }
   }
 
+  async function factoryResetAllLocalData() {
+    const confirmed = await requestConfirm({
+      title: t("settings.storage.factoryReset.confirm.title"),
+      body: t("settings.storage.factoryReset.confirm.body"),
+      confirmLabel: t("settings.storage.factoryReset.confirm.label"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    setAction({ status: "running", message: t("settings.storage.message.resetStarting") });
+    try {
+      await factoryResetLocalDataAndRestart();
+    } catch (error) {
+      setAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
   return (
     <>
       {loadError ? (
@@ -8112,6 +8135,24 @@ function StorageSettings({
           >
             {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
             <span>{t("settings.storage.resetLocalData")}</span>
+          </button>
+        </div>
+        <div className="settings-danger-card">
+          <span className="settings-danger-ic" aria-hidden="true">
+            <AlertTriangle size={18} />
+          </span>
+          <div className="settings-danger-main">
+            <strong>{t("settings.storage.factoryReset")}</strong>
+            <p>{t("settings.storage.factoryReset.desc")}</p>
+          </div>
+          <button
+            className="btn btn-danger sm"
+            type="button"
+            disabled={busy || !hasDesktopHost()}
+            onClick={() => void factoryResetAllLocalData()}
+          >
+            {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+            <span>{t("settings.storage.factoryReset")}</span>
           </button>
         </div>
       </section>

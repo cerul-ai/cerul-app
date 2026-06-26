@@ -11,6 +11,7 @@
     "dev": "pnpm --filter @cerul/desktop build && cargo build -p cerul-api && pnpm build && electron dist/main.js",
     "start": "electron dist/main.js",
     "build": "node scripts/build.mjs",
+    "smoke:reset": "node scripts/smoke-local-data-reset.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && node scripts/build.mjs --check",
     "stage:cerul-core": "node scripts/stage-cerul-core.mjs",
     "stage:cerul-api": "pnpm stage:cerul-core",

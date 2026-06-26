@@ -394,6 +394,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
         .route("/storage/usage", get(storage_usage))
+        .route("/storage/reset-library", post(reset_local_library))
         .route("/models/catalog", get(models::model_catalog))
         .route("/models/whisper", get(models::list_whisper_models))
         .route(
@@ -4249,6 +4250,41 @@ async fn storage_usage(State(state): State<ApiState>) -> ApiResult<Json<StorageU
     Ok(Json(storage_usage_for_paths(&state.paths)?))
 }
 
+async fn reset_local_library(State(state): State<ApiState>) -> ApiResult<Json<Value>> {
+    let cleared = reset_local_library_database(&state.paths)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "cleared": cleared,
+    })))
+}
+
+fn reset_local_library_database(paths: &AppPaths) -> anyhow::Result<BTreeMap<String, usize>> {
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+    let mut cleared = BTreeMap::new();
+
+    for (label, sql) in [
+        (
+            "usage_events",
+            "DELETE FROM inference_usage_events WHERE item_id IS NOT NULL OR job_id IS NOT NULL",
+        ),
+        ("moments", "DELETE FROM moments"),
+        ("retrieval_units", "DELETE FROM retrieval_units"),
+        ("chunks", "DELETE FROM chunks"),
+        ("item_understandings", "DELETE FROM item_understandings"),
+        ("ignored_items", "DELETE FROM ignored_items"),
+        ("jobs", "DELETE FROM jobs"),
+        ("items", "DELETE FROM items"),
+        ("sources", "DELETE FROM sources"),
+    ] {
+        let rows = tx.execute(sql, [])?;
+        cleared.insert(label.to_string(), rows);
+    }
+
+    tx.commit()?;
+    Ok(cleared)
+}
+
 #[derive(Debug, Deserialize)]
 struct UsageEventsQuery {
     limit: Option<usize>,
@@ -6457,6 +6493,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/usage/events", &["get"]),
     ("/internal/usage/summary", &["get"]),
     ("/internal/storage/usage", &["get"]),
+    ("/internal/storage/reset-library", &["post"]),
     ("/internal/models/catalog", &["get"]),
     ("/internal/models/whisper", &["get"]),
     ("/internal/models/whisper/{id}/download", &["post"]),
@@ -10099,6 +10136,159 @@ mod tests {
         assert!(bytes_for("cache") > 0);
         assert!(bytes_for("index") > 0);
         assert!(bytes_for("database") > 0);
+    }
+
+    #[tokio::test]
+    async fn reset_local_library_clears_library_state_and_preserves_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        std::fs::write(paths.models.join("model.bin"), b"model").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('media_dir', '/Volumes/CerulMedia')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO providers (id, type, label, status) VALUES ('remote-asr', 'openai-compatible', 'Remote ASR', 'ready')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO embedding_profiles (
+                    id, model_id, output_dimension, distance_metric, index_version, status, provider_id
+                )
+                VALUES ('profile-1', 'local-embed', 4, 'cosine', 1, 'ready', 'local')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, title, status, metadata)
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO jobs (id, item_id, job_type, status, progress) VALUES ('job-1', 'item-1', 'index_video', 'failed', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chunks (id, item_id, chunk_type, text, metadata) VALUES ('chunk-1', 'item-1', 'transcript', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO moments (id, item_id, chunk_id, title, quote) VALUES ('moment-1', 'item-1', 'chunk-1', 'Moment', 'hello')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO item_understandings (item_id, status, summary, result) VALUES ('item-1', 'completed', 'summary', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ignored_items (source_id, external_id, reason) VALUES ('source-1', 'ignored.mp4', 'test')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO retrieval_units (
+                    id, item_id, unit_index, unit_kind, content_text, embedding_profile_id, index_version
+                )
+                VALUES ('unit-1', 'item-1', 0, 'transcript', 'hello', 'profile-1', 1)
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO inference_usage_events (
+                    id, provider_mode, capability, item_id, job_id, status, metadata
+                )
+                VALUES ('usage-bound', 'remote', 'asr', 'item-1', 'job-1', 'succeeded', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO inference_usage_events (
+                    id, provider_mode, capability, status, metadata
+                )
+                VALUES ('usage-unbound', 'remote', 'asr', 'succeeded', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let app = router_with_paths(paths.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/internal/storage/reset-library")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "ok");
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        for table in [
+            "sources",
+            "items",
+            "jobs",
+            "chunks",
+            "chunks_fts",
+            "moments",
+            "item_understandings",
+            "ignored_items",
+            "retrieval_units",
+            "retrieval_units_fts",
+        ] {
+            assert_eq!(count(table), 0, "{table} should be empty after reset");
+        }
+        assert_eq!(count("providers"), 2);
+        assert_eq!(count("embedding_profiles"), 1);
+        assert_eq!(count("inference_usage_events"), 1);
+        let media_dir: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'media_dir'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(media_dir, "/Volumes/CerulMedia");
+        let usage_id: String = conn
+            .query_row("SELECT id FROM inference_usage_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(usage_id, "usage-unbound");
+        assert!(paths.models.join("model.bin").is_file());
     }
 
     #[tokio::test]

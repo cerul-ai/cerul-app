@@ -24,6 +24,14 @@ import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  assertTargetsPreservePath,
+  factoryResetTargets,
+  localLibraryResetTargets,
+  normalizeResetTargets,
+  pathsMatch,
+  type ResetTarget,
+} from "./local-data-reset";
 // Type-only: erased at runtime. The implementation is lazy-required in
 // getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
 // GitHub-release fallback instead of crashing the main process at load time.
@@ -3388,7 +3396,9 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
     case "clear_cache":
       return clearCache();
     case "reset_local_data":
-      return scheduleLocalDataReset();
+      return scheduleLocalDataReset("library");
+    case "factory_reset_local_data":
+      return scheduleLocalDataReset("factory");
     case "set_global_hotkey":
       registerGlobalHotkey(String(args.label ?? defaultHotkey));
       return null;
@@ -3706,8 +3716,14 @@ function clearCache() {
   };
 }
 
-function scheduleLocalDataReset() {
-  const targets = resetLocalDataTargets();
+type LocalDataResetKind = "library" | "factory";
+
+async function scheduleLocalDataReset(kind: LocalDataResetKind) {
+  const preflight = await assertCanResetActiveCore(kind);
+  if (kind === "library") {
+    await resetCoreLocalLibrary();
+  }
+  const targets = resetLocalDataTargets(kind, preflight.mediaDir);
   const scriptPath = path.join(os.tmpdir(), `cerul-reset-${process.pid}-${Date.now()}.sh`);
   const relaunchLine = relaunchShellLine();
   const lines = [
@@ -3733,50 +3749,96 @@ function scheduleLocalDataReset() {
 
   return {
     scheduled: true,
+    kind,
     targets,
   };
 }
 
-function resetLocalDataTargets() {
-  const paths = appPaths();
-  const userData = app.getPath("userData");
-  const targets = [
-    { label: "data", path: paths.data_dir },
-    {
-      label: app.isPackaged ? "userData" : "devStores",
-      path: app.isPackaged ? userData : path.join(userData, "stores"),
-    },
-  ];
-  const seen = new Set<string>();
-  return targets
-    .map((target) => ({ ...target, path: path.resolve(target.path) }))
-    .filter((target) => {
-      if (seen.has(target.path)) {
-        return false;
-      }
-      seen.add(target.path);
-      return true;
-    })
-    .map((target) => {
-      assertSafeResetTarget(target.path);
-      return target;
-    });
+async function assertCanResetActiveCore(kind: LocalDataResetKind) {
+  const expectedDataDir = path.resolve(appPaths().data_dir);
+  const actualDataDir = path.resolve(await activeCoreDataDir());
+  if (!pathsMatch(actualDataDir, expectedDataDir)) {
+    throw new Error(
+      [
+        "Refusing to reset Cerul data because the active Core is using a different data directory.",
+        `Electron data dir: ${expectedDataDir}`,
+        `Core data dir: ${actualDataDir}`,
+      ].join("\n"),
+    );
+  }
+  if (!ownsApiProcess) {
+    throw new Error(
+      [
+        "Refusing to reset Cerul data because this window is connected to an existing Core process.",
+        "Quit the other Cerul/Core process and restart Cerul before resetting local data.",
+      ].join("\n"),
+    );
+  }
+  if (kind === "library") {
+    const settings = await readApiSettings();
+    const mediaDir = typeof settings.media_dir === "string" ? settings.media_dir : null;
+    assertTargetsPreservePath(resetLocalDataTargets("library", mediaDir), appPaths().models_dir, "models");
+    return { mediaDir };
+  }
+  return { mediaDir: null };
 }
 
-function assertSafeResetTarget(targetPath: string) {
-  const resolved = path.resolve(targetPath);
-  const forbidden = [
-    path.parse(resolved).root,
-    os.homedir(),
-    dataBaseDir(),
-    path.dirname(dataBaseDir()),
-  ].map((value) => path.resolve(value));
-  if (forbidden.includes(resolved)) {
-    throw new Error(`refusing to reset unsafe path: ${resolved}`);
+async function activeCoreDataDir() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1_500);
+  try {
+    const response = await fetch(`${internalApiBaseUrl}/storage/usage`, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Core returned HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as { data_dir?: unknown };
+    if (typeof body.data_dir !== "string" || !body.data_dir.trim()) {
+      throw new Error("Core storage usage did not include data_dir");
+    }
+    return body.data_dir;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not verify active Cerul Core data directory before reset: ${message}`);
+  } finally {
+    clearTimeout(timer);
   }
-  const depth = resolved.split(path.sep).filter(Boolean).length;
-  if (depth < 3) {
-    throw new Error(`refusing to reset shallow path: ${resolved}`);
+}
+
+function resetLocalDataTargets(kind: LocalDataResetKind, mediaDir: string | null) {
+  const paths = appPaths();
+  const userData = app.getPath("userData");
+  const targets: ResetTarget[] =
+    kind === "factory"
+      ? factoryResetTargets(paths, userData, app.isPackaged)
+      : localLibraryResetTargets(paths, mediaDir);
+  const normalized = normalizeResetTargets(targets, {
+    homeDir: os.homedir(),
+    dataBaseDir: dataBaseDir(),
+  });
+  if (kind === "library") {
+    assertTargetsPreservePath(normalized, paths.models_dir, "models");
+  }
+  return normalized;
+}
+
+async function resetCoreLocalLibrary() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${internalApiBaseUrl}/storage/reset-library`, {
+      method: "POST",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(body.trim() || `Core returned HTTP ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not clear Cerul library data before reset: ${message}`);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
