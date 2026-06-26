@@ -289,6 +289,15 @@ pub struct StorageUsageResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct StorageLocationsResponse {
+    pub data_dir: String,
+    pub database_path: String,
+    pub models_dir: String,
+    pub index_dir: String,
+    pub cache_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StorageUsageCategory {
     pub key: String,
     pub label: String,
@@ -394,6 +403,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
         .route("/storage/usage", get(storage_usage))
+        .route("/storage/locations", get(storage_locations))
         .route("/storage/reset-library", post(reset_local_library))
         .route("/models/catalog", get(models::model_catalog))
         .route("/models/whisper", get(models::list_whisper_models))
@@ -4250,15 +4260,30 @@ async fn storage_usage(State(state): State<ApiState>) -> ApiResult<Json<StorageU
     Ok(Json(storage_usage_for_paths(&state.paths)?))
 }
 
+async fn storage_locations(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<StorageLocationsResponse>> {
+    Ok(Json(storage_locations_for_paths(&state.paths)))
+}
+
 async fn reset_local_library(State(state): State<ApiState>) -> ApiResult<Json<Value>> {
-    let cleared = reset_local_library_database(&state.paths)?;
+    let reset = reset_local_library_database(&state.paths)?;
     Ok(Json(json!({
         "status": "ok",
-        "cleared": cleared,
+        "cleared": reset.cleared,
+        "compacted": reset.compacted,
+        "compaction_error": reset.compaction_error,
     })))
 }
 
-fn reset_local_library_database(paths: &AppPaths) -> anyhow::Result<BTreeMap<String, usize>> {
+#[derive(Debug)]
+struct LibraryResetResult {
+    cleared: BTreeMap<String, usize>,
+    compacted: bool,
+    compaction_error: Option<String>,
+}
+
+fn reset_local_library_database(paths: &AppPaths) -> anyhow::Result<LibraryResetResult> {
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction()?;
     let mut cleared = BTreeMap::new();
@@ -4282,7 +4307,29 @@ fn reset_local_library_database(paths: &AppPaths) -> anyhow::Result<BTreeMap<Str
     }
 
     tx.commit()?;
-    Ok(cleared)
+    let compaction_error = compact_library_database(&conn).err().map(|error| {
+        let message = error.to_string();
+        tracing::warn!(%message, "failed to compact SQLite database after local library reset");
+        message
+    });
+    Ok(LibraryResetResult {
+        cleared,
+        compacted: compaction_error.is_none(),
+        compaction_error,
+    })
+}
+
+fn compact_library_database(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    checkpoint_wal(conn)?;
+    conn.execute_batch("VACUUM")?;
+    checkpoint_wal(conn)?;
+    Ok(())
+}
+
+fn checkpoint_wal(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    anyhow::ensure!(busy == 0, "SQLite WAL checkpoint was busy");
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -6136,6 +6183,16 @@ fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageRespo
     })
 }
 
+fn storage_locations_for_paths(paths: &AppPaths) -> StorageLocationsResponse {
+    StorageLocationsResponse {
+        data_dir: paths.data.to_string_lossy().to_string(),
+        database_path: paths.db.to_string_lossy().to_string(),
+        models_dir: paths.models.to_string_lossy().to_string(),
+        index_dir: paths.qdrant.to_string_lossy().to_string(),
+        cache_dir: paths.cache.to_string_lossy().to_string(),
+    }
+}
+
 // Measures downloaded media when it lives outside the data dir (the `media_dir`
 // setting points at an external location). Returns None when downloads default to
 // the in-data cache (already counted by the data scan) or the directory is
@@ -6493,6 +6550,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/usage/events", &["get"]),
     ("/internal/usage/summary", &["get"]),
     ("/internal/storage/usage", &["get"]),
+    ("/internal/storage/locations", &["get"]),
     ("/internal/storage/reset-library", &["post"]),
     ("/internal/models/catalog", &["get"]),
     ("/internal/models/whisper", &["get"]),
@@ -10139,6 +10197,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_locations_reports_paths_without_scanning_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/storage/locations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let locations = response_json(response).await;
+        assert_eq!(
+            locations["data_dir"].as_str(),
+            Some(paths.data.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["database_path"].as_str(),
+            Some(paths.db.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["models_dir"].as_str(),
+            Some(paths.models.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["index_dir"].as_str(),
+            Some(paths.qdrant.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["cache_dir"].as_str(),
+            Some(paths.cache.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
     async fn reset_local_library_clears_library_state_and_preserves_settings() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -10249,6 +10347,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["status"], "ok");
+        assert_eq!(body["compacted"], true);
+        assert!(body["compaction_error"].is_null());
 
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
         let count = |table: &str| -> i64 {

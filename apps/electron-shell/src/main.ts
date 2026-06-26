@@ -1842,16 +1842,25 @@ async function syncNativeThemeFromSettings() {
 }
 
 async function readApiSettings() {
+  try {
+    return await readApiSettingsOrThrow(1_500);
+  } catch {
+    return {};
+  }
+}
+
+async function readApiSettingsOrThrow(timeoutMs: number) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1_500);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${internalApiBaseUrl}/settings`, { signal: controller.signal });
     if (!response.ok) {
-      return {};
+      throw new Error(`Core returned HTTP ${response.status}`);
     }
     return (await response.json()) as Record<string, unknown>;
-  } catch {
-    return {};
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not read Cerul settings: ${message}`);
   } finally {
     clearTimeout(timer);
   }
@@ -3775,7 +3784,7 @@ async function assertCanResetActiveCore(kind: LocalDataResetKind) {
     );
   }
   if (kind === "library") {
-    const settings = await readApiSettings();
+    const settings = await readApiSettingsOrThrow(10_000);
     const mediaDir = typeof settings.media_dir === "string" ? settings.media_dir : null;
     assertTargetsPreservePath(resetLocalDataTargets("library", mediaDir), appPaths().models_dir, "models");
     return { mediaDir };
@@ -3785,15 +3794,15 @@ async function assertCanResetActiveCore(kind: LocalDataResetKind) {
 
 async function activeCoreDataDir() {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1_500);
+  const timer = setTimeout(() => controller.abort(), 5_000);
   try {
-    const response = await fetch(`${internalApiBaseUrl}/storage/usage`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}/storage/locations`, { signal: controller.signal });
     if (!response.ok) {
       throw new Error(`Core returned HTTP ${response.status}`);
     }
     const body = (await response.json()) as { data_dir?: unknown };
     if (typeof body.data_dir !== "string" || !body.data_dir.trim()) {
-      throw new Error("Core storage usage did not include data_dir");
+      throw new Error("Core storage locations did not include data_dir");
     }
     return body.data_dir;
   } catch (error) {
