@@ -1075,6 +1075,7 @@ struct V1ItemRow {
     source_type: String,
     source_config: Value,
     thumbnail_chunk_id: Option<String>,
+    thumbnail_frame_path: Option<String>,
     chunk_count: usize,
     source_file_exists: bool,
 }
@@ -1632,9 +1633,19 @@ fn v1_item_select_sql() -> String {
                    FROM chunks c
                    WHERE c.item_id = i.id
                      AND c.frame_path IS NOT NULL
+                     AND TRIM(c.frame_path) <> ''
                    ORDER BY COALESCE(c.start_sec, 0), c.id
                    LIMIT 1
                ) AS thumbnail_chunk_id,
+               (
+                   SELECT c.frame_path
+                   FROM chunks c
+                   WHERE c.item_id = i.id
+                     AND c.frame_path IS NOT NULL
+                     AND TRIM(c.frame_path) <> ''
+                   ORDER BY COALESCE(c.start_sec, 0), c.id
+                   LIMIT 1
+               ) AS thumbnail_frame_path,
                (
                    SELECT COUNT(*)
                    FROM chunks c
@@ -1662,8 +1673,10 @@ fn v1_item_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<V1ItemRow> 
         .as_deref()
         .map(parse_json)
         .unwrap_or_else(|| json!({}));
-    let chunk_count = row.get::<_, i64>(11)?.max(0) as usize;
-    let raw_path: Option<String> = row.get(12)?;
+    let thumbnail_chunk_id: Option<String> = row.get(10)?;
+    let thumbnail_frame_path: Option<String> = row.get(11)?;
+    let chunk_count = row.get::<_, i64>(12)?.max(0) as usize;
+    let raw_path: Option<String> = row.get(13)?;
     let source_file_exists = raw_path.as_deref().is_some_and(local_source_file_exists);
 
     Ok(V1ItemRow {
@@ -1677,7 +1690,8 @@ fn v1_item_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<V1ItemRow> 
         metadata,
         source_type: row.get(8)?,
         source_config,
-        thumbnail_chunk_id: row.get(10)?,
+        thumbnail_chunk_id,
+        thumbnail_frame_path,
         chunk_count,
         source_file_exists,
     })
@@ -1687,7 +1701,9 @@ fn v1_item_from_row(item: &V1ItemRow, base_url: &str) -> V1Item {
     let thumbnail = item
         .thumbnail_chunk_id
         .as_deref()
-        .map(|chunk_id| V1Locator {
+        .zip(item.thumbnail_frame_path.as_deref())
+        .filter(|(_, frame_path)| local_source_file_exists(frame_path))
+        .map(|(chunk_id, _)| V1Locator {
             locator_type: "local",
             url: format!(
                 "{}/chunks/{}/frame",
@@ -4882,7 +4898,6 @@ async fn update_settings(
 ) -> ApiResult<Json<BTreeMap<String, Value>>> {
     let previous_inference_mode = configured_inference_mode(&state.paths)?;
     let requested_inference_mode = requested_inference_mode(&settings);
-    let mut requested_api_port = None;
     let mut conn = cerul_storage::sqlite::open(&state.paths)?;
     let tx = conn.transaction()?;
     for (key, value) in &settings {
@@ -4894,9 +4909,6 @@ async fn update_settings(
             continue;
         }
         let value = validate_write_setting_value(key, normalize_setting_value(key, value.clone()))?;
-        if key == API_PORT_SETTING {
-            requested_api_port = value.as_u64().and_then(|value| u16::try_from(value).ok());
-        }
         tx.execute(
             r#"
             INSERT INTO settings (key, value, updated_at)
@@ -4912,9 +4924,6 @@ async fn update_settings(
 
     if let Some(inference_mode) = requested_inference_mode.as_deref() {
         sync_inference_mode_side_effects(&state.paths, &previous_inference_mode, inference_mode)?;
-    }
-    if let Some(port) = requested_api_port {
-        write_api_endpoint_file(&state.paths, port)?;
     }
 
     Ok(Json(
@@ -6398,7 +6407,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/entities/{id}", &["get"]),
     ("/internal/weekly-review", &["get"]),
     ("/internal/items", &["get"]),
-    ("/internal/items/{id}", &["get", "delete"]),
+    ("/internal/items/{id}", &["get", "patch", "delete"]),
     ("/internal/items/{id}/playback", &["get", "patch"]),
     ("/internal/items/{id}/reindex", &["post"]),
     ("/internal/items/{id}/chunks", &["get"]),
@@ -6407,6 +6416,7 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/chunks/{id}/video-segment", &["get"]),
     ("/internal/chunks/{id}/video-clip", &["get"]),
     ("/internal/jobs", &["get"]),
+    ("/internal/jobs/{id}/cancel", &["post"]),
     ("/internal/usage/events", &["get"]),
     ("/internal/usage/summary", &["get"]),
     ("/internal/storage/usage", &["get"]),
@@ -6961,7 +6971,10 @@ mod tests {
             .unwrap();
         assert_eq!(openapi.status(), StatusCode::OK);
         let openapi_json = response_json(openapi).await;
-        assert!(openapi_json["paths"].as_object().unwrap().len() >= 19);
+        let paths = openapi_json["paths"].as_object().unwrap();
+        assert!(paths.len() >= 19);
+        assert!(paths["/internal/items/{id}"].get("patch").is_some());
+        assert!(paths["/internal/jobs/{id}/cancel"].get("post").is_some());
     }
 
     #[tokio::test]
@@ -7151,6 +7164,75 @@ mod tests {
             0,
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v1_items_omit_thumbnail_when_frame_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let missing_frame = temp.path().join("missing-frame.jpg");
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, duration_sec,
+                    indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Clip', 10,
+                    10, 'indexed', '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, frame_path, metadata)
+                VALUES ('item-1:keyframe:000000', 'item-1', 'keyframe', 0, ?1, '{}')
+                "#,
+                [missing_frame.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let items = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items")
+                    .header(header::HOST, "127.0.0.1:25001")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert!(items["items"][0]["thumbnail"].is_null());
+
+        let item = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1")
+                    .header(header::HOST, "127.0.0.1:25001")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(item.status(), StatusCode::OK);
+        let item = response_json(item).await;
+        assert!(item["item"]["thumbnail"].is_null());
     }
 
     #[tokio::test]
@@ -8211,9 +8293,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settings_endpoint_validates_api_port_and_writes_endpoint_file() {
+    async fn settings_endpoint_validates_api_port_without_changing_active_endpoint_file() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        write_api_endpoint_file(&paths, 23785).unwrap();
         let app = router_with_paths(paths.clone());
 
         let valid = app
@@ -8239,12 +8322,12 @@ mod tests {
         let endpoint: Value =
             serde_json::from_slice(&std::fs::read(paths.data.join(API_ENDPOINT_FILE)).unwrap())
                 .unwrap();
-        assert_eq!(endpoint["port"], 24001);
-        assert_eq!(endpoint["base_url"], "http://127.0.0.1:24001");
-        assert_eq!(endpoint["v1_base_url"], "http://127.0.0.1:24001/v1");
+        assert_eq!(endpoint["port"], 23785);
+        assert_eq!(endpoint["base_url"], "http://127.0.0.1:23785");
+        assert_eq!(endpoint["v1_base_url"], "http://127.0.0.1:23785/v1");
         assert_eq!(
             endpoint["internal_base_url"],
-            "http://127.0.0.1:24001/internal"
+            "http://127.0.0.1:23785/internal"
         );
 
         let invalid = app
