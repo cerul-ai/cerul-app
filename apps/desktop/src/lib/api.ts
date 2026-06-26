@@ -378,6 +378,15 @@ export type DiagnosticsBundle = {
   local_models: LocalPrepareStatus | null;
   local_models_error: string | null;
   search: SearchHealthDiagnostics;
+  qdrant: {
+    url: string | null;
+    autostart_enabled: boolean | null;
+    api_key_configured: boolean | null;
+    ready_timeout_seconds: number | null;
+    log_path: string | null;
+    recent_log: string | null;
+    error: string | null;
+  };
   jobs: Record<string, unknown>[];
   recent_errors: Record<string, unknown>[];
 };

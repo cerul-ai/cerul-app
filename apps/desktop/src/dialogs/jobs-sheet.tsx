@@ -1,9 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 // Tasks panel — a filterable timeline of indexing jobs (running / done /
 // failed). Restyled to the FGH React/Tailwind prototype (§H). Extracted from
 // App.tsx (B13 Phase D).
 
-import { Check, Pause, Play, Trash2, X } from "lucide-react";
+import { Check, Copy, Loader2, Pause, Play, Trash2, X } from "lucide-react";
 import * as api from "../lib/api";
 import { useT } from "../lib/i18n";
 import { isActiveJob } from "../lib/items";
@@ -28,6 +28,10 @@ import { EmptyState } from "../components/leaf";
 import { ProgressBar } from "../components/transcript";
 
 type JobGroup = "running" | "done" | "failed";
+type DiagnosticCopyState = {
+  jobId: string | null;
+  status: "idle" | "running" | "copied" | "error";
+};
 
 function jobGroup(job: api.JobRecord): JobGroup {
   const badge = jobBadgeStatus(job.status);
@@ -70,6 +74,20 @@ export function JobsSheet({
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(dialogRef);
   const [filter, setFilter] = useState<"all" | JobGroup>("all");
+  const [diagnosticCopy, setDiagnosticCopy] = useState<DiagnosticCopyState>({
+    jobId: null,
+    status: "idle",
+  });
+
+  useEffect(() => {
+    if (diagnosticCopy.status === "idle" || diagnosticCopy.status === "running") {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setDiagnosticCopy({ jobId: null, status: "idle" });
+    }, 2200);
+    return () => window.clearTimeout(timer);
+  }, [diagnosticCopy.status]);
 
   const sortedJobs = [...jobs].sort((a, b) => {
     const activeDelta = Number(isActiveJob(b)) - Number(isActiveJob(a));
@@ -109,6 +127,42 @@ export function JobsSheet({
           count: activeCount,
         })
       : null;
+
+  async function copyJobDiagnostics(job: api.JobRecord) {
+    setDiagnosticCopy({ jobId: job.id, status: "running" });
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("clipboard unavailable");
+      }
+      const diagnostics = await api.diagnosticsBundle();
+      const payload = {
+        kind: "cerul_job_diagnostics",
+        generated_at: new Date().toISOString(),
+        selected_job: {
+          id: job.id,
+          item_id: job.item_id,
+          title: jobItemTitle(job, items, t),
+          job_type: job.job_type,
+          job_type_label: jobTypeLabel(job.job_type, t),
+          status: job.status,
+          display_status: jobDisplayStatus(job, t),
+          started_at: job.started_at,
+          finished_at: job.finished_at,
+          progress: job.progress,
+          stage: job.stage,
+          stage_message: job.stage_message,
+          error_info: job.error_info,
+          raw_error: job.error,
+        },
+        diagnostics,
+      };
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setDiagnosticCopy({ jobId: job.id, status: "copied" });
+    } catch (error) {
+      console.warn("failed to copy job diagnostics", error);
+      setDiagnosticCopy({ jobId: job.id, status: "error" });
+    }
+  }
 
   const renderSyncingSourceCard = (source: Source) => (
     <div className="jobs-tl-item" key={`source:${source.id}`}>
@@ -152,6 +206,8 @@ export function JobsSheet({
       .filter(Boolean)
       .join(" · ");
     const canCancel = onCancelJob && controlsEnabled && job.item_id && (isRunning || job.status === "queued");
+    const copyStatus = diagnosticCopy.jobId === job.id ? diagnosticCopy.status : "idle";
+    const copyingDiagnostics = copyStatus === "running";
 
     return (
       <div className="jobs-tl-item" key={job.id}>
@@ -224,6 +280,32 @@ export function JobsSheet({
           {isFailed && job.error ? (
             <details className="job-tech">
               <summary>{t("jobs.tech.summary")}</summary>
+              <div className="job-tech-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary sm"
+                  disabled={copyingDiagnostics}
+                  onClick={() => void copyJobDiagnostics(job)}
+                >
+                  {copyingDiagnostics ? (
+                    <Loader2 size={13} />
+                  ) : copyStatus === "copied" ? (
+                    <Check size={13} />
+                  ) : (
+                    <Copy size={13} />
+                  )}
+                  <span>
+                    {copyingDiagnostics
+                      ? t("jobs.tech.copyingDiagnostics")
+                      : copyStatus === "copied"
+                      ? t("jobs.tech.copiedDiagnostics")
+                      : t("jobs.tech.copyDiagnostics")}
+                  </span>
+                </button>
+                {copyStatus === "error" ? (
+                  <span className="job-tech-copy-error">{t("jobs.tech.copyDiagnosticsError")}</span>
+                ) : null}
+              </div>
               <pre className="job-tech-raw mono">{job.error}</pre>
             </details>
           ) : null}

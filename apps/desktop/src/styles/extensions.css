@@ -3576,6 +3576,17 @@ body.overlay-body {
 .job-tech[open] summary::before {
   content: "▾ ";
 }
+.job-tech-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.job-tech-copy-error {
+  font-size: var(--fs-caption);
+  color: var(--danger);
+}
 .job-tech-raw {
   margin: 6px 0 0;
   padding: 8px 10px;

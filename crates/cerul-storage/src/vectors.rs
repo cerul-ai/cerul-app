@@ -32,7 +32,7 @@ const DEFAULT_DISTANCE_METRIC: &str = "cosine";
 const ACTIVE_EMBEDDING_PROFILE_SETTING: &str = "active_embedding_profile";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const VECTOR_BATCH_SIZE: usize = 256;
-const DEFAULT_QDRANT_READY_TIMEOUT: Duration = Duration::from_secs(45);
+const DEFAULT_QDRANT_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const QDRANT_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const QDRANT_LOG_TAIL_BYTES: u64 = 16 * 1024;
 
@@ -146,6 +146,16 @@ struct QdrantLaunch {
     url: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct QdrantRuntimeSnapshot {
+    pub url: String,
+    pub autostart_enabled: bool,
+    pub api_key_configured: bool,
+    pub ready_timeout_seconds: u64,
+    pub log_path: String,
+    pub recent_log: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct QdrantEnvelope<T> {
     status: String,
@@ -183,6 +193,19 @@ struct QdrantScrollPoint {
 pub async fn ensure_collections(paths: &AppPaths) -> anyhow::Result<()> {
     let profile = ensure_active_embedding_profile(paths)?;
     ensure_unified_collection_for_profile(paths, &profile, crate::SEARCH_INDEX_VERSION).await
+}
+
+pub fn qdrant_runtime_snapshot(paths: &AppPaths) -> anyhow::Result<QdrantRuntimeSnapshot> {
+    let config = qdrant_config();
+    let log_path = qdrant_log_path(paths)?;
+    Ok(QdrantRuntimeSnapshot {
+        url: config.url.clone(),
+        autostart_enabled: qdrant_autostart_enabled(&config),
+        api_key_configured: config.api_key.is_some(),
+        ready_timeout_seconds: qdrant_ready_timeout().as_secs(),
+        log_path: log_path.to_string_lossy().to_string(),
+        recent_log: qdrant_log_tail(&log_path),
+    })
 }
 
 pub fn shutdown_qdrant_sidecar() {

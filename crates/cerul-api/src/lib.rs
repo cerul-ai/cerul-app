@@ -2536,6 +2536,7 @@ struct DiagnosticsBundle {
     local_models: Option<local_models::LocalPrepareStatus>,
     local_models_error: Option<String>,
     search: SearchHealthDiagnostics,
+    qdrant: DiagnosticsQdrantRuntime,
     jobs: Vec<DiagnosticsJob>,
     recent_errors: Vec<DiagnosticsItemError>,
 }
@@ -2551,6 +2552,17 @@ struct DiagnosticsRuntime {
     effective_inference_mode: String,
     last_error: Option<String>,
     local_runtime_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticsQdrantRuntime {
+    url: Option<String>,
+    autostart_enabled: Option<bool>,
+    api_key_configured: Option<bool>,
+    ready_timeout_seconds: Option<u64>,
+    log_path: Option<String>,
+    recent_log: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2607,6 +2619,7 @@ async fn diagnostics_bundle(State(state): State<ApiState>) -> ApiResult<Json<Dia
             Ok(status) => (Some(status), None),
             Err(error) => (None, Some(redact_diagnostic_text(&error.to_string()))),
         };
+    let qdrant = diagnostics_qdrant_runtime(&state.paths);
 
     Ok(Json(DiagnosticsBundle {
         generated_at,
@@ -2630,9 +2643,33 @@ async fn diagnostics_bundle(State(state): State<ApiState>) -> ApiResult<Json<Dia
         local_models,
         local_models_error,
         search: search_health_diagnostics(&state.paths).await?,
+        qdrant,
         jobs: diagnostics_recent_jobs(&state.paths)?,
         recent_errors: diagnostics_recent_item_errors(&state.paths)?,
     }))
+}
+
+fn diagnostics_qdrant_runtime(paths: &AppPaths) -> DiagnosticsQdrantRuntime {
+    match cerul_storage::vectors::qdrant_runtime_snapshot(paths) {
+        Ok(snapshot) => DiagnosticsQdrantRuntime {
+            url: Some(snapshot.url),
+            autostart_enabled: Some(snapshot.autostart_enabled),
+            api_key_configured: Some(snapshot.api_key_configured),
+            ready_timeout_seconds: Some(snapshot.ready_timeout_seconds),
+            log_path: Some(redact_diagnostic_text(&snapshot.log_path)),
+            recent_log: Some(redact_diagnostic_text(&snapshot.recent_log)),
+            error: None,
+        },
+        Err(error) => DiagnosticsQdrantRuntime {
+            url: None,
+            autostart_enabled: None,
+            api_key_configured: None,
+            ready_timeout_seconds: None,
+            log_path: None,
+            recent_log: None,
+            error: Some(redact_diagnostic_text(&error.to_string())),
+        },
+    }
 }
 
 fn diagnostics_settings_snapshot(
@@ -8367,6 +8404,13 @@ mod tests {
             )
             .unwrap();
         }
+        let qdrant_log_dir = paths.qdrant.join("logs");
+        std::fs::create_dir_all(&qdrant_log_dir).unwrap();
+        std::fs::write(
+            qdrant_log_dir.join("qdrant-sidecar.log"),
+            format!("storage={home}/Library/Application Support/Cerul/indexes/qdrant"),
+        )
+        .unwrap();
         let app = router_with_paths(paths);
 
         let response = app
@@ -8391,6 +8435,11 @@ mod tests {
             json["jobs"][0]["error"],
             "failed to read ~/Downloads/missing.mp4"
         );
+        assert_eq!(
+            json["qdrant"]["recent_log"],
+            "storage=~/Library/Application Support/Cerul/indexes/qdrant"
+        );
+        assert_eq!(json["qdrant"]["ready_timeout_seconds"], 120);
 
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(!serialized.contains("super-secret"));
