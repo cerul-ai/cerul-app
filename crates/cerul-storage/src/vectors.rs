@@ -32,12 +32,14 @@ const DEFAULT_DISTANCE_METRIC: &str = "cosine";
 const ACTIVE_EMBEDDING_PROFILE_SETTING: &str = "active_embedding_profile";
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const VECTOR_BATCH_SIZE: usize = 256;
-const DEFAULT_QDRANT_READY_TIMEOUT: Duration = Duration::from_secs(45);
+const DEFAULT_QDRANT_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const QDRANT_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const QDRANT_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 const QDRANT_LOG_TAIL_BYTES: u64 = 16 * 1024;
 
 static QDRANT_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 static LOCAL_QDRANT_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static QDRANT_READY_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingProfile {
@@ -712,6 +714,14 @@ async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let _ready_guard = QDRANT_READY_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    if qdrant_health().await {
+        return Ok(());
+    }
+
     let config = qdrant_config();
     if !qdrant_autostart_enabled(&config) {
         anyhow::bail!(
@@ -727,9 +737,10 @@ async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
         let launch = maybe_spawn_qdrant(paths, &config)?;
         let started = Instant::now();
         loop {
-            if qdrant_health().await {
-                return Ok(());
-            }
+            let health_error = match qdrant_health_check().await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
             if let Some(status) = qdrant_sidecar_exit_status() {
                 if !restarted && std::env::var_os("CERUL_QDRANT_URL").is_none() {
                     restarted = true;
@@ -741,29 +752,24 @@ async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
                     break;
                 }
                 anyhow::bail!(
-                    "Qdrant sidecar exited before becoming ready at {} (status: {}). Recent log from {}:\n{}",
+                    "Qdrant sidecar exited before becoming ready at {} (status: {}). Last health check error: {}. Recent log from {}:\n{}",
                     launch.url,
                     status,
+                    health_error,
                     launch.log_path.display(),
                     qdrant_log_tail(&launch.log_path)
                 );
             }
             if started.elapsed() >= timeout {
-                if !restarted && std::env::var_os("CERUL_QDRANT_URL").is_none() {
-                    restarted = true;
-                    tracing::warn!(
-                        url = %launch.url,
-                        timeout_secs = timeout.as_secs(),
-                        "local Qdrant sidecar did not become ready; restarting once"
-                    );
-                    shutdown_qdrant_sidecar();
-                    set_local_qdrant_url(None);
-                    break;
-                }
+                let health_error = match qdrant_health_check().await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => error,
+                };
                 anyhow::bail!(
-                    "Qdrant did not become ready at {} within {}s. Recent log from {}:\n{}",
+                    "Qdrant did not become ready at {} within {}s. Last health check error: {}. Recent log from {}:\n{}",
                     launch.url,
                     timeout.as_secs(),
+                    health_error,
                     launch.log_path.display(),
                     qdrant_log_tail(&launch.log_path)
                 );
@@ -774,23 +780,42 @@ async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
 }
 
 async fn qdrant_health() -> bool {
+    qdrant_health_check().await.is_ok()
+}
+
+async fn qdrant_health_check() -> Result<(), String> {
     let config = qdrant_config();
     let client = qdrant_health_client();
+    let url = qdrant_url(&config, "/collections", None);
 
-    let mut request = client.get(qdrant_url(&config, "/collections", None));
+    let mut request = client.get(&url);
     if let Some(api_key) = &config.api_key {
         request = request.header("api-key", api_key);
     }
-    let Ok(response) = request.send().await else {
-        return false;
-    };
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("health request to {url} failed: {error}"))?;
     if !response.status().is_success() {
-        return false;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|error| format!("(unable to read response body: {error})"));
+        return Err(format!("health request to {url} returned {status}: {body}"));
     }
-    response
+    let envelope = response
         .json::<QdrantEnvelope<Value>>()
         .await
-        .is_ok_and(|envelope| envelope.status == "ok")
+        .map_err(|error| format!("health response from {url} was not valid JSON: {error}"))?;
+    if envelope.status == "ok" {
+        Ok(())
+    } else {
+        Err(format!(
+            "health response from {url} returned non-ok status: {}",
+            envelope.status
+        ))
+    }
 }
 
 fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result<QdrantLaunch> {
@@ -1083,7 +1108,7 @@ fn qdrant_client() -> Client {
 
 fn qdrant_health_client() -> Client {
     Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(QDRANT_HEALTH_TIMEOUT)
         .build()
         .expect("Qdrant health reqwest client should build")
 }
