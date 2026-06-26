@@ -6,8 +6,48 @@ cd "$ROOT"
 
 source scripts/load-env.sh
 export GGML_NATIVE="${GGML_NATIVE:-OFF}"
-API_PORT="${CERUL_API_PORT:-23785}"
-export CERUL_API_PORT="$API_PORT"
+
+saved_api_port() {
+  node <<'NODE'
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+function dataBaseDir() {
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support");
+  }
+  if (process.platform === "win32") {
+    return process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  }
+  return process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+}
+
+function parsePort(value) {
+  const port = Number.parseInt(String(value || ""), 10);
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : null;
+}
+
+const dataDir = process.env.CERUL_DATA_DIR || path.join(dataBaseDir(), "Cerul");
+try {
+  const endpoint = JSON.parse(fs.readFileSync(path.join(dataDir, "endpoint.json"), "utf8"));
+  const port = parsePort(endpoint.port)
+    || (typeof endpoint.base_url === "string" ? parsePort(new URL(endpoint.base_url).port) : null);
+  if (port) {
+    process.stdout.write(String(port));
+  }
+} catch {
+}
+NODE
+}
+
+if [ -n "${CERUL_API_PORT:-}" ]; then
+  API_PORT="$CERUL_API_PORT"
+  export CERUL_API_PORT
+else
+  API_PORT="$(saved_api_port)"
+  API_PORT="${API_PORT:-23785}"
+fi
 
 host_target() {
   case "$(uname -s)-$(uname -m)" in

@@ -1076,7 +1076,7 @@ struct V1ItemRow {
     source_config: Value,
     thumbnail_chunk_id: Option<String>,
     chunk_count: usize,
-    has_raw_path: bool,
+    source_file_exists: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1121,7 +1121,7 @@ struct V1SearchItem {
 #[derive(Debug, Clone)]
 struct V1SearchItemMetadata {
     item: V1SearchItem,
-    has_raw_path: bool,
+    source_file_exists: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1189,11 +1189,7 @@ async fn v1_search(
     headers: HeaderMap,
     Json(req): Json<V1SearchRequest>,
 ) -> ApiResult<Json<V1SearchResponse>> {
-    let query = req
-        .query
-        .or(req.q)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let query = first_non_empty_text([req.query, req.q])
         .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
     validate_v1_local_target(req.target.as_deref())?;
     let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 50);
@@ -1243,12 +1239,7 @@ async fn v1_ask(
     headers: HeaderMap,
     Json(req): Json<V1AskRequest>,
 ) -> ApiResult<Json<V1AskResponse>> {
-    let question = req
-        .question
-        .or(req.query)
-        .or(req.q)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let question = first_non_empty_text([req.question, req.query, req.q])
         .ok_or_else(|| ApiError::bad_request("question cannot be empty"))?;
     validate_v1_local_target(req.target.as_deref())?;
     let requested_mode = req
@@ -1444,8 +1435,22 @@ async fn v1_list_item_chunks(
         "#,
     );
     if let Some(chunk_type) = query.chunk_type.filter(|value| !value.trim().is_empty()) {
-        sql.push_str(" AND chunk_type = ?");
-        params.push(SqlValue::from(chunk_type));
+        let chunk_types = v1_chunk_type_filter_values(&chunk_type);
+        if chunk_types.len() == 1 {
+            sql.push_str(" AND chunk_type = ?");
+        } else {
+            sql.push_str(" AND chunk_type IN (");
+            sql.push_str(
+                &std::iter::repeat("?")
+                    .take(chunk_types.len())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            sql.push(')');
+        }
+        for chunk_type in chunk_types {
+            params.push(SqlValue::from(chunk_type));
+        }
     }
     if let Some(from_sec) = query.from_sec {
         sql.push_str(" AND COALESCE(end_sec, start_sec, 0) >= ?");
@@ -1505,6 +1510,32 @@ fn v1_cursor_offset(cursor: Option<&str>) -> ApiResult<usize> {
         .map_err(|_| ApiError::bad_request("cursor must be a non-negative integer offset"))
 }
 
+fn first_non_empty_text(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn v1_chunk_type_filter_values(value: &str) -> Vec<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "transcript" => vec!["transcript".to_string(), "transcript_line".to_string()],
+        "visual" => vec![
+            "keyframe".to_string(),
+            "image".to_string(),
+            "ocr".to_string(),
+        ],
+        "summary" => vec!["understanding".to_string()],
+        raw => vec![raw.to_string()],
+    }
+}
+
+fn local_source_file_exists(raw_path: &str) -> bool {
+    let raw_path = raw_path.trim();
+    !raw_path.is_empty() && FsPath::new(raw_path).is_file()
+}
+
 fn v1_load_item(paths: &AppPaths, id: &str) -> anyhow::Result<Option<V1ItemRow>> {
     let conn = cerul_storage::sqlite::open(paths)?;
     let sql = format!(
@@ -1543,7 +1574,7 @@ fn v1_item_select_sql() -> String {
                    FROM chunks c
                    WHERE c.item_id = i.id
                ) AS chunk_count,
-               CASE WHEN i.raw_path IS NOT NULL AND TRIM(i.raw_path) <> '' THEN 1 ELSE 0 END
+               i.raw_path
         FROM items i
         JOIN sources s ON s.id = i.source_id
     "#
@@ -1566,7 +1597,8 @@ fn v1_item_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<V1ItemRow> 
         .map(parse_json)
         .unwrap_or_else(|| json!({}));
     let chunk_count = row.get::<_, i64>(11)?.max(0) as usize;
-    let has_raw_path = row.get::<_, i64>(12)? == 1;
+    let raw_path: Option<String> = row.get(12)?;
+    let source_file_exists = raw_path.as_deref().is_some_and(local_source_file_exists);
 
     Ok(V1ItemRow {
         id: row.get(0)?,
@@ -1581,7 +1613,7 @@ fn v1_item_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<V1ItemRow> 
         source_config,
         thumbnail_chunk_id: row.get(10)?,
         chunk_count,
-        has_raw_path,
+        source_file_exists,
     })
 }
 
@@ -1643,7 +1675,7 @@ fn v1_chunk_evidence(
     frame_path: Option<&str>,
     base_url: &str,
 ) -> V1Evidence {
-    let clip = if item.has_raw_path && item.content_type == "video" {
+    let clip = if item.source_file_exists && item.content_type == "video" {
         Some(V1Locator {
             locator_type: "local",
             url: format!(
@@ -1812,7 +1844,7 @@ fn v1_search_result(
             .as_ref()
             .map(|_| result.playback_chunk_id.as_str())
     });
-    let clip = if metadata.has_raw_path && metadata.item.content_type == "video" {
+    let clip = if metadata.source_file_exists && metadata.item.content_type == "video" {
         Some(V1Locator {
             locator_type: "local",
             url: format!(
@@ -1891,7 +1923,7 @@ fn v1_search_item_metadata(
     let sql = format!(
         r#"
         SELECT i.id, i.title, i.content_type, s.type, i.duration_sec,
-               CASE WHEN i.raw_path IS NOT NULL AND TRIM(i.raw_path) <> '' THEN 1 ELSE 0 END
+               i.raw_path
         FROM items i
         JOIN sources s ON s.id = i.source_id
         WHERE i.id IN ({placeholders})
@@ -1905,7 +1937,8 @@ fn v1_search_item_metadata(
             .get::<_, Option<String>>(1)?
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "Untitled media".to_string());
-        let has_raw_path = row.get::<_, i64>(5)? == 1;
+        let raw_path: Option<String> = row.get(5)?;
+        let source_file_exists = raw_path.as_deref().is_some_and(local_source_file_exists);
         Ok((
             id.clone(),
             V1SearchItemMetadata {
@@ -1916,7 +1949,7 @@ fn v1_search_item_metadata(
                     source_type: row.get(3)?,
                     duration_sec: row.get(4)?,
                 },
-                has_raw_path,
+                source_file_exists,
             },
         ))
     })?;
@@ -1941,7 +1974,7 @@ fn fallback_v1_search_item_metadata(result: &cerul_search::SearchResult) -> V1Se
             source_type: "unknown".to_string(),
             duration_sec: None,
         },
-        has_raw_path: false,
+        source_file_exists: false,
     }
 }
 
@@ -1970,7 +2003,7 @@ fn v1_base_url(headers: &HeaderMap, paths: &AppPaths) -> String {
 
 fn v1_open_in_cerul_link(item_id: &str, chunk_id: &str, start_sec: Option<f64>) -> String {
     let mut link = format!(
-        "cerul://items/{}?chunk={}",
+        "cerul-app://item/{}?playbackChunkId={}",
         encode_path_segment(item_id),
         encode_path_segment(chunk_id)
     );
@@ -1982,7 +2015,7 @@ fn v1_open_in_cerul_link(item_id: &str, chunk_id: &str, start_sec: Option<f64>) 
 }
 
 fn v1_open_item_in_cerul_link(item_id: &str) -> String {
-    format!("cerul://items/{}", encode_path_segment(item_id))
+    format!("cerul-app://item/{}", encode_path_segment(item_id))
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -7049,13 +7082,73 @@ mod tests {
         );
         assert_eq!(
             body["results"][0]["evidence"]["open_in_cerul"],
-            "cerul://items/item-1?chunk=item-1%3Atranscript%3A000000&t=12.3"
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Atranscript%3A000000&t=12.3"
         );
         assert_eq!(body["results"][0]["score"]["exact_match"], true);
         assert_eq!(body["usage"]["billable"], false);
         assert_eq!(
             body["usage"]["metered_events"][0],
             json!({"capability": "local_search", "quantity": 1, "credits": 0})
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_search_uses_q_alias_when_query_is_blank() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "   ", "q": "scaling laws"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["results"][0]["id"], "item-1:transcript:000000");
+    }
+
+    #[tokio::test]
+    async fn v1_search_does_not_advertise_clip_when_source_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        fs::remove_file(&raw_path).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25005")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"query": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let evidence = &body["results"][0]["evidence"];
+        assert_eq!(evidence["kind"], "frame");
+        assert_eq!(evidence["clip"], Value::Null);
+        assert_eq!(
+            evidence["preview"]["url"],
+            "http://127.0.0.1:25005/v1/chunks/item-1%3Akeyframe%3A000012/frame"
         );
     }
 
@@ -7139,6 +7232,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_ask_uses_fallback_aliases_after_trimming_blanks() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "question": "",
+                            "query": "   ",
+                            "q": "scaling laws"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["citations"][0]["id"], "item-1:transcript:000000");
+    }
+
+    #[tokio::test]
     async fn v1_ask_rejects_non_extractive_mode_until_rag_exists() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -7205,7 +7330,7 @@ mod tests {
             item["thumbnail"]["url"],
             "http://127.0.0.1:25003/v1/chunks/item-1%3Akeyframe%3A000012/frame"
         );
-        assert_eq!(item["open_in_cerul"], "cerul://items/item-1");
+        assert_eq!(item["open_in_cerul"], "cerul-app://item/item-1");
         assert!(item.get("raw_path").is_none());
         assert!(item.get("metadata").is_none());
     }
@@ -7253,9 +7378,59 @@ mod tests {
         assert_eq!(chunk["evidence"]["preview"], Value::Null);
         assert_eq!(
             chunk["evidence"]["open_in_cerul"],
-            "cerul://items/item-1?chunk=item-1%3Atranscript%3A000000&t=12.3"
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Atranscript%3A000000&t=12.3"
         );
         assert_eq!(body["page"], json!({"limit": 5, "next_cursor": null}));
+    }
+
+    #[tokio::test]
+    async fn v1_item_chunks_translates_public_visual_type_filter() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=visual&limit=5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["chunks"].as_array().unwrap().len(), 1);
+        assert_eq!(body["chunks"][0]["id"], "item-1:keyframe:000012");
+        assert_eq!(body["chunks"][0]["type"], "visual");
+    }
+
+    #[test]
+    fn v1_chunk_type_filter_values_cover_public_aliases_and_raw_types() {
+        assert_eq!(
+            v1_chunk_type_filter_values("transcript"),
+            vec!["transcript".to_string(), "transcript_line".to_string()]
+        );
+        assert_eq!(
+            v1_chunk_type_filter_values("visual"),
+            vec![
+                "keyframe".to_string(),
+                "image".to_string(),
+                "ocr".to_string()
+            ]
+        );
+        assert_eq!(
+            v1_chunk_type_filter_values("summary"),
+            vec!["understanding".to_string()]
+        );
+        assert_eq!(
+            v1_chunk_type_filter_values("keyframe"),
+            vec!["keyframe".to_string()]
+        );
     }
 
     #[tokio::test]
