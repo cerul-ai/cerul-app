@@ -1037,8 +1037,8 @@ fn apply_match_scores(results: &mut [SearchResult]) {
 fn calibrated_score(result: &SearchResult, best_lexical_only_score: f32) -> f32 {
     if result.source_mask & SOURCE_TEXT != 0
         && result.source_mask & SOURCE_TEXT_VECTOR == 0
-        && best_lexical_only_score > 1.0
-        && result.score > 1.0
+        && best_lexical_only_score > 0.0
+        && result.score > 0.0
     {
         return (result.score / best_lexical_only_score * LEXICAL_ONLY_SCORE_CEILING)
             .clamp(0.0, LEXICAL_ONLY_SCORE_CEILING);
@@ -1633,6 +1633,19 @@ mod tests {
 
         assert!(scored[0].match_score <= LEXICAL_ONLY_SCORE_CEILING + 0.03);
         assert!(scored[1].match_score < scored[0].match_score);
+    }
+
+    #[test]
+    fn lexical_only_small_bm25_scores_are_normalized() {
+        let mut best = result("chunk-a", "item-1", "transcript", Some(10.0), 0.012);
+        best.source_mask = SOURCE_TEXT;
+        let mut second = result("chunk-b", "item-2", "transcript", Some(20.0), 0.006);
+        second.source_mask = SOURCE_TEXT;
+
+        let scored = finalize_results(vec![best, second], 10);
+
+        assert!((scored[0].match_score - (LEXICAL_ONLY_SCORE_CEILING + 0.03)).abs() < 0.001);
+        assert!((scored[1].match_score - (LEXICAL_ONLY_SCORE_CEILING * 0.5 + 0.03)).abs() < 0.001);
     }
 
     #[test]

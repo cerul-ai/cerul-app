@@ -4618,7 +4618,6 @@ function LibraryScreen({
         status: "failed",
         limit: pageSize,
         cursor,
-        light: true,
       });
       for (const item of page) {
         if (itemStatus(item) === "failed") {
