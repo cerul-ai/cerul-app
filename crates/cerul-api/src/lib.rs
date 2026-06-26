@@ -289,6 +289,15 @@ pub struct StorageUsageResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct StorageLocationsResponse {
+    pub data_dir: String,
+    pub database_path: String,
+    pub models_dir: String,
+    pub index_dir: String,
+    pub cache_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StorageUsageCategory {
     pub key: String,
     pub label: String,
@@ -394,6 +403,8 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
         .route("/storage/usage", get(storage_usage))
+        .route("/storage/locations", get(storage_locations))
+        .route("/storage/reset-library", post(reset_local_library))
         .route("/models/catalog", get(models::model_catalog))
         .route("/models/whisper", get(models::list_whisper_models))
         .route(
@@ -4249,6 +4260,215 @@ async fn storage_usage(State(state): State<ApiState>) -> ApiResult<Json<StorageU
     Ok(Json(storage_usage_for_paths(&state.paths)?))
 }
 
+async fn storage_locations(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<StorageLocationsResponse>> {
+    Ok(Json(storage_locations_for_paths(&state.paths)))
+}
+
+async fn reset_local_library(State(state): State<ApiState>) -> ApiResult<Json<Value>> {
+    let reset = reset_local_library_database(&state.paths)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "cleared": reset.cleared,
+        "compacted": reset.compacted,
+        "compaction_error": reset.compaction_error,
+        "download_targets": reset.download_targets,
+    })))
+}
+
+#[derive(Debug)]
+struct LibraryResetResult {
+    cleared: BTreeMap<String, usize>,
+    compacted: bool,
+    compaction_error: Option<String>,
+    download_targets: Vec<String>,
+}
+
+fn reset_local_library_database(paths: &AppPaths) -> anyhow::Result<LibraryResetResult> {
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let download_targets = local_library_download_targets(paths, &conn)?;
+    let tx = conn.transaction()?;
+    let mut cleared = BTreeMap::new();
+
+    for (label, sql) in [
+        (
+            "usage_events",
+            "DELETE FROM inference_usage_events WHERE item_id IS NOT NULL OR job_id IS NOT NULL",
+        ),
+        ("moments", "DELETE FROM moments"),
+        ("retrieval_units", "DELETE FROM retrieval_units"),
+        ("chunks", "DELETE FROM chunks"),
+        ("item_understandings", "DELETE FROM item_understandings"),
+        ("ignored_items", "DELETE FROM ignored_items"),
+        ("jobs", "DELETE FROM jobs"),
+        ("items", "DELETE FROM items"),
+        ("sources", "DELETE FROM sources"),
+    ] {
+        let rows = tx.execute(sql, [])?;
+        cleared.insert(label.to_string(), rows);
+    }
+
+    tx.commit()?;
+    let compaction_error = compact_library_database(&conn).err().map(|error| {
+        let message = error.to_string();
+        tracing::warn!(%message, "failed to compact SQLite database after local library reset");
+        message
+    });
+    Ok(LibraryResetResult {
+        cleared,
+        compacted: compaction_error.is_none(),
+        compaction_error,
+        download_targets,
+    })
+}
+
+fn local_library_download_targets(
+    paths: &AppPaths,
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<Vec<String>> {
+    let mut targets = BTreeSet::new();
+    if let Some(media_dir) = read_setting_string(conn, "media_dir")? {
+        targets.insert(PathBuf::from(media_dir).join("sources"));
+    }
+
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT s.type, s.config, i.raw_path, i.metadata
+        FROM items i
+        JOIN sources s ON s.id = i.source_id
+        WHERE s.type IN ('youtube', 'web_video', 'rss_podcast')
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (source_type, config, raw_path, metadata) = row?;
+        if let Some(target) = download_target_from_source_config(&config, &source_type) {
+            targets.insert(target);
+        }
+        let mut candidates = Vec::new();
+        if let Some(raw_path) = raw_path {
+            candidates.push(raw_path);
+        }
+        if let Some(raw_path) = metadata.as_deref().and_then(metadata_raw_path) {
+            candidates.push(raw_path);
+        }
+        for candidate in candidates {
+            if let Some(target) = download_target_from_raw_path(&candidate, &source_type) {
+                targets.insert(target);
+            }
+        }
+    }
+
+    Ok(targets
+        .into_iter()
+        .filter(|target| target != &paths.cache)
+        .filter(|target| !reset_target_conflicts_with_preserved_path(target, &paths.models))
+        .map(|target| target.to_string_lossy().to_string())
+        .collect())
+}
+
+fn read_setting_string(conn: &rusqlite::Connection, key: &str) -> anyhow::Result<Option<String>> {
+    let raw: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(raw
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|value| value.as_str().map(str::to_string))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()))
+}
+
+fn metadata_raw_path(metadata: &str) -> Option<String> {
+    serde_json::from_str::<Value>(metadata)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("raw_path")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn download_target_from_source_config(config: &str, source_type: &str) -> Option<PathBuf> {
+    let cache_dir = serde_json::from_str::<Value>(config)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("cache_dir")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })?;
+    download_target_from_cache_dir(&cache_dir, source_type)
+}
+
+fn download_target_from_cache_dir(cache_dir: &str, source_type: &str) -> Option<PathBuf> {
+    let cache_dir = FsPath::new(cache_dir.trim());
+    if cache_dir.as_os_str().is_empty() {
+        return None;
+    }
+    if file_name_eq(cache_dir, "sources") {
+        return Some(cache_dir.to_path_buf());
+    }
+    if file_name_eq(cache_dir, source_type) {
+        let parent = cache_dir.parent()?;
+        if file_name_eq(parent, "sources") {
+            return Some(parent.to_path_buf());
+        }
+    }
+    None
+}
+
+fn download_target_from_raw_path(raw_path: &str, source_type: &str) -> Option<PathBuf> {
+    let mut current = FsPath::new(raw_path.trim()).parent();
+    while let Some(dir) = current {
+        if file_name_eq(dir, source_type) {
+            let parent = dir.parent()?;
+            if file_name_eq(parent, "sources") {
+                return Some(parent.to_path_buf());
+            }
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn file_name_eq(path: &FsPath, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == expected)
+}
+
+fn reset_target_conflicts_with_preserved_path(target: &FsPath, preserved: &FsPath) -> bool {
+    path_contains(target, preserved) || path_contains(preserved, target)
+}
+
+fn path_contains(parent: &FsPath, candidate: &FsPath) -> bool {
+    candidate == parent || candidate.starts_with(parent)
+}
+
+fn compact_library_database(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    checkpoint_wal(conn)?;
+    conn.execute_batch("VACUUM")?;
+    checkpoint_wal(conn)?;
+    Ok(())
+}
+
+fn checkpoint_wal(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    anyhow::ensure!(busy == 0, "SQLite WAL checkpoint was busy");
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct UsageEventsQuery {
     limit: Option<usize>,
@@ -6100,6 +6320,16 @@ fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageRespo
     })
 }
 
+fn storage_locations_for_paths(paths: &AppPaths) -> StorageLocationsResponse {
+    StorageLocationsResponse {
+        data_dir: paths.data.to_string_lossy().to_string(),
+        database_path: paths.db.to_string_lossy().to_string(),
+        models_dir: paths.models.to_string_lossy().to_string(),
+        index_dir: paths.qdrant.to_string_lossy().to_string(),
+        cache_dir: paths.cache.to_string_lossy().to_string(),
+    }
+}
+
 // Measures downloaded media when it lives outside the data dir (the `media_dir`
 // setting points at an external location). Returns None when downloads default to
 // the in-data cache (already counted by the data scan) or the directory is
@@ -6457,6 +6687,8 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/usage/events", &["get"]),
     ("/internal/usage/summary", &["get"]),
     ("/internal/storage/usage", &["get"]),
+    ("/internal/storage/locations", &["get"]),
+    ("/internal/storage/reset-library", &["post"]),
     ("/internal/models/catalog", &["get"]),
     ("/internal/models/whisper", &["get"]),
     ("/internal/models/whisper/{id}/download", &["post"]),
@@ -10099,6 +10331,227 @@ mod tests {
         assert!(bytes_for("cache") > 0);
         assert!(bytes_for("index") > 0);
         assert!(bytes_for("database") > 0);
+    }
+
+    #[tokio::test]
+    async fn storage_locations_reports_paths_without_scanning_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/storage/locations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let locations = response_json(response).await;
+        assert_eq!(
+            locations["data_dir"].as_str(),
+            Some(paths.data.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["database_path"].as_str(),
+            Some(paths.db.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["models_dir"].as_str(),
+            Some(paths.models.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["index_dir"].as_str(),
+            Some(paths.qdrant.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            locations["cache_dir"].as_str(),
+            Some(paths.cache.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_local_library_clears_library_state_and_preserves_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let current_media = temp.path().join("current-media");
+        let old_media = temp.path().join("old-media");
+        let old_downloaded_video = old_media.join("sources").join("web_video").join("clip.mp4");
+        std::fs::write(paths.models.join("model.bin"), b"model").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('media_dir', ?1)",
+                [Value::String(current_media.to_string_lossy().into_owned()).to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO providers (id, type, label, status) VALUES ('remote-asr', 'openai-compatible', 'Remote ASR', 'ready')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO embedding_profiles (
+                    id, model_id, output_dimension, distance_metric, index_version, status, provider_id
+                )
+                VALUES ('profile-1', 'local-embed', 4, 'cosine', 1, 'ready', 'local')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-remote', 'web_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, title, status, metadata)
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path, status, metadata
+                )
+                VALUES ('item-remote', 'source-remote', 'video', 'web-clip', 'Web Clip', ?1, 'indexed', ?2)
+                "#,
+                (
+                    old_downloaded_video.to_string_lossy().as_ref(),
+                    json!({ "raw_path": old_downloaded_video.to_string_lossy() }).to_string(),
+                ),
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO jobs (id, item_id, job_type, status, progress) VALUES ('job-1', 'item-1', 'index_video', 'failed', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chunks (id, item_id, chunk_type, text, metadata) VALUES ('chunk-1', 'item-1', 'transcript', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO moments (id, item_id, chunk_id, title, quote) VALUES ('moment-1', 'item-1', 'chunk-1', 'Moment', 'hello')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO item_understandings (item_id, status, summary, result) VALUES ('item-1', 'completed', 'summary', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ignored_items (source_id, external_id, reason) VALUES ('source-1', 'ignored.mp4', 'test')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO retrieval_units (
+                    id, item_id, unit_index, unit_kind, content_text, embedding_profile_id, index_version
+                )
+                VALUES ('unit-1', 'item-1', 0, 'transcript', 'hello', 'profile-1', 1)
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO inference_usage_events (
+                    id, provider_mode, capability, item_id, job_id, status, metadata
+                )
+                VALUES ('usage-bound', 'remote', 'asr', 'item-1', 'job-1', 'succeeded', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO inference_usage_events (
+                    id, provider_mode, capability, status, metadata
+                )
+                VALUES ('usage-unbound', 'remote', 'asr', 'succeeded', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let app = router_with_paths(paths.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/internal/storage/reset-library")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["compacted"], true);
+        assert!(body["compaction_error"].is_null());
+        let download_targets = body["download_targets"].as_array().unwrap();
+        let includes_download_target = |path: PathBuf| {
+            let expected = path.to_string_lossy();
+            download_targets
+                .iter()
+                .any(|target| target.as_str() == Some(expected.as_ref()))
+        };
+        assert!(includes_download_target(current_media.join("sources")));
+        assert!(includes_download_target(old_media.join("sources")));
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        for table in [
+            "sources",
+            "items",
+            "jobs",
+            "chunks",
+            "chunks_fts",
+            "moments",
+            "item_understandings",
+            "ignored_items",
+            "retrieval_units",
+            "retrieval_units_fts",
+        ] {
+            assert_eq!(count(table), 0, "{table} should be empty after reset");
+        }
+        assert_eq!(count("providers"), 2);
+        assert_eq!(count("embedding_profiles"), 1);
+        assert_eq!(count("inference_usage_events"), 1);
+        let media_dir = cerul_storage::read_string_setting(&paths, "media_dir")
+            .unwrap()
+            .unwrap();
+        assert_eq!(media_dir, current_media.to_string_lossy().as_ref());
+        let usage_id: String = conn
+            .query_row("SELECT id FROM inference_usage_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(usage_id, "usage-unbound");
+        assert!(paths.models.join("model.bin").is_file());
     }
 
     #[tokio::test]

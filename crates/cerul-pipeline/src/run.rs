@@ -446,7 +446,9 @@ impl VideoPipeline {
         let video_path = source
             .fetch_with_progress(&item.as_discovered_item(), Some(fetch_progress))
             .await?;
-        if item.source_type == "web_video" && item.raw_path.as_deref() != video_path.to_str() {
+        if matches!(item.source_type.as_str(), "web_video" | "youtube")
+            && item.raw_path.as_deref() != video_path.to_str()
+        {
             cerul_storage::set_item_raw_path(&self.paths, item_id, &video_path)?;
         }
         update_item_duration_from_media(&self.paths, item_id, &video_path).await;
@@ -1063,6 +1065,11 @@ impl VideoPipeline {
             ),
         )?;
         let source_audio_path = source.fetch(&item.as_discovered_item()).await?;
+        if item.source_type == "rss_podcast"
+            && item.raw_path.as_deref() != source_audio_path.to_str()
+        {
+            cerul_storage::set_item_raw_path(&self.paths, item_id, &source_audio_path)?;
+        }
         update_item_duration_from_media(&self.paths, item_id, &source_audio_path).await;
         let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
