@@ -6,8 +6,12 @@ cd "$ROOT"
 
 source scripts/load-env.sh
 
-if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is already in use; stop the existing Cerul Core before running Electron shell smoke." >&2
+API_PORT="${CERUL_API_PORT:-23785}"
+export CERUL_API_PORT="$API_PORT"
+API_HEALTH_URL="http://127.0.0.1:$API_PORT/internal/health"
+
+if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port $API_PORT is already in use; stop the existing Cerul Core before running Electron shell smoke." >&2
   exit 2
 fi
 
@@ -37,8 +41,8 @@ ELECTRON_PID=$!
 
 HEALTH=""
 for _ in $(seq 1 $((TIMEOUT_SECONDS * 2))); do
-  if curl -fsS http://127.0.0.1:7777/health >/dev/null 2>&1; then
-    HEALTH="$(curl -fsS http://127.0.0.1:7777/health)"
+  if curl -fsS "$API_HEALTH_URL" >/dev/null 2>&1; then
+    HEALTH="$(curl -fsS "$API_HEALTH_URL")"
     if grep -q "cerul_electron_main_window_loaded" "$LOG_FILE"; then
       echo "electron_shell_smoke status=ok health=$HEALTH main_window=loaded data_dir=$CERUL_DATA_DIR"
       exit 0

@@ -7,6 +7,49 @@ cd "$ROOT"
 source scripts/load-env.sh
 export GGML_NATIVE="${GGML_NATIVE:-OFF}"
 
+saved_api_port() {
+  node <<'NODE'
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+function dataBaseDir() {
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support");
+  }
+  if (process.platform === "win32") {
+    return process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  }
+  return process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+}
+
+function parsePort(value) {
+  const port = Number.parseInt(String(value || ""), 10);
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : null;
+}
+
+const dataDir = process.env.CERUL_DATA_DIR || path.join(dataBaseDir(), "Cerul");
+try {
+  const endpoint = JSON.parse(fs.readFileSync(path.join(dataDir, "endpoint.json"), "utf8"));
+  const port = parsePort(endpoint.port)
+    || (typeof endpoint.base_url === "string" ? parsePort(new URL(endpoint.base_url).port) : null);
+  if (port) {
+    process.stdout.write(String(port));
+  }
+} catch {
+}
+NODE
+}
+
+if [ -n "${CERUL_API_PORT:-}" ]; then
+  API_PORT="$CERUL_API_PORT"
+  export CERUL_API_PORT
+else
+  API_PORT="$(saved_api_port)"
+  API_PORT="${API_PORT:-23785}"
+  unset CERUL_API_PORT
+fi
+
 host_target() {
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) echo "aarch64-apple-darwin" ;;
@@ -62,15 +105,15 @@ if command -v osascript >/dev/null 2>&1; then
 fi
 
 for _ in {1..20}; do
-  if ! lsof -nP -iTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
+  if ! lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-if lsof -nP -iTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is still in use after asking Cerul to quit:"
-  lsof -nP -iTCP:7777 -sTCP:LISTEN
+if lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port $API_PORT is still in use after asking Cerul to quit:"
+  lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN
   echo "Quit the process above, then rerun ./run.sh."
   exit 1
 fi
@@ -88,5 +131,5 @@ elif needs_bundled_binaries "$TARGET_TRIPLE"; then
   fi
 fi
 
-bash scripts/clean-dev-runtime.sh
+CERUL_API_PORT="$API_PORT" bash scripts/clean-dev-runtime.sh
 pnpm --filter @cerul/electron-shell dev 2> >(grep -v 'representedObject is not a WeakPtrToElectronMenuModelAsNSObject' >&2)

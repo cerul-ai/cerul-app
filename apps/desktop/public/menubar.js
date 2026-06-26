@@ -1,4 +1,5 @@
-const API_BASE_URL = "http://127.0.0.1:7777";
+const API_BASE_URL = window.cerulDesktop?.apiBaseUrl || "http://127.0.0.1:23785";
+const INTERNAL_API_PREFIX = "/internal";
 const REFRESH_MS = 5000;
 const LANG_KEY = "cerul.lang.v1";
 const RECENT_LIMIT = 3;
@@ -111,7 +112,7 @@ function applyStaticStrings() {
 }
 
 async function fetchJson(path) {
-  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
+  const response = await fetch(`${API_BASE_URL}${INTERNAL_API_PREFIX}${path}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`request failed: ${response.status}`);
   }

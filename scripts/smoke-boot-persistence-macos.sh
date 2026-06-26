@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-API_HEALTH_URL="${CERUL_API_HEALTH_URL:-http://127.0.0.1:7777/health}"
+API_HEALTH_URL="${CERUL_API_HEALTH_URL:-http://127.0.0.1:23785/internal/health}"
 CURL_BIN="${CURL_BIN:-/usr/bin/curl}"
 TIMEOUT_SECONDS="${CERUL_BOOT_SMOKE_TIMEOUT:-30}"
 DRY_RUN=0
@@ -16,7 +16,7 @@ through app.setLoginItemSettings(), so this smoke is read-only and verifies that
 the installed app came up and Cerul Core is healthy after login.
 
 Environment overrides:
-  CERUL_API_HEALTH_URL         default: http://127.0.0.1:7777/health
+  CERUL_API_HEALTH_URL         default: http://127.0.0.1:23785/internal/health
   CERUL_BOOT_SMOKE_TIMEOUT     default: 30
 EOF
 }

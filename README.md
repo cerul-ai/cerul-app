@@ -47,7 +47,7 @@ Cerul App turns your own media into a searchable, **local-first** memory:
 - **Your machine, your data.** Media, transcripts, and the vector index all stay on disk. Inference runs through provider keys *you* control, or fully local models — no Cerul account required.
 - **Search by meaning.** Hybrid retrieval combines full-text (SQLite/FTS) with vector search (a bundled local [Qdrant](https://qdrant.tech)) so you find the moment, not just the keyword.
 - **Always on, out of the way.** A global hotkey overlay, menu-bar tray, background indexing, and start-at-login keep it one keystroke away.
-- **Agent-ready.** Cerul Core exposes a local REST API on `127.0.0.1:7777` so coding agents and scripts can query your library.
+- **Agent-ready.** Cerul Core exposes a local Agent API on `http://127.0.0.1:23785/v1` so coding agents and scripts can query your library.
 
 ## How it works
 
@@ -67,7 +67,7 @@ The indexing pipeline is built for reliability — text search stays available e
 |---|---|---|
 | Local folders | Desktop window (library, sources, settings, detail) | **Remote API** — your provider keys (default) |
 | YouTube channels & videos | Global search overlay (hotkey) | **Local model** — Qwen3-VL / MLX (macOS arm64) |
-| Podcast RSS feeds | Local REST API (`127.0.0.1:7777`) | |
+| Podcast RSS feeds | Local Agent API (`http://127.0.0.1:23785/v1`) | |
 
 ## Quickstart
 
@@ -112,16 +112,17 @@ You can also switch to a fully local model (Qwen3-VL / MLX) in the app's Models 
 Once the app is running, query your library over HTTP — handy for agents and automation:
 
 ```bash
-# Health check
-curl 127.0.0.1:7777/health
+# Status and API discovery
+curl http://127.0.0.1:23785/v1/status
+curl http://127.0.0.1:23785/v1/openapi.json
 
 # Search by meaning
-curl -X POST 127.0.0.1:7777/search \
+curl -X POST http://127.0.0.1:23785/v1/search \
   -H 'content-type: application/json' \
-  -d '{"q": "what did they say about scaling laws"}'
+  -d '{"query": "what did they say about scaling laws", "max_results": 5}'
 ```
 
-Other routes cover sources (`/sources`), items (`/items`), and reindexing. The full contract is served live at `127.0.0.1:7777/openapi.json`.
+The stable agent surface includes `/v1/search`, `/v1/ask`, `/v1/items`, `/v1/items/:id/chunks`, and playable evidence routes under `/v1/chunks/:id/*`. Desktop product internals live under `/internal` and are not the public agent contract.
 
 ## Project layout
 

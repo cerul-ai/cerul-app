@@ -43,6 +43,7 @@ export type DesktopUpdaterCheckOptions = {
 };
 
 type ElectronDesktopHost = {
+  apiBaseUrl?: string;
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openDialog(options: OpenDialogOptions): Promise<string | string[] | null>;
   appVersion(): Promise<string>;
@@ -70,6 +71,10 @@ declare global {
 
 export function hasDesktopHost() {
   return Boolean(window.cerulDesktop);
+}
+
+export function localApiBaseUrl() {
+  return window.cerulDesktop?.apiBaseUrl ?? "http://127.0.0.1:23785";
 }
 
 export async function invokeHostCommand<T>(

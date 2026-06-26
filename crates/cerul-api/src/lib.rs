@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, Write},
     net::SocketAddr,
@@ -43,6 +43,9 @@ const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_LIST_LIMIT: usize = 250;
 const MAX_LIST_LIMIT: usize = 1_000;
 const CORE_LOG_FILE: &str = "cerul-core.log";
+const DEFAULT_API_PORT: u16 = 23785;
+const API_PORT_SETTING: &str = "api_port";
+const API_ENDPOINT_FILE: &str = "endpoint.json";
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -345,7 +348,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
     }
     let state = ApiState { paths };
 
-    Router::new()
+    let internal_routes = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_json))
@@ -443,7 +446,22 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             "/providers/:id/models",
             get(providers::discover_provider_models),
         )
-        .route("/settings", get(list_settings).patch(update_settings))
+        .route("/settings", get(list_settings).patch(update_settings));
+    let v1_routes = Router::new()
+        .route("/status", get(v1_status))
+        .route("/openapi.json", get(v1_openapi_json))
+        .route("/search", post(v1_search))
+        .route("/ask", post(v1_ask))
+        .route("/items", get(v1_list_items))
+        .route("/items/:id", get(v1_get_item))
+        .route("/items/:id/chunks", get(v1_list_item_chunks))
+        .route("/chunks/:id/frame", get(get_chunk_frame))
+        .route("/chunks/:id/video-segment", get(get_chunk_video_segment))
+        .route("/chunks/:id/video-clip", get(get_chunk_video_clip));
+
+    Router::new()
+        .nest("/internal", internal_routes)
+        .nest("/v1", v1_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_remote_auth,
@@ -491,6 +509,9 @@ pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Resu
     let _worker = jobs::spawn_default_job_worker(paths.clone());
     let _qdrant_shutdown = QdrantShutdownGuard;
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    if let Err(error) = write_api_endpoint_file(&paths, addr.port()) {
+        tracing::warn!(%error, "failed to write Cerul API endpoint file");
+    }
     axum::serve(
         listener,
         router_with_paths(paths).into_make_service_with_connect_info::<SocketAddr>(),
@@ -631,7 +652,7 @@ async fn shutdown_signal() {
 }
 
 pub fn default_addr() -> SocketAddr {
-    "127.0.0.1:7777"
+    format!("127.0.0.1:{DEFAULT_API_PORT}")
         .parse()
         .expect("default Cerul API address is valid")
 }
@@ -641,8 +662,44 @@ pub fn configured_addr(paths: &AppPaths) -> anyhow::Result<SocketAddr> {
         Some("0") | Some("0.0.0.0") => "0.0.0.0",
         _ => "127.0.0.1",
     };
+    let port = configured_api_port(paths)?;
 
-    Ok(format!("{host}:7777").parse()?)
+    Ok(format!("{host}:{port}").parse()?)
+}
+
+fn configured_api_port(paths: &AppPaths) -> anyhow::Result<u16> {
+    if let Ok(value) = std::env::var("CERUL_API_PORT") {
+        return parse_api_port(&value).ok_or_else(|| {
+            anyhow::anyhow!("CERUL_API_PORT must be an integer from 1024 to 65535")
+        });
+    }
+    match setting_string(paths, API_PORT_SETTING)? {
+        Some(value) => parse_api_port(&value)
+            .ok_or_else(|| anyhow::anyhow!("api_port must be an integer from 1024 to 65535")),
+        None => Ok(DEFAULT_API_PORT),
+    }
+}
+
+fn parse_api_port(value: &str) -> Option<u16> {
+    let port = value.trim().parse::<u16>().ok()?;
+    (1024..=65535).contains(&port).then_some(port)
+}
+
+fn write_api_endpoint_file(paths: &AppPaths, port: u16) -> anyhow::Result<()> {
+    fs::create_dir_all(&paths.data)?;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let payload = json!({
+        "base_url": base_url,
+        "v1_base_url": format!("{base_url}/v1"),
+        "internal_base_url": format!("{base_url}/internal"),
+        "port": port,
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    fs::write(
+        paths.data.join(API_ENDPOINT_FILE),
+        serde_json::to_vec_pretty(&payload)?,
+    )?;
+    Ok(())
 }
 
 async fn require_remote_auth(State(state): State<ApiState>, req: Request, next: Next) -> Response {
@@ -766,8 +823,16 @@ async fn metrics() -> Response {
 }
 
 async fn openapi_json() -> Json<Value> {
+    Json(openapi_document("Cerul Internal API", API_PATHS))
+}
+
+async fn v1_openapi_json() -> Json<Value> {
+    Json(openapi_document("Cerul Agent API", V1_API_PATHS))
+}
+
+fn openapi_document(title: &str, api_paths: &[(&str, &[&str])]) -> Value {
     let mut paths = serde_json::Map::new();
-    for (path, methods) in API_PATHS {
+    for (path, methods) in api_paths {
         let mut method_map = serde_json::Map::new();
         for method in *methods {
             method_map.insert(
@@ -782,14 +847,1347 @@ async fn openapi_json() -> Json<Value> {
         paths.insert((*path).to_string(), Value::Object(method_map));
     }
 
-    Json(json!({
+    json!({
         "openapi": "3.1.0",
         "info": {
-            "title": "Cerul API",
+            "title": title,
             "version": env!("CARGO_PKG_VERSION")
         },
         "paths": paths
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct V1Execution {
+    target: &'static str,
+    account_id: Option<String>,
+    privacy: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusResponse {
+    request_id: String,
+    status: &'static str,
+    version: &'static str,
+    execution: V1Execution,
+    library: V1StatusLibrary,
+    search: V1StatusSearch,
+    indexing: V1StatusIndexing,
+    account: V1StatusAccount,
+    capabilities: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusLibrary {
+    total_items: u64,
+    indexed_items: u64,
+    processing_items: u64,
+    failed_items: u64,
+    chunk_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusSearch {
+    ready: bool,
+    retrieval_mode: &'static str,
+    text_ready: bool,
+    vector_ready: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusIndexing {
+    paused: bool,
+    active_jobs: u64,
+    queued_jobs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct V1StatusAccount {
+    signed_in: bool,
+    plan: Option<String>,
+    credits_remaining: Option<i64>,
+}
+
+async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResponse>> {
+    let indexing = jobs::indexing_diagnostics(&state.paths)?;
+    let search = search_health_diagnostics(&state.paths).await?;
+    let text_ready = search.fts_row_count > 0 || search.retrieval_unit_fts_row_count > 0;
+    let vector_ready = search.qdrant_error.is_none() && search.qdrant_point_count.unwrap_or(0) > 0;
+    let retrieval_mode = match (text_ready, vector_ready) {
+        (true, true) => "hybrid",
+        (true, false) => "text",
+        (false, true) => "vector",
+        (false, false) => "empty",
+    };
+    let counts = &indexing.counts;
+
+    Ok(Json(V1StatusResponse {
+        request_id: new_id("req"),
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        library: V1StatusLibrary {
+            total_items: counts.total_items,
+            indexed_items: counts.indexed_items,
+            processing_items: counts.processing_items,
+            failed_items: counts.failed_items,
+            chunk_count: search.chunk_count,
+        },
+        search: V1StatusSearch {
+            ready: text_ready || vector_ready,
+            retrieval_mode,
+            text_ready,
+            vector_ready,
+        },
+        indexing: V1StatusIndexing {
+            paused: indexing.paused,
+            active_jobs: counts.running_jobs,
+            queued_jobs: counts.queued_jobs,
+        },
+        account: V1StatusAccount {
+            signed_in: false,
+            plan: None,
+            credits_remaining: None,
+        },
+        capabilities: vec!["status", "openapi", "search", "ask", "items", "chunks"],
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct V1ListItemsQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    status: Option<String>,
+    source_id: Option<String>,
+    source_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct V1ItemChunksQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    from_sec: Option<f64>,
+    to_sec: Option<f64>,
+    #[serde(rename = "type")]
+    chunk_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct V1SearchRequest {
+    query: Option<String>,
+    q: Option<String>,
+    max_results: Option<usize>,
+    limit: Option<usize>,
+    target: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct V1AskRequest {
+    question: Option<String>,
+    query: Option<String>,
+    q: Option<String>,
+    max_results: Option<usize>,
+    limit: Option<usize>,
+    locale: Option<String>,
+    mode: Option<String>,
+    target: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchResponse {
+    request_id: String,
+    execution: V1Execution,
+    results: Vec<V1SearchResult>,
+    diagnostics: V1SearchDiagnostics,
+    usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+struct V1AskResponse {
+    request_id: String,
+    execution: V1Execution,
+    mode: &'static str,
+    answer: String,
+    citations: Vec<V1SearchResult>,
+    warnings: Vec<String>,
+    usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemsResponse {
+    request_id: String,
+    execution: V1Execution,
+    items: Vec<V1Item>,
+    page: V1Page,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemResponse {
+    request_id: String,
+    execution: V1Execution,
+    item: V1Item,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemChunksResponse {
+    request_id: String,
+    execution: V1Execution,
+    item: V1Item,
+    chunks: Vec<V1ItemChunk>,
+    page: V1Page,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Page {
+    limit: usize,
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Item {
+    id: String,
+    title: String,
+    content_type: String,
+    source_type: String,
+    source_url: Option<String>,
+    status: String,
+    duration_sec: Option<f64>,
+    indexed_at: Option<i64>,
+    chunk_count: usize,
+    thumbnail: Option<V1Locator>,
+    open_in_cerul: String,
+}
+
+#[derive(Debug)]
+struct V1ItemRow {
+    id: String,
+    title: String,
+    content_type: String,
+    external_id: Option<String>,
+    duration_sec: Option<f64>,
+    indexed_at: Option<i64>,
+    status: String,
+    metadata: Value,
+    source_type: String,
+    source_config: Value,
+    thumbnail_chunk_id: Option<String>,
+    thumbnail_frame_path: Option<String>,
+    chunk_count: usize,
+    source_file_exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ItemChunk {
+    id: String,
+    #[serde(rename = "type")]
+    chunk_type: String,
+    source: &'static str,
+    time: V1SearchTime,
+    text: V1ChunkText,
+    evidence: V1Evidence,
+}
+
+#[derive(Debug, Serialize)]
+struct V1ChunkText {
+    content: Option<String>,
+    snippet: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchResult {
+    id: String,
+    #[serde(rename = "type")]
+    result_type: &'static str,
+    source: &'static str,
+    item: V1SearchItem,
+    time: V1SearchTime,
+    text: V1SearchText,
+    evidence: V1Evidence,
+    score: V1Score,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct V1SearchItem {
+    id: String,
+    title: String,
+    content_type: String,
+    source_type: String,
+    duration_sec: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct V1SearchItemMetadata {
+    item: V1SearchItem,
+    source_file_exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchTime {
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchText {
+    snippet: String,
+    quote: String,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Evidence {
+    id: String,
+    kind: &'static str,
+    clip: Option<V1Locator>,
+    preview: Option<V1Locator>,
+    open_in_cerul: String,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Locator {
+    #[serde(rename = "type")]
+    locator_type: &'static str,
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Score {
+    #[serde(rename = "match")]
+    match_score: f32,
+    exact_match: bool,
+    similarity: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+struct V1SearchDiagnostics {
+    retrieval_mode: String,
+    fallback_reason: Option<String>,
+    vector_hits: usize,
+    text_hits: usize,
+    result_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct V1Usage {
+    billable: bool,
+    metered_events: Vec<V1MeteredEvent>,
+    credits_used: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct V1MeteredEvent {
+    capability: &'static str,
+    quantity: u64,
+    credits: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V1QueryExecution {
+    LocalOnly,
+    RemoteEmbedding,
+}
+
+impl V1QueryExecution {
+    fn execution(self) -> V1Execution {
+        V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: match self {
+                Self::LocalOnly => "local_only",
+                Self::RemoteEmbedding => "local_library_remote_query",
+            },
+        }
+    }
+
+    fn search_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_search",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+
+    fn ask_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_ask_extractive",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+}
+
+async fn v1_search(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1SearchRequest>,
+) -> ApiResult<Json<V1SearchResponse>> {
+    let query = first_non_empty_text([req.query, req.q])
+        .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let query_execution = v1_query_execution(&state.paths);
+    let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 50);
+    let response = search_records(
+        &state.paths,
+        cerul_search::SearchRequest { q: query, limit },
+    )
+    .await?;
+    let item_metadata = v1_search_item_metadata(&state.paths, &response.results)?;
+    let existing_preview_chunk_ids =
+        v1_existing_preview_chunk_ids(&state.paths, &response.results)?;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let results = response
+        .results
+        .iter()
+        .map(|result| {
+            v1_search_result(
+                result,
+                &item_metadata,
+                &existing_preview_chunk_ids,
+                &base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+    let result_count = results.len();
+
+    Ok(Json(V1SearchResponse {
+        request_id: new_id("req"),
+        execution: query_execution.execution(),
+        results,
+        diagnostics: V1SearchDiagnostics {
+            retrieval_mode: response.diagnostics.retrieval_mode,
+            fallback_reason: response.diagnostics.fallback_reason,
+            vector_hits: response.diagnostics.vector_hits_count,
+            text_hits: response.diagnostics.fts_hits_count,
+            result_count,
+        },
+        usage: V1Usage {
+            billable: false,
+            metered_events: query_execution.search_events(),
+            credits_used: 0,
+        },
+    }))
+}
+
+async fn v1_ask(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1AskRequest>,
+) -> ApiResult<Json<V1AskResponse>> {
+    let question = first_non_empty_text([req.question, req.query, req.q])
+        .ok_or_else(|| ApiError::bad_request("question cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let query_execution = v1_query_execution(&state.paths);
+    let requested_mode = req
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("extractive")
+        .to_ascii_lowercase();
+    if !matches!(requested_mode.as_str(), "extractive" | "auto") {
+        return Err(ApiError::bad_request(
+            "only extractive mode is currently supported by /v1/ask",
+        ));
+    }
+    let limit = req.max_results.or(req.limit).unwrap_or(6).clamp(1, 8);
+    let response = search_records(
+        &state.paths,
+        cerul_search::SearchRequest {
+            q: question.clone(),
+            limit,
+        },
+    )
+    .await?;
+    let filtered_results = response
+        .results
+        .into_iter()
+        .filter(|result| !result.snippet.trim().is_empty())
+        .take(limit)
+        .collect::<Vec<_>>();
+    let item_metadata = v1_search_item_metadata(&state.paths, &filtered_results)?;
+    let existing_preview_chunk_ids =
+        v1_existing_preview_chunk_ids(&state.paths, &filtered_results)?;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let citations = filtered_results
+        .iter()
+        .map(|result| {
+            v1_search_result(
+                result,
+                &item_metadata,
+                &existing_preview_chunk_ids,
+                &base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+    let answer = v1_extractive_answer(&question, &citations, req.locale.as_deref());
+
+    Ok(Json(V1AskResponse {
+        request_id: new_id("req"),
+        execution: query_execution.execution(),
+        mode: "extractive",
+        answer,
+        citations,
+        warnings: Vec::new(),
+        usage: V1Usage {
+            billable: false,
+            metered_events: query_execution.ask_events(),
+            credits_used: 0,
+        },
+    }))
+}
+
+async fn v1_list_items(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(query): Query<V1ListItemsQuery>,
+) -> ApiResult<Json<V1ItemsResponse>> {
+    let limit = v1_page_limit(query.limit, 50, 100);
+    let offset = v1_cursor_offset(query.cursor.as_deref())?;
+    let fetch_limit = limit + 1;
+    let statuses = split_filter_values(query.status.as_deref());
+    let base_url = v1_base_url(&headers, &state.paths);
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let mut params: Vec<SqlValue> = Vec::new();
+    let mut sql = v1_item_select_sql();
+    sql.push_str(" WHERE i.status != 'deleting'");
+
+    if !statuses.is_empty() {
+        sql.push_str(" AND i.status IN (");
+        sql.push_str(
+            &std::iter::repeat_n("?", statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push(')');
+        params.extend(statuses.into_iter().map(SqlValue::from));
+    }
+    if let Some(source_id) = query.source_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND i.source_id = ?");
+        params.push(SqlValue::from(source_id));
+    }
+    if let Some(source_type) = query.source_type.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(" AND s.type = ?");
+        params.push(SqlValue::from(source_type));
+    }
+    sql.push_str(
+        r#"
+        ORDER BY COALESCE(i.indexed_at, 0) DESC, i.id ASC
+        LIMIT ? OFFSET ?
+        "#,
+    );
+    params.push(SqlValue::from(fetch_limit as i64));
+    params.push(SqlValue::from(offset as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(params.iter()),
+        v1_item_row_from_row,
+    )?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if rows.len() > limit {
+        rows.truncate(limit);
+        Some((offset + limit).to_string())
+    } else {
+        None
+    };
+    let items = rows
+        .iter()
+        .map(|item| v1_item_from_row(item, &base_url))
+        .collect::<Vec<_>>();
+
+    Ok(Json(V1ItemsResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        items,
+        page: V1Page { limit, next_cursor },
+    }))
+}
+
+async fn v1_get_item(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<V1ItemResponse>> {
+    let base_url = v1_base_url(&headers, &state.paths);
+    let item = v1_load_item(&state.paths, &id)?
+        .ok_or_else(|| ApiError::not_found(format!("item not found: {id}")))?;
+
+    Ok(Json(V1ItemResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        item: v1_item_from_row(&item, &base_url),
+    }))
+}
+
+async fn v1_list_item_chunks(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<V1ItemChunksQuery>,
+) -> ApiResult<Json<V1ItemChunksResponse>> {
+    let limit = v1_page_limit(query.limit, 100, 250);
+    let offset = v1_cursor_offset(query.cursor.as_deref())?;
+    let fetch_limit = limit + 1;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let item = v1_load_item(&state.paths, &id)?
+        .ok_or_else(|| ApiError::not_found(format!("item not found: {id}")))?;
+
+    if let Some(from_sec) = query.from_sec {
+        if !from_sec.is_finite() || from_sec < 0.0 {
+            return Err(ApiError::bad_request(
+                "from_sec must be a finite non-negative number",
+            ));
+        }
+    }
+    if let Some(to_sec) = query.to_sec {
+        if !to_sec.is_finite() || to_sec < 0.0 {
+            return Err(ApiError::bad_request(
+                "to_sec must be a finite non-negative number",
+            ));
+        }
+    }
+    if let (Some(from_sec), Some(to_sec)) = (query.from_sec, query.to_sec) {
+        if to_sec < from_sec {
+            return Err(ApiError::bad_request(
+                "to_sec must be greater than or equal to from_sec",
+            ));
+        }
+    }
+
+    let mut params: Vec<SqlValue> = vec![SqlValue::from(id.clone())];
+    let mut sql = String::from(
+        r#"
+        SELECT id, item_id, chunk_type, start_sec, end_sec, text, frame_path, metadata
+        FROM chunks
+        WHERE item_id = ?
+        "#,
+    );
+    if let Some(chunk_type) = query.chunk_type.filter(|value| !value.trim().is_empty()) {
+        let chunk_types = v1_chunk_type_filter_values(&chunk_type);
+        if chunk_types.len() == 1 {
+            sql.push_str(" AND chunk_type = ?");
+        } else {
+            sql.push_str(" AND chunk_type IN (");
+            sql.push_str(
+                &std::iter::repeat("?")
+                    .take(chunk_types.len())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            sql.push(')');
+        }
+        for chunk_type in chunk_types {
+            params.push(SqlValue::from(chunk_type));
+        }
+    }
+    if let Some(from_sec) = query.from_sec {
+        sql.push_str(" AND COALESCE(end_sec, start_sec, 0) >= ?");
+        params.push(SqlValue::from(from_sec));
+    }
+    if let Some(to_sec) = query.to_sec {
+        sql.push_str(" AND COALESCE(start_sec, end_sec, 0) <= ?");
+        params.push(SqlValue::from(to_sec));
+    }
+    sql.push_str(
+        r#"
+        ORDER BY COALESCE(start_sec, 0), id ASC
+        LIMIT ? OFFSET ?
+        "#,
+    );
+    params.push(SqlValue::from(fetch_limit as i64));
+    params.push(SqlValue::from(offset as i64));
+
+    let conn = cerul_storage::sqlite::open(&state.paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), chunk_from_row)?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if rows.len() > limit {
+        rows.truncate(limit);
+        Some((offset + limit).to_string())
+    } else {
+        None
+    };
+    let chunks = rows
+        .iter()
+        .map(|chunk| v1_item_chunk(chunk, &item, &base_url))
+        .collect::<Vec<_>>();
+
+    Ok(Json(V1ItemChunksResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        item: v1_item_from_row(&item, &base_url),
+        chunks,
+        page: V1Page { limit, next_cursor },
+    }))
+}
+
+fn v1_page_limit(limit: Option<usize>, default: usize, max: usize) -> usize {
+    limit.unwrap_or(default).clamp(1, max)
+}
+
+fn v1_cursor_offset(cursor: Option<&str>) -> ApiResult<usize> {
+    let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(0);
+    };
+    cursor
+        .parse::<usize>()
+        .map_err(|_| ApiError::bad_request("cursor must be a non-negative integer offset"))
+}
+
+fn first_non_empty_text(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn v1_chunk_type_filter_values(value: &str) -> Vec<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "transcript" => vec!["transcript".to_string(), "transcript_line".to_string()],
+        "visual" => vec![
+            "keyframe".to_string(),
+            "image".to_string(),
+            "ocr".to_string(),
+        ],
+        "summary" => vec!["understanding".to_string()],
+        raw => vec![raw.to_string()],
+    }
+}
+
+fn local_source_file_exists(raw_path: &str) -> bool {
+    let raw_path = raw_path.trim();
+    !raw_path.is_empty() && FsPath::new(raw_path).is_file()
+}
+
+fn v1_query_execution(paths: &AppPaths) -> V1QueryExecution {
+    match api_models::effective_query_inference_mode(paths) {
+        Ok(mode) if mode == "remote" => V1QueryExecution::RemoteEmbedding,
+        Ok(_) => V1QueryExecution::LocalOnly,
+        Err(error) => {
+            tracing::debug!(%error, "could not resolve v1 query execution mode; assuming local-only fallback");
+            V1QueryExecution::LocalOnly
+        }
+    }
+}
+
+fn v1_load_item(paths: &AppPaths, id: &str) -> anyhow::Result<Option<V1ItemRow>> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let sql = format!(
+        r#"
+        {}
+        WHERE i.id = ?1
+          AND i.status != 'deleting'
+        "#,
+        v1_item_select_sql()
+    );
+    conn.query_row(&sql, [id], v1_item_row_from_row)
+        .optional()
+        .map_err(Into::into)
+}
+
+fn v1_item_select_sql() -> String {
+    r#"
+        SELECT i.id, i.content_type, i.external_id, i.title,
+               COALESCE(i.duration_sec, (
+                   SELECT MAX(c2.end_sec)
+                   FROM chunks c2
+                   WHERE c2.item_id = i.id
+               )) AS duration_sec,
+               i.indexed_at, i.status, i.metadata,
+               s.type AS source_type, s.config AS source_config,
+               (
+                   SELECT c.id
+                   FROM chunks c
+                   WHERE c.item_id = i.id
+                     AND c.frame_path IS NOT NULL
+                     AND TRIM(c.frame_path) <> ''
+                   ORDER BY COALESCE(c.start_sec, 0), c.id
+                   LIMIT 1
+               ) AS thumbnail_chunk_id,
+               (
+                   SELECT c.frame_path
+                   FROM chunks c
+                   WHERE c.item_id = i.id
+                     AND c.frame_path IS NOT NULL
+                     AND TRIM(c.frame_path) <> ''
+                   ORDER BY COALESCE(c.start_sec, 0), c.id
+                   LIMIT 1
+               ) AS thumbnail_frame_path,
+               (
+                   SELECT COUNT(*)
+                   FROM chunks c
+                   WHERE c.item_id = i.id
+               ) AS chunk_count,
+               i.raw_path
+        FROM items i
+        JOIN sources s ON s.id = i.source_id
+    "#
+    .to_string()
+}
+
+fn v1_item_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<V1ItemRow> {
+    let title = row
+        .get::<_, Option<String>>(3)?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Untitled media".to_string());
+    let metadata = row
+        .get::<_, Option<String>>(7)?
+        .as_deref()
+        .map(parse_json)
+        .unwrap_or_else(|| json!({}));
+    let source_config = row
+        .get::<_, Option<String>>(9)?
+        .as_deref()
+        .map(parse_json)
+        .unwrap_or_else(|| json!({}));
+    let thumbnail_chunk_id: Option<String> = row.get(10)?;
+    let thumbnail_frame_path: Option<String> = row.get(11)?;
+    let chunk_count = row.get::<_, i64>(12)?.max(0) as usize;
+    let raw_path: Option<String> = row.get(13)?;
+    let source_file_exists = raw_path.as_deref().is_some_and(local_source_file_exists);
+
+    Ok(V1ItemRow {
+        id: row.get(0)?,
+        content_type: row.get(1)?,
+        external_id: row.get(2)?,
+        title,
+        duration_sec: row.get(4)?,
+        indexed_at: row.get(5)?,
+        status: row.get(6)?,
+        metadata,
+        source_type: row.get(8)?,
+        source_config,
+        thumbnail_chunk_id,
+        thumbnail_frame_path,
+        chunk_count,
+        source_file_exists,
+    })
+}
+
+fn v1_item_from_row(item: &V1ItemRow, base_url: &str) -> V1Item {
+    let thumbnail = item
+        .thumbnail_chunk_id
+        .as_deref()
+        .zip(item.thumbnail_frame_path.as_deref())
+        .filter(|(_, frame_path)| local_source_file_exists(frame_path))
+        .map(|(chunk_id, _)| V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/frame",
+                base_url,
+                encode_path_segment(chunk_id)
+            ),
+        });
+    V1Item {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        content_type: item.content_type.clone(),
+        source_type: item.source_type.clone(),
+        source_url: v1_item_source_url(item),
+        status: item.status.clone(),
+        duration_sec: item.duration_sec,
+        indexed_at: item.indexed_at,
+        chunk_count: item.chunk_count,
+        thumbnail,
+        open_in_cerul: v1_open_item_in_cerul_link(&item.id),
+    }
+}
+
+fn v1_item_chunk(chunk: &ChunkRecord, item: &V1ItemRow, base_url: &str) -> V1ItemChunk {
+    V1ItemChunk {
+        id: chunk.id.clone(),
+        chunk_type: v1_result_type(&chunk.chunk_type).to_string(),
+        source: "local_library",
+        time: V1SearchTime {
+            start_sec: chunk.start_sec.filter(|value| value.is_finite()),
+            end_sec: chunk.end_sec.filter(|value| value.is_finite()),
+            timestamp: chunk.start_sec.map(format_playback_timestamp),
+        },
+        text: V1ChunkText {
+            content: chunk.text.clone(),
+            snippet: chunk.text.as_deref().map(|text| trim_for_answer(text, 360)),
+        },
+        evidence: v1_chunk_evidence(
+            &chunk.id,
+            item,
+            chunk.start_sec,
+            chunk.frame_path.as_deref(),
+            base_url,
+        ),
+    }
+}
+
+fn has_timed_video_clip_start(start_sec: Option<f64>) -> bool {
+    start_sec.is_some_and(|value| value.is_finite() && value >= 0.0)
+}
+
+fn v1_chunk_evidence(
+    chunk_id: &str,
+    item: &V1ItemRow,
+    start_sec: Option<f64>,
+    frame_path: Option<&str>,
+    base_url: &str,
+) -> V1Evidence {
+    let clip = if item.source_file_exists
+        && item.content_type == "video"
+        && has_timed_video_clip_start(start_sec)
+    {
+        Some(V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/video-clip?before_sec=3&after_sec=5",
+                base_url,
+                encode_path_segment(chunk_id)
+            ),
+        })
+    } else {
+        None
+    };
+    let preview = frame_path
+        .map(str::trim)
+        .filter(|path| local_source_file_exists(path))
+        .map(|_| V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/frame",
+                base_url,
+                encode_path_segment(chunk_id)
+            ),
+        });
+    let evidence_kind = match (clip.is_some(), preview.is_some()) {
+        (true, _) => "video_clip",
+        (false, true) => "frame",
+        (false, false) => "chunk",
+    };
+
+    V1Evidence {
+        id: chunk_id.to_string(),
+        kind: evidence_kind,
+        clip,
+        preview,
+        open_in_cerul: v1_open_in_cerul_link(&item.id, chunk_id, start_sec),
+    }
+}
+
+fn v1_item_source_url(item: &V1ItemRow) -> Option<String> {
+    for key in [
+        "webpage_url",
+        "original_url",
+        "source_url",
+        "url",
+        "enclosure_url",
+        "feed_url",
+        "channel_url",
+    ] {
+        if let Some(url) = item
+            .metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(v1_http_url)
+        {
+            return Some(url);
+        }
+    }
+    if item.source_type == "youtube" {
+        if let Some(external_id) = item
+            .external_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(format!("https://www.youtube.com/watch?v={external_id}"));
+        }
+    }
+    for key in ["url", "feed_url", "channel_url"] {
+        if let Some(url) = item
+            .source_config
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(v1_http_url)
+        {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn v1_http_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn validate_v1_local_target(target: Option<&str>) -> ApiResult<()> {
+    let target = target
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local")
+        .to_ascii_lowercase();
+    if matches!(target.as_str(), "local" | "auto") {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(
+        "only local or auto target is currently supported by /v1",
+    ))
+}
+
+fn v1_extractive_answer(
+    question: &str,
+    citations: &[V1SearchResult],
+    locale: Option<&str>,
+) -> String {
+    let answer_in_english =
+        !locale.is_some_and(|locale| locale.trim().to_ascii_lowercase().starts_with("zh"));
+    if citations.is_empty() {
+        if answer_in_english {
+            format!(
+                "I couldn't find a directly related moment for \"{}\" in the local index. Try another keyword or wait for current indexing jobs to finish.",
+                question
+            )
+        } else {
+            format!(
+                "没有在本地索引里找到和「{}」直接相关的片段。可以先换一个关键词，或等当前索引任务完成后再问。",
+                question
+            )
+        }
+    } else {
+        let mut sentences = Vec::new();
+        for citation in citations.iter().take(3) {
+            let timestamp = citation.time.timestamp.as_deref().unwrap_or("0:00");
+            if answer_in_english {
+                sentences.push(format!(
+                    "Around {} in \"{}\", the index says: {}",
+                    timestamp, citation.item.title, citation.text.snippet
+                ));
+            } else {
+                sentences.push(format!(
+                    "在《{}》{} 附近，索引里提到：{}",
+                    citation.item.title, timestamp, citation.text.snippet
+                ));
+            }
+        }
+        if answer_in_english {
+            format!(
+                "{} This answer is extractive and grounded only in the local search hits below.",
+                sentences.join(" ")
+            )
+        } else {
+            format!(
+                "{} 本回答是抽取式回答，只基于下面这些本地检索命中。",
+                sentences.join(" ")
+            )
+        }
+    }
+}
+
+fn v1_search_result(
+    result: &cerul_search::SearchResult,
+    item_metadata: &HashMap<String, V1SearchItemMetadata>,
+    existing_preview_chunk_ids: &HashSet<String>,
+    base_url: &str,
+) -> V1SearchResult {
+    let metadata = item_metadata
+        .get(&result.item_id)
+        .cloned()
+        .unwrap_or_else(|| fallback_v1_search_item_metadata(result));
+    let start_sec = result.start_sec.filter(|value| value.is_finite());
+    let end_sec = result.end_sec.filter(|value| value.is_finite());
+    let preview_chunk_id = result.nearest_frame_chunk_id.as_deref().or_else(|| {
+        result
+            .frame_path
+            .as_ref()
+            .map(|_| result.playback_chunk_id.as_str())
+    });
+    let clip = if metadata.source_file_exists
+        && metadata.item.content_type == "video"
+        && has_timed_video_clip_start(start_sec)
+    {
+        Some(V1Locator {
+            locator_type: "local",
+            url: format!(
+                "{}/chunks/{}/video-clip?before_sec=3&after_sec=5",
+                base_url,
+                encode_path_segment(&result.playback_chunk_id)
+            ),
+        })
+    } else {
+        None
+    };
+    let preview = preview_chunk_id.and_then(|chunk_id| {
+        existing_preview_chunk_ids
+            .contains(chunk_id)
+            .then(|| V1Locator {
+                locator_type: "local",
+                url: format!(
+                    "{}/chunks/{}/frame",
+                    base_url,
+                    encode_path_segment(chunk_id)
+                ),
+            })
+    });
+    let evidence_kind = match (clip.is_some(), preview.is_some()) {
+        (true, _) => "video_clip",
+        (false, true) => "frame",
+        (false, false) => "chunk",
+    };
+
+    V1SearchResult {
+        id: result.playback_chunk_id.clone(),
+        result_type: v1_result_type(&result.chunk_type),
+        source: "local_library",
+        item: metadata.item,
+        time: V1SearchTime {
+            start_sec,
+            end_sec,
+            timestamp: start_sec.map(format_playback_timestamp),
+        },
+        text: V1SearchText {
+            snippet: trim_for_answer(&result.snippet, 360),
+            quote: trim_for_answer(&result.snippet, 240),
+        },
+        evidence: V1Evidence {
+            id: result.playback_chunk_id.clone(),
+            kind: evidence_kind,
+            clip,
+            preview,
+            open_in_cerul: v1_open_in_cerul_link(
+                &result.item_id,
+                &result.playback_chunk_id,
+                start_sec,
+            ),
+        },
+        score: V1Score {
+            match_score: result.match_score,
+            exact_match: result.exact_match,
+            similarity: result.similarity_score,
+        },
+    }
+}
+
+fn v1_search_item_metadata(
+    paths: &AppPaths,
+    results: &[cerul_search::SearchResult],
+) -> anyhow::Result<HashMap<String, V1SearchItemMetadata>> {
+    let mut item_ids = results
+        .iter()
+        .map(|result| result.item_id.as_str())
+        .collect::<Vec<_>>();
+    item_ids.sort_unstable();
+    item_ids.dedup();
+    if item_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(item_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        r#"
+        SELECT i.id, i.title, i.content_type, s.type, i.duration_sec,
+               i.raw_path
+        FROM items i
+        JOIN sources s ON s.id = i.source_id
+        WHERE i.id IN ({placeholders})
+        "#
+    );
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |row| {
+        let id: String = row.get(0)?;
+        let title = row
+            .get::<_, Option<String>>(1)?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Untitled media".to_string());
+        let raw_path: Option<String> = row.get(5)?;
+        let source_file_exists = raw_path.as_deref().is_some_and(local_source_file_exists);
+        Ok((
+            id.clone(),
+            V1SearchItemMetadata {
+                item: V1SearchItem {
+                    id,
+                    title,
+                    content_type: row.get(2)?,
+                    source_type: row.get(3)?,
+                    duration_sec: row.get(4)?,
+                },
+                source_file_exists,
+            },
+        ))
+    })?;
+    let mut metadata = HashMap::with_capacity(item_ids.len());
+    for row in rows {
+        let (id, item) = row?;
+        metadata.insert(id, item);
+    }
+    Ok(metadata)
+}
+
+fn v1_existing_preview_chunk_ids(
+    paths: &AppPaths,
+    results: &[cerul_search::SearchResult],
+) -> anyhow::Result<HashSet<String>> {
+    let mut chunk_ids = results
+        .iter()
+        .filter_map(|result| {
+            result.nearest_frame_chunk_id.as_deref().or_else(|| {
+                result
+                    .frame_path
+                    .as_ref()
+                    .map(|_| result.playback_chunk_id.as_str())
+            })
+        })
+        .collect::<Vec<_>>();
+    chunk_ids.sort_unstable();
+    chunk_ids.dedup();
+    if chunk_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(chunk_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        r#"
+        SELECT id, frame_path
+        FROM chunks
+        WHERE id IN ({placeholders})
+          AND frame_path IS NOT NULL
+          AND TRIM(frame_path) <> ''
+        "#
+    );
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut existing = HashSet::new();
+    for row in rows {
+        let (id, frame_path) = row?;
+        if local_source_file_exists(&frame_path) {
+            existing.insert(id);
+        }
+    }
+    Ok(existing)
+}
+
+fn fallback_v1_search_item_metadata(result: &cerul_search::SearchResult) -> V1SearchItemMetadata {
+    V1SearchItemMetadata {
+        item: V1SearchItem {
+            id: result.item_id.clone(),
+            title: result
+                .item_title
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "Untitled media".to_string()),
+            content_type: "unknown".to_string(),
+            source_type: "unknown".to_string(),
+            duration_sec: None,
+        },
+        source_file_exists: false,
+    }
+}
+
+fn v1_result_type(chunk_type: &str) -> &'static str {
+    match chunk_type {
+        "keyframe" | "image" | "ocr" => "visual",
+        "understanding" => "summary",
+        _ => "transcript",
+    }
+}
+
+fn v1_base_url(headers: &HeaderMap, paths: &AppPaths) -> String {
+    if let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.contains('/'))
+    {
+        return format!("http://{host}/v1");
+    }
+    let port = configured_addr(paths)
+        .map(|addr| addr.port())
+        .unwrap_or(DEFAULT_API_PORT);
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+fn v1_open_in_cerul_link(item_id: &str, chunk_id: &str, start_sec: Option<f64>) -> String {
+    let mut link = format!(
+        "cerul-app://item/{}?playbackChunkId={}",
+        encode_path_segment(item_id),
+        encode_path_segment(chunk_id)
+    );
+    if let Some(start_sec) = start_sec.filter(|value| value.is_finite() && *value >= 0.0) {
+        link.push_str("&t=");
+        link.push_str(&format_seconds_param(start_sec));
+    }
+    link
+}
+
+fn v1_open_item_in_cerul_link(item_id: &str) -> String {
+    format!("cerul-app://item/{}", encode_path_segment(item_id))
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
+fn format_seconds_param(value: f64) -> String {
+    let mut formatted = format!("{:.3}", value.max(0.0));
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
 }
 
 async fn search(
@@ -1168,6 +2566,7 @@ struct DiagnosticsItemError {
 
 const DIAGNOSTIC_SETTING_KEYS: &[&str] = &[
     "api_binding",
+    API_PORT_SETTING,
     "asr_model",
     "concurrent_jobs",
     "inference_mode",
@@ -3519,7 +4918,7 @@ async fn update_settings(
         if is_internal_setting(key) {
             continue;
         }
-        let value = normalize_setting_value(key, value.clone());
+        let value = validate_write_setting_value(key, normalize_setting_value(key, value.clone()))?;
         tx.execute(
             r#"
             INSERT INTO settings (key, value, updated_at)
@@ -3583,6 +4982,20 @@ fn normalize_setting_value(key: &str, value: Value) -> Value {
         );
     }
     value
+}
+
+fn validate_write_setting_value(key: &str, value: Value) -> ApiResult<Value> {
+    if key == API_PORT_SETTING {
+        let port = match &value {
+            Value::Number(number) => number.as_u64().and_then(|value| u16::try_from(value).ok()),
+            Value::String(value) => parse_api_port(value),
+            _ => None,
+        }
+        .filter(|port| (1024..=65535).contains(port))
+        .ok_or_else(|| ApiError::bad_request("api_port must be an integer from 1024 to 65535"))?;
+        return Ok(Value::from(port));
+    }
+    Ok(value)
 }
 
 fn requested_inference_mode(settings: &BTreeMap<String, Value>) -> Option<String> {
@@ -4554,6 +5967,9 @@ fn video_clip_source_for_chunk(
             let title: Option<String> = row.get(1)?;
             let start_sec: Option<f64> = row.get(2)?;
             let end_sec: Option<f64> = row.get(3)?;
+            if !has_timed_video_clip_start(start_sec) {
+                return Ok(None);
+            }
             Ok(raw_path.map(|raw_path| VideoClipSource {
                 raw_path,
                 title,
@@ -5006,57 +6422,71 @@ impl From<std::io::Error> for ApiError {
 }
 
 const API_PATHS: &[(&str, &[&str])] = &[
-    ("/health", &["get"]),
-    ("/metrics", &["get"]),
-    ("/openapi.json", &["get"]),
-    ("/diagnostics", &["get"]),
-    ("/diagnostics/indexing", &["get"]),
-    ("/search", &["post"]),
-    ("/search/diagnostics", &["get"]),
-    ("/search/rebuild", &["post"]),
-    ("/ask", &["post"]),
-    ("/sources", &["get", "post"]),
-    ("/sources/preview/rss", &["post"]),
-    ("/sources/{id}", &["delete"]),
-    ("/sources/{id}/pause", &["post"]),
-    ("/sources/{id}/resume", &["post"]),
-    ("/sources/{id}/retry-failed", &["post"]),
-    ("/sources/{id}/retry-discovery", &["post"]),
-    ("/moments", &["get", "post"]),
-    ("/moments/{id}", &["delete"]),
-    ("/entities", &["get"]),
-    ("/entities/{id}", &["get"]),
-    ("/weekly-review", &["get"]),
-    ("/items", &["get"]),
-    ("/items/{id}", &["get", "delete"]),
-    ("/items/{id}/playback", &["get", "patch"]),
-    ("/items/{id}/reindex", &["post"]),
-    ("/items/{id}/chunks", &["get"]),
-    ("/items/{id}/understanding", &["get", "post"]),
-    ("/chunks/{id}/frame", &["get"]),
-    ("/chunks/{id}/video-segment", &["get"]),
-    ("/chunks/{id}/video-clip", &["get"]),
-    ("/jobs", &["get"]),
-    ("/usage/events", &["get"]),
-    ("/usage/summary", &["get"]),
-    ("/storage/usage", &["get"]),
-    ("/models/catalog", &["get"]),
-    ("/models/whisper", &["get"]),
-    ("/models/whisper/{id}/download", &["post"]),
-    ("/models/whisper/auto-download-status", &["get"]),
-    ("/models/embed/status", &["get"]),
-    ("/models/embed/prepare", &["post"]),
-    ("/models/local/capability", &["get"]),
-    ("/models/local/prepare", &["post"]),
-    ("/models/local/prepare-status", &["get"]),
-    ("/models/local/prepare-cancel", &["post"]),
-    ("/models/local/delete", &["post"]),
-    ("/models/local/repair", &["post"]),
-    ("/providers", &["get", "post"]),
-    ("/providers/{id}", &["patch", "delete"]),
-    ("/providers/{id}/test", &["post"]),
-    ("/providers/{id}/models", &["get"]),
-    ("/settings", &["get", "patch"]),
+    ("/internal/health", &["get"]),
+    ("/internal/metrics", &["get"]),
+    ("/internal/openapi.json", &["get"]),
+    ("/internal/diagnostics", &["get"]),
+    ("/internal/diagnostics/indexing", &["get"]),
+    ("/internal/search", &["post"]),
+    ("/internal/search/diagnostics", &["get"]),
+    ("/internal/search/rebuild", &["post"]),
+    ("/internal/ask", &["post"]),
+    ("/internal/sources", &["get", "post"]),
+    ("/internal/sources/preview/rss", &["post"]),
+    ("/internal/sources/{id}", &["delete"]),
+    ("/internal/sources/{id}/pause", &["post"]),
+    ("/internal/sources/{id}/resume", &["post"]),
+    ("/internal/sources/{id}/retry-failed", &["post"]),
+    ("/internal/sources/{id}/retry-discovery", &["post"]),
+    ("/internal/moments", &["get", "post"]),
+    ("/internal/moments/{id}", &["delete"]),
+    ("/internal/entities", &["get"]),
+    ("/internal/entities/{id}", &["get"]),
+    ("/internal/weekly-review", &["get"]),
+    ("/internal/items", &["get"]),
+    ("/internal/items/{id}", &["get", "patch", "delete"]),
+    ("/internal/items/{id}/playback", &["get", "patch"]),
+    ("/internal/items/{id}/reindex", &["post"]),
+    ("/internal/items/{id}/chunks", &["get"]),
+    ("/internal/items/{id}/understanding", &["get", "post"]),
+    ("/internal/chunks/{id}/frame", &["get"]),
+    ("/internal/chunks/{id}/video-segment", &["get"]),
+    ("/internal/chunks/{id}/video-clip", &["get"]),
+    ("/internal/jobs", &["get"]),
+    ("/internal/jobs/{id}/cancel", &["post"]),
+    ("/internal/usage/events", &["get"]),
+    ("/internal/usage/summary", &["get"]),
+    ("/internal/storage/usage", &["get"]),
+    ("/internal/models/catalog", &["get"]),
+    ("/internal/models/whisper", &["get"]),
+    ("/internal/models/whisper/{id}/download", &["post"]),
+    ("/internal/models/whisper/auto-download-status", &["get"]),
+    ("/internal/models/embed/status", &["get"]),
+    ("/internal/models/embed/prepare", &["post"]),
+    ("/internal/models/local/capability", &["get"]),
+    ("/internal/models/local/prepare", &["post"]),
+    ("/internal/models/local/prepare-status", &["get"]),
+    ("/internal/models/local/prepare-cancel", &["post"]),
+    ("/internal/models/local/delete", &["post"]),
+    ("/internal/models/local/repair", &["post"]),
+    ("/internal/providers", &["get", "post"]),
+    ("/internal/providers/{id}", &["patch", "delete"]),
+    ("/internal/providers/{id}/test", &["post"]),
+    ("/internal/providers/{id}/models", &["get"]),
+    ("/internal/settings", &["get", "patch"]),
+];
+
+const V1_API_PATHS: &[(&str, &[&str])] = &[
+    ("/v1/status", &["get"]),
+    ("/v1/openapi.json", &["get"]),
+    ("/v1/search", &["post"]),
+    ("/v1/ask", &["post"]),
+    ("/v1/items", &["get"]),
+    ("/v1/items/{id}", &["get"]),
+    ("/v1/items/{id}/chunks", &["get"]),
+    ("/v1/chunks/{id}/frame", &["get"]),
+    ("/v1/chunks/{id}/video-segment", &["get"]),
+    ("/v1/chunks/{id}/video-clip", &["get"]),
 ];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
@@ -5475,7 +6905,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources/source-1/retry-failed")
+                    .uri("/internal/sources/source-1/retry-failed")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5556,7 +6986,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/health")
+                    .uri("/internal/health")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5570,7 +7000,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/openapi.json")
+                    .uri("/internal/openapi.json")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5578,7 +7008,1078 @@ mod tests {
             .unwrap();
         assert_eq!(openapi.status(), StatusCode::OK);
         let openapi_json = response_json(openapi).await;
-        assert!(openapi_json["paths"].as_object().unwrap().len() >= 19);
+        let paths = openapi_json["paths"].as_object().unwrap();
+        assert!(paths.len() >= 19);
+        assert!(paths["/internal/items/{id}"].get("patch").is_some());
+        assert!(paths["/internal/jobs/{id}/cancel"].get("post").is_some());
+    }
+
+    #[tokio::test]
+    async fn router_serves_v1_status_and_openapi() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, status, indexed_at, metadata
+                )
+                VALUES
+                    ('item-indexed', 'source-1', 'video', 'video-1', 'Indexed', 'indexed', 10, '{}'),
+                    ('item-processing', 'source-1', 'video', 'video-2', 'Processing', 'processing', NULL, '{}'),
+                    ('item-failed', 'source-1', 'video', 'video-3', 'Failed', 'failed', NULL, '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES ('job-queued', 'item-processing', 'index_video', 'queued', 0)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(&paths);
+        cerul_storage::set_item_search_index_status(&paths, "item-indexed", "indexed", None, 0, 0)
+            .unwrap();
+        let app = router_with_paths(paths);
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status_json = response_json(status).await;
+        assert!(status_json["request_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("req-"));
+        assert_eq!(status_json["status"], "ok");
+        assert_eq!(status_json["execution"]["target"], "local");
+        assert_eq!(status_json["execution"]["privacy"], "local_only");
+        assert_eq!(status_json["library"]["total_items"], 3);
+        assert_eq!(status_json["library"]["indexed_items"], 1);
+        assert_eq!(status_json["library"]["processing_items"], 1);
+        assert_eq!(status_json["library"]["failed_items"], 1);
+        assert_eq!(status_json["indexing"]["queued_jobs"], 1);
+        assert_eq!(status_json["account"]["signed_in"], false);
+        assert_eq!(
+            status_json["capabilities"],
+            json!(["status", "openapi", "search", "ask", "items", "chunks"])
+        );
+
+        let openapi = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(openapi.status(), StatusCode::OK);
+        let openapi_json = response_json(openapi).await;
+        let paths = openapi_json["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/v1/status"));
+        assert!(paths.contains_key("/v1/openapi.json"));
+        assert!(paths.contains_key("/v1/search"));
+        assert!(paths.contains_key("/v1/ask"));
+        assert!(paths.contains_key("/v1/items"));
+        assert!(paths.contains_key("/v1/items/{id}"));
+        assert!(paths.contains_key("/v1/items/{id}/chunks"));
+        assert!(paths.contains_key("/v1/chunks/{id}/frame"));
+        assert!(paths.contains_key("/v1/chunks/{id}/video-segment"));
+        assert!(paths.contains_key("/v1/chunks/{id}/video-clip"));
+        assert!(!paths.contains_key("/internal/health"));
+        assert!(!paths.contains_key("/health"));
+    }
+
+    fn seed_v1_agent_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
+        fs::write(raw_path, b"not a real video").unwrap();
+        let raw_path_string = raw_path.to_string_lossy().to_string();
+        let frame_path = raw_path.with_file_name("frame.jpg");
+        fs::write(&frame_path, b"not a real frame").unwrap();
+        let frame_path_string = frame_path.to_string_lossy().to_string();
+        {
+            let conn = cerul_storage::sqlite::open(paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, duration_sec,
+                    raw_path, indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Scaling Talk', 120.5,
+                    ?1, 10, 'indexed', '{}'
+                )
+                "#,
+                [raw_path_string.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+                VALUES (
+                    'item-1:transcript:000000',
+                    'item-1',
+                    'transcript',
+                    12.3,
+                    18.0,
+                    'The talk says scaling laws keep holding across larger training runs.',
+                    '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+                VALUES (
+                    'item-1:keyframe:000012',
+                    'item-1',
+                    'keyframe',
+                    12.0,
+                    12.0,
+                    ?1,
+                    '{}'
+                )
+                "#,
+                [frame_path_string.as_str()],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+        let units = vec![cerul_storage::StorageRetrievalUnit {
+            id: "item-1:unit:v2:000000".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "transcript".to_string(),
+            start_sec: Some(12.3),
+            end_sec: Some(18.0),
+            content_text: "The talk says scaling laws keep holding across larger training runs."
+                .to_string(),
+            transcript_text: Some("scaling laws keep holding".to_string()),
+            ocr_text: None,
+            visual_text: None,
+            summary_text: None,
+            representative_chunk_id: Some("item-1:transcript:000000".to_string()),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id,
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        }];
+        cerul_storage::replace_item_retrieval_units(paths, "item-1", &units).unwrap();
+        cerul_storage::set_item_search_index_status(
+            paths,
+            "item-1",
+            "indexed",
+            None,
+            units.len(),
+            0,
+        )
+        .unwrap();
+    }
+
+    fn seed_v1_untimed_summary_fixture(paths: &AppPaths, raw_path: &FsPath) {
+        fs::write(raw_path, b"not a real video").unwrap();
+        let raw_path_string = raw_path.to_string_lossy().to_string();
+        {
+            let conn = cerul_storage::sqlite::open(paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, duration_sec,
+                    raw_path, indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Summary Talk', 120.5,
+                    ?1, 10, 'indexed', '{}'
+                )
+                "#,
+                [raw_path_string.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, text, metadata)
+                VALUES (
+                    'item-1:understanding:summary',
+                    'item-1',
+                    'understanding',
+                    'Untimed executive summary about launch planning.',
+                    '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        seed_indexing_schema_version(paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+        let units = vec![cerul_storage::StorageRetrievalUnit {
+            id: "item-1:unit:v2:summary".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "understanding".to_string(),
+            start_sec: None,
+            end_sec: None,
+            content_text: "Untimed executive summary about launch planning.".to_string(),
+            transcript_text: None,
+            ocr_text: None,
+            visual_text: None,
+            summary_text: Some("Untimed executive summary about launch planning.".to_string()),
+            representative_chunk_id: Some("item-1:understanding:summary".to_string()),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id,
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        }];
+        cerul_storage::replace_item_retrieval_units(paths, "item-1", &units).unwrap();
+        cerul_storage::set_item_search_index_status(
+            paths,
+            "item-1",
+            "indexed",
+            None,
+            units.len(),
+            0,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v1_items_omit_thumbnail_when_frame_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let missing_frame = temp.path().join("missing-frame.jpg");
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, duration_sec,
+                    indexed_at, status, metadata
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video-1', 'Clip', 10,
+                    10, 'indexed', '{}'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, frame_path, metadata)
+                VALUES ('item-1:keyframe:000000', 'item-1', 'keyframe', 0, ?1, '{}')
+                "#,
+                [missing_frame.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let items = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items")
+                    .header(header::HOST, "127.0.0.1:25001")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert!(items["items"][0]["thumbnail"].is_null());
+
+        let item = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1")
+                    .header(header::HOST, "127.0.0.1:25001")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(item.status(), StatusCode::OK);
+        let item = response_json(item).await;
+        assert!(item["item"]["thumbnail"].is_null());
+    }
+
+    #[tokio::test]
+    async fn v1_search_returns_agent_friendly_results_with_evidence_urls() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25001")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "scaling laws", "max_results": 2}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["request_id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["results"][0]["id"], "item-1:transcript:000000");
+        assert_eq!(body["results"][0]["type"], "transcript");
+        assert_eq!(body["results"][0]["source"], "local_library");
+        assert_eq!(body["results"][0]["item"]["id"], "item-1");
+        assert_eq!(body["results"][0]["item"]["title"], "Scaling Talk");
+        assert_eq!(body["results"][0]["item"]["content_type"], "video");
+        assert_eq!(body["results"][0]["item"]["source_type"], "local");
+        assert_eq!(body["results"][0]["item"]["duration_sec"], 120.5);
+        assert_eq!(body["results"][0]["time"]["start_sec"], 12.3);
+        assert_eq!(body["results"][0]["time"]["end_sec"], 18.0);
+        assert_eq!(body["results"][0]["time"]["timestamp"], "0:12");
+        assert!(body["results"][0]["text"]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("scaling laws"));
+        assert_eq!(body["results"][0]["evidence"]["kind"], "video_clip");
+        assert_eq!(
+            body["results"][0]["evidence"]["clip"]["url"],
+            "http://127.0.0.1:25001/v1/chunks/item-1%3Atranscript%3A000000/video-clip?before_sec=3&after_sec=5"
+        );
+        assert_eq!(
+            body["results"][0]["evidence"]["preview"]["url"],
+            "http://127.0.0.1:25001/v1/chunks/item-1%3Akeyframe%3A000012/frame"
+        );
+        assert_eq!(
+            body["results"][0]["evidence"]["open_in_cerul"],
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Atranscript%3A000000&t=12.3"
+        );
+        assert_eq!(body["results"][0]["score"]["exact_match"], true);
+        assert_eq!(body["usage"]["billable"], false);
+        assert_eq!(
+            body["usage"]["metered_events"][0],
+            json!({"capability": "local_search", "quantity": 1, "credits": 0})
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_search_uses_q_alias_when_query_is_blank() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "   ", "q": "scaling laws"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["results"][0]["id"], "item-1:transcript:000000");
+    }
+
+    #[tokio::test]
+    async fn v1_search_marks_remote_embedding_privacy_when_remote_query_mode_is_selected() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('inference_mode', '"remote"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"query": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["execution"]["privacy"], "local_library_remote_query");
+        assert_eq!(
+            body["usage"]["metered_events"],
+            json!([
+                {"capability": "local_search", "quantity": 1, "credits": 0},
+                {"capability": "remote_embedding_query", "quantity": 1, "credits": 0}
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_search_does_not_advertise_clip_when_source_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        fs::remove_file(&raw_path).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25005")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"query": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let evidence = &body["results"][0]["evidence"];
+        assert_eq!(evidence["kind"], "frame");
+        assert_eq!(evidence["clip"], Value::Null);
+        assert_eq!(
+            evidence["preview"]["url"],
+            "http://127.0.0.1:25005/v1/chunks/item-1%3Akeyframe%3A000012/frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_search_does_not_advertise_preview_when_frame_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        let frame_path = temp.path().join("frame.jpg");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        fs::remove_file(frame_path).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25006")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"query": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let evidence = &body["results"][0]["evidence"];
+        assert_eq!(evidence["kind"], "video_clip");
+        assert!(evidence["clip"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("/v1/chunks/item-1%3Atranscript%3A000000/video-clip"));
+        assert_eq!(evidence["preview"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn v1_search_does_not_advertise_clip_for_untimed_summary_hit() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_untimed_summary_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25007")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "untimed executive summary"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let evidence = &body["results"][0]["evidence"];
+        assert_eq!(body["results"][0]["id"], "item-1:understanding:summary");
+        assert_eq!(body["results"][0]["time"]["start_sec"], Value::Null);
+        assert_eq!(evidence["kind"], "chunk");
+        assert_eq!(evidence["clip"], Value::Null);
+        assert_eq!(evidence["preview"], Value::Null);
+        assert_eq!(
+            evidence["open_in_cerul"],
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Aunderstanding%3Asummary"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_search_rejects_cloud_target_until_cloud_proxy_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "scaling laws", "target": "cloud"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("only local or auto target"));
+    }
+
+    #[tokio::test]
+    async fn v1_ask_returns_extractive_answer_with_evidence_citations() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::HOST, "127.0.0.1:25002")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "question": "scaling laws",
+                            "max_results": 2,
+                            "locale": "en-US"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["request_id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["mode"], "extractive");
+        assert!(body["answer"]
+            .as_str()
+            .unwrap()
+            .contains("This answer is extractive"));
+        assert_eq!(body["citations"][0]["id"], "item-1:transcript:000000");
+        assert_eq!(body["citations"][0]["item"]["title"], "Scaling Talk");
+        assert_eq!(
+            body["citations"][0]["evidence"]["clip"]["url"],
+            "http://127.0.0.1:25002/v1/chunks/item-1%3Atranscript%3A000000/video-clip?before_sec=3&after_sec=5"
+        );
+        assert_eq!(body["warnings"], json!([]));
+        assert_eq!(body["usage"]["billable"], false);
+        assert_eq!(
+            body["usage"]["metered_events"][0],
+            json!({"capability": "local_ask_extractive", "quantity": 1, "credits": 0})
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_ask_defaults_to_english_without_locale() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"question": "scaling laws"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let answer = body["answer"].as_str().unwrap();
+        assert!(answer.contains("This answer is extractive"));
+        assert!(!answer.contains("本回答"));
+    }
+
+    #[tokio::test]
+    async fn v1_ask_uses_fallback_aliases_after_trimming_blanks() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "question": "",
+                            "query": "   ",
+                            "q": "scaling laws"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["citations"][0]["id"], "item-1:transcript:000000");
+    }
+
+    #[tokio::test]
+    async fn v1_ask_rejects_non_extractive_mode_until_rag_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"question": "scaling laws", "mode": "rag"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("only extractive mode"));
+    }
+
+    #[tokio::test]
+    async fn v1_items_returns_agent_friendly_item_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items?status=indexed&limit=1")
+                    .header(header::HOST, "127.0.0.1:25003")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["request_id"].as_str().unwrap().starts_with("req-"));
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["page"], json!({"limit": 1, "next_cursor": null}));
+        let item = &body["items"][0];
+        assert_eq!(item["id"], "item-1");
+        assert_eq!(item["title"], "Scaling Talk");
+        assert_eq!(item["content_type"], "video");
+        assert_eq!(item["source_type"], "local");
+        assert_eq!(item["status"], "indexed");
+        assert_eq!(item["duration_sec"], 120.5);
+        assert_eq!(item["indexed_at"], 10);
+        assert_eq!(item["chunk_count"], 2);
+        assert_eq!(item["source_url"], Value::Null);
+        assert_eq!(
+            item["thumbnail"]["url"],
+            "http://127.0.0.1:25003/v1/chunks/item-1%3Akeyframe%3A000012/frame"
+        );
+        assert_eq!(item["open_in_cerul"], "cerul-app://item/item-1");
+        assert!(item.get("raw_path").is_none());
+        assert!(item.get("metadata").is_none());
+    }
+
+    #[tokio::test]
+    async fn v1_item_chunks_returns_agent_context_with_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=transcript&limit=5")
+                    .header(header::HOST, "127.0.0.1:25004")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["execution"]["target"], "local");
+        assert_eq!(body["item"]["id"], "item-1");
+        assert_eq!(body["chunks"].as_array().unwrap().len(), 1);
+        let chunk = &body["chunks"][0];
+        assert_eq!(chunk["id"], "item-1:transcript:000000");
+        assert_eq!(chunk["type"], "transcript");
+        assert_eq!(chunk["source"], "local_library");
+        assert_eq!(chunk["time"]["start_sec"], 12.3);
+        assert_eq!(chunk["time"]["end_sec"], 18.0);
+        assert_eq!(chunk["time"]["timestamp"], "0:12");
+        assert_eq!(
+            chunk["text"]["content"],
+            "The talk says scaling laws keep holding across larger training runs."
+        );
+        assert_eq!(
+            chunk["evidence"]["clip"]["url"],
+            "http://127.0.0.1:25004/v1/chunks/item-1%3Atranscript%3A000000/video-clip?before_sec=3&after_sec=5"
+        );
+        assert_eq!(chunk["evidence"]["preview"], Value::Null);
+        assert_eq!(
+            chunk["evidence"]["open_in_cerul"],
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Atranscript%3A000000&t=12.3"
+        );
+        assert_eq!(body["page"], json!({"limit": 5, "next_cursor": null}));
+    }
+
+    #[tokio::test]
+    async fn v1_item_chunks_do_not_advertise_clip_for_untimed_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_untimed_summary_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=summary")
+                    .header(header::HOST, "127.0.0.1:25008")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let chunk = &body["chunks"][0];
+        assert_eq!(chunk["id"], "item-1:understanding:summary");
+        assert_eq!(chunk["time"]["start_sec"], Value::Null);
+        assert_eq!(chunk["evidence"]["kind"], "chunk");
+        assert_eq!(chunk["evidence"]["clip"], Value::Null);
+        assert_eq!(chunk["evidence"]["preview"], Value::Null);
+        assert_eq!(
+            chunk["evidence"]["open_in_cerul"],
+            "cerul-app://item/item-1?playbackChunkId=item-1%3Aunderstanding%3Asummary"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_item_chunks_translates_public_visual_type_filter() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=visual&limit=5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["chunks"].as_array().unwrap().len(), 1);
+        assert_eq!(body["chunks"][0]["id"], "item-1:keyframe:000012");
+        assert_eq!(body["chunks"][0]["type"], "visual");
+    }
+
+    #[test]
+    fn v1_chunk_type_filter_values_cover_public_aliases_and_raw_types() {
+        assert_eq!(
+            v1_chunk_type_filter_values("transcript"),
+            vec!["transcript".to_string(), "transcript_line".to_string()]
+        );
+        assert_eq!(
+            v1_chunk_type_filter_values("visual"),
+            vec![
+                "keyframe".to_string(),
+                "image".to_string(),
+                "ocr".to_string()
+            ]
+        );
+        assert_eq!(
+            v1_chunk_type_filter_values("summary"),
+            vec!["understanding".to_string()]
+        );
+        assert_eq!(
+            v1_chunk_type_filter_values("keyframe"),
+            vec!["keyframe".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_routes_are_not_retained_as_compatibility_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let app = router_with_paths(paths);
+
+        for (method, path) in [
+            (Method::GET, "/health"),
+            (Method::GET, "/metrics"),
+            (Method::GET, "/diagnostics"),
+            (Method::GET, "/diagnostics/indexing"),
+            (Method::POST, "/search"),
+            (Method::GET, "/search/diagnostics"),
+            (Method::POST, "/search/rebuild"),
+            (Method::POST, "/ask"),
+            (Method::GET, "/sources"),
+            (Method::GET, "/items"),
+            (Method::GET, "/items/item-1"),
+            (Method::GET, "/items/item-1/chunks"),
+            (Method::GET, "/chunks/chunk-1/frame"),
+            (Method::GET, "/chunks/chunk-1/video-segment"),
+            (Method::GET, "/chunks/chunk-1/video-clip"),
+            (Method::GET, "/jobs"),
+            (Method::GET, "/usage/summary"),
+            (Method::GET, "/storage/usage"),
+            (Method::GET, "/providers"),
+            (Method::GET, "/settings"),
+            (Method::GET, "/openapi.json"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_product_routes_remain_available_after_root_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let frame = temp.path().join("frame.jpg");
+        std::fs::write(&frame, b"jpg-bytes").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', 10, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+                VALUES ('chunk-frame', 'item-1', 'keyframe', 2, 2, ?1, '{}')
+                "#,
+                [frame.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let settings = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settings.status(), StatusCode::OK);
+
+        let items = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/items")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert_eq!(items[0]["id"], "item-1");
+
+        let item = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/items/item-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(item.status(), StatusCode::OK);
+
+        let chunks = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/items/item-1/chunks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chunks.status(), StatusCode::OK);
+        let chunks = response_json(chunks).await;
+        assert_eq!(chunks[0]["id"], "chunk-frame");
+
+        let frame = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/chunks/chunk-frame/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(frame.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -5640,7 +8141,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/diagnostics")
+                    .uri("/internal/diagnostics")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5709,7 +8210,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/diagnostics/indexing")
+                    .uri("/internal/diagnostics/indexing")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5736,7 +8237,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/models/local/capability")
+                    .uri("/internal/models/local/capability")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5819,7 +8320,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_addr_defaults_to_loopback_and_reads_binding_setting() {
+    fn configured_addr_defaults_to_loopback_and_reads_binding_and_port_settings() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         assert_eq!(configured_addr(&paths).unwrap(), default_addr());
@@ -5836,7 +8337,21 @@ mod tests {
 
         assert_eq!(
             configured_addr(&paths).unwrap(),
-            "0.0.0.0:7777".parse::<SocketAddr>().unwrap()
+            "0.0.0.0:23785".parse::<SocketAddr>().unwrap()
+        );
+
+        conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('api_port', '24001', strftime('%s','now'))
+            "#,
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            configured_addr(&paths).unwrap(),
+            "0.0.0.0:24001".parse::<SocketAddr>().unwrap()
         );
     }
 
@@ -5850,7 +8365,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/models/whisper")
+                    .uri("/internal/models/whisper")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5885,7 +8400,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/models/catalog")
+                    .uri("/internal/models/catalog")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5935,7 +8450,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5954,6 +8469,58 @@ mod tests {
         assert!(setting_string(&paths, "cloud_quota_percent")
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn settings_endpoint_validates_api_port_without_changing_active_endpoint_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        write_api_endpoint_file(&paths, 23785).unwrap();
+        let app = router_with_paths(paths.clone());
+
+        let valid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/internal/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "api_port": 24001 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), StatusCode::OK);
+        let settings = response_json(valid).await;
+        assert_eq!(settings["api_port"], 24001);
+        assert_eq!(
+            setting_string(&paths, "api_port").unwrap().as_deref(),
+            Some("24001")
+        );
+
+        let endpoint: Value =
+            serde_json::from_slice(&std::fs::read(paths.data.join(API_ENDPOINT_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(endpoint["port"], 23785);
+        assert_eq!(endpoint["base_url"], "http://127.0.0.1:23785");
+        assert_eq!(endpoint["v1_base_url"], "http://127.0.0.1:23785/v1");
+        assert_eq!(
+            endpoint["internal_base_url"],
+            "http://127.0.0.1:23785/internal"
+        );
+
+        let invalid = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/internal/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "api_port": 80 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -5994,7 +8561,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "inference_mode": "remote" }).to_string(),
@@ -6154,7 +8721,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "inference_mode": "remote" }).to_string(),
@@ -6276,7 +8843,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6301,7 +8868,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(create_body.to_string()))
                     .unwrap(),
@@ -6320,7 +8887,7 @@ mod tests {
                 Request::builder()
                     .method(Method::PATCH)
                     .uri(format!(
-                        "/providers/{}",
+                        "/internal/providers/{}",
                         created_json["id"].as_str().unwrap()
                     ))
                     .header(header::CONTENT_TYPE, "application/json")
@@ -6350,7 +8917,7 @@ mod tests {
                 Request::builder()
                     .method(Method::GET)
                     .uri(format!(
-                        "/providers/{}/models",
+                        "/internal/providers/{}/models",
                         created_json["id"].as_str().unwrap()
                     ))
                     .body(Body::empty())
@@ -6365,7 +8932,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/providers/local/models")
+                    .uri("/internal/providers/local/models")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6378,7 +8945,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/providers/local")
+                    .uri("/internal/providers/local")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(json!({"label": "Other"}).to_string()))
                     .unwrap(),
@@ -6392,7 +8959,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::DELETE)
-                    .uri("/providers/local")
+                    .uri("/internal/providers/local")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6404,7 +8971,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers/local/test")
+                    .uri("/internal/providers/local/test")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6428,7 +8995,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -6450,7 +9017,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/providers")
+                    .uri("/internal/providers")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
@@ -6565,7 +9132,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -6583,7 +9150,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6605,7 +9172,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs")
+                    .uri("/internal/jobs")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6622,7 +9189,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri(format!("/sources/{id}/pause"))
+                    .uri(format!("/internal/sources/{id}/pause"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6698,7 +9265,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/items/item-1/reindex")
+                    .uri("/internal/items/item-1/reindex")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6762,7 +9329,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::DELETE)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6864,7 +9431,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/items/item-1/reindex")
+                    .uri("/internal/items/item-1/reindex")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6932,7 +9499,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/items/item-1/reindex")
+                    .uri("/internal/items/item-1/reindex")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6953,7 +9520,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri(format!("/jobs/{job_id}/cancel"))
+                    .uri(format!("/internal/jobs/{job_id}/cancel"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7009,7 +9576,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::DELETE)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7251,7 +9818,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7314,7 +9881,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/jobs/job-1/cancel")
+                    .uri("/internal/jobs/job-1/cancel")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7372,7 +9939,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -7431,7 +9998,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::PATCH)
-                    .uri("/items/item-1/playback")
+                    .uri("/internal/items/item-1/playback")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "position_sec": 75.4, "chunk_id": "chunk-1" }).to_string(),
@@ -7452,7 +10019,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items/item-1/playback")
+                    .uri("/internal/items/item-1/playback")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7466,7 +10033,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7500,7 +10067,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/storage/usage")
+                    .uri("/internal/storage/usage")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7567,7 +10134,7 @@ mod tests {
         let request = |item_id: &str| {
             Request::builder()
                 .method(Method::POST)
-                .uri(format!("/items/{item_id}/reindex"))
+                .uri(format!("/internal/items/{item_id}/reindex"))
                 .body(Body::empty())
                 .unwrap()
         };
@@ -7643,7 +10210,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7657,7 +10224,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items/item-1")
+                    .uri("/internal/items/item-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7716,7 +10283,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-png/frame")
+                    .uri("/internal/chunks/chunk-png/frame")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7738,13 +10305,111 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-missing/frame")
+                    .uri("/internal/chunks/chunk-missing/frame")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn v1_chunk_binary_routes_resolve_agent_evidence_urls() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let image = temp.path().join("frame.PNG");
+        let video = temp.path().join("clip.mp4");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        std::fs::write(&video, b"0123456789abcdef").unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', ?1, 10, 'indexed', '{}')
+                "#,
+                [video.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+                VALUES ('chunk-frame', 'item-1', 'keyframe', 2, 2, ?1, '{}')
+                "#,
+                [image.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+                VALUES ('chunk-video', 'item-1', 'transcript', 2, 5, 'hello', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let frame = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/chunk-frame/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(frame.status(), StatusCode::OK);
+        assert_eq!(
+            frame.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("image/png"))
+        );
+        let frame_body = to_bytes(frame.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&frame_body[..], b"png-bytes");
+
+        let segment = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/chunk-video/video-segment")
+                    .header(header::RANGE, "bytes=1-3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(segment.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            segment.headers().get(header::CONTENT_RANGE),
+            Some(&HeaderValue::from_static("bytes 1-3/16"))
+        );
+        let segment_body = to_bytes(segment.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&segment_body[..], b"123");
+
+        let missing_clip = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/missing/video-clip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_clip.status(), StatusCode::NOT_FOUND);
+        let missing_clip = response_json(missing_clip).await;
+        assert_eq!(missing_clip["error"], "video clip not found");
     }
 
     #[tokio::test]
@@ -7786,7 +10451,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-1/video-segment")
+                    .uri("/internal/chunks/chunk-1/video-segment")
                     .header(header::RANGE, "bytes=2-5")
                     .body(Body::empty())
                     .unwrap(),
@@ -7814,7 +10479,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-1/video-segment")
+                    .uri("/internal/chunks/chunk-1/video-segment")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -7832,7 +10497,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/chunks/chunk-1/video-segment")
+                    .uri("/internal/chunks/chunk-1/video-segment")
                     .header(header::RANGE, "bytes=20-30")
                     .body(Body::empty())
                     .unwrap(),
@@ -7910,6 +10575,11 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO chunks (id, item_id, chunk_type, text, metadata) VALUES ('untimed-video-chunk', 'video-1', 'understanding', 'summary', '{}')",
+            [],
+        )
+        .unwrap();
 
         assert!(video_clip_source_for_chunk(&paths, "image-chunk")
             .unwrap()
@@ -7917,6 +10587,9 @@ mod tests {
         assert!(video_clip_source_for_chunk(&paths, "video-chunk")
             .unwrap()
             .is_some());
+        assert!(video_clip_source_for_chunk(&paths, "untimed-video-chunk")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -7954,7 +10627,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -8168,7 +10841,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/sources/preview/rss")
+                    .uri("/internal/sources/preview/rss")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({ "url": feed.to_string_lossy() }).to_string(),
@@ -8238,7 +10911,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/usage/summary")
+                    .uri("/internal/usage/summary")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8259,7 +10932,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/usage/events?limit=1")
+                    .uri("/internal/usage/events?limit=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8276,7 +10949,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8291,7 +10964,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs")
+                    .uri("/internal/jobs")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8342,7 +11015,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items?source_id=source-a&status=indexed&limit=1&cursor=1&light=true")
+                    .uri("/internal/items?source_id=source-a&status=indexed&limit=1&cursor=1&light=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8400,7 +11073,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs?source_id=source-a&status=queued,running&limit=1&light=true")
+                    .uri("/internal/jobs?source_id=source-a&status=queued,running&limit=1&light=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8505,7 +11178,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/jobs?scope=drawer&light=true&limit=10")
+                    .uri("/internal/jobs?scope=drawer&light=true&limit=10")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8544,7 +11217,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::ORIGIN, "http://127.0.0.1:1420")
                     .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                     .body(Body::empty())
@@ -8572,7 +11245,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
-                    .uri("/sources")
+                    .uri("/internal/sources")
                     .header(header::ORIGIN, "https://evil.example")
                     .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                     .body(Body::empty())
@@ -8591,7 +11264,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/items")
+                    .uri("/internal/items")
                     .header(header::ORIGIN, "https://evil.example")
                     .body(Body::empty())
                     .unwrap(),
@@ -8620,7 +11293,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/settings")
+                    .uri("/internal/settings")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -8708,7 +11381,7 @@ exit 1
     fn remote_request(remote_addr: &str, token: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method(Method::GET)
-            .uri("/health")
+            .uri("/internal/health")
             .extension(ConnectInfo(
                 remote_addr
                     .parse::<SocketAddr>()

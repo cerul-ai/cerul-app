@@ -7,6 +7,7 @@ type OpenDialogOptions = {
 };
 
 contextBridge.exposeInMainWorld("cerulDesktop", {
+  apiBaseUrl: process.env.CERUL_RENDERER_API_BASE_URL ?? "http://127.0.0.1:23785",
   invoke: <T>(command: string, args?: Record<string, unknown>) =>
     ipcRenderer.invoke("cerul:invoke", command, args) as Promise<T>,
   openDialog: (options: OpenDialogOptions) => ipcRenderer.invoke("cerul:open-dialog", options),

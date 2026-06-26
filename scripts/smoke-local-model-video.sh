@@ -9,6 +9,10 @@ source scripts/load-env.sh
 VIDEO_PATH="${1:-$HOME/sample/video/moshi.mp4}"
 TIMEOUT_SECONDS="${CERUL_LOCAL_MODEL_SMOKE_TIMEOUT:-1800}"
 DEFAULT_PYTHON="$ROOT/.tmp/runtime-matrix-venv/bin/python"
+API_PORT="${CERUL_API_PORT:-23785}"
+export CERUL_API_PORT="$API_PORT"
+API_BASE_URL="http://127.0.0.1:$API_PORT"
+INTERNAL_API_BASE_URL="$API_BASE_URL/internal"
 
 binary_runs() {
   local binary="$1"
@@ -74,8 +78,8 @@ if [ -z "${CERUL_FFMPEG_PATH:-}" ]; then
   exit 2
 fi
 
-if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:7777 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 7777 is already in use; stop the existing Cerul Core before running local model smoke." >&2
+if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port $API_PORT is already in use; stop the existing Cerul Core before running local model smoke." >&2
   exit 2
 fi
 
@@ -104,11 +108,11 @@ request() {
   local path="$2"
   local body="${3:-}"
   if [ -n "$body" ]; then
-    curl -fsS -X "$method" "http://127.0.0.1:7777$path" \
+    curl -fsS -X "$method" "$INTERNAL_API_BASE_URL$path" \
       -H 'content-type: application/json' \
       --data "$body"
   else
-    curl -fsS -X "$method" "http://127.0.0.1:7777$path"
+    curl -fsS -X "$method" "$INTERNAL_API_BASE_URL$path"
   fi
 }
 

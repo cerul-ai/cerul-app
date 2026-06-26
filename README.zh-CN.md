@@ -47,7 +47,7 @@ Cerul App 把你自己的媒体变成一份可搜索、**本地优先**的记忆
 - **你的机器，你的数据。** 媒体、转录稿和向量索引全部留在本地磁盘。推理通过*你自己*掌控的 provider key 运行，或使用完全本地的模型 —— 无需 Cerul 账号。
 - **按语义搜索。** 混合检索把全文检索（SQLite/FTS）与向量搜索（内置本地 [Qdrant](https://qdrant.tech)）结合，让你找到的是那个"瞬间"，而不只是关键词。
 - **常驻而不打扰。** 全局快捷键浮层、菜单栏托盘、后台索引、开机自启，让它始终离你一个按键之遥。
-- **面向 Agent。** Cerul Core 在 `127.0.0.1:7777` 暴露本地 REST API，让编码 Agent 和脚本能查询你的媒体库。
+- **面向 Agent。** Cerul Core 在 `http://127.0.0.1:23785/v1` 暴露本地 Agent API，让编码 Agent 和脚本能查询你的媒体库。
 
 ## 工作原理
 
@@ -67,7 +67,7 @@ Cerul App 把你自己的媒体变成一份可搜索、**本地优先**的记忆
 |---|---|---|
 | 本地文件夹 | 桌面窗口（媒体库、数据源、设置、详情） | **Remote API** —— 你自己的 provider key（默认） |
 | YouTube 频道与视频 | 全局搜索浮层（快捷键） | **本地模型** —— Qwen3-VL / MLX（macOS arm64） |
-| 播客 RSS 订阅源 | 本地 REST API（`127.0.0.1:7777`） | |
+| 播客 RSS 订阅源 | 本地 Agent API（`http://127.0.0.1:23785/v1`） | |
 
 ## 快速开始
 
@@ -112,16 +112,17 @@ CERUL_EMBEDDING_BASE_URL=...
 应用运行后，可以通过 HTTP 查询你的媒体库 —— 方便 Agent 和自动化使用：
 
 ```bash
-# 健康检查
-curl 127.0.0.1:7777/health
+# 状态与 API 发现
+curl http://127.0.0.1:23785/v1/status
+curl http://127.0.0.1:23785/v1/openapi.json
 
 # 按语义搜索
-curl -X POST 127.0.0.1:7777/search \
+curl -X POST http://127.0.0.1:23785/v1/search \
   -H 'content-type: application/json' \
-  -d '{"q": "他们关于 scaling laws 说了什么"}'
+  -d '{"query": "他们关于 scaling laws 说了什么", "max_results": 5}'
 ```
 
-其他路由覆盖数据源（`/sources`）、条目（`/items`）和重新索引。完整契约由 `127.0.0.1:7777/openapi.json` 实时提供。
+稳定的 Agent 接口包括 `/v1/search`、`/v1/ask`、`/v1/items`、`/v1/items/:id/chunks`，以及 `/v1/chunks/:id/*` 下的可播放证据路由。桌面端产品内部接口位于 `/internal`，不属于公开 Agent 契约。
 
 ## 项目结构
 

@@ -29,7 +29,18 @@ import { pathToFileURL } from "node:url";
 // GitHub-release fallback instead of crashing the main process at load time.
 import type { AppUpdater } from "electron-updater";
 
-const apiBaseUrl = "http://127.0.0.1:7777";
+const defaultApiPort = 23785;
+const apiEndpointFileName = "endpoint.json";
+const explicitApiPort = parseApiPort(process.env.CERUL_API_PORT);
+let apiPort = explicitApiPort ?? resolveApiPortForLaunch();
+let apiBaseUrl = apiBaseUrlForPort(apiPort);
+let internalApiBaseUrl = `${apiBaseUrl}/internal`;
+if (explicitApiPort) {
+  process.env.CERUL_API_PORT = String(explicitApiPort);
+} else {
+  delete process.env.CERUL_API_PORT;
+}
+process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
 const appScheme = "app";
 const appHost = "cerul";
 const deepLinkSchemes = ["cerul", "cerul-app"];
@@ -44,20 +55,6 @@ const packagedMlxRuntimeManifestName = "mlx-runtime-manifest.json";
 const packagedMlxRuntimeReadyMarker = ".cerul-mlx-runtime-ready.json";
 const apiStartupTimeoutMs = positiveIntegerEnv("CERUL_API_STARTUP_TIMEOUT_MS", 90_000);
 const apiOutputTailBytes = 32 * 1024;
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "font-src 'self' data:",
-  "img-src 'self' app: http://127.0.0.1:7777 data: blob:",
-  "media-src 'self' http://127.0.0.1:7777 blob:",
-  `connect-src 'self' http://127.0.0.1:7777 ${cloudAccountOrigin}`,
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join("; ");
-
 let mainWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
 let menuBarWindow: BrowserWindow | null = null;
@@ -397,7 +394,7 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
     return response;
   }
   const headers = new Headers(response.headers);
-  headers.set("Content-Security-Policy", contentSecurityPolicy);
+  headers.set("Content-Security-Policy", contentSecurityPolicy());
   // Never cache index.html so it always references the current (content-hashed)
   // assets after a rebuild; the hashed assets themselves remain cacheable.
   headers.set("Cache-Control", "no-store");
@@ -406,6 +403,22 @@ function withAppSecurityHeaders(response: Response, filePath: string) {
     statusText: response.statusText,
     headers,
   });
+}
+
+function contentSecurityPolicy() {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    `img-src 'self' app: ${apiBaseUrl} data: blob:`,
+    `media-src 'self' ${apiBaseUrl} blob:`,
+    `connect-src 'self' ${apiBaseUrl} ${cloudAccountOrigin}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
 }
 
 function rendererDiagnosticsLogPath() {
@@ -857,7 +870,7 @@ async function fetchApiJson(pathname: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(`${apiBaseUrl}${pathname}`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}${pathname}`, { signal: controller.signal });
     if (!response.ok) {
       return null;
     }
@@ -1445,7 +1458,7 @@ function collectApiStartupDiagnostics({
   const pid = child.pid;
   const lines = [
     "Cerul Core startup diagnostics:",
-    `  health_url=${apiBaseUrl}/health`,
+    `  health_url=${internalApiBaseUrl}/health`,
     `  startup_timeout_ms=${apiStartupTimeoutMs}`,
     `  pid=${pid ?? "unknown"}`,
     `  binary=${binary}`,
@@ -1769,16 +1782,17 @@ async function waitForApi(timeoutMs: number, exitInfo?: () => ApiExitInfo | null
     const observedExit = exitInfo?.();
     if (observedExit) {
       throw new Error(
-        `Cerul Core exited before becoming healthy at ${apiBaseUrl} (${formatApiExit(observedExit)})`,
+        `Cerul Core exited before becoming healthy at ${internalApiBaseUrl}/health (${formatApiExit(observedExit)})`,
       );
     }
+    refreshApiPortFromEndpoint();
     if (await apiIsHealthy(750)) {
       return;
     }
     await delay(250);
   }
   throw new Error(
-    `Cerul Core did not become healthy at ${apiBaseUrl} within ${timeoutMs}ms`,
+    `Cerul Core did not become healthy at ${internalApiBaseUrl}/health within ${timeoutMs}ms`,
   );
 }
 
@@ -1786,7 +1800,7 @@ async function apiIsHealthy(timeoutMs: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${apiBaseUrl}/health`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}/health`, { signal: controller.signal });
     return response.ok;
   } catch {
     return false;
@@ -1823,7 +1837,7 @@ async function readApiSettings() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(`${apiBaseUrl}/settings`, { signal: controller.signal });
+    const response = await fetch(`${internalApiBaseUrl}/settings`, { signal: controller.signal });
     if (!response.ok) {
       return {};
     }
@@ -3598,6 +3612,58 @@ function appPaths() {
     models_dir: path.join(data, "models"),
     index_dir: path.join(data, "indexes", "qdrant"),
   };
+}
+
+function resolveApiPortForLaunch() {
+  return readEndpointApiPort() ?? defaultApiPort;
+}
+
+function refreshApiPortFromEndpoint() {
+  if (explicitApiPort) {
+    return false;
+  }
+  const endpointPort = readEndpointApiPort();
+  if (!endpointPort || endpointPort === apiPort) {
+    return false;
+  }
+  setApiPort(endpointPort);
+  return true;
+}
+
+function setApiPort(port: number) {
+  apiPort = port;
+  apiBaseUrl = apiBaseUrlForPort(port);
+  internalApiBaseUrl = `${apiBaseUrl}/internal`;
+  process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
+}
+
+function readEndpointApiPort() {
+  try {
+    const raw = fs.readFileSync(path.join(appPaths().data_dir, apiEndpointFileName), "utf8");
+    const parsed = JSON.parse(raw) as { port?: unknown; base_url?: unknown };
+    const port = parseApiPort(parsed.port);
+    if (port) {
+      return port;
+    }
+    if (typeof parsed.base_url === "string") {
+      return parseApiPort(new URL(parsed.base_url).port);
+    }
+  } catch {
+    // Missing or malformed endpoint metadata falls back to the branded default.
+  }
+  return null;
+}
+
+function parseApiPort(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+  const port = Number.parseInt(String(value), 10);
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : null;
+}
+
+function apiBaseUrlForPort(port: number) {
+  return `http://127.0.0.1:${port}`;
 }
 
 function dataBaseDir() {
