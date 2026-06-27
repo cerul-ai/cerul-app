@@ -812,6 +812,8 @@ fn similarity_from_vector_index_score(score: f32, distance_metric: &str) -> f32 
     }
 
     match distance_metric.to_ascii_lowercase().as_str() {
+        // zvec cosine query scores are distances: an identical vector returns
+        // 0.0 and larger values are less similar.
         "cosine" => (1.0 - score.max(0.0)).clamp(0.0, 1.0),
         "dot" | "ip" => score.clamp(0.0, 1.0),
         "euclid" | "euclidean" | "l2" => (1.0 / (1.0 + score.max(0.0))).clamp(0.0, 1.0),
@@ -1624,6 +1626,13 @@ mod tests {
         assert!((scored[0].match_score - 0.92).abs() < 0.001);
         assert!((scored[1].match_score - 0.91).abs() < 0.001);
         assert!((scored[2].match_score - (LEXICAL_ONLY_SCORE_CEILING + 0.03)).abs() < 0.001);
+    }
+
+    #[test]
+    fn zvec_cosine_scores_are_distances() {
+        assert!((similarity_from_vector_index_score(0.0, "cosine") - 1.0).abs() < 0.001);
+        assert!((similarity_from_vector_index_score(0.92, "cosine") - 0.08).abs() < 0.001);
+        assert!((similarity_from_vector_index_score(1.25, "cosine") - 0.0).abs() < 0.001);
     }
 
     #[test]

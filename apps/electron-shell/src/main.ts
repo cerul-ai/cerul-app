@@ -1623,7 +1623,17 @@ function bundleArgumentSidecarPaths(bundlePath: string) {
     path.join(resourcesPath, "bin", executableName(packagedCoreBinaryName)),
     path.join(resourcesPath, "bin", executableName(devCoreBinaryName)),
     path.join(resourcesPath, "mlx-sidecar", "cerul_mlx_sidecar.py"),
+    ...legacyQdrantSidecarPaths(resourcesPath),
   ].map(normalizeProcessPathForMatch);
+}
+
+function legacyQdrantSidecarPaths(resourcesPath: string) {
+  return [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+  ].map((target) => path.join(resourcesPath, "third-party", target, executableName("qdrant")));
 }
 
 function normalizeProcessPathForMatch(value: string) {
@@ -1671,6 +1681,8 @@ function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
   return (
     command === packagedCoreBinaryName ||
     command === devCoreBinaryName ||
+    command === "qdrant" ||
+    command === "qdrant.exe" ||
     command === "python" ||
     command === "python3" ||
     command.startsWith("python3.")

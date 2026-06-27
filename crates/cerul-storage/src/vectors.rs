@@ -436,12 +436,32 @@ async fn delete_stale_collection_item_embeddings(
         return Ok(0);
     };
     let filter = stale_item_filter(item_id, keep_records);
+    let stale_point_ids = stale_sibling_point_ids(keep_records);
     let guard = handle
         .lock()
         .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+    let before_filter_delete = guard.stats()?.doc_count() as usize;
     guard.delete_by_filter(&filter)?;
     guard.flush()?;
-    Ok(0)
+    let after_filter_delete = guard.stats()?.doc_count() as usize;
+    let filter_deleted = before_filter_delete.saturating_sub(after_filter_delete);
+
+    let stale_siblings = existing_point_ids(&guard, &stale_point_ids)?;
+    let sibling_deleted = stale_siblings.len();
+    if !stale_siblings.is_empty() {
+        let refs = stale_siblings
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let summary = guard.delete(&refs)?;
+        anyhow::ensure!(
+            summary.error == 0,
+            "zvec stale delete for collection {collection} failed for {} records",
+            summary.error
+        );
+        guard.flush()?;
+    }
+    Ok(filter_deleted + sibling_deleted)
 }
 
 fn ensure_collection(
@@ -759,6 +779,48 @@ fn stale_item_filter(item_id: &str, keep_records: &[VectorRecord]) -> String {
         filter.push_str(&format!(" AND {CHUNK_ID_FIELD} NOT IN ({keep_values})"));
     }
     filter
+}
+
+fn stale_sibling_point_ids(keep_records: &[VectorRecord]) -> Vec<String> {
+    let keep_point_keys = keep_records
+        .iter()
+        .map(|record| record.point_key.as_str())
+        .collect::<HashSet<_>>();
+    let mut keep_chunk_ids = keep_records
+        .iter()
+        .map(|record| record.chunk_id.as_str())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    keep_chunk_ids.sort_unstable();
+
+    let mut stale_ids = Vec::new();
+    for chunk_id in keep_chunk_ids {
+        for point_key in [chunk_id.to_string(), format!("{chunk_id}:image")] {
+            if !keep_point_keys.contains(point_key.as_str()) {
+                stale_ids.push(point_id(&point_key));
+            }
+        }
+    }
+    stale_ids
+}
+
+fn existing_point_ids(
+    collection: &Collection,
+    point_ids: &[String],
+) -> anyhow::Result<Vec<String>> {
+    if point_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let refs = point_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let docs = collection.fetch(&refs)?;
+    let mut ids = Vec::new();
+    for doc in docs.iter() {
+        if let Some(id) = doc.pk_copy() {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 fn quoted_filter_value(value: &str) -> String {
@@ -1112,6 +1174,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zvec_cosine_search_scores_are_distances() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let same = test_record("chunk-same", "chunk-same", "item-1", [1.0, 0.0, 0.0]);
+        let orthogonal = test_record(
+            "chunk-orthogonal",
+            "chunk-orthogonal",
+            "item-1",
+            [0.0, 1.0, 0.0],
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[same, orthogonal],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let hits = search_collection(&paths, &collection, &[1.0, 0.0, 0.0], 2)
+            .await
+            .unwrap();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, "chunk-same");
+        assert!(hits[0].score.abs() < 0.001);
+        assert!(hits[0].score < hits[1].score);
+    }
+
+    #[tokio::test]
     async fn stale_unified_delete_preserves_keep_records() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -1128,7 +1223,7 @@ mod tests {
         .await
         .unwrap();
 
-        delete_stale_item_unified_embeddings_for_profile(
+        let deleted = delete_stale_item_unified_embeddings_for_profile(
             &paths,
             "item-1",
             std::slice::from_ref(&keep),
@@ -1137,6 +1232,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(deleted, 1);
 
         let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
         assert_eq!(
@@ -1152,6 +1248,48 @@ mod tests {
         .unwrap();
         assert!(!vectors.contains_key("chunk-stale"));
         assert_eq!(vectors.get("chunk-keep").map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn stale_unified_delete_removes_dropped_sibling_point_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let text = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        let image = test_record("chunk-1:image", "chunk-1", "item-1", [0.0, 1.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[text.clone(), image],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_stale_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&text),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(deleted, 1);
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+        let vectors = retrieve_collection_vectors(&paths, &collection, &["chunk-1".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            vectors.get("chunk-1").cloned(),
+            Some(vec![vec![1.0, 0.0, 0.0]])
+        );
     }
 
     #[tokio::test]
