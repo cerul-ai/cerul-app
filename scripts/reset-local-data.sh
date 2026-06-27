@@ -70,7 +70,7 @@ if is_running; then
     echo "Quitting Cerul (graceful)…"
     osascript -e 'quit app "Cerul"' >/dev/null 2>&1 || true
     pkill -f "/Applications/Cerul.app/Contents/MacOS/Cerul" >/dev/null 2>&1 || true
-    # Up to ~12s of grace: the backend owns qdrant, whose WAL may be mid-flush.
+    # Up to ~12s of grace: the backend owns the vector index, whose WAL may be mid-flush.
     for _ in $(seq 1 60); do
       is_running || break
       sleep 0.2

@@ -10,17 +10,13 @@ usage() {
   cat <<'EOF'
 Usage: scripts/fetch-binaries.sh [--target <triple>] [--force] [--dry-run]
 
-Stages ffmpeg, yt-dlp, and qdrant into third-party/<target-triple>/ for desktop packaging.
+Stages ffmpeg and yt-dlp into third-party/<target-triple>/ for desktop packaging.
 
 ffmpeg is copied from PATH unless CERUL_FFMPEG_URL or a target-specific
 CERUL_FFMPEG_URL_<TARGET> is set. On macOS, non-system dynamic libraries are
 copied next to the staged ffmpeg binary and rewritten to relative load paths.
 The URL may point to a binary, .zip, .tar.gz, or .tar.xz archive containing an
 ffmpeg executable.
-
-qdrant is downloaded from official Qdrant GitHub releases unless
-CERUL_QDRANT_DOWNLOAD_URL or a target-specific
-CERUL_QDRANT_DOWNLOAD_URL_<TARGET> is set.
 
 CERUL_YTDLP_VERSION may override the pinned yt-dlp release for testing or
 hotfixes. When it differs from the manifest version, set either
@@ -144,7 +140,6 @@ manifest_asset_sha256() {
 
 YTDLP_MANIFEST_VERSION="$(manifest_value version)"
 YTDLP_VERSION="${CERUL_YTDLP_VERSION:-$YTDLP_MANIFEST_VERSION}"
-QDRANT_VERSION="${CERUL_QDRANT_VERSION:-v1.18.2}"
 # Cerul-vendored, self-contained LGPL ffmpeg (built from official source with no
 # --enable-gpl / x264, hosted on the cerul-app releases). See ffmpeg_url().
 FFMPEG_VERSION="${CERUL_FFMPEG_VERSION:-7.1}"
@@ -182,11 +177,6 @@ expected_sha256() {
   esac
 
   case "$1" in
-    qdrant-aarch64-apple-darwin.tar.gz) echo "859f487e316ae1bda3b5d7c1e129a0a7344424d992503c188979ca6ac1b47253" ;;
-    qdrant-x86_64-apple-darwin.tar.gz) echo "d395eb3d96c2196bbb8c611b800842928fb8b4997924b585bf42ce0ceb90fa1f" ;;
-    qdrant-aarch64-unknown-linux-musl.tar.gz) echo "2ead5bb8206289b67c930f0eb29123228ddb43c2344551a0947cbc9046f92c6c" ;;
-    qdrant-x86_64-unknown-linux-musl.tar.gz) echo "40a6af44f8a496560c9d2352b6b2a0ada816aa48d0781c68f602582e67b3aea0" ;;
-    qdrant-x86_64-pc-windows-msvc.zip) echo "b2b262cba6f78cf4fa794ae78d73a8f70a221c93c76c75ac8fd6fe95d809b142" ;;
     ffmpeg-7.1-lgpl-macos-arm64.tar.gz) echo "157076bb3e83f31e7a39781200173eb730edafed9481ed5c5a3b3a2adee416fa" ;;
     ffmpeg-7.1-lgpl-macos-x86_64.tar.gz) echo "a13c65f9986d970bb89eee172959aa5c6b09534e8c045575eeba1cdab444fd86" ;;
     *) return 1 ;;
@@ -305,35 +295,12 @@ ffmpeg_url() {
   esac
 }
 
-target_specific_qdrant_url() {
-  local env_name="CERUL_QDRANT_DOWNLOAD_URL_$(sanitize_env_target "$TARGET")"
-  printf '%s' "${!env_name:-${CERUL_QDRANT_DOWNLOAD_URL:-}}"
-}
-
 ytdlp_url() {
   case "$(target_os "$TARGET")-$(target_arch "$TARGET")" in
     macos-*) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_macos" ;;
     linux-aarch64) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux_aarch64" ;;
     linux-x86_64) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" ;;
     windows-*) echo "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp.exe" ;;
-    *) return 1 ;;
-  esac
-}
-
-qdrant_url() {
-  local override
-  override="$(target_specific_qdrant_url)"
-  if [ -n "$override" ]; then
-    echo "$override"
-    return 0
-  fi
-
-  case "$(target_os "$TARGET")-$(target_arch "$TARGET")" in
-    macos-aarch64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-aarch64-apple-darwin.tar.gz" ;;
-    macos-x86_64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-x86_64-apple-darwin.tar.gz" ;;
-    linux-aarch64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-aarch64-unknown-linux-musl.tar.gz" ;;
-    linux-x86_64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-x86_64-unknown-linux-musl.tar.gz" ;;
-    windows-x86_64) echo "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-x86_64-pc-windows-msvc.zip" ;;
     *) return 1 ;;
   esac
 }
@@ -660,10 +627,6 @@ needs_stage_binary() {
     ! staged_binary_version_matches "$name" "$path" "$YTDLP_VERSION" "$@"; then
     return 0
   fi
-  if [ "$name" = "qdrant" ] &&
-    ! staged_binary_version_matches "$name" "$path" "${QDRANT_VERSION#v}" "$@"; then
-    return 0
-  fi
   if run_probe "$path" "$@"; then
     return 1
   fi
@@ -676,7 +639,6 @@ write_version_markers() {
   [ "$DRY_RUN" -eq 1 ] && return 0
   printf '%s\n' "$FFMPEG_VERSION" >"$OUT_DIR/.ffmpeg-version"
   printf '%s\n' "$YTDLP_VERSION" >"$OUT_DIR/.yt-dlp-version"
-  printf '%s\n' "$QDRANT_VERSION" >"$OUT_DIR/.qdrant-version"
 }
 
 OUT_DIR="$ROOT/third-party/$TARGET"
@@ -684,10 +646,8 @@ run mkdir -p "$OUT_DIR"
 
 FFMPEG_EXE="ffmpeg$(exe_suffix)"
 YTDLP_EXE="yt-dlp$(exe_suffix)"
-QDRANT_EXE="qdrant$(exe_suffix)"
 FFMPEG_OUT="$OUT_DIR/$FFMPEG_EXE"
 YTDLP_OUT="$OUT_DIR/$YTDLP_EXE"
-QDRANT_OUT="$OUT_DIR/$QDRANT_EXE"
 
 if needs_stage_binary "ffmpeg" "$FFMPEG_OUT" -version; then
   stage_ffmpeg
@@ -703,19 +663,8 @@ if needs_stage_binary "yt-dlp" "$YTDLP_OUT" --version; then
   fi
 fi
 
-if needs_stage_binary "qdrant" "$QDRANT_OUT" --version; then
-  if URL="$(qdrant_url)"; then
-    if ! stage_from_archive "$URL" "$QDRANT_EXE" "$QDRANT_OUT"; then
-      stage_path_tool "$QDRANT_EXE" "$QDRANT_OUT"
-    fi
-  else
-    stage_path_tool "$QDRANT_EXE" "$QDRANT_OUT"
-  fi
-fi
-
 verify_staged_binary "ffmpeg" "$FFMPEG_OUT" -version
 verify_staged_binary "yt-dlp" "$YTDLP_OUT" --version
-verify_staged_binary "qdrant" "$QDRANT_OUT" --version
 write_version_markers
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -725,4 +674,3 @@ else
 fi
 echo "  $FFMPEG_OUT"
 echo "  $YTDLP_OUT"
-echo "  $QDRANT_OUT"

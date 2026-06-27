@@ -26,7 +26,7 @@ try {
     data_dir: path.join(temp, "Application Support", "Cerul"),
     cache_dir: path.join(temp, "Application Support", "Cerul", "cache"),
     models_dir: path.join(temp, "Application Support", "Cerul", "models"),
-    index_dir: path.join(temp, "Application Support", "Cerul", "indexes", "qdrant"),
+    index_dir: path.join(temp, "Application Support", "Cerul", "indexes", "zvec"),
   };
   const safety = {
     homeDir: path.join(temp, "Home"),

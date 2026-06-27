@@ -12,7 +12,7 @@ const APP_DATA_DIR_NAME: &str = "Cerul";
 pub struct AppPaths {
     pub data: PathBuf,
     pub db: PathBuf,
-    pub qdrant: PathBuf,
+    pub vector_index: PathBuf,
     pub models: PathBuf,
     pub cache: PathBuf,
 }
@@ -28,14 +28,14 @@ impl AppPaths {
         let data = data.as_ref().to_path_buf();
         let paths = Self {
             db: data.join("cerul.db"),
-            qdrant: data.join("indexes").join("qdrant"),
+            vector_index: data.join("indexes").join("zvec"),
             models: data.join("models"),
             cache: data.join("cache"),
             data,
         };
 
         remove_empty_legacy_lance_dir(&paths)?;
-        for dir in [&paths.data, &paths.qdrant, &paths.models, &paths.cache] {
+        for dir in [&paths.data, &paths.vector_index, &paths.models, &paths.cache] {
             fs::create_dir_all(dir)?;
         }
 
@@ -156,14 +156,17 @@ mod tests {
     use super::AppPaths;
 
     #[test]
-    fn from_data_dir_uses_indexes_qdrant_layout() {
+    fn from_data_dir_uses_indexes_zvec_layout() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
 
         assert_eq!(paths.db, temp.path().join("cerul.db"));
         assert_eq!(paths.models, temp.path().join("models"));
         assert_eq!(paths.cache, temp.path().join("cache"));
-        assert_eq!(paths.qdrant, temp.path().join("indexes").join("qdrant"));
+        assert_eq!(
+            paths.vector_index,
+            temp.path().join("indexes").join("zvec")
+        );
         assert_eq!(
             paths.source_cache_dir("youtube"),
             temp.path().join("cache").join("sources").join("youtube")
@@ -181,6 +184,6 @@ mod tests {
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
 
         assert!(temp.path().join("lance").join("table.lance").is_file());
-        assert!(paths.qdrant.is_dir());
+        assert!(paths.vector_index.is_dir());
     }
 }

@@ -43,8 +43,6 @@ terminate_pid() {
   fi
   echo "Stopping orphan $label process pid=$pid" >&2
   kill "$pid" 2>/dev/null || true
-  # 8s grace before SIGKILL: qdrant is a database with a WAL mid-flush;
-  # killing it after 1s risked storage corruption.
   for _ in $(seq 1 40); do
     if ! kill -0 "$pid" 2>/dev/null; then
       return
@@ -100,12 +98,6 @@ check_api_port() {
 }
 
 API_BINARY="$ROOT/target/debug/cerul-api"
-TARGET_TRIPLE="$(host_target_triple)"
-QDRANT_BINARY="$ROOT/third-party/$TARGET_TRIPLE/qdrant"
-if [[ "$TARGET_TRIPLE" == *windows* ]]; then
-  QDRANT_BINARY="$QDRANT_BINARY.exe"
-fi
 
 kill_orphan_processes_for_path "Cerul Core" "$API_BINARY"
-kill_orphan_processes_for_path "Qdrant" "$QDRANT_BINARY"
 check_api_port

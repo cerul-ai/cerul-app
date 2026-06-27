@@ -299,7 +299,7 @@ app.on("will-quit", (event) => {
   stopStatusMonitor();
   flushDirtyStores();
   if (!coreShutdownComplete && apiProcess && ownsApiProcess) {
-    // Wait for the backend (which in turn owns qdrant) to exit, escalating
+    // Wait for the backend (which in turn owns the vector index) to exit, escalating
     // to SIGKILL after a grace period — fire-and-forget SIGTERM used to
     // leave orphans whenever the process needed longer than the app.
     event.preventDefault();
@@ -1599,11 +1599,9 @@ function readBundleArgumentProcessHolders(bundlePath: string) {
 
 function bundleArgumentSidecarPaths(bundlePath: string) {
   const resourcesPath = path.join(bundlePath, "Contents", "Resources");
-  const thirdPartyPath = path.join(resourcesPath, "third-party", targetTriple());
   return [
     path.join(resourcesPath, "bin", executableName(packagedCoreBinaryName)),
     path.join(resourcesPath, "bin", executableName(devCoreBinaryName)),
-    path.join(thirdPartyPath, executableName("qdrant")),
     path.join(resourcesPath, "mlx-sidecar", "cerul_mlx_sidecar.py"),
   ].map(normalizeProcessPathForMatch);
 }
@@ -1653,7 +1651,6 @@ function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
   return (
     command === packagedCoreBinaryName ||
     command === devCoreBinaryName ||
-    command === "qdrant" ||
     command === "python" ||
     command === "python3" ||
     command.startsWith("python3.")
@@ -1899,10 +1896,8 @@ function runtimeEnv() {
 
   const ffmpeg = path.join(thirdParty, target, `ffmpeg${suffix}`);
   const ytdlp = path.join(thirdParty, target, `yt-dlp${suffix}`);
-  const qdrant = path.join(thirdParty, target, `qdrant${suffix}`);
   setBundledBinaryEnv(env, "CERUL_FFMPEG_PATH", ffmpeg, ["-version"]);
   setBundledExecutableEnv(env, "CERUL_YTDLP_PATH", ytdlp);
-  setBundledBinaryEnv(env, "CERUL_QDRANT_BIN", qdrant, ["--version"]);
 
   const mlxSidecar = path.join(
     app.isPackaged ? process.resourcesPath : root,
@@ -3629,7 +3624,7 @@ function appPaths() {
     data_dir: data,
     cache_dir: path.join(data, "cache"),
     models_dir: path.join(data, "models"),
-    index_dir: path.join(data, "indexes", "qdrant"),
+    index_dir: path.join(data, "indexes", "zvec"),
   };
 }
 

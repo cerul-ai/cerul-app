@@ -47,15 +47,15 @@ pub struct SearchDiagnostics {
     pub image_vector_hits_count: usize,
     pub fts_hits_count: usize,
     pub embedding_profile_id: Option<String>,
-    pub qdrant_collection: Option<String>,
-    pub qdrant_point_count: Option<usize>,
+    pub vector_index_collection: Option<String>,
+    pub vector_index_point_count: Option<usize>,
     pub retrieval_unit_count: Option<usize>,
     pub indexed_item_count: Option<usize>,
     pub items_needing_rebuild: Option<usize>,
-    pub qdrant_text_collection: Option<String>,
-    pub qdrant_image_collection: Option<String>,
-    pub qdrant_text_points: Option<usize>,
-    pub qdrant_image_points: Option<usize>,
+    pub vector_index_text_collection: Option<String>,
+    pub vector_index_image_collection: Option<String>,
+    pub vector_index_text_points: Option<usize>,
+    pub vector_index_image_points: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -265,7 +265,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     );
     let (lexical_hits, vector_hits) = tokio::try_join!(
         sqlite_text_search(paths, &req.q, retrieval_limit),
-        qdrant_vector_search(
+        vector_index_search(
             paths,
             &collection,
             &text_query_vector,
@@ -275,14 +275,14 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     )?;
     let mut fts_hits_count = lexical_hits.len();
     let vector_hits_count = vector_hits.len();
-    let qdrant_point_count = cerul_storage::vectors::collection_point_count(paths, &collection)
+    let vector_index_point_count = cerul_storage::vectors::collection_point_count(paths, &collection)
         .await
         .ok();
     let mut fallback_reason = if vector_hits_count == 0 {
-        match qdrant_point_count {
+        match vector_index_point_count {
             Some(0) => Some("unified_vector_index_empty".to_string()),
             Some(_) => Some("no_unified_vector_hits".to_string()),
-            None => Some("qdrant_health_check_failed".to_string()),
+            None => Some("vector_index_unavailable".to_string()),
         }
     } else {
         None
@@ -313,7 +313,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     let retrieval_mode = if used_legacy_fts {
         "fts_fallback".to_string()
     } else {
-        retrieval_mode(vector_hits_count, fts_hits_count, qdrant_point_count)
+        retrieval_mode(vector_hits_count, fts_hits_count, vector_index_point_count)
     };
     Ok(SearchResponse {
         results,
@@ -325,15 +325,15 @@ pub async fn search_with_vectors_for_profile_diagnostics(
             image_vector_hits_count: 0,
             fts_hits_count,
             embedding_profile_id: Some(profile.id.clone()),
-            qdrant_collection: Some(collection.clone()),
-            qdrant_point_count,
+            vector_index_collection: Some(collection.clone()),
+            vector_index_point_count,
             retrieval_unit_count: cerul_storage::retrieval_unit_count(paths).ok(),
             indexed_item_count: cerul_storage::indexed_item_count(paths).ok(),
             items_needing_rebuild: cerul_storage::items_needing_rebuild_count(paths).ok(),
-            qdrant_text_collection: None,
-            qdrant_image_collection: None,
-            qdrant_text_points: qdrant_point_count,
-            qdrant_image_points: Some(0),
+            vector_index_text_collection: None,
+            vector_index_image_collection: None,
+            vector_index_text_points: vector_index_point_count,
+            vector_index_image_points: Some(0),
         },
     })
 }
@@ -354,15 +354,15 @@ impl SearchDiagnostics {
             image_vector_hits_count: 0,
             fts_hits_count,
             embedding_profile_id: None,
-            qdrant_collection: None,
-            qdrant_point_count: None,
+            vector_index_collection: None,
+            vector_index_point_count: None,
             retrieval_unit_count: None,
             indexed_item_count: None,
             items_needing_rebuild: None,
-            qdrant_text_collection: None,
-            qdrant_image_collection: None,
-            qdrant_text_points: None,
-            qdrant_image_points: None,
+            vector_index_text_collection: None,
+            vector_index_image_collection: None,
+            vector_index_text_points: None,
+            vector_index_image_points: None,
         }
     }
 }
@@ -370,12 +370,12 @@ impl SearchDiagnostics {
 fn retrieval_mode(
     vector_hits_count: usize,
     fts_hits_count: usize,
-    qdrant_point_count: Option<usize>,
+    vector_index_point_count: Option<usize>,
 ) -> String {
     match (
         vector_hits_count > 0,
         fts_hits_count > 0,
-        qdrant_point_count,
+        vector_index_point_count,
     ) {
         (true, _, _) => "unified_vector",
         (false, true, _) => "unified_vector",
@@ -653,7 +653,7 @@ async fn legacy_sqlite_literal_search(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-async fn qdrant_vector_search(
+async fn vector_index_search(
     paths: &AppPaths,
     collection: &str,
     query_vector: &[f32],
@@ -666,8 +666,8 @@ async fn qdrant_vector_search(
         .into_iter()
         .map(|hit| RawHit {
             chunk_id: hit.chunk_id,
-            score: similarity_from_qdrant_score(hit.score, distance_metric),
-            similarity_score: Some(similarity_from_qdrant_score(hit.score, distance_metric)),
+            score: similarity_from_vector_index_score(hit.score, distance_metric),
+            similarity_score: Some(similarity_from_vector_index_score(hit.score, distance_metric)),
             exact_match: false,
             source_mask: SOURCE_TEXT_VECTOR,
         })
@@ -802,13 +802,13 @@ fn vector_similarity(query_vector: &[f32], vector: &[f32], distance_metric: &str
     }
 }
 
-fn similarity_from_qdrant_score(score: f32, distance_metric: &str) -> f32 {
+fn similarity_from_vector_index_score(score: f32, distance_metric: &str) -> f32 {
     if !score.is_finite() {
         return 0.0;
     }
 
     match distance_metric.to_ascii_lowercase().as_str() {
-        "cosine" => score.clamp(0.0, 1.0),
+        "cosine" => (1.0 - score.max(0.0)).clamp(0.0, 1.0),
         "dot" | "ip" => score.clamp(0.0, 1.0),
         "euclid" | "euclidean" | "l2" => (1.0 / (1.0 + score.max(0.0))).clamp(0.0, 1.0),
         _ => score.clamp(0.0, 1.0),
@@ -1619,7 +1619,9 @@ mod tests {
         );
         assert!((scored[0].match_score - 0.92).abs() < 0.001);
         assert!((scored[1].match_score - 0.91).abs() < 0.001);
-        assert!((scored[2].match_score - 0.43).abs() < 0.001);
+        assert!(
+            (scored[2].match_score - (LEXICAL_ONLY_SCORE_CEILING + 0.03)).abs() < 0.001
+        );
     }
 
     #[test]
@@ -2723,12 +2725,12 @@ mod tests {
         assert!(response.diagnostics.embedding_profile_id.is_some());
         assert!(response
             .diagnostics
-            .qdrant_collection
+            .vector_index_collection
             .as_deref()
             .unwrap()
             .contains("retrieval_units"));
-        assert_eq!(response.diagnostics.qdrant_text_collection, None);
-        assert_eq!(response.diagnostics.qdrant_image_points, Some(0));
+        assert_eq!(response.diagnostics.vector_index_text_collection, None);
+        assert_eq!(response.diagnostics.vector_index_image_points, Some(0));
         assert_eq!(
             response.results[0].playback_chunk_id,
             "item-1:keyframe:000001"

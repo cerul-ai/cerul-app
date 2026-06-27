@@ -50,7 +50,7 @@ emit_result() {
   local status="$1"
   local target_triple="${2:-${TARGET_TRIPLE:-${CERUL_TARGET_TRIPLE:-x86_64-pc-windows-msvc}}}"
   local target_binary="${3:-${INSTALLED_BINARY:-${BINARY:-auto}}}"
-  printf 'installed_runtime_smoke platform=windows status=%s %s %s packaged_core=verified bundled_ffmpeg=verified bundled_ytdlp=verified bundled_qdrant=verified health=ok\n' \
+  printf 'installed_runtime_smoke platform=windows status=%s %s %s packaged_core=verified bundled_ffmpeg=verified bundled_ytdlp=verified health=ok\n' \
     "$status" \
     "$(field binary "$target_binary")" \
     "$(field target "$target_triple")"
@@ -60,7 +60,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ validate Windows host"
   echo "+ locate Electron resources/bin/cerul-core.exe"
   echo "+ copy packaged cerul-core.exe and sibling resources/third-party to a temporary install directory"
-  echo "+ launch copied cerul-core.exe with CERUL_FFMPEG_PATH, CERUL_YTDLP_PATH, and CERUL_QDRANT_BIN"
+  echo "+ launch copied cerul-core.exe with CERUL_FFMPEG_PATH and CERUL_YTDLP_PATH"
   echo "+ poll http://127.0.0.1:23785/internal/health for status=ok"
   emit_result planned
   exit 0
@@ -130,7 +130,6 @@ check_bundled_binary() {
 
 check_bundled_binary "ffmpeg.exe"
 check_bundled_binary "yt-dlp.exe"
-check_bundled_binary "qdrant.exe"
 
 if "$CURL_BIN" -fsS --max-time 1 "$API_HEALTH_URL" >/dev/null 2>&1; then
   echo "Cerul Core already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
@@ -163,7 +162,6 @@ env -i \
   PATH="$SYSTEM_PATH_WIN" \
   CERUL_FFMPEG_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/ffmpeg.exe" \
   CERUL_YTDLP_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/yt-dlp.exe" \
-  CERUL_QDRANT_BIN="$INSTALL_DIR/third-party/$TARGET_TRIPLE/qdrant.exe" \
   "$INSTALLED_BINARY" &
 PID="$!"
 

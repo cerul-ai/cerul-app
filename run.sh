@@ -71,14 +71,11 @@ needs_bundled_binaries() {
   local ytdlp_version
   ytdlp_version="$(node -e 'const fs = require("fs"); const manifest = JSON.parse(fs.readFileSync("third-party/yt-dlp-manifest.json", "utf8")); process.stdout.write(String(process.env.CERUL_YTDLP_VERSION || manifest.version));')"
   local ffmpeg_version="${CERUL_FFMPEG_VERSION:-7.1}"
-  local qdrant_version="${CERUL_QDRANT_VERSION:-v1.18.2}"
 
   [ -x "$dir/ffmpeg$suffix" ] || return 0
   [ -x "$dir/yt-dlp$suffix" ] || return 0
-  [ -x "$dir/qdrant$suffix" ] || return 0
   [ "$(cat "$dir/.ffmpeg-version" 2>/dev/null || true)" = "$ffmpeg_version" ] || return 0
   [ "$(cat "$dir/.yt-dlp-version" 2>/dev/null || true)" = "$ytdlp_version" ] || return 0
-  [ "$(cat "$dir/.qdrant-version" 2>/dev/null || true)" = "$qdrant_version" ] || return 0
   return 1
 }
 
