@@ -2741,6 +2741,48 @@ function setUpdaterError(error: unknown, version?: string) {
   });
 }
 
+type AvailableUpdaterState = Extract<UpdaterState, { phase: "available" }>;
+
+function newerReleasePageUpdateForVersion(version: string): AvailableUpdaterState | null {
+  if (
+    latestUpdaterState.phase !== "available" ||
+    latestUpdaterState.canAutoInstall ||
+    compareVersions(latestUpdaterState.version, version) <= 0
+  ) {
+    return null;
+  }
+  return latestUpdaterState;
+}
+
+function keepNewerReleasePageUpdate(version: string, source: string) {
+  const newerUpdate = newerReleasePageUpdateForVersion(version);
+  if (!newerUpdate) {
+    return false;
+  }
+  updaterCheckInstallRequested = false;
+  updateInstallRequested = false;
+  console.warn(
+    `electron-updater ${source} ignored stale update metadata version=${version}; newer GitHub release=${newerUpdate.version}`,
+  );
+  setUpdaterState(newerUpdate);
+  return true;
+}
+
+function startAutoUpdaterDownload(updater: AppUpdater, version: string) {
+  void updater.downloadUpdate().catch((error) => {
+    console.error("electron-updater auto download failed; release-page fallback active", error);
+    updaterCheckInstallRequested = false;
+    updateInstallRequested = false;
+    clearPreparedMacUpdateHandoff(version);
+    setUpdaterState({
+      phase: "error",
+      version,
+      message: error instanceof Error ? error.message : String(error),
+      releaseUrl: releasesPageUrl(),
+    });
+  });
+}
+
 function getAutoUpdater(): AppUpdater | null {
   if (autoUpdaterInstance) {
     return autoUpdaterInstance;
@@ -2760,21 +2802,27 @@ function wireAutoUpdater(updater: AppUpdater) {
     return;
   }
   autoUpdaterWired = true;
-  // Codex-like flow: signed update assets download in the background after a
-  // successful check. The rail button then installs an already prepared update.
-  updater.autoDownload = true;
+  // Keep downloads behind our own version arbitration so stale generic-provider
+  // metadata cannot replace a newer GitHub release-page update with an older
+  // auto-installable build.
+  updater.autoDownload = false;
   // On macOS, electron-updater emits its own update-downloaded event before
   // native Squirrel has necessarily finished its handoff. Keep the Squirrel
   // fetch/install tied to explicit quitAndInstall so a fallback app.quit cannot
   // strand a staged update.
   updater.autoInstallOnAppQuit = process.platform !== "darwin";
   updater.on("update-available", (info) => {
+    const version = normalizeVersion(info.version);
+    if (keepNewerReleasePageUpdate(version, "update-available")) {
+      return;
+    }
     clearPreparedMacUpdateHandoff();
     if (updaterCheckInstallRequested) {
       updateInstallRequested = true;
       updaterCheckInstallRequested = false;
     }
-    setUpdaterState(updateDownloadState(normalizeVersion(info.version)));
+    setUpdaterState(updateDownloadState(version));
+    startAutoUpdaterDownload(updater, version);
   });
   updater.on("update-not-available", () => {
     updaterCheckInstallRequested = false;
@@ -2790,6 +2838,9 @@ function wireAutoUpdater(updater: AppUpdater) {
   });
   updater.on("update-downloaded", (info) => {
     const version = normalizeVersion(info.version);
+    if (keepNewerReleasePageUpdate(version, "update-downloaded")) {
+      return;
+    }
     const installWhenReady = updateInstallRequested || updaterCheckInstallRequested;
     updateInstallRequested = false;
     updaterCheckInstallRequested = false;

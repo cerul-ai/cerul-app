@@ -3,6 +3,10 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      release_version:
+        description: "Create a Release x.y.z commit and vX.Y.Z tag from the default branch"
+        required: true
+        type: string
       require_macos_signing:
         description: "Require Developer ID signing and notarization for macOS artifacts"
         required: false
@@ -25,11 +29,88 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ytdlp-preflight:
-    name: Check bundled yt-dlp pin
+  prepare-release:
+    name: Prepare release tag
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.CERUL_RELEASE_TOKEN || github.token }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Prepare release commit and tag
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CERUL_RELEASE_TOKEN: ${{ secrets.CERUL_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERUL_RELEASE_TOKEN:-}" ]; then
+            echo "::notice::CERUL_RELEASE_TOKEN is not configured. The release commit push may fail if the default branch protection does not allow GITHUB_TOKEN to bypass reviews."
+          fi
+          tag="v${RELEASE_VERSION}"
+          git fetch origin "$DEFAULT_BRANCH" --tags
+          git checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists locally." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists on origin." >&2
+            exit 1
+          fi
+          node scripts/prepare-release.mjs "$RELEASE_VERSION"
+          git status --short
+          git add package.json apps/desktop/package.json apps/electron-shell/package.json
+          if git diff --cached --quiet; then
+            echo "No release version changes staged." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Release $RELEASE_VERSION"
+          git tag -a "$tag" -m "Cerul $RELEASE_VERSION"
+          git push origin "HEAD:$DEFAULT_BRANCH"
+          git push origin "$tag"
+
+  release-context:
+    name: Resolve release target
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    outputs:
+      is_release: ${{ steps.tag.outputs.is_release || 'false' }}
+      release_ref: ${{ steps.tag.outputs.release_ref || github.ref }}
+      release_sha: ${{ steps.tag.outputs.release_sha || github.sha }}
+      release_tag: ${{ steps.tag.outputs.release_tag || '' }}
+      release_version: ${{ steps.tag.outputs.release_version || '' }}
+    steps:
+      - name: Resolve pushed tag
+        id: tag
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "is_release=true"
+            echo "release_ref=${GITHUB_REF}"
+            echo "release_sha=${GITHUB_SHA}"
+            echo "release_tag=${GITHUB_REF_NAME}"
+            echo "release_version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  ytdlp-preflight:
+    name: Check bundled yt-dlp pin
+    needs: release-context
+    if: needs.release-context.outputs.is_release == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-context.outputs.release_ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -40,10 +121,15 @@ jobs:
 
   macos-update-assets:
     name: Build macOS update assets
-    needs: ytdlp-preflight
+    needs:
+      - release-context
+      - ytdlp-preflight
+    if: needs.release-context.outputs.is_release == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-context.outputs.release_ref }}
 
       - name: Restore same-SHA macOS update prebuild
         id: prebuilt-update
@@ -57,7 +143,7 @@ jobs:
             apps/electron-shell/mlx-runtime.tar.gz
             apps/electron-shell/mlx-runtime.tar.gz.sha256
             apps/electron-shell/mlx-runtime-manifest.json
-          key: cerul-macos-update-${{ github.sha }}
+          key: cerul-macos-update-${{ needs.release-context.outputs.release_sha }}
 
       - name: Extract cached app bundle
         if: steps.prebuilt-update.outputs.cache-hit == 'true'
@@ -117,7 +203,7 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ needs.release-context.outputs.is_release == 'true' || inputs.require_macos_signing }}
         run: |
           if [ -z "${CSC_LINK:-}" ]; then
             if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
@@ -153,7 +239,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-          REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ needs.release-context.outputs.is_release == 'true' || inputs.require_macos_signing }}
         run: |
           args=(--mac-targets zip)
           if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
@@ -187,7 +273,7 @@ jobs:
         shell: bash
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ needs.release-context.outputs.is_release == 'true' || inputs.require_macos_signing }}
         run: |
           args=(--app "${{ steps.update-app.outputs.app_path }}")
           if [ -n "${APPLE_TEAM_ID:-}" ]; then
@@ -216,30 +302,16 @@ jobs:
 
   publish-update-assets:
     name: Publish macOS update assets
-    needs: macos-update-assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-context
+      - macos-update-assets
+    if: needs.release-context.outputs.is_release == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: cerul-macos-update
           path: release-assets
-      - name: Upload update assets to GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "$tag" --latest --verify-tag
-          fi
-          mapfile -d '' files < <(find release-assets -type f \( -name "*.zip" -o -name "*.zip.blockmap" -o -name "latest-mac.yml" \) -print0 | sort -z)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No update assets found to upload." >&2
-            exit 1
-          fi
-          gh release upload "$tag" "${files[@]}" --clobber
       - name: Upload update assets to Cloudflare R2
         shell: bash
         env:
@@ -248,7 +320,10 @@ jobs:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CERUL_UPDATES_R2_BUCKET: ${{ secrets.CERUL_UPDATES_R2_BUCKET }}
           CERUL_UPDATES_R2_PREFIX: ${{ vars.CERUL_UPDATES_R2_PREFIX }}
+          CERUL_UPDATES_PUBLIC_BASE_URL: ${{ vars.CERUL_UPDATES_PUBLIC_BASE_URL }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
         run: |
+          set -euo pipefail
           required=(
             AWS_ACCESS_KEY_ID
             AWS_SECRET_ACCESS_KEY
@@ -275,26 +350,40 @@ jobs:
             echo "No update assets found to upload." >&2
             exit 1
           fi
+          latest_file=""
           for file in "${files[@]}"; do
             name="$(basename "$file")"
+            if [ "$name" = "latest-mac.yml" ]; then
+              latest_file="$file"
+              continue
+            fi
             key="$name"
             if [ -n "$prefix" ]; then
               key="$prefix/$name"
             fi
-            cache_control="public, max-age=31536000, immutable"
-            if [ "$name" = "latest-mac.yml" ]; then
-              cache_control="public, max-age=300"
-            fi
             content_type="application/octet-stream"
             case "$name" in
-              *.yml) content_type="application/yaml" ;;
               *.zip) content_type="application/zip" ;;
             esac
             aws s3 cp "$file" "s3://${CERUL_UPDATES_R2_BUCKET}/${key}" \
               --endpoint-url "$endpoint" \
-              --cache-control "$cache_control" \
+              --cache-control "public, max-age=31536000, immutable" \
               --content-type "$content_type"
           done
+          if [ -z "$latest_file" ]; then
+            echo "No latest-mac.yml found in update assets." >&2
+            exit 1
+          fi
+          metadata_version="$(sed -n 's/^version:[[:space:]]*//p' "$latest_file" | tr -d "'\"" | head -1)"
+          if [ "$metadata_version" != "$RELEASE_VERSION" ]; then
+            echo "latest-mac.yml version $metadata_version does not match release $RELEASE_VERSION." >&2
+            exit 1
+          fi
+          primary_path="$(sed -n 's/^path:[[:space:]]*//p' "$latest_file" | tr -d "'\"" | head -1)"
+          if [ -z "$primary_path" ]; then
+            echo "latest-mac.yml does not include a primary path." >&2
+            exit 1
+          fi
           manifest="$(find release-assets -type f -name "mlx-runtime-manifest.json" -print -quit)"
           archive="$(find release-assets -type f -name "mlx-runtime.tar.gz" -print -quit)"
           checksum="$(find release-assets -type f -name "mlx-runtime.tar.gz.sha256" -print -quit)"
@@ -319,13 +408,28 @@ jobs:
             --endpoint-url "$endpoint" \
             --cache-control "public, max-age=300" \
             --content-type "application/json"
+          public_base="${CERUL_UPDATES_PUBLIC_BASE_URL:-https://updates.cerul.ai}"
+          public_prefix="${public_base%/}"
+          if [ -n "$prefix" ]; then
+            public_prefix="$public_prefix/$prefix"
+          fi
+          primary_url="$public_prefix/$primary_path"
+          if ! curl -fsSI "$primary_url" >/dev/null; then
+            curl -fsSL --range 0-0 "$primary_url" >/dev/null
+          fi
+          echo "Verified versioned updater asset $primary_url"
 
   macos-dmg-assets:
     name: Build macOS DMG assets
-    needs: macos-update-assets
+    needs:
+      - release-context
+      - macos-update-assets
+    if: needs.release-context.outputs.is_release == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-context.outputs.release_ref }}
       - uses: pnpm/action-setup@v6
         with:
           version: 9.15.9
@@ -347,7 +451,7 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ needs.release-context.outputs.is_release == 'true' || inputs.require_macos_signing }}
         run: |
           if [ -z "${CSC_LINK:-}" ]; then
             if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
@@ -407,7 +511,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-          REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ needs.release-context.outputs.is_release == 'true' || inputs.require_macos_signing }}
         run: |
           args=(--mac-targets dmg --prepackaged-app "${{ steps.prepackaged-app.outputs.app_path }}")
           if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ]; then
@@ -434,7 +538,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CERUL_NOTARIZE: ${{ secrets.CERUL_NOTARIZE }}
-          REQUIRE_MACOS_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.require_macos_signing) }}
+          REQUIRE_MACOS_SIGNING: ${{ needs.release-context.outputs.is_release == 'true' || inputs.require_macos_signing }}
         run: |
           if [ "${REQUIRE_MACOS_SIGNING:-false}" = "true" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
             echo "APPLE_SIGNING_IDENTITY is required for signed macOS release artifacts." >&2
@@ -482,28 +586,20 @@ jobs:
   publish-dmg-assets:
     name: Publish macOS DMG assets
     needs:
+      - release-context
       - publish-update-assets
       - macos-dmg-assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.release-context.outputs.is_release == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: cerul-macos-dmg
-          path: release-assets
-      - name: Upload DMG assets to GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          mapfile -d '' files < <(find release-assets -type f \( -name "*.dmg" -o -name "*.dmg.blockmap" \) -print0 | sort -z)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No DMG assets found to upload." >&2
-            exit 1
-          fi
-          gh release upload "$tag" "${files[@]}" --clobber
+          path: release-assets/dmg
+      - uses: actions/download-artifact@v8
+        with:
+          name: cerul-macos-update
+          path: release-assets/update
       - name: Upload DMG assets to Cloudflare R2
         shell: bash
         env:
@@ -534,7 +630,7 @@ jobs:
           prefix="${CERUL_UPDATES_R2_PREFIX:-}"
           prefix="${prefix#/}"
           prefix="${prefix%/}"
-          mapfile -d '' files < <(find release-assets -type f \( -name "*.dmg" -o -name "*.dmg.blockmap" \) -print0 | sort -z)
+          mapfile -d '' files < <(find release-assets/dmg -type f \( -name "*.dmg" -o -name "*.dmg.blockmap" \) -print0 | sort -z)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No DMG assets found to upload." >&2
             exit 1
@@ -554,7 +650,7 @@ jobs:
               --cache-control "public, max-age=31536000, immutable" \
               --content-type "$content_type"
           done
-          dmg="$(find release-assets -type f -name "*.dmg" -print | sort | tail -1)"
+          dmg="$(find release-assets/dmg -type f -name "*.dmg" -print | sort | tail -1)"
           if [ -z "$dmg" ]; then
             echo "No DMG found for stable macOS download alias." >&2
             exit 1
@@ -581,17 +677,132 @@ jobs:
               --content-type "application/octet-stream" \
               --content-disposition "attachment; filename=\"$(basename "$dmg_blockmap")\""
           fi
+      - name: Upload release assets to draft GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --draft --verify-tag --notes "Release assets staged; updater metadata publishes last."
+          fi
+          mapfile -d '' files < <(find release-assets -type f \( -name "*.zip" -o -name "*.zip.blockmap" -o -name "latest-mac.yml" -o -name "*.dmg" -o -name "*.dmg.blockmap" \) -print0 | sort -z)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release assets found to upload." >&2
+            exit 1
+          fi
+          gh release upload "$tag" "${files[@]}" --clobber
+      - name: Publish updater metadata to Cloudflare R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CERUL_UPDATES_R2_BUCKET: ${{ secrets.CERUL_UPDATES_R2_BUCKET }}
+          CERUL_UPDATES_R2_PREFIX: ${{ vars.CERUL_UPDATES_R2_PREFIX }}
+          CERUL_UPDATES_PUBLIC_BASE_URL: ${{ vars.CERUL_UPDATES_PUBLIC_BASE_URL }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          required=(
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+            CLOUDFLARE_R2_ACCOUNT_ID
+            CERUL_UPDATES_R2_BUCKET
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "R2 upload cannot continue: $name is not configured." >&2
+              exit 1
+            fi
+          done
+          if ! command -v aws >/dev/null 2>&1; then
+            python3 -m pip install --user awscli
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          endpoint="https://${CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="${CERUL_UPDATES_R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+          latest_file="$(find release-assets/update -type f -name "latest-mac.yml" -print -quit)"
+          if [ -z "$latest_file" ]; then
+            echo "No latest-mac.yml found in update assets." >&2
+            exit 1
+          fi
+          metadata_version="$(sed -n 's/^version:[[:space:]]*//p' "$latest_file" | tr -d "'\"" | head -1)"
+          if [ "$metadata_version" != "$RELEASE_VERSION" ]; then
+            echo "latest-mac.yml version $metadata_version does not match release $RELEASE_VERSION." >&2
+            exit 1
+          fi
+          primary_path="$(sed -n 's/^path:[[:space:]]*//p' "$latest_file" | tr -d "'\"" | head -1)"
+          if [ -z "$primary_path" ]; then
+            echo "latest-mac.yml does not include a primary path." >&2
+            exit 1
+          fi
+          latest_key="latest-mac.yml"
+          if [ -n "$prefix" ]; then
+            latest_key="$prefix/$latest_key"
+          fi
+          aws s3 cp "$latest_file" "s3://${CERUL_UPDATES_R2_BUCKET}/${latest_key}" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=60, must-revalidate" \
+            --content-type "application/yaml"
+
+          public_base="${CERUL_UPDATES_PUBLIC_BASE_URL:-https://updates.cerul.ai}"
+          public_prefix="${public_base%/}"
+          if [ -n "$prefix" ]; then
+            public_prefix="$public_prefix/$prefix"
+          fi
+          primary_url="$public_prefix/$primary_path"
+          if ! curl -fsSI "$primary_url" >/dev/null; then
+            curl -fsSL --range 0-0 "$primary_url" >/dev/null
+          fi
+          latest_url="$public_prefix/latest-mac.yml"
+          seen_version=""
+          latest_body=""
+          for attempt in $(seq 1 36); do
+            latest_body="$(curl -fsSL -H "Cache-Control: no-cache" "$latest_url" 2>/dev/null || true)"
+            seen_version="$(printf '%s\n' "$latest_body" | sed -n 's/^version:[[:space:]]*//p' | tr -d "'\"" | head -1)"
+            if [ "$seen_version" = "$RELEASE_VERSION" ]; then
+              break
+            fi
+            echo "Waiting for $latest_url to report $RELEASE_VERSION (attempt $attempt, saw ${seen_version:-none})."
+            sleep 10
+          done
+          if [ "$seen_version" != "$RELEASE_VERSION" ]; then
+            echo "CDN updater metadata did not publish $RELEASE_VERSION." >&2
+            printf '%s\n' "$latest_body" >&2
+            exit 1
+          fi
+          echo "Verified updater metadata $latest_url version=$seen_version primary=$primary_path"
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          gh release edit "$tag" --draft=false --latest
 
   announce:
     name: AI release notes + Discord announcement
-    needs: publish-dmg-assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-context
+      - publish-dmg-assets
+    if: needs.release-context.outputs.is_release == 'true'
     # Best-effort: a failure here must never affect the release that already shipped.
     continue-on-error: true
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.release-context.outputs.release_ref }}
           fetch-depth: 0 # full history + tags so we can diff the commit range
       - name: Generate AI release notes (GitHub / Discord / Tweet)
         env:
@@ -600,7 +811,7 @@ jobs:
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           DOWNLOAD_URL: ${{ vars.DOWNLOAD_URL }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
           bash scripts/ai-release-notes.sh "$TAG" --out notes --channels github
           bash scripts/ai-release-notes.sh "$TAG" --out notes --channels discord \
@@ -611,7 +822,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
           if [ -s notes/notes.github.md ]; then
             marker="<!-- cerul-discord-announced:${TAG} -->"
@@ -629,7 +840,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
           if [ -z "${DISCORD_WEBHOOK_URL:-}" ] || [ ! -s notes/notes.discord.md ]; then
             echo "Webhook or Discord notes missing; skipping Discord announcement."
@@ -662,7 +873,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Cerul ${GITHUB_REF_NAME} — tweet draft (post manually)"
+            echo "## Cerul ${{ needs.release-context.outputs.release_tag }} — tweet draft (post manually)"
             echo '```'
             cat notes/notes.tweet.txt 2>/dev/null || echo "(none generated)"
             echo '```'
@@ -670,6 +881,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: release-notes-${{ github.ref_name }}
+          name: release-notes-${{ needs.release-context.outputs.release_tag }}
           path: notes/
           if-no-files-found: warn
