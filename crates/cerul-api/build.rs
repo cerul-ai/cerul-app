@@ -34,6 +34,13 @@ fn reject_unsupported_zvec_runtime_target(target_os: &str, target_arch: &str) {
              ZVEC_BUNDLED_WHEEL_PATH, or ZVEC_BUNDLED_WHEEL_URL plus ZVEC_BUNDLED_WHEEL_SHA256."
         );
     }
+    if target_os == "windows" && !has_zvec_runtime_override() {
+        panic!(
+            "Windows zvec builds require an explicit runtime override. \
+             Provide a matching zvec runtime through ZVEC_ROOT/ZVEC_LIB_DIR, \
+             ZVEC_BUNDLED_WHEEL_PATH, or ZVEC_BUNDLED_WHEEL_URL plus ZVEC_BUNDLED_WHEEL_SHA256."
+        );
+    }
 }
 
 fn has_zvec_runtime_override() -> bool {
@@ -104,11 +111,6 @@ fn find_zvec_runtime_library(
         }
     }
 
-    let direct = target_dir.join(file_name);
-    if direct.is_file() {
-        return Ok(Some(direct));
-    }
-
     let build_dir = target_dir.join("build");
     let entries = match fs::read_dir(&build_dir) {
         Ok(entries) => entries,
@@ -137,7 +139,15 @@ fn find_zvec_runtime_library(
         }
     }
     candidates.sort();
-    Ok(candidates.pop())
+    if let Some(candidate) = candidates.pop() {
+        return Ok(Some(candidate));
+    }
+
+    let direct = target_dir.join(file_name);
+    if direct.is_file() {
+        return Ok(Some(direct));
+    }
+    Ok(None)
 }
 
 fn zvec_runtime_override_candidates(file_name: &str) -> Vec<PathBuf> {

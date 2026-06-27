@@ -71,10 +71,6 @@ async function findZvecRuntimeLibrary(profileDir) {
   }
 
   const direct = resolve(profileDir, fileName);
-  if (await isFile(direct)) {
-    return { fileName, path: direct };
-  }
-
   const buildDir = resolve(profileDir, "build");
   let entries = [];
   try {
@@ -96,7 +92,13 @@ async function findZvecRuntimeLibrary(profileDir) {
   }
   candidates.sort();
   const path = candidates.at(-1);
-  return path ? { fileName, path } : null;
+  if (path) {
+    return { fileName, path };
+  }
+  if (await isFile(direct)) {
+    return { fileName, path: direct };
+  }
+  return null;
 }
 
 function zvecRuntimeOverrideCandidates(fileName) {

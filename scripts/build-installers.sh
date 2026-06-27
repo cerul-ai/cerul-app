@@ -324,6 +324,18 @@ supported Apple Silicon target with --target aarch64-apple-darwin.
 EOF
       exit 2
       ;;
+    x86_64-pc-windows-msvc)
+      if has_zvec_runtime_override; then
+        return
+      fi
+      cat >&2 <<'EOF'
+x86_64-pc-windows-msvc requires an explicit zvec runtime override.
+
+To build Windows artifacts, provide a matching zvec runtime through
+ZVEC_ROOT/ZVEC_LIB_DIR or ZVEC_BUNDLED_WHEEL_PATH.
+EOF
+      exit 2
+      ;;
   esac
 }
 
