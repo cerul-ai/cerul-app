@@ -488,7 +488,7 @@ fn collection_handle_for_profile(
         .map_err(|_| anyhow::anyhow!("zvec collection cache mutex poisoned"))?;
 
     if let Some(handle) = guard.get(&path) {
-        if collection_path_has_data(&path)? {
+        if collection_path_has_data(&path)? && collection_config_exists(&path) {
             validate_collection_config(paths, collection, profile, handle)?;
             return Ok(Arc::clone(handle));
         }
@@ -514,13 +514,13 @@ fn collection_handle_existing(
         .map_err(|_| anyhow::anyhow!("zvec collection cache mutex poisoned"))?;
 
     if let Some(handle) = guard.get(&path) {
-        if collection_path_has_data(&path)? {
+        if collection_path_has_data(&path)? && collection_config_exists(&path) {
             return Ok(Some(Arc::clone(handle)));
         }
         guard.remove(&path);
     }
 
-    if !collection_path_has_data(&path)? {
+    if !collection_path_has_data(&path)? || !collection_config_exists(&path) {
         return Ok(None);
     }
 
@@ -545,12 +545,20 @@ fn open_or_create_collection(
     fs::create_dir_all(&profile_index_root(path))?;
     let collection_path = path_to_string(path)?;
     if collection_path_has_data(path)? {
-        return Collection::open(&collection_path, None).with_context(|| {
+        if collection_config_exists(path) {
+            return Collection::open(&collection_path, None).with_context(|| {
+                format!(
+                    "failed to open zvec collection {collection} at {}",
+                    path.display()
+                )
+            });
+        }
+        fs::remove_dir_all(path).with_context(|| {
             format!(
-                "failed to open zvec collection {collection} at {}",
+                "failed to remove zvec collection {collection} with missing config at {}",
                 path.display()
             )
-        });
+        })?;
     }
     if path.exists() {
         fs::remove_dir_all(path)?;
@@ -680,6 +688,10 @@ fn collection_config_path(collection_path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("collection");
     collection_path.with_file_name(format!("{file_name}{ZVEC_COLLECTION_CONFIG_SUFFIX}"))
+}
+
+fn collection_config_exists(collection_path: &Path) -> bool {
+    collection_config_path(collection_path).is_file()
 }
 
 fn read_collection_config(path: &Path) -> anyhow::Result<ZvecCollectionConfig> {
@@ -1308,5 +1320,51 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(error.contains("config does not match profile"));
+    }
+
+    #[tokio::test]
+    async fn ensure_collection_recreates_when_config_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&record),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let path = collection_path(&paths, &collection);
+        let config = collection_config_path(&path);
+        assert!(config.exists());
+        fs::remove_file(&config).unwrap();
+
+        ensure_unified_collection_for_profile(&paths, &profile, crate::SEARCH_INDEX_VERSION)
+            .await
+            .unwrap();
+
+        assert!(config.exists());
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            0
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
     }
 }
