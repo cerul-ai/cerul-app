@@ -642,7 +642,7 @@ write_version_markers() {
 }
 
 remove_stale_qdrant_artifacts() {
-  run rm -f "$OUT_DIR/qdrant$(exe_suffix)" "$OUT_DIR/.qdrant-version"
+  run rm -f "$ROOT"/third-party/*/qdrant "$ROOT"/third-party/*/qdrant.exe "$ROOT"/third-party/*/.qdrant-version
 }
 
 OUT_DIR="$ROOT/third-party/$TARGET"
