@@ -32,7 +32,7 @@ The old API felt better because it moved complexity to indexing: it built a rich
 Build multimodal meaning at index time. Search should be simple:
 
 ```text
-typed query -> query embedding -> one Qdrant collection -> hydrate retrieval units
+typed query -> query embedding -> one vector index collection -> hydrate retrieval units
 ```
 
 No text-vector/image-vector/FTS three-way merge on the hot path.
@@ -62,7 +62,7 @@ Recommended fields:
 - `created_at`
 - `updated_at`
 
-The Qdrant payload should stay small:
+The vector-index payload should stay small:
 
 - `unit_id`
 - `item_id`
@@ -71,7 +71,7 @@ The Qdrant payload should stay small:
 - `end_sec`
 - `index_version`
 
-Hydration should come from SQLite, not from Qdrant payload blobs.
+Hydration should come from SQLite, not from vector-index payload blobs.
 
 ### Unit Construction
 
@@ -133,7 +133,7 @@ The key design point is not dimension count. It is that the unit vector represen
 
 1. Trim and validate `q`.
 2. Generate one query embedding for the active profile.
-3. Vector-search one Qdrant collection: `retrieval_units_{profile}_{index_version}`. This is primary recall.
+3. Vector-search one collection: `retrieval_units_{profile}_{index_version}`. This is primary recall.
 4. Run one cheap lexical recall pass over `content_text` (FTS + CJK literal) and **union** its hits into the candidate set.
 5. Hydrate units from SQLite.
 6. Rank (see Ranking) and return.
@@ -166,13 +166,13 @@ Replace current diagnostics with unified-index diagnostics:
 - `embedding_profile_id`
 - `index_version`
 - `retrieval_unit_count`
-- `qdrant_collection`
-- `qdrant_point_count`
+- `vector_index_collection`
+- `vector_index_point_count`
 - `indexed_item_count`
 - `items_needing_rebuild`
 - `items_blocked_by_missing_source`
 - `query_embedding_ms`
-- `qdrant_search_ms`
+- `vector_index_search_ms`
 - `hydrate_ms`
 
 Diagnostics should prove the app is not accidentally searching old text/image collections.
@@ -234,9 +234,9 @@ On first launch after this release, migrate the index with **build-then-swap**. 
    - OCR chunks
    - keyframes
    - video-understanding records
-3. Build new retrieval units from canonical artifacts and write them into a **new** unified Qdrant collection alongside the old one.
+3. Build new retrieval units from canonical artifacts and write them into a **new** unified vector-index collection alongside the old one.
 4. Re-embed units into the new collection. Note the real cost: for the cloud profile this is API + network spend proportional to (items x units); for local it is GPU time. This re-embed is the dominant migration cost — it is not a free metadata rebuild.
-5. Self-check the new collection (SQLite unit count == Qdrant point count; sample queries return) before flipping.
+5. Self-check the new collection (SQLite unit count == vector point count; sample queries return) before flipping.
 6. Atomically flip the active index pointer to the new collection.
 7. Only then garbage-collect the old text/image collections.
 
@@ -244,16 +244,16 @@ On first launch after this release, migrate the index with **build-then-swap**. 
 
 ### New Users
 
-New installs only create the unified retrieval-unit index. Old text/image Qdrant collection creation should not run.
+New installs only create the unified retrieval-unit index. Old text/image vector collection creation should not run.
 
 ### Repair/Rebuild
 
 Settings > Storage > repair search index should rebuild the unified retrieval-unit index only:
 
 - Rebuild SQLite retrieval units from canonical artifacts.
-- Rebuild the single Qdrant collection.
+- Rebuild the single vector-index collection.
 - Do not resurrect old hybrid collections.
-- Do not call this "Qdrant repair" in user-facing copy.
+- Do not call this "vector database repair" in user-facing copy.
 
 ## Implementation Tasks
 
@@ -293,9 +293,9 @@ Replace the current text/image vector writing path with unified unit embedding:
 
 - Batch embed retrieval-unit `content_text`.
 - For textless image units, batch embed representative image paths.
-- Write all vectors to one Qdrant collection.
+- Write all vectors to one vector-index collection.
 - Store `unit_id` payload.
-- Mark item `search_index_status='indexed'` only after SQLite units and Qdrant points are both committed.
+- Mark item `search_index_status='indexed'` only after SQLite units and vector points are both committed.
 
 Failure policy:
 
@@ -309,7 +309,7 @@ Rewrite `cerul-search` around retrieval units:
 
 - Remove RRF from the main path.
 - Remove the independent image-vector collection search and source masks from the main path.
-- Vector-search one Qdrant collection, then union a cheap lexical recall pass (FTS + CJK literal) into the candidate set — recall augmenter only, not a co-equal ranking source.
+- Vector-search one collection, then union a cheap lexical recall pass (FTS + CJK literal) into the candidate set — recall augmenter only, not a co-equal ranking source.
 - Rank by vector score; strongly pin only high-confidence exact matches (quoted/long phrases, entities, product/model names, IDs, code-like strings); apply bounded lexical boost for short/common terms; score lexical-only candidates by their own unit vector.
 - Hydrate `retrieval_units`.
 - Resolve `start_sec` to the best sub-unit line for playback, not the window start.
@@ -338,7 +338,7 @@ On API startup:
 - Detect old search index versions.
 - Schedule rebuild jobs for items that need the new index.
 - Do not serve old hybrid results.
-- Garbage-collect old text/image Qdrant collections only **after** the new unified collection passes its self-check and the active index pointer has flipped. Never delete-before-build.
+- Garbage-collect old text/image vector collections only **after** the new unified collection passes its self-check and the active index pointer has flipped. Never delete-before-build.
 
 Cleanup must be scoped to Cerul's namespace and active data directory.
 
@@ -347,7 +347,7 @@ Cleanup must be scoped to Cerul's namespace and active data directory.
 Required tests:
 
 - Unit builder output stability.
-- Retrieval-unit embedding count matches Qdrant point count.
+- Retrieval-unit embedding count matches vector-index point count.
 - Search does not query old text/image collections.
 - Search returns hydrated unit metadata in rank order.
 - Startup marks old indexes stale and queues rebuild.
@@ -380,7 +380,7 @@ Build the labeled query set and eval script described in **Relevance Eval & Qual
 Success criteria:
 
 - `/search/diagnostics` reports `retrieval_mode='unified_vector'` on normal searches.
-- Qdrant collection name is unified, not text/image split.
+- Vector-index collection name is unified, not text/image split.
 - No RRF path is used.
 - Results remain usable after restart.
 - Overlay search feels faster than the old hybrid path.

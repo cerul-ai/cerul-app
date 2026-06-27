@@ -13,7 +13,7 @@ Current code explains both behaviors:
 - `Clear cache` only removes `data/cache`.
 - `Reset local data` removes the entire app data directory, including:
   - `cerul.db`
-  - `indexes/qdrant`
+  - `indexes/zvec`
   - `cache`
   - `models`
   - local provider keys and app settings
@@ -52,7 +52,7 @@ Should not delete:
 - `cerul.db`
 - `jobs`
 - `items`
-- `indexes/qdrant`
+- `indexes/zvec`
 - `models`
 - provider keys
 - app settings
@@ -73,7 +73,7 @@ Should delete or reset:
   - `moments`
   - retrieval/search units
   - usage events tied to local processing
-- Search index directory: `indexes/qdrant`
+- Search index directory: `indexes/zvec`
 - Downloaded/imported media cache and processing intermediates: `cache`
 - Endpoint metadata if it points to stale Core state.
 

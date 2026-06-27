@@ -289,7 +289,22 @@ applying shared reranking/fusion logic.
 
 ### 1. Introduce a VectorIndex abstraction
 
-Create a storage-level interface that covers the current Qdrant surface:
+The implementation pass already keeps zvec mostly inside
+`crates/cerul-storage/src/vectors.rs`: callers use Cerul-level operations such
+as replacing item embeddings, deleting stale item embeddings, counting points,
+and searching a named collection. That is enough for this PR while zvec is the
+only active local vector backend.
+
+Do **not** add a large trait/object hierarchy solely for this first zvec
+cutover. It would create churn without reducing current runtime risk. Introduce
+a formal `VectorIndex` abstraction when either of these becomes true:
+
+- a second local backend is implemented behind a runtime/build-time switch;
+- search, pipeline, or API code starts needing backend-specific behavior beyond
+  the existing storage functions.
+
+When that happens, create a storage-level interface that covers the current
+vector-index surface:
 
 - ensure/open index for an embedding profile and vector branch;
 - replace all item vectors;
