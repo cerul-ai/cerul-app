@@ -1,0 +1,9 @@
+lancedb==0.33.0
+numpy==2.4.6
+psutil==7.2.2
+qdrant-client==1.18.0
+requests==2.34.2
+sqlite-vec==0.1.9
+turbovec==0.8.0
+usearch==2.25.3
+zvec==0.5.1

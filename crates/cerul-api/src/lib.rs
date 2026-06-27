@@ -518,7 +518,7 @@ pub async fn serve_with_paths(paths: AppPaths, addr: SocketAddr) -> anyhow::Resu
     }
     resume_interrupted_source_discovery(&paths);
     let _worker = jobs::spawn_default_job_worker(paths.clone());
-    let _qdrant_shutdown = QdrantShutdownGuard;
+    let _vector_index_shutdown = VectorIndexShutdownGuard;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     if let Err(error) = write_api_endpoint_file(&paths, addr.port()) {
         tracing::warn!(%error, "failed to write Cerul API endpoint file");
@@ -621,12 +621,12 @@ impl Write for CoreLogGuard {
     }
 }
 
-struct QdrantShutdownGuard;
+struct VectorIndexShutdownGuard;
 
-impl Drop for QdrantShutdownGuard {
+impl Drop for VectorIndexShutdownGuard {
     fn drop(&mut self) {
         api_models::shutdown_local_query_sidecar();
-        cerul_storage::vectors::shutdown_qdrant_sidecar();
+        cerul_storage::vectors::shutdown_vector_index();
     }
 }
 
@@ -923,7 +923,8 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
     let indexing = jobs::indexing_diagnostics(&state.paths)?;
     let search = search_health_diagnostics(&state.paths).await?;
     let text_ready = search.fts_row_count > 0 || search.retrieval_unit_fts_row_count > 0;
-    let vector_ready = search.qdrant_error.is_none() && search.qdrant_point_count.unwrap_or(0) > 0;
+    let vector_ready =
+        search.vector_index_error.is_none() && search.vector_index_point_count.unwrap_or(0) > 0;
     let retrieval_mode = match (text_ready, vector_ready) {
         (true, true) => "hybrid",
         (true, false) => "text",
@@ -2247,8 +2248,8 @@ async fn search_records(
                         retrieval_mode = %response.diagnostics.retrieval_mode,
                         vector_hits_count = response.diagnostics.vector_hits_count,
                         fts_hits_count = response.diagnostics.fts_hits_count,
-                        qdrant_collection = ?response.diagnostics.qdrant_collection,
-                        qdrant_point_count = ?response.diagnostics.qdrant_point_count,
+                        vector_index_collection = ?response.diagnostics.vector_index_collection,
+                        vector_index_point_count = ?response.diagnostics.vector_index_point_count,
                         search_ms = search_started.elapsed().as_millis(),
                         "API search completed"
                     );
@@ -2317,28 +2318,28 @@ struct SearchHealthDiagnostics {
     orphan_job_count: usize,
     missing_raw_path_count: usize,
     embedding_profile_id: Option<String>,
-    qdrant_collection: Option<String>,
-    qdrant_point_count: Option<usize>,
-    qdrant_text_collection: Option<String>,
-    qdrant_image_collection: Option<String>,
-    qdrant_text_points: Option<usize>,
-    qdrant_image_points: Option<usize>,
+    vector_index_collection: Option<String>,
+    vector_index_point_count: Option<usize>,
+    vector_index_text_collection: Option<String>,
+    vector_index_image_collection: Option<String>,
+    vector_index_text_points: Option<usize>,
+    vector_index_image_points: Option<usize>,
     embedded_text_chunk_count: Option<usize>,
     embedded_image_chunk_count: Option<usize>,
     text_embedding_gap_count: Option<usize>,
     image_embedding_gap_count: Option<usize>,
-    qdrant_error: Option<String>,
+    vector_index_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct IndexingDiagnosticsResponse {
     #[serde(flatten)]
     indexing: jobs::IndexingDiagnostics,
-    qdrant: IndexingQdrantDiagnostics,
+    vector_index: IndexingVectorIndexDiagnostics,
 }
 
 #[derive(Debug, Serialize)]
-struct IndexingQdrantDiagnostics {
+struct IndexingVectorIndexDiagnostics {
     ready: bool,
     collection: Option<String>,
     point_count: Option<usize>,
@@ -2352,11 +2353,11 @@ async fn indexing_diagnostics(
     let search = search_health_diagnostics(&state.paths).await?;
     Ok(Json(IndexingDiagnosticsResponse {
         indexing,
-        qdrant: IndexingQdrantDiagnostics {
-            ready: search.qdrant_error.is_none(),
-            collection: search.qdrant_collection,
-            point_count: search.qdrant_point_count,
-            error: search.qdrant_error,
+        vector_index: IndexingVectorIndexDiagnostics {
+            ready: search.vector_index_error.is_none(),
+            collection: search.vector_index_collection,
+            point_count: search.vector_index_point_count,
+            error: search.vector_index_error,
         },
     }))
 }
@@ -2453,24 +2454,24 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         orphan_job_count,
         missing_raw_path_count,
         embedding_profile_id: None,
-        qdrant_collection: None,
-        qdrant_point_count: None,
-        qdrant_text_collection: None,
-        qdrant_image_collection: None,
-        qdrant_text_points: None,
-        qdrant_image_points: None,
+        vector_index_collection: None,
+        vector_index_point_count: None,
+        vector_index_text_collection: None,
+        vector_index_image_collection: None,
+        vector_index_text_points: None,
+        vector_index_image_points: None,
         embedded_text_chunk_count: None,
         embedded_image_chunk_count: None,
         text_embedding_gap_count: None,
         image_embedding_gap_count: None,
-        qdrant_error: None,
+        vector_index_error: None,
     };
 
     let profile = match cerul_storage::vectors::ensure_active_embedding_profile(paths) {
         Ok(profile) => profile,
         Err(error) => {
             tracing::warn!(%error, "failed to load active embedding profile for search diagnostics");
-            diagnostics.qdrant_error = Some("embedding_profile_unavailable".to_string());
+            diagnostics.vector_index_error = Some("embedding_profile_unavailable".to_string());
             return Ok(diagnostics);
         }
     };
@@ -2479,27 +2480,74 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         &profile,
         cerul_storage::SEARCH_INDEX_VERSION,
     );
-    diagnostics.embedding_profile_id = Some(profile.id);
-    diagnostics.qdrant_collection = Some(collection.clone());
+    diagnostics.embedding_profile_id = Some(profile.id.clone());
+    diagnostics.vector_index_collection = Some(collection.clone());
 
-    let unified_points = cerul_storage::vectors::collection_point_count(paths, &collection).await;
+    let unified_points =
+        cerul_storage::vectors::collection_point_count_for_profile(paths, &collection, &profile)
+            .await;
     match unified_points {
         Ok(count) => {
-            diagnostics.qdrant_point_count = Some(count);
-            diagnostics.qdrant_text_points = Some(count);
+            diagnostics.vector_index_point_count = Some(count);
+            diagnostics.vector_index_text_points = Some(count);
             diagnostics.embedded_text_chunk_count = Some(count);
             diagnostics.text_embedding_gap_count = Some(retrieval_unit_count.saturating_sub(count));
+            cleanup_legacy_qdrant_index_after_zvec_verified(
+                paths,
+                retrieval_unit_count,
+                items_needing_rebuild,
+                count,
+            );
         }
         Err(error) => {
-            tracing::warn!(%error, collection, "failed to count Qdrant unified points for search diagnostics");
-            diagnostics.qdrant_error = Some("qdrant_count_failed".to_string());
+            tracing::warn!(%error, collection, "failed to count vector index unified points for search diagnostics");
+            diagnostics.vector_index_error = Some("vector_index_count_failed".to_string());
         }
     }
-    diagnostics.qdrant_image_points = Some(0);
+    diagnostics.vector_index_image_points = Some(0);
     diagnostics.embedded_image_chunk_count = Some(0);
     diagnostics.image_embedding_gap_count = Some(0);
 
     Ok(diagnostics)
+}
+
+fn cleanup_legacy_qdrant_index_after_zvec_verified(
+    paths: &AppPaths,
+    retrieval_unit_count: usize,
+    items_needing_rebuild: usize,
+    vector_point_count: usize,
+) {
+    if retrieval_unit_count == 0
+        || items_needing_rebuild > 0
+        || vector_point_count < retrieval_unit_count
+    {
+        return;
+    }
+
+    let legacy = paths.legacy_qdrant_index_dir();
+    if !legacy.exists() {
+        return;
+    }
+
+    match paths.remove_legacy_qdrant_index_dir() {
+        Ok(()) => {
+            tracing::info!(
+                path = %legacy.display(),
+                retrieval_unit_count,
+                vector_point_count,
+                "removed legacy qdrant index after zvec index verification"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %legacy.display(),
+                retrieval_unit_count,
+                vector_point_count,
+                ?error,
+                "failed to remove legacy qdrant index after zvec index verification"
+            );
+        }
+    }
 }
 
 fn count_missing_raw_paths(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
@@ -5372,7 +5420,10 @@ fn clear_deferred_embedding_rebuild_mode(paths: &AppPaths) -> anyhow::Result<()>
 fn sync_indexing_schema_side_effects(paths: &AppPaths) -> anyhow::Result<()> {
     let current = setting_string(paths, INDEXING_SCHEMA_VERSION_SETTING)?
         .and_then(|value| value.parse::<i32>().ok());
-    if current == Some(INDEXING_SCHEMA_VERSION) {
+    let current_vector_backend = setting_string(paths, VECTOR_INDEX_BACKEND_SETTING)?;
+    if current == Some(INDEXING_SCHEMA_VERSION)
+        && current_vector_backend.as_deref() == Some(ACTIVE_VECTOR_INDEX_BACKEND)
+    {
         return Ok(());
     }
 
@@ -5391,12 +5442,27 @@ fn sync_indexing_schema_side_effects(paths: &AppPaths) -> anyhow::Result<()> {
             Value::from(INDEXING_SCHEMA_VERSION).to_string(),
         ),
     )?;
+    conn.execute(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (?1, ?2, strftime('%s','now'))
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        "#,
+        (
+            VECTOR_INDEX_BACKEND_SETTING,
+            Value::from(ACTIVE_VECTOR_INDEX_BACKEND).to_string(),
+        ),
+    )?;
     tracing::info!(
         previous_version = ?current,
         version = INDEXING_SCHEMA_VERSION,
+        previous_vector_backend = ?current_vector_backend,
+        vector_backend = ACTIVE_VECTOR_INDEX_BACKEND,
         rebuild_items,
         queued_jobs,
-        "indexing schema changed; queued media rebuild"
+        "indexing schema or vector backend changed; queued media rebuild"
     );
     Ok(())
 }
@@ -6275,7 +6341,7 @@ fn storage_usage_for_paths(paths: &AppPaths) -> anyhow::Result<StorageUsageRespo
     let data = path_usage(&paths.data)?;
     let database = path_usage(&paths.db)?;
     let models = path_usage(&paths.models)?;
-    let index = path_usage(&paths.qdrant)?;
+    let index = path_usage(&paths.vector_index)?;
     let cache = path_usage(&paths.cache)?;
     // Downloads can be redirected to an external disk via the `media_dir` setting.
     // When that path is outside the data dir, its media is invisible to the
@@ -6325,7 +6391,7 @@ fn storage_locations_for_paths(paths: &AppPaths) -> StorageLocationsResponse {
         data_dir: paths.data.to_string_lossy().to_string(),
         database_path: paths.db.to_string_lossy().to_string(),
         models_dir: paths.models.to_string_lossy().to_string(),
-        index_dir: paths.qdrant.to_string_lossy().to_string(),
+        index_dir: paths.vector_index.to_string_lossy().to_string(),
         cache_dir: paths.cache.to_string_lossy().to_string(),
     }
 }
@@ -6731,10 +6797,13 @@ const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
 ];
 const DEFERRED_EMBEDDING_REBUILD_MODE_SETTING: &str = "embedding_profile_rebuild_deferred_mode";
 const INDEXING_SCHEMA_VERSION_SETTING: &str = "indexing_schema_version";
-const INDEXING_SCHEMA_VERSION: i32 = 4;
+const VECTOR_INDEX_BACKEND_SETTING: &str = "vector_index_backend";
+const ACTIVE_VECTOR_INDEX_BACKEND: &str = "zvec";
+const INDEXING_SCHEMA_VERSION: i32 = 5;
 const INTERNAL_SETTING_KEYS: &[&str] = &[
     DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
     INDEXING_SCHEMA_VERSION_SETTING,
+    VECTOR_INDEX_BACKEND_SETTING,
     // Computed flag returned by list_settings; never persisted.
     "remote_api_key_set",
 ];
@@ -6755,7 +6824,9 @@ mod tests {
         conn.execute(
             r#"
             INSERT INTO settings (key, value, updated_at)
-            VALUES (?1, ?2, strftime('%s','now'))
+            VALUES
+                (?1, ?2, strftime('%s','now')),
+                (?3, ?4, strftime('%s','now'))
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = excluded.updated_at
@@ -6763,6 +6834,8 @@ mod tests {
             (
                 INDEXING_SCHEMA_VERSION_SETTING,
                 Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+                VECTOR_INDEX_BACKEND_SETTING,
+                Value::from(ACTIVE_VECTOR_INDEX_BACKEND).to_string(),
             ),
         )
         .unwrap();
@@ -8456,7 +8529,7 @@ mod tests {
         assert_eq!(diagnostics["effective_inference_mode"], "local");
         assert_eq!(diagnostics["waiting_model_jobs"], 1);
         assert_eq!(diagnostics["counts"]["running_jobs"], 1);
-        assert!(diagnostics["qdrant"]["ready"].is_boolean());
+        assert!(diagnostics["vector_index"]["ready"].is_boolean());
     }
 
     #[tokio::test]
@@ -8824,6 +8897,143 @@ mod tests {
             .unwrap();
         assert_eq!(item_status, "indexed");
         assert_eq!(queued_jobs, 1);
+    }
+
+    #[test]
+    fn vector_backend_change_requeues_indexed_items_when_schema_is_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata,
+                    search_index_version, search_index_status, search_index_unit_count, search_index_vector_count
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video.mp4', 'Video', 100, 'indexed', '{}',
+                    ?1, 'indexed', 4, 4
+                )
+                "#,
+                [cerul_storage::SEARCH_INDEX_VERSION],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?1, ?2, strftime('%s','now'))
+                "#,
+                (
+                    INDEXING_SCHEMA_VERSION_SETTING,
+                    Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+                ),
+            )
+            .unwrap();
+        }
+
+        sync_indexing_schema_side_effects(&paths).unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 1);
+        assert_eq!(
+            setting_string(&paths, VECTOR_INDEX_BACKEND_SETTING)
+                .unwrap()
+                .as_deref(),
+            Some(ACTIVE_VECTOR_INDEX_BACKEND)
+        );
+    }
+
+    #[tokio::test]
+    async fn search_diagnostics_cleans_legacy_qdrant_only_after_zvec_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let legacy_qdrant = paths.legacy_qdrant_index_dir();
+        std::fs::create_dir_all(&legacy_qdrant).unwrap();
+        std::fs::write(legacy_qdrant.join("collection.bin"), b"vectors").unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit = cerul_storage::StorageRetrievalUnit {
+            id: "item-1:unit:v2:000000".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "transcript".to_string(),
+            start_sec: Some(0.0),
+            end_sec: Some(5.0),
+            content_text: "legacy qdrant cleanup waits for verified zvec points".to_string(),
+            transcript_text: Some("verified zvec points".to_string()),
+            ocr_text: None,
+            visual_text: None,
+            summary_text: None,
+            representative_chunk_id: Some("item-1:transcript:000000".to_string()),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id.clone(),
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        };
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'video.mp4', 'Video', 100, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", std::slice::from_ref(&unit))
+            .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 0)
+            .unwrap();
+
+        let diagnostics = search_health_diagnostics(&paths).await.unwrap();
+        assert_eq!(diagnostics.retrieval_unit_count, 1);
+        assert_eq!(diagnostics.vector_index_point_count, Some(0));
+        assert!(legacy_qdrant.exists());
+
+        let mut vector = vec![0.0; profile.output_dimension as usize];
+        vector[0] = 1.0;
+        let record = cerul_storage::vectors::VectorRecord::new_for_dimensions(
+            unit.id.clone(),
+            "item-1".to_string(),
+            vector,
+            profile.output_dimension,
+        )
+        .unwrap();
+        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 1)
+            .unwrap();
+
+        let diagnostics = search_health_diagnostics(&paths).await.unwrap();
+        assert_eq!(diagnostics.vector_index_point_count, Some(1));
+        assert!(!legacy_qdrant.exists());
     }
 
     #[test]
@@ -10292,7 +10502,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(paths.cache.join("cache.bin"), b"cache-data").unwrap();
-        std::fs::write(paths.qdrant.join("index.bin"), b"idx").unwrap();
+        std::fs::write(paths.vector_index.join("index.bin"), b"idx").unwrap();
         let app = router_with_paths(paths);
 
         let response = app
@@ -10365,7 +10575,7 @@ mod tests {
         );
         assert_eq!(
             locations["index_dir"].as_str(),
-            Some(paths.qdrant.to_string_lossy().as_ref())
+            Some(paths.vector_index.to_string_lossy().as_ref())
         );
         assert_eq!(
             locations["cache_dir"].as_str(),

@@ -50,7 +50,7 @@ emit_result() {
   local status="$1"
   local target_triple="${2:-${TARGET_TRIPLE:-${CERUL_TARGET_TRIPLE:-auto}}}"
   local target_binary="${3:-${INSTALLED_BINARY:-${BINARY:-auto}}}"
-  printf 'installed_runtime_smoke platform=linux status=%s %s %s packaged_core=verified bundled_ffmpeg=verified bundled_ytdlp=verified bundled_qdrant=verified health=ok\n' \
+  printf 'installed_runtime_smoke platform=linux status=%s %s %s packaged_core=verified bundled_ffmpeg=verified bundled_ytdlp=verified health=ok\n' \
     "$status" \
     "$(field binary "$target_binary")" \
     "$(field target "$target_triple")"
@@ -60,7 +60,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "+ validate Linux host"
   echo "+ locate Electron resources/bin/cerul-core"
   echo "+ copy packaged cerul-core and sibling resources/third-party to a temporary install directory"
-  echo "+ launch copied cerul-core with CERUL_FFMPEG_PATH, CERUL_YTDLP_PATH, and CERUL_QDRANT_BIN"
+  echo "+ launch copied cerul-core with CERUL_FFMPEG_PATH and CERUL_YTDLP_PATH"
   echo "+ poll http://127.0.0.1:23785/internal/health for status=ok"
   emit_result planned
   exit 0
@@ -124,6 +124,10 @@ mkdir -p "$INSTALL_DIR/bin"
 INSTALLED_BINARY="$INSTALL_DIR/bin/cerul-core"
 cp "$BINARY" "$INSTALLED_BINARY"
 chmod +x "$INSTALLED_BINARY"
+if [ -f "$(dirname "$BINARY")/libzvec_c_api.so" ]; then
+  cp "$(dirname "$BINARY")/libzvec_c_api.so" "$INSTALL_DIR/bin/libzvec_c_api.so"
+  chmod +x "$INSTALL_DIR/bin/libzvec_c_api.so"
+fi
 cp -R "$SOURCE_THIRD_PARTY" "$INSTALL_DIR/third-party"
 
 check_bundled_binary() {
@@ -138,7 +142,6 @@ check_bundled_binary() {
 
 check_bundled_binary "ffmpeg"
 check_bundled_binary "yt-dlp"
-check_bundled_binary "qdrant"
 
 if "$CURL_BIN" -fsS --max-time 1 "$API_HEALTH_URL" >/dev/null 2>&1; then
   echo "Cerul Core already responds at $API_HEALTH_URL before launch; stop the existing runtime and rerun." >&2
@@ -149,9 +152,9 @@ env -i \
   HOME="$HOME_DIR" \
   XDG_RUNTIME_DIR="$HOME_DIR/xdg-runtime" \
   PATH="/usr/bin:/bin" \
+  LD_LIBRARY_PATH="$INSTALL_DIR/bin" \
   CERUL_FFMPEG_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/ffmpeg" \
   CERUL_YTDLP_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/yt-dlp" \
-  CERUL_QDRANT_BIN="$INSTALL_DIR/third-party/$TARGET_TRIPLE/qdrant" \
   "$INSTALLED_BINARY" &
 PID="$!"
 

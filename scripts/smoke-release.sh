@@ -183,7 +183,7 @@ if [ "$RUN_LIVE_YOUTUBE" -eq 1 ]; then
   run scripts/smoke-youtube-source.sh "${live_youtube_args[@]}"
 fi
 run scripts/smoke-hotkey-overlay.sh
-run cargo test -p cerul-pipeline process_video_item_writes_sqlite_and_qdrant
+run cargo test -p cerul-pipeline process_video_item_writes_sqlite_and_vector_index
 run cargo test -p cerul-pipeline audio_image_smoke
 run scripts/smoke-audio-image-sources.sh
 run cargo test -p cerul-search

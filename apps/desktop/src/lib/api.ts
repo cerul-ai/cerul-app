@@ -110,7 +110,7 @@ export type IndexingDiagnostics = {
     progress: number;
     started_at: number | null;
   }>;
-  qdrant: {
+  vector_index: {
     ready: boolean;
     collection: string | null;
     point_count: number | null;
@@ -320,12 +320,12 @@ export type SearchDiagnostics = {
   image_vector_hits_count: number;
   fts_hits_count: number;
   embedding_profile_id: string | null;
-  qdrant_collection: string | null;
-  qdrant_point_count: number | null;
-  qdrant_text_collection: string | null;
-  qdrant_image_collection: string | null;
-  qdrant_text_points: number | null;
-  qdrant_image_points: number | null;
+  vector_index_collection: string | null;
+  vector_index_point_count: number | null;
+  vector_index_text_collection: string | null;
+  vector_index_image_collection: string | null;
+  vector_index_text_points: number | null;
+  vector_index_image_points: number | null;
   retrieval_unit_count?: number;
   indexed_item_count?: number;
   items_needing_rebuild?: number;
@@ -351,17 +351,17 @@ export type SearchHealthDiagnostics = {
   orphan_job_count: number;
   missing_raw_path_count: number;
   embedding_profile_id: string | null;
-  qdrant_collection: string | null;
-  qdrant_point_count: number | null;
-  qdrant_text_collection: string | null;
-  qdrant_image_collection: string | null;
-  qdrant_text_points: number | null;
-  qdrant_image_points: number | null;
+  vector_index_collection: string | null;
+  vector_index_point_count: number | null;
+  vector_index_text_collection: string | null;
+  vector_index_image_collection: string | null;
+  vector_index_text_points: number | null;
+  vector_index_image_points: number | null;
   embedded_text_chunk_count: number | null;
   embedded_image_chunk_count: number | null;
   text_embedding_gap_count: number | null;
   image_embedding_gap_count: number | null;
-  qdrant_error: string | null;
+  vector_index_error: string | null;
 };
 
 export type SearchRebuildResponse = {

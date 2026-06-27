@@ -66,10 +66,6 @@ if [ -z "${CERUL_FFMPEG_PATH:-}" ]; then
     export CERUL_FFMPEG_PATH="$(command -v ffmpeg)"
   fi
 fi
-if [ -z "${CERUL_QDRANT_BIN:-}" ] && binary_runs "$ROOT/third-party/$HOST_TRIPLE/qdrant$EXE_SUFFIX" --version; then
-  export CERUL_QDRANT_BIN="$ROOT/third-party/$HOST_TRIPLE/qdrant$EXE_SUFFIX"
-fi
-
 if [ -z "${CERUL_MLX_PYTHON:-}" ]; then
   echo "CERUL_MLX_PYTHON is not set and $DEFAULT_PYTHON is missing." >&2
   exit 2

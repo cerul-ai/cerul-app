@@ -1,18 +1,17 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
-    net::TcpListener,
+    fs,
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
-    sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, OnceLock},
 };
 
-use reqwest::{Client, StatusCode};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use uuid::Uuid;
+use zvec::{
+    Collection, CollectionSchema, DataType, Doc, FieldSchema, IndexParams, IndexType, MetricType,
+    VectorQuery,
+};
 
 use crate::paths::AppPaths;
 
@@ -30,16 +29,28 @@ pub const LOCAL_VECTOR_DIMENSIONS: i32 = 2048;
 pub const VECTOR_DIMENSIONS: i32 = DEFAULT_VECTOR_DIMENSIONS;
 const DEFAULT_DISTANCE_METRIC: &str = "cosine";
 const ACTIVE_EMBEDDING_PROFILE_SETTING: &str = "active_embedding_profile";
-const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const VECTOR_BATCH_SIZE: usize = 256;
-const DEFAULT_QDRANT_READY_TIMEOUT: Duration = Duration::from_secs(120);
-const QDRANT_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const QDRANT_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
-const QDRANT_LOG_TAIL_BYTES: u64 = 16 * 1024;
+const CHUNK_ID_FIELD: &str = "chunk_id";
+const ITEM_ID_FIELD: &str = "item_id";
+const VECTOR_FIELD: &str = "vector";
+const ZVEC_HNSW_M: i32 = 16;
+const ZVEC_HNSW_EF_CONSTRUCTION: i32 = 200;
+const ZVEC_COLLECTION_CONFIG_SUFFIX: &str = ".cerul.json";
 
-static QDRANT_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
-static LOCAL_QDRANT_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-static QDRANT_READY_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+type CollectionHandle = Arc<Mutex<Collection>>;
+type CollectionCache = HashMap<PathBuf, CollectionHandle>;
+
+static ZVEC_COLLECTIONS: OnceLock<Mutex<CollectionCache>> = OnceLock::new();
+
+async fn zvec_blocking<T, F>(operation: &'static str, f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .with_context(|| format!("{operation} task panicked"))?
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingProfile {
@@ -136,50 +147,12 @@ pub struct VectorHit {
     pub score: f32,
 }
 
-#[derive(Debug, Clone)]
-struct QdrantConfig {
-    url: String,
-    api_key: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct QdrantLaunch {
-    log_path: PathBuf,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct QdrantEnvelope<T> {
-    status: String,
-    result: T,
-}
-
-#[derive(Debug, Deserialize)]
-struct QdrantCountResult {
-    count: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct QdrantScoredPoint {
-    score: f32,
-    payload: Option<HashMap<String, Value>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QdrantRetrievedPoint {
-    payload: Option<HashMap<String, Value>>,
-    vector: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QdrantScrollResult {
-    points: Vec<QdrantScrollPoint>,
-    next_page_offset: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QdrantScrollPoint {
-    id: Value,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ZvecCollectionConfig {
+    collection: String,
+    profile_id: String,
+    output_dimension: i32,
+    distance_metric: String,
 }
 
 pub async fn ensure_collections(paths: &AppPaths) -> anyhow::Result<()> {
@@ -187,23 +160,12 @@ pub async fn ensure_collections(paths: &AppPaths) -> anyhow::Result<()> {
     ensure_unified_collection_for_profile(paths, &profile, crate::SEARCH_INDEX_VERSION).await
 }
 
-pub fn shutdown_qdrant_sidecar() {
-    let Some(mutex) = QDRANT_PROCESS.get() else {
+pub fn shutdown_vector_index() {
+    let Some(cache) = ZVEC_COLLECTIONS.get() else {
         return;
     };
-    let mut guard = mutex.lock().expect("Qdrant process mutex poisoned");
-    let Some(mut child) = guard.take() else {
-        return;
-    };
-
-    if matches!(child.try_wait(), Ok(Some(_))) {
-        return;
-    }
-    if let Err(error) = child.kill() {
-        tracing::warn!(%error, "failed to stop local Qdrant sidecar");
-    }
-    if let Err(error) = child.wait() {
-        tracing::warn!(%error, "failed to wait for local Qdrant sidecar shutdown");
+    if let Ok(mut guard) = cache.lock() {
+        guard.clear();
     }
 }
 
@@ -211,10 +173,9 @@ pub async fn ensure_collections_for_profile(
     paths: &AppPaths,
     profile: &EmbeddingProfile,
 ) -> anyhow::Result<()> {
-    ensure_qdrant_ready(paths).await?;
     let collections = collection_names(paths, profile);
     for collection in [&collections.text, &collections.image] {
-        ensure_collection(paths, collection, profile).await?;
+        ensure_collection(paths, collection, profile)?;
     }
     Ok(())
 }
@@ -224,9 +185,8 @@ pub async fn ensure_unified_collection_for_profile(
     profile: &EmbeddingProfile,
     index_version: i32,
 ) -> anyhow::Result<()> {
-    ensure_qdrant_ready(paths).await?;
     let collection = unified_collection_name(paths, profile, index_version);
-    ensure_collection(paths, &collection, profile).await?;
+    ensure_collection(paths, &collection, profile)?;
     Ok(())
 }
 
@@ -262,7 +222,6 @@ pub async fn replace_item_unified_embeddings_for_profile(
     profile: &EmbeddingProfile,
     index_version: i32,
 ) -> anyhow::Result<()> {
-    ensure_qdrant_ready(paths).await?;
     let collection = unified_collection_name(paths, profile, index_version);
     ensure_unified_collection_for_profile(paths, profile, index_version).await?;
     replace_collection_item_embeddings(paths, &collection, item_id, records).await
@@ -274,7 +233,6 @@ pub async fn upsert_item_unified_embeddings_for_profile(
     profile: &EmbeddingProfile,
     index_version: i32,
 ) -> anyhow::Result<()> {
-    ensure_qdrant_ready(paths).await?;
     let collection = unified_collection_name(paths, profile, index_version);
     ensure_unified_collection_for_profile(paths, profile, index_version).await?;
     upsert_collection_embeddings(paths, &collection, records).await
@@ -287,28 +245,15 @@ pub async fn delete_stale_item_unified_embeddings_for_profile(
     profile: &EmbeddingProfile,
     index_version: i32,
 ) -> anyhow::Result<usize> {
-    ensure_qdrant_ready(paths).await?;
     let collection = unified_collection_name(paths, profile, index_version);
     if !collection_exists(paths, &collection).await? {
         return Ok(0);
     }
-
-    let keep_ids = keep_records
-        .iter()
-        .map(|record| point_id(&record.point_key))
-        .collect::<HashSet<_>>();
-    let existing_ids = scroll_collection_item_point_ids(paths, &collection, item_id).await?;
-    let stale_ids = existing_ids
-        .into_iter()
-        .filter(|id| !keep_ids.contains(id))
-        .collect::<Vec<_>>();
-
-    delete_collection_points(paths, &collection, &stale_ids).await?;
-    Ok(stale_ids.len())
+    upsert_collection_embeddings(paths, &collection, keep_records).await?;
+    delete_stale_collection_item_embeddings(paths, &collection, item_id, keep_records).await
 }
 
 pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
-    ensure_qdrant_ready(paths).await?;
     let profiles = list_embedding_profiles(paths)?;
 
     for profile in profiles {
@@ -328,19 +273,31 @@ pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::
 }
 
 pub async fn collection_point_count(paths: &AppPaths, collection: &str) -> anyhow::Result<usize> {
-    ensure_qdrant_ready(paths).await?;
-    if !collection_exists(paths, collection).await? {
+    let Some(handle) = collection_handle_existing(paths, collection)? else {
         return Ok(0);
-    }
+    };
+    collection_doc_count(handle).await
+}
 
-    let result: QdrantCountResult = qdrant_post(
-        paths,
-        &format!("/collections/{collection}/points/count"),
-        Some(&[("wait", "true")]),
-        &json!({ "exact": true }),
-    )
-    .await?;
-    Ok(result.count)
+pub async fn collection_point_count_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<usize> {
+    let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
+        return Ok(0);
+    };
+    collection_doc_count(handle).await
+}
+
+async fn collection_doc_count(handle: CollectionHandle) -> anyhow::Result<usize> {
+    zvec_blocking("count zvec collection docs", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        Ok(guard.stats()?.doc_count() as usize)
+    })
+    .await
 }
 
 pub fn collection_names(paths: &AppPaths, profile: &EmbeddingProfile) -> VectorCollectionNames {
@@ -357,44 +314,51 @@ pub fn unified_collection_name(
     format!("{namespace}__retrieval_units_v{index_version}__{sanitized}")
 }
 
-pub async fn search_collection(
+pub async fn search_collection_for_profile(
     paths: &AppPaths,
     collection: &str,
     query_vector: &[f32],
     limit: usize,
+    profile: &EmbeddingProfile,
 ) -> anyhow::Result<Vec<VectorHit>> {
-    ensure_qdrant_ready(paths).await?;
-    if !collection_exists(paths, collection).await? {
+    let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
         return Ok(Vec::new());
-    }
+    };
+    search_collection_handle(handle, query_vector, limit).await
+}
 
-    let points: Vec<QdrantScoredPoint> = qdrant_post(
-        paths,
-        &format!("/collections/{collection}/points/search"),
-        None,
-        &json!({
-            "vector": query_vector,
-            "limit": limit.max(1),
-            "with_payload": true,
-            "with_vector": false
-        }),
-    )
-    .await?;
+async fn search_collection_handle(
+    handle: CollectionHandle,
+    query_vector: &[f32],
+    limit: usize,
+) -> anyhow::Result<Vec<VectorHit>> {
+    let query_vector = query_vector.to_vec();
+    zvec_blocking("query zvec collection", move || {
+        let mut query = VectorQuery::new()?;
+        query.set_field_name(VECTOR_FIELD)?;
+        query.set_query_vector_fp32(&query_vector)?;
+        query.set_topk(limit.max(1).min(i32::MAX as usize) as i32)?;
+        query.set_include_vector(false)?;
+        query.set_include_doc_id(false)?;
+        query.set_output_fields(&[CHUNK_ID_FIELD])?;
 
-    Ok(points
-        .into_iter()
-        .filter_map(|point| {
-            let chunk_id = point
-                .payload?
-                .get("chunk_id")?
-                .as_str()
-                .map(ToOwned::to_owned)?;
-            Some(VectorHit {
-                chunk_id,
-                score: point.score,
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        let docs = guard.query(&query)?;
+
+        Ok(docs
+            .iter()
+            .filter_map(|doc| {
+                let chunk_id = doc.get_string(CHUNK_ID_FIELD).ok().flatten()?;
+                Some(VectorHit {
+                    chunk_id,
+                    score: doc.score(),
+                })
             })
-        })
-        .collect())
+            .collect())
+    })
+    .await
 }
 
 pub async fn retrieve_collection_vectors(
@@ -402,54 +366,68 @@ pub async fn retrieve_collection_vectors(
     collection: &str,
     chunk_ids: &[String],
 ) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
-    ensure_qdrant_ready(paths).await?;
-    if chunk_ids.is_empty() || !collection_exists(paths, collection).await? {
+    if chunk_ids.is_empty() {
         return Ok(HashMap::new());
     }
+    let Some(handle) = collection_handle_existing(paths, collection)? else {
+        return Ok(HashMap::new());
+    };
+    retrieve_collection_vectors_from_handle(handle, chunk_ids).await
+}
 
-    let mut ids = Vec::with_capacity(chunk_ids.len() * 2);
-    let mut seen_ids = HashSet::new();
-    for id in chunk_ids {
-        for point_key in [id.clone(), format!("{id}:image")] {
-            let qdrant_id = point_id(&point_key);
-            if seen_ids.insert(qdrant_id.clone()) {
-                ids.push(qdrant_id);
+pub async fn retrieve_collection_vectors_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    chunk_ids: &[String],
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
+    if chunk_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
+        return Ok(HashMap::new());
+    };
+    retrieve_collection_vectors_from_handle(handle, chunk_ids).await
+}
+
+async fn retrieve_collection_vectors_from_handle(
+    handle: CollectionHandle,
+    chunk_ids: &[String],
+) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
+    let chunk_ids = chunk_ids.to_vec();
+    zvec_blocking("fetch zvec collection vectors", move || {
+        let mut ids = Vec::with_capacity(chunk_ids.len() * 2);
+        let mut seen_ids = HashSet::new();
+        for id in &chunk_ids {
+            for point_key in [id.clone(), format!("{id}:image")] {
+                let zvec_id = point_id(&point_key);
+                if seen_ids.insert(zvec_id.clone()) {
+                    ids.push(zvec_id);
+                }
             }
         }
-    }
-    let points: Vec<QdrantRetrievedPoint> = qdrant_post(
-        paths,
-        &format!("/collections/{collection}/points"),
-        None,
-        &json!({
-            "ids": ids,
-            "with_payload": true,
-            "with_vector": true
-        }),
-    )
-    .await?;
+        let refs = ids.iter().map(String::as_str).collect::<Vec<_>>();
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        let docs = guard.fetch(&refs)?;
 
-    let mut vectors = HashMap::new();
-    for point in points {
-        let Some(payload) = point.payload else {
-            continue;
-        };
-        let Some(chunk_id) = payload
-            .get("chunk_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-        else {
-            continue;
-        };
-        let Some(vector) = point.vector.and_then(parse_qdrant_vector) else {
-            continue;
-        };
-        vectors
-            .entry(chunk_id)
-            .or_insert_with(Vec::new)
-            .push(vector);
-    }
-    Ok(vectors)
+        let mut vectors = HashMap::new();
+        for doc in docs.iter() {
+            let Some(chunk_id) = doc.get_string(CHUNK_ID_FIELD).ok().flatten() else {
+                continue;
+            };
+            let Ok(vector) = doc.get_vector_fp32(VECTOR_FIELD) else {
+                continue;
+            };
+            vectors
+                .entry(chunk_id)
+                .or_insert_with(Vec::new)
+                .push(vector);
+        }
+        Ok(vectors)
+    })
+    .await
 }
 
 async fn replace_collection_item_embeddings(
@@ -471,95 +449,29 @@ async fn upsert_collection_embeddings(
         if batch.is_empty() {
             continue;
         }
-
-        let points = batch
-            .iter()
-            .map(|record| {
-                json!({
-                    "id": point_id(&record.point_key),
-                    "vector": record.vector,
-                    "payload": {
-                        "chunk_id": record.chunk_id,
-                        "item_id": record.item_id
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let _: Value = qdrant_put(
-            paths,
-            &format!("/collections/{collection}/points"),
-            Some(&[("wait", "true")]),
-            &json!({ "points": points }),
-        )
-        .await?;
-    }
-
-    Ok(())
-}
-
-async fn scroll_collection_item_point_ids(
-    paths: &AppPaths,
-    collection: &str,
-    item_id: &str,
-) -> anyhow::Result<Vec<String>> {
-    let mut point_ids = Vec::new();
-    let mut offset: Option<Value> = None;
-    loop {
-        let mut body = json!({
-            "filter": {
-                "must": [
-                    {
-                        "key": "item_id",
-                        "match": { "value": item_id }
-                    }
-                ]
-            },
-            "limit": VECTOR_BATCH_SIZE,
-            "with_payload": false,
-            "with_vector": false
-        });
-        if let Some(next_offset) = offset.take() {
-            body["offset"] = next_offset;
-        }
-
-        let result: QdrantScrollResult = qdrant_post(
-            paths,
-            &format!("/collections/{collection}/points/scroll"),
-            None,
-            &body,
-        )
-        .await?;
-        point_ids.extend(
-            result
-                .points
-                .into_iter()
-                .filter_map(|point| point.id.as_str().map(ToOwned::to_owned)),
-        );
-
-        let Some(next_offset) = result.next_page_offset else {
-            break;
-        };
-        offset = Some(next_offset);
-    }
-    Ok(point_ids)
-}
-
-async fn delete_collection_points(
-    paths: &AppPaths,
-    collection: &str,
-    point_ids: &[String],
-) -> anyhow::Result<()> {
-    for batch in point_ids.chunks(VECTOR_BATCH_SIZE) {
-        if batch.is_empty() {
-            continue;
-        }
-        let _: Value = qdrant_post(
-            paths,
-            &format!("/collections/{collection}/points/delete"),
-            Some(&[("wait", "true")]),
-            &json!({ "points": batch }),
-        )
+        let batch = batch.to_vec();
+        let handle = collection_handle_existing(paths, collection)?.ok_or_else(|| {
+            anyhow::anyhow!("zvec collection {collection} does not exist before vector upsert")
+        })?;
+        let collection = collection.to_string();
+        zvec_blocking("upsert zvec collection vectors", move || {
+            let docs = batch
+                .iter()
+                .map(record_to_doc)
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let refs = docs.iter().collect::<Vec<_>>();
+            let guard = handle
+                .lock()
+                .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+            let summary = guard.upsert(&refs)?;
+            anyhow::ensure!(
+                summary.error == 0,
+                "zvec upsert for collection {collection} failed for {} records",
+                summary.error
+            );
+            guard.flush()?;
+            Ok(())
+        })
         .await?;
     }
     Ok(())
@@ -570,670 +482,482 @@ async fn delete_collection_item_embeddings(
     collection: &str,
     item_id: &str,
 ) -> anyhow::Result<()> {
-    let _: Value = qdrant_post(
-        paths,
-        &format!("/collections/{collection}/points/delete"),
-        Some(&[("wait", "true")]),
-        &json!({
-            "filter": {
-                "must": [
-                    {
-                        "key": "item_id",
-                        "match": { "value": item_id }
-                    }
-                ]
-            }
-        }),
-    )
-    .await?;
-    Ok(())
+    let Some(handle) = collection_handle_existing(paths, collection)? else {
+        return Ok(());
+    };
+    let filter = equality_filter(ITEM_ID_FIELD, item_id);
+    zvec_blocking("delete zvec collection item vectors", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        guard.delete_by_filter(&filter)?;
+        guard.flush()?;
+        Ok(())
+    })
+    .await
 }
 
-async fn ensure_collection(
+async fn delete_stale_collection_item_embeddings(
+    paths: &AppPaths,
+    collection: &str,
+    item_id: &str,
+    keep_records: &[VectorRecord],
+) -> anyhow::Result<usize> {
+    let Some(handle) = collection_handle_existing(paths, collection)? else {
+        return Ok(0);
+    };
+    let filter = stale_item_filter(item_id, keep_records);
+    let stale_point_ids = stale_sibling_point_ids(keep_records);
+    let collection = collection.to_string();
+    zvec_blocking("delete stale zvec collection vectors", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        let before_filter_delete = guard.stats()?.doc_count() as usize;
+        guard.delete_by_filter(&filter)?;
+        guard.flush()?;
+        let after_filter_delete = guard.stats()?.doc_count() as usize;
+        let filter_deleted = before_filter_delete.saturating_sub(after_filter_delete);
+
+        let stale_siblings = existing_point_ids(&guard, &stale_point_ids)?;
+        let sibling_deleted = stale_siblings.len();
+        if !stale_siblings.is_empty() {
+            let refs = stale_siblings
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let summary = guard.delete(&refs)?;
+            anyhow::ensure!(
+                summary.error == 0,
+                "zvec stale delete for collection {collection} failed for {} records",
+                summary.error
+            );
+            guard.flush()?;
+        }
+        Ok(filter_deleted + sibling_deleted)
+    })
+    .await
+}
+
+fn ensure_collection(
     paths: &AppPaths,
     collection: &str,
     profile: &EmbeddingProfile,
 ) -> anyhow::Result<()> {
-    if let Some(info) = collection_info(paths, collection).await? {
-        validate_collection_config(collection, profile, &info)?;
-        ensure_payload_index(paths, collection, "item_id").await;
-        ensure_payload_index(paths, collection, "chunk_id").await;
-        return Ok(());
-    }
-
-    let _: Value = qdrant_put(
-        paths,
-        &format!("/collections/{collection}"),
-        Some(&[("wait", "true")]),
-        &json!({
-            "vectors": {
-                "size": profile.output_dimension,
-                "distance": qdrant_distance(&profile.distance_metric)?,
-                "on_disk": true
-            },
-            "on_disk_payload": true
-        }),
-    )
-    .await?;
-
-    ensure_payload_index(paths, collection, "item_id").await;
-    ensure_payload_index(paths, collection, "chunk_id").await;
-    Ok(())
-}
-
-async fn ensure_payload_index(paths: &AppPaths, collection: &str, field: &str) {
-    let result: anyhow::Result<Value> = qdrant_put(
-        paths,
-        &format!("/collections/{collection}/index"),
-        Some(&[("wait", "true")]),
-        &json!({
-            "field_name": field,
-            "field_schema": "keyword"
-        }),
-    )
-    .await;
-
-    if let Err(error) = result {
-        tracing::warn!(%error, collection, field, "failed to create Qdrant payload index");
-    }
+    collection_handle_for_profile(paths, collection, profile).map(|_| ())
 }
 
 async fn collection_exists(paths: &AppPaths, collection: &str) -> anyhow::Result<bool> {
-    Ok(collection_info(paths, collection).await?.is_some())
+    Ok(collection_handle_existing(paths, collection)?.is_some())
 }
 
-async fn collection_info(paths: &AppPaths, collection: &str) -> anyhow::Result<Option<Value>> {
-    match qdrant_get::<Value>(paths, &format!("/collections/{collection}")).await {
-        Ok(value) => Ok(Some(value)),
-        Err(error) if qdrant_error_is_not_found(&error) => Ok(None),
-        Err(error) => Err(error),
+fn collection_handle_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<CollectionHandle> {
+    let path = collection_path(paths, collection);
+    let cache = ZVEC_COLLECTIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("zvec collection cache mutex poisoned"))?;
+
+    if let Some(handle) = guard.get(&path) {
+        if collection_path_has_data(&path)? && collection_config_is_readable(&path) {
+            validate_collection_config(paths, collection, profile, handle)?;
+            return Ok(Arc::clone(handle));
+        }
+        guard.remove(&path);
     }
+
+    let collection_handle = Arc::new(Mutex::new(open_or_create_collection(
+        &path, collection, profile,
+    )?));
+    validate_collection_config(paths, collection, profile, &collection_handle)?;
+    guard.insert(path, Arc::clone(&collection_handle));
+    Ok(collection_handle)
+}
+
+fn collection_handle_existing(
+    paths: &AppPaths,
+    collection: &str,
+) -> anyhow::Result<Option<CollectionHandle>> {
+    collection_handle_existing_with_profile(paths, collection, None)
+}
+
+fn collection_handle_existing_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<Option<CollectionHandle>> {
+    collection_handle_existing_with_profile(paths, collection, Some(profile))
+}
+
+fn collection_handle_existing_with_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: Option<&EmbeddingProfile>,
+) -> anyhow::Result<Option<CollectionHandle>> {
+    let path = collection_path(paths, collection);
+    let cache = ZVEC_COLLECTIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("zvec collection cache mutex poisoned"))?;
+
+    if let Some(handle) = guard.get(&path) {
+        if collection_path_has_data(&path)? && collection_config_is_readable(&path) {
+            if let Some(profile) = profile {
+                validate_collection_config(paths, collection, profile, handle)?;
+            }
+            return Ok(Some(Arc::clone(handle)));
+        }
+        guard.remove(&path);
+    }
+
+    if !collection_path_has_data(&path)? || !collection_config_is_readable(&path) {
+        return Ok(None);
+    }
+
+    let collection_path = path_to_string(&path)?;
+    let collection_handle = Arc::new(Mutex::new(
+        Collection::open(&collection_path, None).with_context(|| {
+            format!(
+                "failed to open zvec collection {collection} at {}",
+                path.display()
+            )
+        })?,
+    ));
+    if let Some(profile) = profile {
+        validate_collection_config(paths, collection, profile, &collection_handle)?;
+    }
+    guard.insert(path, Arc::clone(&collection_handle));
+    Ok(Some(collection_handle))
+}
+
+fn open_or_create_collection(
+    path: &Path,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<Collection> {
+    fs::create_dir_all(&profile_index_root(path))?;
+    let collection_path = path_to_string(path)?;
+    if collection_path_has_data(path)? {
+        if collection_config_is_readable(path) {
+            return Collection::open(&collection_path, None).with_context(|| {
+                format!(
+                    "failed to open zvec collection {collection} at {}",
+                    path.display()
+                )
+            });
+        }
+        fs::remove_dir_all(path).with_context(|| {
+            format!(
+                "failed to remove zvec collection {collection} with missing or invalid config at {}",
+                path.display()
+            )
+        })?;
+    }
+    if path.exists() {
+        fs::remove_dir_all(path)?;
+    }
+    let schema = zvec_collection_schema(collection, profile)?;
+    let handle =
+        Collection::create_and_open(&collection_path, &schema, None).with_context(|| {
+            format!(
+                "failed to create zvec collection {collection} at {}",
+                path.display()
+            )
+        })?;
+    write_collection_config(path, collection, profile)?;
+    Ok(handle)
+}
+
+fn zvec_collection_schema(
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<CollectionSchema> {
+    let mut schema = CollectionSchema::new(&collection_schema_name(collection))?;
+
+    let mut invert = IndexParams::new(IndexType::Invert)?;
+    invert.set_invert_params(true, false)?;
+
+    let mut item_field = FieldSchema::new(ITEM_ID_FIELD, DataType::String, false, 0)?;
+    item_field.set_index_params(&invert)?;
+    schema.add_field(&item_field)?;
+
+    let mut chunk_field = FieldSchema::new(CHUNK_ID_FIELD, DataType::String, false, 0)?;
+    chunk_field.set_index_params(&invert)?;
+    schema.add_field(&chunk_field)?;
+
+    let mut hnsw = IndexParams::new(IndexType::Hnsw)?;
+    hnsw.set_metric_type(zvec_metric(&profile.distance_metric)?)?;
+    hnsw.set_hnsw_params(ZVEC_HNSW_M, ZVEC_HNSW_EF_CONSTRUCTION)?;
+
+    let mut vector_field = FieldSchema::new(
+        VECTOR_FIELD,
+        DataType::VectorFp32,
+        false,
+        profile.output_dimension as u32,
+    )?;
+    vector_field.set_index_params(&hnsw)?;
+    schema.add_field(&vector_field)?;
+    schema.validate()?;
+    Ok(schema)
 }
 
 fn validate_collection_config(
+    paths: &AppPaths,
     collection: &str,
     profile: &EmbeddingProfile,
-    info: &Value,
+    handle: &CollectionHandle,
 ) -> anyhow::Result<()> {
-    let vectors = info.pointer("/result/config/params/vectors");
-    let Some(vectors) = vectors else {
-        tracing::warn!(
-            collection,
-            "Qdrant collection config did not include vector params"
-        );
-        return Ok(());
-    };
-    let size = vectors.get("size").and_then(Value::as_i64);
-    let distance = vectors.get("distance").and_then(Value::as_str);
-
-    if let Some(size) = size {
-        anyhow::ensure!(
-            size == i64::from(profile.output_dimension),
-            "Qdrant collection {collection} has vector size {size}, expected {} for profile {}",
-            profile.output_dimension,
-            profile.id
-        );
-    } else {
-        tracing::warn!(
-            collection,
-            "Qdrant collection config did not include vector size"
-        );
-    }
-
-    if let Some(distance) = distance {
-        let expected = qdrant_distance(&profile.distance_metric)?;
-        anyhow::ensure!(
-            distance.eq_ignore_ascii_case(expected),
-            "Qdrant collection {collection} uses distance {distance}, expected {expected} for profile {}",
-            profile.id
-        );
-    } else {
-        tracing::warn!(
-            collection,
-            "Qdrant collection config did not include distance metric"
-        );
-    }
-
+    let guard = handle
+        .lock()
+        .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+    let schema = guard.schema()?;
+    let vector_field = schema
+        .vector_field(VECTOR_FIELD)?
+        .ok_or_else(|| anyhow::anyhow!("zvec collection {collection} is missing vector field"))?;
+    anyhow::ensure!(
+        vector_field.dimension() == profile.output_dimension as u32,
+        "zvec collection {collection} has vector dimension {}, expected {} for profile {}",
+        vector_field.dimension(),
+        profile.output_dimension,
+        profile.id
+    );
+    let config =
+        read_collection_config(&collection_config_path(&collection_path(paths, collection)))?;
+    let expected_metric = canonical_distance_metric(&profile.distance_metric)?;
+    anyhow::ensure!(
+        config.collection == collection
+            && config.profile_id == profile.id
+            && config.output_dimension == profile.output_dimension
+            && config.distance_metric == expected_metric,
+        "zvec collection {collection} config does not match profile {}; stored collection={} profile={} dimensions={} metric={}, expected dimensions={} metric={}",
+        profile.id,
+        config.collection,
+        config.profile_id,
+        config.output_dimension,
+        config.distance_metric,
+        profile.output_dimension,
+        expected_metric
+    );
     Ok(())
 }
 
-fn parse_qdrant_vector(value: Value) -> Option<Vec<f32>> {
-    let values = if let Some(array) = value.as_array() {
-        array
-    } else {
-        value.as_object()?.values().next()?.as_array()?
-    };
-    values
-        .iter()
-        .map(|value| value.as_f64().map(|number| number as f32))
-        .collect()
+fn record_to_doc(record: &VectorRecord) -> anyhow::Result<Doc> {
+    let mut doc = Doc::new()?;
+    doc.set_pk(&point_id(&record.point_key))?;
+    doc.add_string(CHUNK_ID_FIELD, &record.chunk_id)?;
+    doc.add_string(ITEM_ID_FIELD, &record.item_id)?;
+    doc.add_vector_fp32(VECTOR_FIELD, &record.vector)?;
+    Ok(doc)
 }
 
-async fn ensure_qdrant_ready(paths: &AppPaths) -> anyhow::Result<()> {
-    if qdrant_health().await {
-        return Ok(());
-    }
-
-    let _ready_guard = QDRANT_READY_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-    if qdrant_health().await {
-        return Ok(());
-    }
-
-    let config = qdrant_config();
-    if !qdrant_autostart_enabled(&config) {
-        anyhow::bail!(
-            "Qdrant is not reachable at {}. Start Qdrant or set CERUL_QDRANT_URL.",
-            config.url
-        );
-    }
-
-    let timeout = qdrant_ready_timeout();
-    let mut restarted = false;
-
-    loop {
-        let launch = maybe_spawn_qdrant(paths, &config)?;
-        let started = Instant::now();
-        loop {
-            let health_error = match qdrant_health_check().await {
-                Ok(()) => return Ok(()),
-                Err(error) => error,
-            };
-            if let Some(status) = qdrant_sidecar_exit_status() {
-                if !restarted && std::env::var_os("CERUL_QDRANT_URL").is_none() {
-                    restarted = true;
-                    tracing::warn!(
-                        %status,
-                        url = %launch.url,
-                        "local Qdrant sidecar exited before ready; restarting once"
-                    );
-                    break;
-                }
-                anyhow::bail!(
-                    "Qdrant sidecar exited before becoming ready at {} (status: {}). Last health check error: {}. Recent log from {}:\n{}",
-                    launch.url,
-                    status,
-                    health_error,
-                    launch.log_path.display(),
-                    qdrant_log_tail(&launch.log_path)
-                );
-            }
-            if started.elapsed() >= timeout {
-                let health_error = match qdrant_health_check().await {
-                    Ok(()) => return Ok(()),
-                    Err(error) => error,
-                };
-                anyhow::bail!(
-                    "Qdrant did not become ready at {} within {}s. Last health check error: {}. Recent log from {}:\n{}",
-                    launch.url,
-                    timeout.as_secs(),
-                    health_error,
-                    launch.log_path.display(),
-                    qdrant_log_tail(&launch.log_path)
-                );
-            }
-            tokio::time::sleep(QDRANT_READY_POLL_INTERVAL).await;
-        }
+fn zvec_metric(metric: &str) -> anyhow::Result<MetricType> {
+    match canonical_distance_metric(metric)?.as_str() {
+        "cosine" => Ok(MetricType::Cosine),
+        "dot" => Ok(MetricType::Ip),
+        "l2" => Ok(MetricType::L2),
+        other => anyhow::bail!("unsupported zvec distance metric {other:?}"),
     }
 }
 
-async fn qdrant_health() -> bool {
-    qdrant_health_check().await.is_ok()
-}
-
-async fn qdrant_health_check() -> Result<(), String> {
-    let config = qdrant_config();
-    let client = qdrant_health_client();
-    let url = qdrant_url(&config, "/collections", None);
-
-    let mut request = client.get(&url);
-    if let Some(api_key) = &config.api_key {
-        request = request.header("api-key", api_key);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("health request to {url} failed: {error}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|error| format!("(unable to read response body: {error})"));
-        return Err(format!("health request to {url} returned {status}: {body}"));
-    }
-    let envelope = response
-        .json::<QdrantEnvelope<Value>>()
-        .await
-        .map_err(|error| format!("health response from {url} was not valid JSON: {error}"))?;
-    if envelope.status == "ok" {
-        Ok(())
-    } else {
-        Err(format!(
-            "health response from {url} returned non-ok status: {}",
-            envelope.status
-        ))
+fn canonical_distance_metric(metric: &str) -> anyhow::Result<String> {
+    match metric.to_ascii_lowercase().as_str() {
+        "cosine" => Ok("cosine".to_string()),
+        "dot" | "ip" => Ok("dot".to_string()),
+        "euclid" | "euclidean" | "l2" => Ok("l2".to_string()),
+        other => anyhow::bail!("unsupported zvec distance metric {other:?}"),
     }
 }
 
-fn maybe_spawn_qdrant(paths: &AppPaths, config: &QdrantConfig) -> anyhow::Result<QdrantLaunch> {
-    ensure_data_dirs(paths)?;
-    let log_path = qdrant_log_path(paths)?;
+fn collection_path(paths: &AppPaths, collection: &str) -> PathBuf {
+    paths
+        .vector_index
+        .join("collections")
+        .join(sanitize_collection_path(collection))
+}
 
-    let mutex = QDRANT_PROCESS.get_or_init(|| Mutex::new(None));
-    let mut guard = mutex.lock().expect("Qdrant process mutex poisoned");
-    if guard
-        .as_mut()
-        .is_some_and(|child| child.try_wait().ok().flatten().is_none())
-    {
-        return Ok(QdrantLaunch {
-            log_path,
-            url: config.url.clone(),
-        });
-    }
+fn collection_config_path(collection_path: &Path) -> PathBuf {
+    let file_name = collection_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("collection");
+    collection_path.with_file_name(format!("{file_name}{ZVEC_COLLECTION_CONFIG_SUFFIX}"))
+}
 
-    let binary = find_qdrant_binary().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Qdrant is not reachable at {} and no qdrant binary was found. Run scripts/fetch-binaries.sh or set CERUL_QDRANT_BIN.",
-            config.url
+fn collection_config_is_readable(collection_path: &Path) -> bool {
+    read_collection_config(&collection_config_path(collection_path)).is_ok()
+}
+
+fn read_collection_config(path: &Path) -> anyhow::Result<ZvecCollectionConfig> {
+    let raw = fs::read_to_string(path).with_context(|| {
+        format!(
+            "zvec collection config is missing at {}; rebuild the vector index",
+            path.display()
         )
     })?;
-    let launch_url = choose_qdrant_launch_url(&config.url)?;
-    let parsed = reqwest::Url::parse(&launch_url)?;
-    let port = parsed
-        .port_or_known_default()
-        .ok_or_else(|| anyhow::anyhow!("Qdrant URL has no port: {}", launch_url))?;
-    let grpc_port = port.saturating_add(1);
-
-    let mut log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
-    writeln!(
-        log,
-        "\n--- starting qdrant sidecar url={} storage={} ---",
-        launch_url,
-        paths.qdrant.display()
-    )
-    .ok();
-    let stdout = log.try_clone()?;
-    let stderr = log.try_clone()?;
-
-    let mut command = Command::new(binary);
-    command
-        .current_dir(&paths.qdrant)
-        .env(
-            "QDRANT__STORAGE__STORAGE_PATH",
-            paths.qdrant.to_string_lossy().into_owned(),
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "failed to parse zvec collection config at {}",
+            path.display()
         )
-        .env(
-            "QDRANT__STORAGE__SNAPSHOTS_PATH",
-            paths
-                .qdrant
-                .join("snapshots")
-                .to_string_lossy()
-                .into_owned(),
-        )
-        .env("QDRANT__SERVICE__HTTP_PORT", port.to_string())
-        .env("QDRANT__SERVICE__GRPC_PORT", grpc_port.to_string())
-        .env("QDRANT__LOG_LEVEL", "WARN")
-        .env("QDRANT__TELEMETRY_DISABLED", "true")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-
-    tracing::info!(%port, storage = %paths.qdrant.display(), "starting local Qdrant sidecar");
-    let child = command.spawn()?;
-    *guard = Some(child);
-    if launch_url != config.url {
-        set_local_qdrant_url(Some(launch_url.clone()));
-        tracing::warn!(
-            configured_url = %config.url,
-            launch_url = %launch_url,
-            "default Qdrant port was unavailable; using a fallback local port"
-        );
-    }
-    Ok(QdrantLaunch {
-        log_path,
-        url: launch_url,
     })
 }
 
-fn qdrant_sidecar_exit_status() -> Option<ExitStatus> {
-    let mutex = QDRANT_PROCESS.get()?;
-    let mut guard = mutex.lock().ok()?;
-    let child = guard.as_mut()?;
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            *guard = None;
-            Some(status)
-        }
-        _ => None,
-    }
-}
-
-fn find_qdrant_binary() -> Option<PathBuf> {
-    let exe = qdrant_exe_name();
-    if let Some(path) = std::env::var_os("CERUL_QDRANT_BIN").map(PathBuf::from) {
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    for root in candidate_roots() {
-        let candidate = root.join("third-party").join(host_target()).join(&exe);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let candidate = root
-                .join("Contents")
-                .join("Resources")
-                .join("third-party")
-                .join(host_target())
-                .join(&exe);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    find_on_path(&exe)
-}
-
-fn candidate_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        push_ancestors(&mut roots, &cwd);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            push_ancestors(&mut roots, parent);
-        }
-    }
-    roots
-}
-
-fn push_ancestors(roots: &mut Vec<PathBuf>, start: &Path) {
-    for path in start.ancestors().take(8) {
-        let candidate = path.to_path_buf();
-        if !roots.contains(&candidate) {
-            roots.push(candidate);
-        }
-    }
-}
-
-fn find_on_path(exe: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|path| path.join(exe))
-        .find(|candidate| candidate.is_file())
-}
-
-fn qdrant_exe_name() -> String {
-    if cfg!(target_os = "windows") {
-        "qdrant.exe".to_string()
-    } else {
-        "qdrant".to_string()
-    }
-}
-
-fn host_target() -> &'static str {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-        _ => "unsupported",
-    }
-}
-
-fn qdrant_autostart_enabled(config: &QdrantConfig) -> bool {
-    match std::env::var("CERUL_QDRANT_AUTOSTART") {
-        Ok(value) => !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO"),
-        Err(_) => {
-            std::env::var_os("CERUL_QDRANT_URL").is_none() && qdrant_url_is_loopback(&config.url)
-        }
-    }
-}
-
-fn qdrant_config() -> QdrantConfig {
-    QdrantConfig {
-        url: std::env::var("CERUL_QDRANT_URL")
-            .ok()
-            .or_else(local_qdrant_url)
-            .unwrap_or_else(|| DEFAULT_QDRANT_URL.to_string()),
-        api_key: std::env::var("CERUL_QDRANT_API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty()),
-    }
-}
-
-fn local_qdrant_url() -> Option<String> {
-    let mutex = LOCAL_QDRANT_URL.get()?;
-    mutex.lock().ok()?.clone()
-}
-
-fn set_local_qdrant_url(url: Option<String>) {
-    let mutex = LOCAL_QDRANT_URL.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = mutex.lock() {
-        *guard = url;
-    }
-}
-
-fn choose_qdrant_launch_url(configured_url: &str) -> anyhow::Result<String> {
-    if std::env::var_os("CERUL_QDRANT_URL").is_some() {
-        return Ok(configured_url.to_string());
-    }
-
-    let parsed = reqwest::Url::parse(configured_url)?;
-    if !url_host_is_loopback(&parsed) {
-        return Ok(configured_url.to_string());
-    }
-
-    let port = parsed
-        .port_or_known_default()
-        .ok_or_else(|| anyhow::anyhow!("Qdrant URL has no port: {configured_url}"))?;
-    if tcp_port_pair_available(port, port.saturating_add(1)) {
-        set_local_qdrant_url(None);
-        return Ok(configured_url.to_string());
-    }
-
-    let fallback_port = find_available_qdrant_port(port.saturating_add(2))
-        .ok_or_else(|| anyhow::anyhow!("no free local ports available for Qdrant sidecar"))?;
-    qdrant_url_with_port(configured_url, fallback_port)
-}
-
-fn qdrant_url_with_port(url: &str, port: u16) -> anyhow::Result<String> {
-    let mut parsed = reqwest::Url::parse(url)?;
-    parsed
-        .set_port(Some(port))
-        .map_err(|_| anyhow::anyhow!("failed to set Qdrant URL port for {url}"))?;
-    Ok(parsed.to_string().trim_end_matches('/').to_string())
-}
-
-fn find_available_qdrant_port(start: u16) -> Option<u16> {
-    (start..=u16::MAX.saturating_sub(1))
-        .find(|port| tcp_port_pair_available(*port, port.saturating_add(1)))
-}
-
-fn tcp_port_pair_available(http_port: u16, grpc_port: u16) -> bool {
-    if http_port == 0 || grpc_port == 0 || http_port == grpc_port {
-        return false;
-    }
-    let Ok(http) = TcpListener::bind(("127.0.0.1", http_port)) else {
-        return false;
+fn write_collection_config(
+    collection_path: &Path,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<()> {
+    let config = ZvecCollectionConfig {
+        collection: collection.to_string(),
+        profile_id: profile.id.clone(),
+        output_dimension: profile.output_dimension,
+        distance_metric: canonical_distance_metric(&profile.distance_metric)?,
     };
-    let Ok(grpc) = TcpListener::bind(("127.0.0.1", grpc_port)) else {
-        drop(http);
-        return false;
-    };
-    drop(grpc);
-    drop(http);
-    true
-}
-
-fn qdrant_url_is_loopback(url: &str) -> bool {
-    reqwest::Url::parse(url)
-        .map(|url| url_host_is_loopback(&url))
-        .unwrap_or(false)
-}
-
-fn url_host_is_loopback(url: &reqwest::Url) -> bool {
-    matches!(
-        url.host_str(),
-        Some("127.0.0.1") | Some("localhost") | Some("::1")
-    )
-}
-
-fn qdrant_ready_timeout() -> Duration {
-    std::env::var("CERUL_QDRANT_READY_TIMEOUT_SEC")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_QDRANT_READY_TIMEOUT)
-}
-
-fn qdrant_client() -> Client {
-    Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("Qdrant reqwest client should build")
-}
-
-fn qdrant_health_client() -> Client {
-    Client::builder()
-        .timeout(QDRANT_HEALTH_TIMEOUT)
-        .build()
-        .expect("Qdrant health reqwest client should build")
-}
-
-async fn qdrant_get<T: for<'de> Deserialize<'de>>(
-    paths: &AppPaths,
-    path: &str,
-) -> anyhow::Result<T> {
-    ensure_data_dirs(paths)?;
-    let config = qdrant_config();
-    let mut request = qdrant_client().get(qdrant_url(&config, path, None));
-    if let Some(api_key) = &config.api_key {
-        request = request.header("api-key", api_key);
+    let config_path = collection_config_path(collection_path);
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
     }
-    qdrant_send(request).await
-}
-
-async fn qdrant_put<T: for<'de> Deserialize<'de>>(
-    paths: &AppPaths,
-    path: &str,
-    query: Option<&[(&str, &str)]>,
-    body: &Value,
-) -> anyhow::Result<T> {
-    ensure_data_dirs(paths)?;
-    let config = qdrant_config();
-    let mut request = qdrant_client()
-        .put(qdrant_url(&config, path, query))
-        .json(body);
-    if let Some(api_key) = &config.api_key {
-        request = request.header("api-key", api_key);
-    }
-    qdrant_send(request).await
-}
-
-async fn qdrant_post<T: for<'de> Deserialize<'de>>(
-    paths: &AppPaths,
-    path: &str,
-    query: Option<&[(&str, &str)]>,
-    body: &Value,
-) -> anyhow::Result<T> {
-    ensure_data_dirs(paths)?;
-    let config = qdrant_config();
-    let mut request = qdrant_client()
-        .post(qdrant_url(&config, path, query))
-        .json(body);
-    if let Some(api_key) = &config.api_key {
-        request = request.header("api-key", api_key);
-    }
-    qdrant_send(request).await
-}
-
-async fn qdrant_send<T: for<'de> Deserialize<'de>>(
-    request: reqwest::RequestBuilder,
-) -> anyhow::Result<T> {
-    let response = request.send().await?;
-    let status = response.status();
-    let text = response.text().await?;
-    if !status.is_success() {
-        anyhow::bail!("Qdrant request failed ({status}): {text}");
-    }
-    let envelope = serde_json::from_str::<QdrantEnvelope<T>>(&text)?;
-    anyhow::ensure!(
-        envelope.status == "ok",
-        "Qdrant returned non-ok status: {}",
-        envelope.status
-    );
-    Ok(envelope.result)
-}
-
-fn qdrant_url(config: &QdrantConfig, path: &str, query: Option<&[(&str, &str)]>) -> String {
-    let mut url = format!("{}{}", config.url.trim_end_matches('/'), path);
-    if let Some(query) = query {
-        let query = query
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join("&");
-        if !query.is_empty() {
-            url.push('?');
-            url.push_str(&query);
+    let tmp_path = collection_config_tmp_path(&config_path);
+    let _ = fs::remove_file(&tmp_path);
+    fs::write(&tmp_path, serde_json::to_vec_pretty(&config)?)?;
+    if let Err(error) = fs::rename(&tmp_path, &config_path) {
+        if config_path.exists() {
+            fs::remove_file(&config_path)?;
+            fs::rename(&tmp_path, &config_path)?;
+        } else {
+            return Err(error.into());
         }
     }
-    url
-}
-
-fn ensure_data_dirs(paths: &AppPaths) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.qdrant)?;
     Ok(())
 }
 
-fn qdrant_log_path(paths: &AppPaths) -> anyhow::Result<PathBuf> {
-    let dir = paths.qdrant.join("logs");
-    fs::create_dir_all(&dir)?;
-    Ok(dir.join("qdrant-sidecar.log"))
+fn collection_config_tmp_path(config_path: &Path) -> PathBuf {
+    let file_name = config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("collection.cerul.json");
+    config_path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()))
 }
 
-fn qdrant_log_tail(path: &Path) -> String {
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) => return format!("(unable to read Qdrant log: {error})"),
-    };
-    let len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-    let start = len.saturating_sub(QDRANT_LOG_TAIL_BYTES);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return "(unable to seek Qdrant log)".to_string();
-    }
-    let mut bytes = Vec::new();
-    if let Err(error) = file.read_to_end(&mut bytes) {
-        return format!("(unable to read Qdrant log: {error})");
-    }
-    String::from_utf8_lossy(&bytes).trim().to_string()
+fn profile_index_root(path: &Path) -> PathBuf {
+    path.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
-fn qdrant_error_is_not_found(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.contains(StatusCode::NOT_FOUND.as_str()) || message.contains("Not found")
+fn collection_path_has_data(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    Ok(fs::read_dir(path)?.next().transpose()?.is_some())
 }
 
-fn qdrant_distance(metric: &str) -> anyhow::Result<&'static str> {
-    match metric.to_ascii_lowercase().as_str() {
-        "cosine" => Ok("Cosine"),
-        "dot" | "ip" => Ok("Dot"),
-        "euclid" | "euclidean" | "l2" => Ok("Euclid"),
-        other => anyhow::bail!("unsupported Qdrant distance metric {other:?}"),
+fn collection_schema_name(collection: &str) -> String {
+    format!(
+        "cerul_{}",
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, collection.as_bytes()).simple()
+    )
+}
+
+fn sanitize_collection_path(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "collection".to_string()
+    } else {
+        sanitized
     }
+}
+
+fn equality_filter(field: &str, value: &str) -> String {
+    format!(
+        "{field} = '{}'",
+        value.replace('\\', "\\\\").replace('\'', "\\'")
+    )
+}
+
+fn stale_item_filter(item_id: &str, keep_records: &[VectorRecord]) -> String {
+    let mut filter = equality_filter(ITEM_ID_FIELD, item_id);
+    let mut keep_chunk_ids = keep_records
+        .iter()
+        .map(|record| record.chunk_id.as_str())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    keep_chunk_ids.sort_unstable();
+    if !keep_chunk_ids.is_empty() {
+        let keep_values = keep_chunk_ids
+            .into_iter()
+            .map(quoted_filter_value)
+            .collect::<Vec<_>>()
+            .join(", ");
+        filter.push_str(&format!(" AND {CHUNK_ID_FIELD} NOT IN ({keep_values})"));
+    }
+    filter
+}
+
+fn stale_sibling_point_ids(keep_records: &[VectorRecord]) -> Vec<String> {
+    let keep_point_keys = keep_records
+        .iter()
+        .map(|record| record.point_key.as_str())
+        .collect::<HashSet<_>>();
+    let mut keep_chunk_ids = keep_records
+        .iter()
+        .map(|record| record.chunk_id.as_str())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    keep_chunk_ids.sort_unstable();
+
+    let mut stale_ids = Vec::new();
+    for chunk_id in keep_chunk_ids {
+        for point_key in [chunk_id.to_string(), format!("{chunk_id}:image")] {
+            if !keep_point_keys.contains(point_key.as_str()) {
+                stale_ids.push(point_id(&point_key));
+            }
+        }
+    }
+    stale_ids
+}
+
+fn existing_point_ids(
+    collection: &Collection,
+    point_ids: &[String],
+) -> anyhow::Result<Vec<String>> {
+    if point_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let refs = point_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let docs = collection.fetch(&refs)?;
+    let mut ids = Vec::new();
+    for doc in docs.iter() {
+        if let Some(id) = doc.pk_copy() {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+fn quoted_filter_value(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+fn path_to_string(path: &Path) -> anyhow::Result<String> {
+    path.to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
 }
 
 fn point_id(chunk_id: &str) -> String {
@@ -1540,4 +1264,293 @@ fn sanitize_profile_id(profile_id: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_profile(distance_metric: &str) -> EmbeddingProfile {
+        EmbeddingProfile {
+            id: "test-profile".to_string(),
+            provider_id: "test".to_string(),
+            model_id: "test-model".to_string(),
+            model_revision: None,
+            output_dimension: 3,
+            distance_metric: distance_metric.to_string(),
+            instruction_template: None,
+            index_version: MODEL_INDEX_VERSION,
+            status: "active".to_string(),
+        }
+    }
+
+    fn test_record(
+        point_key: &str,
+        chunk_id: &str,
+        item_id: &str,
+        vector: [f32; 3],
+    ) -> VectorRecord {
+        VectorRecord::new_for_dimensions_with_point_key(
+            point_key.to_string(),
+            chunk_id.to_string(),
+            item_id.to_string(),
+            vector.to_vec(),
+            3,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn zvec_cosine_search_scores_are_distances() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let same = test_record("chunk-same", "chunk-same", "item-1", [1.0, 0.0, 0.0]);
+        let orthogonal = test_record(
+            "chunk-orthogonal",
+            "chunk-orthogonal",
+            "item-1",
+            [0.0, 1.0, 0.0],
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[same, orthogonal],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let hits =
+            search_collection_for_profile(&paths, &collection, &[1.0, 0.0, 0.0], 2, &profile)
+                .await
+                .unwrap();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, "chunk-same");
+        assert!(hits[0].score.abs() < 0.001);
+        assert!(hits[0].score < hits[1].score);
+    }
+
+    #[tokio::test]
+    async fn stale_unified_delete_preserves_keep_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let stale = test_record("chunk-stale", "chunk-stale", "item-1", [1.0, 0.0, 0.0]);
+        let keep = test_record("chunk-keep", "chunk-keep", "item-1", [0.0, 1.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[stale.clone(), keep.clone()],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_stale_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&keep),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted, 1);
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+        let vectors = retrieve_collection_vectors(
+            &paths,
+            &collection,
+            &["chunk-stale".to_string(), "chunk-keep".to_string()],
+        )
+        .await
+        .unwrap();
+        assert!(!vectors.contains_key("chunk-stale"));
+        assert_eq!(vectors.get("chunk-keep").map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn stale_unified_delete_removes_dropped_sibling_point_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let text = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        let image = test_record("chunk-1:image", "chunk-1", "item-1", [0.0, 1.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[text.clone(), image],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_stale_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&text),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(deleted, 1);
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+        let vectors = retrieve_collection_vectors(&paths, &collection, &["chunk-1".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            vectors.get("chunk-1").cloned(),
+            Some(vec![vec![1.0, 0.0, 0.0]])
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_collection_rejects_distance_metric_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        ensure_unified_collection_for_profile(&paths, &profile, crate::SEARCH_INDEX_VERSION)
+            .await
+            .unwrap();
+
+        let mismatched = test_profile("l2");
+        let error =
+            ensure_unified_collection_for_profile(&paths, &mismatched, crate::SEARCH_INDEX_VERSION)
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("config does not match profile"));
+    }
+
+    #[tokio::test]
+    async fn ensure_collection_recreates_when_config_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&record),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let path = collection_path(&paths, &collection);
+        let config = collection_config_path(&path);
+        assert!(config.exists());
+        fs::remove_file(&config).unwrap();
+
+        ensure_unified_collection_for_profile(&paths, &profile, crate::SEARCH_INDEX_VERSION)
+            .await
+            .unwrap();
+
+        assert!(config.exists());
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            0
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_collection_recreates_when_config_is_corrupt() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&record),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let path = collection_path(&paths, &collection);
+        let config = collection_config_path(&path);
+        fs::write(&config, b"{").unwrap();
+
+        ensure_unified_collection_for_profile(&paths, &profile, crate::SEARCH_INDEX_VERSION)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            0
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn search_collection_for_profile_rejects_distance_metric_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let mismatched = test_profile("l2");
+        let error =
+            search_collection_for_profile(&paths, &collection, &[1.0, 0.0, 0.0], 1, &mismatched)
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("config does not match profile"));
+    }
 }

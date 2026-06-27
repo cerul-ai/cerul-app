@@ -1464,7 +1464,7 @@ impl VideoPipeline {
             );
         }
 
-        let qdrant_started = Instant::now();
+        let vector_index_started = Instant::now();
         let stale_vectors_deleted = if replace_existing_vectors {
             cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
                 &self.paths,
@@ -1492,7 +1492,7 @@ impl VideoPipeline {
             )
             .await?
         };
-        let qdrant_write_ms = qdrant_started.elapsed().as_millis() as u64;
+        let vector_index_write_ms = vector_index_started.elapsed().as_millis() as u64;
         cerul_storage::set_item_search_index_status(
             &self.paths,
             item_id,
@@ -1509,7 +1509,7 @@ impl VideoPipeline {
                 "vectors": records.len(),
                 "text_vectors": text_vectors.len(),
                 "image_vectors": image_vectors.len(),
-                "qdrant_write_ms": qdrant_write_ms,
+                "vector_index_write_ms": vector_index_write_ms,
                 "total_ms": started.elapsed().as_millis() as u64,
                 "embedding_profile_id": profile.id,
                 "include_image_embeddings": include_image_embeddings,
@@ -2557,7 +2557,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_video_item_writes_sqlite_and_qdrant() {
+    async fn process_video_item_writes_sqlite_and_vector_index() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
         let videos = temp.path().join("videos");

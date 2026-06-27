@@ -133,7 +133,7 @@ async fn smoke_fts_tracks_chunk_text_changes() {
 }
 
 #[tokio::test]
-async fn smoke_write_video_chunks_persists_sqlite_and_qdrant_vectors() {
+async fn smoke_write_video_chunks_persists_sqlite_and_vector_index_vectors() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::from_data_dir(temp.path()).unwrap();
     let conn = sqlite::open(&paths).unwrap();

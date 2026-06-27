@@ -41,7 +41,7 @@ pub use usage::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageBackend {
     Sqlite,
-    Qdrant,
+    Zvec,
 }
 
 pub fn crate_ready() -> bool {
@@ -49,7 +49,7 @@ pub fn crate_ready() -> bool {
 }
 
 pub fn required_backends() -> &'static [StorageBackend] {
-    &[StorageBackend::Sqlite, StorageBackend::Qdrant]
+    &[StorageBackend::Sqlite, StorageBackend::Zvec]
 }
 
 #[cfg(test)]
@@ -60,7 +60,7 @@ mod tests {
     fn storage_scaffold_exposes_required_backends() {
         assert_eq!(
             required_backends(),
-            &[StorageBackend::Sqlite, StorageBackend::Qdrant]
+            &[StorageBackend::Sqlite, StorageBackend::Zvec]
         );
         assert!(!rusqlite::version().is_empty());
     }

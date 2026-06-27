@@ -299,7 +299,7 @@ app.on("will-quit", (event) => {
   stopStatusMonitor();
   flushDirtyStores();
   if (!coreShutdownComplete && apiProcess && ownsApiProcess) {
-    // Wait for the backend (which in turn owns qdrant) to exit, escalating
+    // Wait for the backend (which in turn owns the vector index) to exit, escalating
     // to SIGKILL after a grace period — fire-and-forget SIGTERM used to
     // leave orphans whenever the process needed longer than the app.
     event.preventDefault();
@@ -1313,7 +1313,7 @@ async function startRustCore() {
     if (!fs.existsSync(binary)) {
       throw new Error(`packaged Cerul Core binary is missing: ${binary}`);
     }
-    apiProcess = spawnApiProcess(binary, env);
+    apiProcess = spawnApiProcess(binary, withCoreLibraryPath(env, path.dirname(binary)));
   } else {
     binary = path.join(repoRoot(), "target", "debug", executableName(devCoreBinaryName));
     if (!fs.existsSync(binary)) {
@@ -1321,7 +1321,7 @@ async function startRustCore() {
         `dev Cerul Core binary is missing: ${binary}. Run "cargo build -p cerul-api" before launching the Electron shell.`,
       );
     }
-    apiProcess = spawnApiProcess(binary, env, repoRoot());
+    apiProcess = spawnApiProcess(binary, withCoreLibraryPath(env, path.dirname(binary)), repoRoot());
   }
 
   ownsApiProcess = true;
@@ -1381,6 +1381,26 @@ async function startRustCore() {
     );
     throw error;
   }
+}
+
+function withCoreLibraryPath(env: NodeJS.ProcessEnv, coreDir: string): NodeJS.ProcessEnv {
+  const next = { ...env };
+  if (process.platform === "darwin") {
+    next.DYLD_LIBRARY_PATH = prependEnvPath(next.DYLD_LIBRARY_PATH, coreDir);
+  } else if (process.platform === "linux") {
+    next.LD_LIBRARY_PATH = prependEnvPath(next.LD_LIBRARY_PATH, coreDir);
+  } else if (process.platform === "win32") {
+    next.PATH = prependEnvPath(next.PATH, coreDir);
+  }
+  return next;
+}
+
+function prependEnvPath(current: string | undefined, dir: string): string {
+  const parts = (current ?? "")
+    .split(path.delimiter)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return [dir, ...parts.filter((part) => path.resolve(part) !== path.resolve(dir))].join(path.delimiter);
 }
 
 async function stopRustCoreGracefully(timeoutMs = 4000) {
@@ -1599,13 +1619,21 @@ function readBundleArgumentProcessHolders(bundlePath: string) {
 
 function bundleArgumentSidecarPaths(bundlePath: string) {
   const resourcesPath = path.join(bundlePath, "Contents", "Resources");
-  const thirdPartyPath = path.join(resourcesPath, "third-party", targetTriple());
   return [
     path.join(resourcesPath, "bin", executableName(packagedCoreBinaryName)),
     path.join(resourcesPath, "bin", executableName(devCoreBinaryName)),
-    path.join(thirdPartyPath, executableName("qdrant")),
     path.join(resourcesPath, "mlx-sidecar", "cerul_mlx_sidecar.py"),
+    ...legacyQdrantSidecarPaths(resourcesPath),
   ].map(normalizeProcessPathForMatch);
+}
+
+function legacyQdrantSidecarPaths(resourcesPath: string) {
+  return [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+  ].map((target) => path.join(resourcesPath, "third-party", target, executableName("qdrant")));
 }
 
 function normalizeProcessPathForMatch(value: string) {
@@ -1654,6 +1682,7 @@ function shouldTerminateUpdateInstallHolder(holder: BundleProcessHolder) {
     command === packagedCoreBinaryName ||
     command === devCoreBinaryName ||
     command === "qdrant" ||
+    command === "qdrant.exe" ||
     command === "python" ||
     command === "python3" ||
     command.startsWith("python3.")
@@ -1899,10 +1928,8 @@ function runtimeEnv() {
 
   const ffmpeg = path.join(thirdParty, target, `ffmpeg${suffix}`);
   const ytdlp = path.join(thirdParty, target, `yt-dlp${suffix}`);
-  const qdrant = path.join(thirdParty, target, `qdrant${suffix}`);
   setBundledBinaryEnv(env, "CERUL_FFMPEG_PATH", ffmpeg, ["-version"]);
   setBundledExecutableEnv(env, "CERUL_YTDLP_PATH", ytdlp);
-  setBundledBinaryEnv(env, "CERUL_QDRANT_BIN", qdrant, ["--version"]);
 
   const mlxSidecar = path.join(
     app.isPackaged ? process.resourcesPath : root,
@@ -3629,7 +3656,7 @@ function appPaths() {
     data_dir: data,
     cache_dir: path.join(data, "cache"),
     models_dir: path.join(data, "models"),
-    index_dir: path.join(data, "indexes", "qdrant"),
+    index_dir: path.join(data, "indexes", "zvec"),
   };
 }
 

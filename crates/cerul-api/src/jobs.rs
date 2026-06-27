@@ -2265,7 +2265,7 @@ mod tests {
                 result.item_id == "item-indexed"
                     && result.snippet.contains("restart resilience phrase")
             }),
-            "expected SQLite + Qdrant search to remain readable, got {search_results:?}"
+            "expected SQLite + vector index search to remain readable, got {search_results:?}"
         );
 
         let processor = Arc::new(FakeProcessor {

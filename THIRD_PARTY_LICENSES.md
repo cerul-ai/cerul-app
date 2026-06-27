@@ -32,8 +32,8 @@ Release builds may copy these generated artifacts into the app bundle:
 |---|---|---|---|
 | `ffmpeg` | staged by `scripts/fetch-binaries.sh` | Must be LGPL-compatible for commercial distribution | Confirm build flags do not enable GPL components such as x264/x265 or other `--enable-gpl` features. |
 | `yt-dlp` | official GitHub releases | Unlicense | Keep an update path because site extractors become stale. |
-| `qdrant` | official Qdrant releases | Apache-2.0 | Verify platform artifact and bundled path before installer release. |
-| `cerul-api` | built from this repository | FSL-1.1-ALv2 | Built and staged by `apps/electron-shell/scripts/stage-cerul-api.mjs`. |
+| `cerul-api` | built from this repository | FSL-1.1-ALv2 | Built and staged by `apps/electron-shell/scripts/stage-cerul-core.mjs`. |
+| `libzvec_c_api` / `zvec_c_api.dll` | zvec bundled runtime selected by the Rust `zvec` crate | Apache-2.0 posture; confirm bundled wheel/source provenance before public release | Staged next to `cerul-core` by `apps/electron-shell/scripts/stage-cerul-core.mjs`; keep macOS x64 blocked unless a reviewed matching runtime is supplied. |
 
 ## Local Model Runtime
 

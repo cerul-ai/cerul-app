@@ -5,15 +5,13 @@
 ```text
 third-party/<target-triple>/ffmpeg
 third-party/<target-triple>/yt-dlp
-third-party/<target-triple>/qdrant
 ```
 
 The staged binaries are generated artifacts and are ignored by git. Electron
 copies this directory into the app bundle resources during installer builds and
 injects the packaged paths into the Rust runtime with `CERUL_FFMPEG_PATH`,
-`CERUL_YTDLP_PATH`, and `CERUL_QDRANT_BIN`. Cerul uses the bundled `qdrant`
-binary as the local vector-index sidecar when the default local Qdrant URL is
-not already running.
+and `CERUL_YTDLP_PATH`. The local vector index is embedded in the Rust runtime
+through zvec, so there is no packaged vector-database sidecar binary.
 
 `yt-dlp-manifest.json` is the checked-in source of truth for the bundled
 yt-dlp release and per-platform SHA-256 hashes. `scripts/fetch-binaries.sh`

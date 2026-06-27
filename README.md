@@ -45,7 +45,7 @@ Most of what you learn lives in video and audio — talks, podcasts, lectures, r
 Cerul App turns your own media into a searchable, **local-first** memory:
 
 - **Your machine, your data.** Media, transcripts, and the vector index all stay on disk. Inference runs through provider keys *you* control, or fully local models — no Cerul account required.
-- **Search by meaning.** Hybrid retrieval combines full-text (SQLite/FTS) with vector search (a bundled local [Qdrant](https://qdrant.tech)) so you find the moment, not just the keyword.
+- **Search by meaning.** Hybrid retrieval combines full-text (SQLite/FTS) with an embedded local vector index so you find the moment, not just the keyword.
 - **Always on, out of the way.** A global hotkey overlay, menu-bar tray, background indexing, and start-at-login keep it one keystroke away.
 - **Agent-ready.** Cerul Core exposes a local Agent API on `http://127.0.0.1:23785/v1` so coding agents and scripts can query your library.
 
@@ -57,7 +57,7 @@ The indexing pipeline is built for reliability — text search stays available e
 2. **Extract** audio and sample frames with `ffmpeg`.
 3. **Transcribe** via a Remote API provider or the local Qwen3-VL / MLX runtime.
 4. **Index text** into SQLite/FTS immediately — searchable right away.
-5. **Embed** transcript chunks and write vectors to Qdrant when embedding succeeds.
+5. **Embed** transcript chunks and write vectors to the embedded zvec index when embedding succeeds.
 
 > Visual understanding (slides, charts, on-screen text via Gemini) is an opt-in beta enrichment on an item's detail page, not a required step in the pipeline.
 
@@ -148,7 +148,7 @@ Cerul App is in alpha. Current release: **0.0.32**. The foundation works end to 
 - Windows/Linux packaging and signing
 - Update metadata and auto-update rollout checks
 - Broader installed-build release smoke coverage
-- Third-party binary license review (`ffmpeg`, `yt-dlp`, `qdrant`)
+- Third-party binary license review (`ffmpeg`, `yt-dlp`)
 
 Want newer ready-to-install builds? Star and watch the repo — public builds ship as GitHub Releases.
 
