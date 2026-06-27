@@ -5,8 +5,16 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=ZVEC_ROOT");
+    println!("cargo:rerun-if-env-changed=ZVEC_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=ZVEC_BUNDLED_WHEEL_PATH");
+    println!("cargo:rerun-if-env-changed=ZVEC_BUNDLED_WHEEL_URL");
+    println!("cargo:rerun-if-env-changed=ZVEC_BUNDLED_WHEEL_SHA256");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    reject_unsupported_zvec_runtime_target(&target_os, &target_arch);
+
     match target_os.as_str() {
         "macos" => println!("cargo:rustc-link-arg-bin=cerul-api=-Wl,-rpath,@loader_path"),
         "linux" => println!("cargo:rustc-link-arg-bin=cerul-api=-Wl,-rpath,$ORIGIN"),
@@ -16,6 +24,24 @@ fn main() {
     if let Err(error) = stage_zvec_runtime_library(&target_os) {
         println!("cargo:warning=failed to stage zvec runtime library next to cerul-api: {error}");
     }
+}
+
+fn reject_unsupported_zvec_runtime_target(target_os: &str, target_arch: &str) {
+    if target_os == "macos" && target_arch == "x86_64" && !has_zvec_runtime_override() {
+        panic!(
+            "x86_64-apple-darwin is not supported by zvec's bundled runtime wheels. \
+             Provide a matching zvec runtime through ZVEC_ROOT/ZVEC_LIB_DIR, \
+             ZVEC_BUNDLED_WHEEL_PATH, or ZVEC_BUNDLED_WHEEL_URL plus ZVEC_BUNDLED_WHEEL_SHA256."
+        );
+    }
+}
+
+fn has_zvec_runtime_override() -> bool {
+    env::var_os("ZVEC_ROOT").is_some()
+        || env::var_os("ZVEC_LIB_DIR").is_some()
+        || env::var_os("ZVEC_BUNDLED_WHEEL_PATH").is_some()
+        || (env::var_os("ZVEC_BUNDLED_WHEEL_URL").is_some()
+            && env::var_os("ZVEC_BUNDLED_WHEEL_SHA256").is_some())
 }
 
 fn stage_zvec_runtime_library(target_os: &str) -> Result<(), String> {
