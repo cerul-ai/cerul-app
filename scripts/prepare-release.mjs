@@ -22,8 +22,8 @@ if (version.startsWith("v")) {
   process.exit(1);
 }
 
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
-  console.error(`Invalid release version: ${version}`);
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  console.error(`Invalid stable release version: ${version}`);
   process.exit(1);
 }
 

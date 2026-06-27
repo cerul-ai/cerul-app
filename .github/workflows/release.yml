@@ -34,11 +34,21 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
+      - name: Require release token
+        shell: bash
+        env:
+          CERUL_RELEASE_TOKEN: ${{ secrets.CERUL_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERUL_RELEASE_TOKEN:-}" ]; then
+            echo "::error::CERUL_RELEASE_TOKEN is required so the release tag push triggers the tag-based Release workflow."
+            exit 1
+          fi
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.repository.default_branch }}
-          token: ${{ secrets.CERUL_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.CERUL_RELEASE_TOKEN }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -47,12 +57,8 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          CERUL_RELEASE_TOKEN: ${{ secrets.CERUL_RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${CERUL_RELEASE_TOKEN:-}" ]; then
-            echo "::notice::CERUL_RELEASE_TOKEN is not configured. The release commit push may fail if the default branch protection does not allow GITHUB_TOKEN to bypass reviews."
-          fi
           tag="v${RELEASE_VERSION}"
           git fetch origin "$DEFAULT_BRANCH" --tags
           git checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"
@@ -75,8 +81,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Release $RELEASE_VERSION"
           git tag -a "$tag" -m "Cerul $RELEASE_VERSION"
-          git push origin "HEAD:$DEFAULT_BRANCH"
-          git push origin "$tag"
+          git push --atomic origin "HEAD:$DEFAULT_BRANCH" "$tag"
 
   release-context:
     name: Resolve release target
@@ -652,30 +657,8 @@ jobs:
           done
           dmg="$(find release-assets/dmg -type f -name "*.dmg" -print | sort | tail -1)"
           if [ -z "$dmg" ]; then
-            echo "No DMG found for stable macOS download alias." >&2
+            echo "No DMG found in release assets." >&2
             exit 1
-          fi
-          stable_dmg_key="Cerul-mac.dmg"
-          if [ -n "$prefix" ]; then
-            stable_dmg_key="$prefix/$stable_dmg_key"
-          fi
-          aws s3 cp "$dmg" "s3://${CERUL_UPDATES_R2_BUCKET}/${stable_dmg_key}" \
-            --endpoint-url "$endpoint" \
-            --cache-control "public, max-age=300" \
-            --content-type "application/x-apple-diskimage" \
-            --content-disposition "attachment; filename=\"$(basename "$dmg")\""
-
-          dmg_blockmap="${dmg}.blockmap"
-          if [ -f "$dmg_blockmap" ]; then
-            stable_blockmap_key="Cerul-mac.dmg.blockmap"
-            if [ -n "$prefix" ]; then
-              stable_blockmap_key="$prefix/$stable_blockmap_key"
-            fi
-            aws s3 cp "$dmg_blockmap" "s3://${CERUL_UPDATES_R2_BUCKET}/${stable_blockmap_key}" \
-              --endpoint-url "$endpoint" \
-              --cache-control "public, max-age=300" \
-              --content-type "application/octet-stream" \
-              --content-disposition "attachment; filename=\"$(basename "$dmg_blockmap")\""
           fi
       - name: Upload release assets to draft GitHub release
         shell: bash
@@ -789,6 +772,64 @@ jobs:
           set -euo pipefail
           tag="$RELEASE_TAG"
           gh release edit "$tag" --draft=false --latest
+      - name: Publish stable DMG aliases to Cloudflare R2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CERUL_UPDATES_R2_BUCKET: ${{ secrets.CERUL_UPDATES_R2_BUCKET }}
+          CERUL_UPDATES_R2_PREFIX: ${{ vars.CERUL_UPDATES_R2_PREFIX }}
+        run: |
+          set -euo pipefail
+          required=(
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+            CLOUDFLARE_R2_ACCOUNT_ID
+            CERUL_UPDATES_R2_BUCKET
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "R2 upload cannot continue: $name is not configured." >&2
+              exit 1
+            fi
+          done
+          if ! command -v aws >/dev/null 2>&1; then
+            python3 -m pip install --user awscli
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          endpoint="https://${CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="${CERUL_UPDATES_R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+          dmg="$(find release-assets/dmg -type f -name "*.dmg" -print | sort | tail -1)"
+          if [ -z "$dmg" ]; then
+            echo "No DMG found for stable macOS download alias." >&2
+            exit 1
+          fi
+          stable_dmg_key="Cerul-mac.dmg"
+          if [ -n "$prefix" ]; then
+            stable_dmg_key="$prefix/$stable_dmg_key"
+          fi
+          aws s3 cp "$dmg" "s3://${CERUL_UPDATES_R2_BUCKET}/${stable_dmg_key}" \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=300" \
+            --content-type "application/x-apple-diskimage" \
+            --content-disposition "attachment; filename=\"$(basename "$dmg")\""
+
+          dmg_blockmap="${dmg}.blockmap"
+          if [ -f "$dmg_blockmap" ]; then
+            stable_blockmap_key="Cerul-mac.dmg.blockmap"
+            if [ -n "$prefix" ]; then
+              stable_blockmap_key="$prefix/$stable_blockmap_key"
+            fi
+            aws s3 cp "$dmg_blockmap" "s3://${CERUL_UPDATES_R2_BUCKET}/${stable_blockmap_key}" \
+              --endpoint-url "$endpoint" \
+              --cache-control "public, max-age=300" \
+              --content-type "application/octet-stream" \
+              --content-disposition "attachment; filename=\"$(basename "$dmg_blockmap")\""
+          fi
 
   announce:
     name: AI release notes + Discord announcement
