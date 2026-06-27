@@ -1328,8 +1328,9 @@ function AppWorkspace() {
 
   async function handleUpdateActivate() {
     if (updaterState.phase === "available") {
-      // No desktop host (browser/preview demo) → just open the download page.
-      if (!hasDesktopHost()) {
+      // GitHub-release fallback is informational; only latest-mac.yml backed
+      // states can use the automatic downloader.
+      if (!hasDesktopHost() || !updaterState.canAutoInstall) {
         window.open(updaterState.releaseUrl, "_blank", "noopener,noreferrer");
         return;
       }
@@ -1540,7 +1541,9 @@ function AppWorkspace() {
                     ? t("shell.updateReadyTip", { version: updaterState.version })
                     : updaterState.phase === "error"
                     ? t("shell.updateErrorTip", { message: updaterState.message })
-                    : t("shell.updateAvailableTip", { version: updaterState.version })
+                    : updaterState.canAutoInstall
+                    ? t("shell.updateAvailableTip", { version: updaterState.version })
+                    : t("shell.updateReleaseTip", { version: updaterState.version })
               }
               onClick={() => void handleUpdateActivate()}
             >
@@ -1571,7 +1574,7 @@ function AppWorkspace() {
                 </>
               ) : (
                 <>
-                  <Download size={13} />
+                  {updaterState.canAutoInstall ? <Download size={13} /> : <ExternalLink size={13} />}
                   <span className="rail-update-label">{t("shell.update")}</span>
                 </>
               )}
@@ -8530,6 +8533,7 @@ function UsageSettings() {
 function AboutSettings() {
   const t = useT();
   type AvailableDesktopUpdate = Exclude<DesktopUpdate, null>;
+  const releasePageUrl = "https://github.com/cerul-ai/cerul-app/releases";
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<{
     status: SettingsActionStatus;
@@ -8579,15 +8583,24 @@ function AboutSettings() {
     lastManualUpdateCheckAt.current = now;
     setUpdateState({ status: "running", message: null, update: null });
     try {
-      const update = await checkForDesktopUpdate();
+      let nextUpdaterState: DesktopUpdaterState | null = null;
+      let update: DesktopUpdate = null;
       if (hasDesktopHost()) {
         const next = await runDesktopUpdaterCheck({ installWhenDownloaded: true });
+        nextUpdaterState = next;
         setAboutUpdaterState(next);
+        update = updateFromUpdaterState(next);
+      } else {
+        update = await checkForDesktopUpdate();
       }
+      const releasePageOnly =
+        nextUpdaterState?.phase === "available" && !nextUpdaterState.canAutoInstall;
       setUpdateState({
         status: "done",
         message: update
-          ? t("settings.about.update.ready", { version: update.version })
+          ? releasePageOnly
+            ? t("settings.about.update.releasePageReady", { version: update.version })
+            : t("settings.about.update.ready", { version: update.version })
           : t("settings.about.update.upToDate"),
         update,
       });
@@ -8619,6 +8632,10 @@ function AboutSettings() {
         return;
       }
       if (next.phase === "available") {
+        if (!next.canAutoInstall) {
+          window.open(update.url, "_blank", "noopener,noreferrer");
+          return;
+        }
         const downloaded = await downloadDesktopUpdate();
         setAboutUpdaterState(downloaded);
         if (downloaded.phase === "idle") {
@@ -8641,6 +8658,27 @@ function AboutSettings() {
     }
   }
 
+  function updateFromUpdaterState(state: DesktopUpdaterState): AvailableDesktopUpdate | null {
+    if (state.phase === "available") {
+      return {
+        version: state.version,
+        url: state.releaseUrl,
+      };
+    }
+    if (
+      state.phase === "downloading" ||
+      state.phase === "preparing" ||
+      state.phase === "downloaded" ||
+      state.phase === "installing"
+    ) {
+      return {
+        version: state.version,
+        url: releasePageUrl,
+      };
+    }
+    return null;
+  }
+
   function updateActionLabel() {
     if (updateActionStatus === "running") {
       return t("settings.about.update.download");
@@ -8656,6 +8694,9 @@ function AboutSettings() {
     }
     if (aboutUpdaterState.phase === "installing") {
       return t("settings.about.update.installing");
+    }
+    if (aboutUpdaterState.phase === "available" && !aboutUpdaterState.canAutoInstall) {
+      return t("settings.about.update.openRelease");
     }
     return t("settings.about.update.download");
   }
