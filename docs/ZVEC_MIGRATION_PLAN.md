@@ -389,7 +389,7 @@ Completed first-pass benchmark:
 
 - synthetic 10k, 30k, and 50k vector datasets;
 - 2048 dimensions;
-- zvec, Qdrant sidecar, sqlite-vec, LanceDB, USearch, turbovec, and Chroma;
+- zvec, Qdrant sidecar, sqlite-vec, LanceDB, USearch, and turbovec;
 - delete, reopen, and basic concurrent read/write smoke checks.
 
 Minimum datasets:
@@ -413,7 +413,10 @@ Measure:
 - disk footprint;
 - crash during write, then reopen;
 - concurrent read while indexing;
-- app packaging and signing on macOS ARM64/x64.
+- app packaging and signing on macOS ARM64. macOS x64 requires a separately
+  supplied zvec runtime (`ZVEC_ROOT`, `ZVEC_LIB_DIR`, or a matching bundled
+  wheel override) because the current zvec bundled wheels do not include
+  `x86_64-apple-darwin`.
 
 Remaining product-quality tests:
 

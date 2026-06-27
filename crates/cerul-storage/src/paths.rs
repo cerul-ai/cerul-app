@@ -35,7 +35,12 @@ impl AppPaths {
         };
 
         remove_empty_legacy_lance_dir(&paths)?;
-        for dir in [&paths.data, &paths.vector_index, &paths.models, &paths.cache] {
+        for dir in [
+            &paths.data,
+            &paths.vector_index,
+            &paths.models,
+            &paths.cache,
+        ] {
             fs::create_dir_all(dir)?;
         }
 
@@ -163,10 +168,7 @@ mod tests {
         assert_eq!(paths.db, temp.path().join("cerul.db"));
         assert_eq!(paths.models, temp.path().join("models"));
         assert_eq!(paths.cache, temp.path().join("cache"));
-        assert_eq!(
-            paths.vector_index,
-            temp.path().join("indexes").join("zvec")
-        );
+        assert_eq!(paths.vector_index, temp.path().join("indexes").join("zvec"));
         assert_eq!(
             paths.source_cache_dir("youtube"),
             temp.path().join("cache").join("sources").join("youtube")

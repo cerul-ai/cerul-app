@@ -290,6 +290,39 @@ check_signing_prereqs() {
   export APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-$APPLE_PASSWORD}"
 }
 
+has_zvec_runtime_override() {
+  [ -n "${ZVEC_ROOT:-}" ] ||
+    [ -n "${ZVEC_LIB_DIR:-}" ] ||
+    [ -n "${ZVEC_BUNDLED_WHEEL_PATH:-}" ] ||
+    { [ -n "${ZVEC_BUNDLED_WHEEL_URL:-}" ] && [ -n "${ZVEC_BUNDLED_WHEEL_SHA256:-}" ]; }
+}
+
+check_zvec_target_prereqs() {
+  local effective_target="$TARGET"
+  if [ -z "$effective_target" ] && [ "$(uname -s)" = "Darwin" ]; then
+    case "$(uname -m)" in
+      arm64) effective_target="aarch64-apple-darwin" ;;
+      x86_64) effective_target="x86_64-apple-darwin" ;;
+    esac
+  fi
+
+  case "$effective_target" in
+    x86_64-apple-darwin)
+      if has_zvec_runtime_override; then
+        return
+      fi
+      cat >&2 <<'EOF'
+x86_64-apple-darwin is not supported by zvec's bundled runtime wheels.
+
+To build Intel macOS artifacts, provide a matching zvec runtime through
+ZVEC_ROOT/ZVEC_LIB_DIR or ZVEC_BUNDLED_WHEEL_PATH. Otherwise build the
+supported Apple Silicon target with --target aarch64-apple-darwin.
+EOF
+      exit 2
+      ;;
+  esac
+}
+
 electron_builder_args() {
   if [ -z "$TARGET" ]; then
     return
@@ -321,6 +354,7 @@ electron_builder_args() {
 }
 
 check_signing_prereqs
+check_zvec_target_prereqs
 prepare_corepack_pnpm_path "$ROOT" "$DRY_RUN"
 if [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_PASSWORD:-}" ]; then
   export APPLE_APP_SPECIFIC_PASSWORD="$APPLE_PASSWORD"

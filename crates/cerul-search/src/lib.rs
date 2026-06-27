@@ -275,9 +275,10 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     )?;
     let mut fts_hits_count = lexical_hits.len();
     let vector_hits_count = vector_hits.len();
-    let vector_index_point_count = cerul_storage::vectors::collection_point_count(paths, &collection)
-        .await
-        .ok();
+    let vector_index_point_count =
+        cerul_storage::vectors::collection_point_count(paths, &collection)
+            .await
+            .ok();
     let mut fallback_reason = if vector_hits_count == 0 {
         match vector_index_point_count {
             Some(0) => Some("unified_vector_index_empty".to_string()),
@@ -667,7 +668,10 @@ async fn vector_index_search(
         .map(|hit| RawHit {
             chunk_id: hit.chunk_id,
             score: similarity_from_vector_index_score(hit.score, distance_metric),
-            similarity_score: Some(similarity_from_vector_index_score(hit.score, distance_metric)),
+            similarity_score: Some(similarity_from_vector_index_score(
+                hit.score,
+                distance_metric,
+            )),
             exact_match: false,
             source_mask: SOURCE_TEXT_VECTOR,
         })
@@ -1619,9 +1623,7 @@ mod tests {
         );
         assert!((scored[0].match_score - 0.92).abs() < 0.001);
         assert!((scored[1].match_score - 0.91).abs() < 0.001);
-        assert!(
-            (scored[2].match_score - (LEXICAL_ONLY_SCORE_CEILING + 0.03)).abs() < 0.001
-        );
+        assert!((scored[2].match_score - (LEXICAL_ONLY_SCORE_CEILING + 0.03)).abs() < 0.001);
     }
 
     #[test]

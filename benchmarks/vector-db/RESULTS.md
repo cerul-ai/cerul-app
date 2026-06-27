@@ -15,13 +15,12 @@ Tested:
 - `USearch 2.25.3`, default and high-recall modes
 - `turbovec 0.8.0`
 - Cerul-bundled Qdrant sidecar binary, actual local version `qdrant 1.18.1`
-- `Chroma 1.5.9` persistent local client as a reference item
 
 Not tested as local desktop candidates:
 
 - Pinecone and turbopuffer, because they are cloud services and do not solve Cerul's offline local index problem.
 - Weaviate local/embedded, because it keeps the service/sidecar shape that this migration is trying to avoid.
-- Chroma server mode, for the same reason. Only Chroma's local persistent client was included as a reference.
+- Chroma local/server modes, because they keep a Python/service-oriented shape that does not align with the Rust/Electron packaged local core; `chromadb` was also left out of committed dependencies after dependency review flagged a critical advisory.
 
 ## Method
 
@@ -92,7 +91,6 @@ Reproduce:
 | USearch high-recall | 5.07 / 0.990 | 11.73 / 0.925 | 15.28 / 0.804 |
 | turbovec | 0.60 / 0.851 | 1.28 / 0.853 | 2.12 / 0.824 |
 | Qdrant sidecar | 3.49 / 0.990 | 16.59 / 0.910 | 17.55 / 0.830 |
-| Chroma local persistent | 5.41 / 0.471 | 6.40 / 0.235 | not rerun |
 
 ## Findings
 
@@ -195,18 +193,13 @@ Weaknesses:
 
 ### Chroma
 
-Not recommended for Cerul local desktop.
+Not carried forward as a committed benchmark dependency.
 
-Strengths:
+Reasons:
 
-- Easy Python local persistent client.
-- Delete/reopen/concurrent smoke passed.
-
-Weaknesses:
-
-- Poor recall on this synthetic cosine benchmark even after setting the collection space to cosine.
 - Python/local-development shape does not align well with Cerul's Rust/Electron local backend.
 - Server mode brings back sidecar/service concerns.
+- `chromadb 1.5.9` was flagged by dependency review for a critical advisory, so it should stay out of default local benchmark dependencies unless we explicitly revisit it with a patched version.
 
 ## Recommendation
 

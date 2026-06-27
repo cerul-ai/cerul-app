@@ -124,6 +124,10 @@ mkdir -p "$INSTALL_DIR/bin"
 INSTALLED_BINARY="$INSTALL_DIR/bin/cerul-core"
 cp "$BINARY" "$INSTALLED_BINARY"
 chmod +x "$INSTALLED_BINARY"
+if [ -f "$(dirname "$BINARY")/libzvec_c_api.so" ]; then
+  cp "$(dirname "$BINARY")/libzvec_c_api.so" "$INSTALL_DIR/bin/libzvec_c_api.so"
+  chmod +x "$INSTALL_DIR/bin/libzvec_c_api.so"
+fi
 cp -R "$SOURCE_THIRD_PARTY" "$INSTALL_DIR/third-party"
 
 check_bundled_binary() {
@@ -148,6 +152,7 @@ env -i \
   HOME="$HOME_DIR" \
   XDG_RUNTIME_DIR="$HOME_DIR/xdg-runtime" \
   PATH="/usr/bin:/bin" \
+  LD_LIBRARY_PATH="$INSTALL_DIR/bin" \
   CERUL_FFMPEG_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/ffmpeg" \
   CERUL_YTDLP_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/yt-dlp" \
   "$INSTALLED_BINARY" &

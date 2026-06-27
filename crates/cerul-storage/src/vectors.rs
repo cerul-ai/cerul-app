@@ -35,6 +35,7 @@ const ITEM_ID_FIELD: &str = "item_id";
 const VECTOR_FIELD: &str = "vector";
 const ZVEC_HNSW_M: i32 = 16;
 const ZVEC_HNSW_EF_CONSTRUCTION: i32 = 200;
+const ZVEC_COLLECTION_CONFIG_SUFFIX: &str = ".cerul.json";
 
 type CollectionHandle = Arc<Mutex<Collection>>;
 type CollectionCache = HashMap<PathBuf, CollectionHandle>;
@@ -136,6 +137,14 @@ pub struct VectorHit {
     pub score: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ZvecCollectionConfig {
+    collection: String,
+    profile_id: String,
+    output_dimension: i32,
+    distance_metric: String,
+}
+
 pub async fn ensure_collections(paths: &AppPaths) -> anyhow::Result<()> {
     let profile = ensure_active_embedding_profile(paths)?;
     ensure_unified_collection_for_profile(paths, &profile, crate::SEARCH_INDEX_VERSION).await
@@ -230,9 +239,8 @@ pub async fn delete_stale_item_unified_embeddings_for_profile(
     if !collection_exists(paths, &collection).await? {
         return Ok(0);
     }
-    delete_collection_item_embeddings(paths, &collection, item_id).await?;
     upsert_collection_embeddings(paths, &collection, keep_records).await?;
-    Ok(0)
+    delete_stale_collection_item_embeddings(paths, &collection, item_id, keep_records).await
 }
 
 pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
@@ -418,6 +426,24 @@ async fn delete_collection_item_embeddings(
     Ok(())
 }
 
+async fn delete_stale_collection_item_embeddings(
+    paths: &AppPaths,
+    collection: &str,
+    item_id: &str,
+    keep_records: &[VectorRecord],
+) -> anyhow::Result<usize> {
+    let Some(handle) = collection_handle_existing(paths, collection)? else {
+        return Ok(0);
+    };
+    let filter = stale_item_filter(item_id, keep_records);
+    let guard = handle
+        .lock()
+        .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+    guard.delete_by_filter(&filter)?;
+    guard.flush()?;
+    Ok(0)
+}
+
 fn ensure_collection(
     paths: &AppPaths,
     collection: &str,
@@ -443,7 +469,7 @@ fn collection_handle_for_profile(
 
     if let Some(handle) = guard.get(&path) {
         if collection_path_has_data(&path)? {
-            validate_collection_config(collection, profile, handle)?;
+            validate_collection_config(paths, collection, profile, handle)?;
             return Ok(Arc::clone(handle));
         }
         guard.remove(&path);
@@ -452,7 +478,7 @@ fn collection_handle_for_profile(
     let collection_handle = Arc::new(Mutex::new(open_or_create_collection(
         &path, collection, profile,
     )?));
-    validate_collection_config(collection, profile, &collection_handle)?;
+    validate_collection_config(paths, collection, profile, &collection_handle)?;
     guard.insert(path, Arc::clone(&collection_handle));
     Ok(collection_handle)
 }
@@ -510,12 +536,15 @@ fn open_or_create_collection(
         fs::remove_dir_all(path)?;
     }
     let schema = zvec_collection_schema(collection, profile)?;
-    Collection::create_and_open(&collection_path, &schema, None).with_context(|| {
-        format!(
-            "failed to create zvec collection {collection} at {}",
-            path.display()
-        )
-    })
+    let handle =
+        Collection::create_and_open(&collection_path, &schema, None).with_context(|| {
+            format!(
+                "failed to create zvec collection {collection} at {}",
+                path.display()
+            )
+        })?;
+    write_collection_config(path, collection, profile)?;
+    Ok(handle)
 }
 
 fn zvec_collection_schema(
@@ -552,6 +581,7 @@ fn zvec_collection_schema(
 }
 
 fn validate_collection_config(
+    paths: &AppPaths,
     collection: &str,
     profile: &EmbeddingProfile,
     handle: &CollectionHandle,
@@ -570,6 +600,23 @@ fn validate_collection_config(
         profile.output_dimension,
         profile.id
     );
+    let config =
+        read_collection_config(&collection_config_path(&collection_path(paths, collection)))?;
+    let expected_metric = canonical_distance_metric(&profile.distance_metric)?;
+    anyhow::ensure!(
+        config.collection == collection
+            && config.profile_id == profile.id
+            && config.output_dimension == profile.output_dimension
+            && config.distance_metric == expected_metric,
+        "zvec collection {collection} config does not match profile {}; stored collection={} profile={} dimensions={} metric={}, expected dimensions={} metric={}",
+        profile.id,
+        config.collection,
+        config.profile_id,
+        config.output_dimension,
+        config.distance_metric,
+        profile.output_dimension,
+        expected_metric
+    );
     Ok(())
 }
 
@@ -583,10 +630,19 @@ fn record_to_doc(record: &VectorRecord) -> anyhow::Result<Doc> {
 }
 
 fn zvec_metric(metric: &str) -> anyhow::Result<MetricType> {
-    match metric.to_ascii_lowercase().as_str() {
+    match canonical_distance_metric(metric)?.as_str() {
         "cosine" => Ok(MetricType::Cosine),
-        "dot" | "ip" => Ok(MetricType::Ip),
-        "euclid" | "euclidean" | "l2" => Ok(MetricType::L2),
+        "dot" => Ok(MetricType::Ip),
+        "l2" => Ok(MetricType::L2),
+        other => anyhow::bail!("unsupported zvec distance metric {other:?}"),
+    }
+}
+
+fn canonical_distance_metric(metric: &str) -> anyhow::Result<String> {
+    match metric.to_ascii_lowercase().as_str() {
+        "cosine" => Ok("cosine".to_string()),
+        "dot" | "ip" => Ok("dot".to_string()),
+        "euclid" | "euclidean" | "l2" => Ok("l2".to_string()),
         other => anyhow::bail!("unsupported zvec distance metric {other:?}"),
     }
 }
@@ -596,6 +652,48 @@ fn collection_path(paths: &AppPaths, collection: &str) -> PathBuf {
         .vector_index
         .join("collections")
         .join(sanitize_collection_path(collection))
+}
+
+fn collection_config_path(collection_path: &Path) -> PathBuf {
+    let file_name = collection_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("collection");
+    collection_path.with_file_name(format!("{file_name}{ZVEC_COLLECTION_CONFIG_SUFFIX}"))
+}
+
+fn read_collection_config(path: &Path) -> anyhow::Result<ZvecCollectionConfig> {
+    let raw = fs::read_to_string(path).with_context(|| {
+        format!(
+            "zvec collection config is missing at {}; rebuild the vector index",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "failed to parse zvec collection config at {}",
+            path.display()
+        )
+    })
+}
+
+fn write_collection_config(
+    collection_path: &Path,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<()> {
+    let config = ZvecCollectionConfig {
+        collection: collection.to_string(),
+        profile_id: profile.id.clone(),
+        output_dimension: profile.output_dimension,
+        distance_metric: canonical_distance_metric(&profile.distance_metric)?,
+    };
+    let config_path = collection_config_path(collection_path);
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(config_path, serde_json::to_vec_pretty(&config)?)?;
+    Ok(())
 }
 
 fn profile_index_root(path: &Path) -> PathBuf {
@@ -637,7 +735,34 @@ fn sanitize_collection_path(value: &str) -> String {
 }
 
 fn equality_filter(field: &str, value: &str) -> String {
-    format!("{field} == '{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+    format!(
+        "{field} = '{}'",
+        value.replace('\\', "\\\\").replace('\'', "\\'")
+    )
+}
+
+fn stale_item_filter(item_id: &str, keep_records: &[VectorRecord]) -> String {
+    let mut filter = equality_filter(ITEM_ID_FIELD, item_id);
+    let mut keep_chunk_ids = keep_records
+        .iter()
+        .map(|record| record.chunk_id.as_str())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    keep_chunk_ids.sort_unstable();
+    if !keep_chunk_ids.is_empty() {
+        let keep_values = keep_chunk_ids
+            .into_iter()
+            .map(quoted_filter_value)
+            .collect::<Vec<_>>()
+            .join(", ");
+        filter.push_str(&format!(" AND {CHUNK_ID_FIELD} NOT IN ({keep_values})"));
+    }
+    filter
+}
+
+fn quoted_filter_value(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 fn path_to_string(path: &Path) -> anyhow::Result<String> {
@@ -950,4 +1075,100 @@ fn sanitize_profile_id(profile_id: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_profile(distance_metric: &str) -> EmbeddingProfile {
+        EmbeddingProfile {
+            id: "test-profile".to_string(),
+            provider_id: "test".to_string(),
+            model_id: "test-model".to_string(),
+            model_revision: None,
+            output_dimension: 3,
+            distance_metric: distance_metric.to_string(),
+            instruction_template: None,
+            index_version: MODEL_INDEX_VERSION,
+            status: "active".to_string(),
+        }
+    }
+
+    fn test_record(
+        point_key: &str,
+        chunk_id: &str,
+        item_id: &str,
+        vector: [f32; 3],
+    ) -> VectorRecord {
+        VectorRecord::new_for_dimensions_with_point_key(
+            point_key.to_string(),
+            chunk_id.to_string(),
+            item_id.to_string(),
+            vector.to_vec(),
+            3,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stale_unified_delete_preserves_keep_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let stale = test_record("chunk-stale", "chunk-stale", "item-1", [1.0, 0.0, 0.0]);
+        let keep = test_record("chunk-keep", "chunk-keep", "item-1", [0.0, 1.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[stale.clone(), keep.clone()],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        delete_stale_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&keep),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+        let vectors = retrieve_collection_vectors(
+            &paths,
+            &collection,
+            &["chunk-stale".to_string(), "chunk-keep".to_string()],
+        )
+        .await
+        .unwrap();
+        assert!(!vectors.contains_key("chunk-stale"));
+        assert_eq!(vectors.get("chunk-keep").map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn ensure_collection_rejects_distance_metric_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        ensure_unified_collection_for_profile(&paths, &profile, crate::SEARCH_INDEX_VERSION)
+            .await
+            .unwrap();
+
+        let mismatched = test_profile("l2");
+        let error =
+            ensure_unified_collection_for_profile(&paths, &mismatched, crate::SEARCH_INDEX_VERSION)
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("config does not match profile"));
+    }
 }

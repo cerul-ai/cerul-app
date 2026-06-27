@@ -1313,7 +1313,7 @@ async function startRustCore() {
     if (!fs.existsSync(binary)) {
       throw new Error(`packaged Cerul Core binary is missing: ${binary}`);
     }
-    apiProcess = spawnApiProcess(binary, env);
+    apiProcess = spawnApiProcess(binary, withCoreLibraryPath(env, path.dirname(binary)));
   } else {
     binary = path.join(repoRoot(), "target", "debug", executableName(devCoreBinaryName));
     if (!fs.existsSync(binary)) {
@@ -1321,7 +1321,7 @@ async function startRustCore() {
         `dev Cerul Core binary is missing: ${binary}. Run "cargo build -p cerul-api" before launching the Electron shell.`,
       );
     }
-    apiProcess = spawnApiProcess(binary, env, repoRoot());
+    apiProcess = spawnApiProcess(binary, withCoreLibraryPath(env, path.dirname(binary)), repoRoot());
   }
 
   ownsApiProcess = true;
@@ -1381,6 +1381,26 @@ async function startRustCore() {
     );
     throw error;
   }
+}
+
+function withCoreLibraryPath(env: NodeJS.ProcessEnv, coreDir: string): NodeJS.ProcessEnv {
+  const next = { ...env };
+  if (process.platform === "darwin") {
+    next.DYLD_LIBRARY_PATH = prependEnvPath(next.DYLD_LIBRARY_PATH, coreDir);
+  } else if (process.platform === "linux") {
+    next.LD_LIBRARY_PATH = prependEnvPath(next.LD_LIBRARY_PATH, coreDir);
+  } else if (process.platform === "win32") {
+    next.PATH = prependEnvPath(next.PATH, coreDir);
+  }
+  return next;
+}
+
+function prependEnvPath(current: string | undefined, dir: string): string {
+  const parts = (current ?? "")
+    .split(path.delimiter)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return [dir, ...parts.filter((part) => path.resolve(part) !== path.resolve(dir))].join(path.delimiter);
 }
 
 async function stopRustCoreGracefully(timeoutMs = 4000) {

@@ -116,6 +116,9 @@ mkdir -p "$INSTALL_DIR/bin"
 INSTALLED_BINARY="$INSTALL_DIR/bin/cerul-core.exe"
 cp "$BINARY" "$INSTALLED_BINARY"
 chmod +x "$INSTALLED_BINARY"
+if [ -f "$(dirname "$BINARY")/zvec_c_api.dll" ]; then
+  cp "$(dirname "$BINARY")/zvec_c_api.dll" "$INSTALL_DIR/bin/zvec_c_api.dll"
+fi
 cp -R "$SOURCE_THIRD_PARTY" "$INSTALL_DIR/third-party"
 
 check_bundled_binary() {
@@ -159,7 +162,7 @@ env -i \
   SYSTEMROOT="$SYSTEMROOT_WIN" \
   SystemRoot="$SYSTEMROOT_WIN" \
   WINDIR="$WINDIR_WIN" \
-  PATH="$SYSTEM_PATH_WIN" \
+  PATH="$(to_windows_path "$INSTALL_DIR/bin");$SYSTEM_PATH_WIN" \
   CERUL_FFMPEG_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/ffmpeg.exe" \
   CERUL_YTDLP_PATH="$INSTALL_DIR/third-party/$TARGET_TRIPLE/yt-dlp.exe" \
   "$INSTALLED_BINARY" &

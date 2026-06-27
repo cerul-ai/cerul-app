@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260627)
     parser.add_argument(
         "--backends",
-        default="zvec,lancedb,sqlite_vec,usearch,turbovec,qdrant_sidecar,chroma",
+        default="zvec,lancedb,sqlite_vec,usearch,turbovec,qdrant_sidecar",
         help="Comma-separated backend names",
     )
     parser.add_argument(
@@ -940,7 +940,6 @@ BACKENDS: dict[str, Callable[[BenchContext], BackendResult]] = {
     "usearch_exact": bench_usearch_exact,
     "turbovec": bench_turbovec,
     "qdrant_sidecar": bench_qdrant_sidecar,
-    "chroma": bench_chroma,
 }
 
 

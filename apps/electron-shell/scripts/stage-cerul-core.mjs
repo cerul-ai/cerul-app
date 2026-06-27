@@ -1,13 +1,20 @@
-import { access, chmod, copyFile, mkdir, rm } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { constants } from "node:fs";
+import { execFile } from "node:child_process";
 import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const targetTriple = process.env.CERUL_TARGET_TRIPLE ?? "";
 const executableSuffix = targetTriple.includes("windows") || process.platform === "win32" ? ".exe" : "";
+const targetProfileDir = targetTriple
+  ? resolve(repoRoot, "target", targetTriple, "release")
+  : resolve(repoRoot, "target", "release");
 const source = targetTriple
-  ? resolve(repoRoot, "target", targetTriple, "release", `cerul-api${executableSuffix}`)
-  : resolve(repoRoot, "target", "release", `cerul-api${executableSuffix}`);
+  ? resolve(targetProfileDir, `cerul-api${executableSuffix}`)
+  : resolve(targetProfileDir, `cerul-api${executableSuffix}`);
 const destination = resolve(
   repoRoot,
   "apps",
@@ -29,3 +36,98 @@ await mkdir(dirname(destination), { recursive: true });
 await copyFile(source, destination);
 await chmod(destination, 0o755);
 console.log(`staged ${destination}`);
+
+const zvecLibrary = await findZvecRuntimeLibrary(targetProfileDir);
+if (zvecLibrary) {
+  const zvecDestination = resolve(dirname(destination), zvecLibrary.fileName);
+  await copyFile(zvecLibrary.path, zvecDestination);
+  if (process.platform !== "win32") {
+    await chmod(zvecDestination, 0o755);
+  }
+  console.log(`staged ${zvecDestination}`);
+  if (zvecLibrary.fileName.endsWith(".dylib")) {
+    await ensureMacosLoaderRpath(destination);
+  }
+} else {
+  throw new Error(`zvec runtime library was not found for ${targetTriple || process.platform} under ${targetProfileDir}`);
+}
+
+function zvecRuntimeLibraryName() {
+  if (targetTriple.includes("windows") || process.platform === "win32") {
+    return "zvec_c_api.dll";
+  }
+  if (targetTriple.includes("apple-darwin") || process.platform === "darwin") {
+    return "libzvec_c_api.dylib";
+  }
+  return "libzvec_c_api.so";
+}
+
+async function findZvecRuntimeLibrary(profileDir) {
+  const fileName = zvecRuntimeLibraryName();
+  for (const candidate of zvecRuntimeOverrideCandidates(fileName)) {
+    if (await isFile(candidate)) {
+      return { fileName, path: candidate };
+    }
+  }
+
+  const direct = resolve(profileDir, fileName);
+  if (await isFile(direct)) {
+    return { fileName, path: direct };
+  }
+
+  const buildDir = resolve(profileDir, "build");
+  let entries = [];
+  try {
+    entries = await readdir(buildDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("zvec-")) {
+      continue;
+    }
+    const candidate = resolve(buildDir, entry.name, "out", "zvec-bundled", "lib", fileName);
+    if (await isFile(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  candidates.sort();
+  const path = candidates.at(-1);
+  return path ? { fileName, path } : null;
+}
+
+function zvecRuntimeOverrideCandidates(fileName) {
+  const candidates = [];
+  if (process.env.ZVEC_LIB_DIR) {
+    candidates.push(resolve(process.env.ZVEC_LIB_DIR, fileName));
+  }
+  if (process.env.ZVEC_ROOT) {
+    candidates.push(resolve(process.env.ZVEC_ROOT, "lib", fileName));
+    candidates.push(resolve(process.env.ZVEC_ROOT, "lib64", fileName));
+  }
+  return candidates;
+}
+
+async function isFile(path) {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureMacosLoaderRpath(binary) {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const { stdout } = await execFileAsync("otool", ["-l", binary]);
+  if (stdout.includes("path @loader_path ")) {
+    return;
+  }
+  await execFileAsync("install_name_tool", ["-add_rpath", "@loader_path", binary]);
+  console.log(`added @loader_path rpath to ${binary}`);
+}

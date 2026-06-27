@@ -923,7 +923,8 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
     let indexing = jobs::indexing_diagnostics(&state.paths)?;
     let search = search_health_diagnostics(&state.paths).await?;
     let text_ready = search.fts_row_count > 0 || search.retrieval_unit_fts_row_count > 0;
-    let vector_ready = search.vector_index_error.is_none() && search.vector_index_point_count.unwrap_or(0) > 0;
+    let vector_ready =
+        search.vector_index_error.is_none() && search.vector_index_point_count.unwrap_or(0) > 0;
     let retrieval_mode = match (text_ready, vector_ready) {
         (true, true) => "hybrid",
         (true, false) => "text",
@@ -5372,7 +5373,10 @@ fn clear_deferred_embedding_rebuild_mode(paths: &AppPaths) -> anyhow::Result<()>
 fn sync_indexing_schema_side_effects(paths: &AppPaths) -> anyhow::Result<()> {
     let current = setting_string(paths, INDEXING_SCHEMA_VERSION_SETTING)?
         .and_then(|value| value.parse::<i32>().ok());
-    if current == Some(INDEXING_SCHEMA_VERSION) {
+    let current_vector_backend = setting_string(paths, VECTOR_INDEX_BACKEND_SETTING)?;
+    if current == Some(INDEXING_SCHEMA_VERSION)
+        && current_vector_backend.as_deref() == Some(ACTIVE_VECTOR_INDEX_BACKEND)
+    {
         return Ok(());
     }
 
@@ -5391,12 +5395,27 @@ fn sync_indexing_schema_side_effects(paths: &AppPaths) -> anyhow::Result<()> {
             Value::from(INDEXING_SCHEMA_VERSION).to_string(),
         ),
     )?;
+    conn.execute(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (?1, ?2, strftime('%s','now'))
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        "#,
+        (
+            VECTOR_INDEX_BACKEND_SETTING,
+            Value::from(ACTIVE_VECTOR_INDEX_BACKEND).to_string(),
+        ),
+    )?;
     tracing::info!(
         previous_version = ?current,
         version = INDEXING_SCHEMA_VERSION,
+        previous_vector_backend = ?current_vector_backend,
+        vector_backend = ACTIVE_VECTOR_INDEX_BACKEND,
         rebuild_items,
         queued_jobs,
-        "indexing schema changed; queued media rebuild"
+        "indexing schema or vector backend changed; queued media rebuild"
     );
     Ok(())
 }
@@ -6731,10 +6750,13 @@ const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
 ];
 const DEFERRED_EMBEDDING_REBUILD_MODE_SETTING: &str = "embedding_profile_rebuild_deferred_mode";
 const INDEXING_SCHEMA_VERSION_SETTING: &str = "indexing_schema_version";
-const INDEXING_SCHEMA_VERSION: i32 = 4;
+const VECTOR_INDEX_BACKEND_SETTING: &str = "vector_index_backend";
+const ACTIVE_VECTOR_INDEX_BACKEND: &str = "zvec";
+const INDEXING_SCHEMA_VERSION: i32 = 5;
 const INTERNAL_SETTING_KEYS: &[&str] = &[
     DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
     INDEXING_SCHEMA_VERSION_SETTING,
+    VECTOR_INDEX_BACKEND_SETTING,
     // Computed flag returned by list_settings; never persisted.
     "remote_api_key_set",
 ];
@@ -6755,7 +6777,9 @@ mod tests {
         conn.execute(
             r#"
             INSERT INTO settings (key, value, updated_at)
-            VALUES (?1, ?2, strftime('%s','now'))
+            VALUES
+                (?1, ?2, strftime('%s','now')),
+                (?3, ?4, strftime('%s','now'))
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = excluded.updated_at
@@ -6763,6 +6787,8 @@ mod tests {
             (
                 INDEXING_SCHEMA_VERSION_SETTING,
                 Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+                VECTOR_INDEX_BACKEND_SETTING,
+                Value::from(ACTIVE_VECTOR_INDEX_BACKEND).to_string(),
             ),
         )
         .unwrap();
@@ -8824,6 +8850,63 @@ mod tests {
             .unwrap();
         assert_eq!(item_status, "indexed");
         assert_eq!(queued_jobs, 1);
+    }
+
+    #[test]
+    fn vector_backend_change_requeues_indexed_items_when_schema_is_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata,
+                    search_index_version, search_index_status, search_index_unit_count, search_index_vector_count
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video.mp4', 'Video', 100, 'indexed', '{}',
+                    ?1, 'indexed', 4, 4
+                )
+                "#,
+                [cerul_storage::SEARCH_INDEX_VERSION],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?1, ?2, strftime('%s','now'))
+                "#,
+                (
+                    INDEXING_SCHEMA_VERSION_SETTING,
+                    Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+                ),
+            )
+            .unwrap();
+        }
+
+        sync_indexing_schema_side_effects(&paths).unwrap();
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let queued_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_jobs, 1);
+        assert_eq!(
+            setting_string(&paths, VECTOR_INDEX_BACKEND_SETTING)
+                .unwrap()
+                .as_deref(),
+            Some(ACTIVE_VECTOR_INDEX_BACKEND)
+        );
     }
 
     #[test]
