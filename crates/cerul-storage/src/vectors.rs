@@ -42,6 +42,16 @@ type CollectionCache = HashMap<PathBuf, CollectionHandle>;
 
 static ZVEC_COLLECTIONS: OnceLock<Mutex<CollectionCache>> = OnceLock::new();
 
+async fn zvec_blocking<T, F>(operation: &'static str, f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .with_context(|| format!("{operation} task panicked"))?
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingProfile {
     pub id: String,
@@ -266,7 +276,7 @@ pub async fn collection_point_count(paths: &AppPaths, collection: &str) -> anyho
     let Some(handle) = collection_handle_existing(paths, collection)? else {
         return Ok(0);
     };
-    collection_doc_count(handle)
+    collection_doc_count(handle).await
 }
 
 pub async fn collection_point_count_for_profile(
@@ -277,14 +287,17 @@ pub async fn collection_point_count_for_profile(
     let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
         return Ok(0);
     };
-    collection_doc_count(handle)
+    collection_doc_count(handle).await
 }
 
-fn collection_doc_count(handle: CollectionHandle) -> anyhow::Result<usize> {
-    let guard = handle
-        .lock()
-        .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
-    Ok(guard.stats()?.doc_count() as usize)
+async fn collection_doc_count(handle: CollectionHandle) -> anyhow::Result<usize> {
+    zvec_blocking("count zvec collection docs", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        Ok(guard.stats()?.doc_count() as usize)
+    })
+    .await
 }
 
 pub fn collection_names(paths: &AppPaths, profile: &EmbeddingProfile) -> VectorCollectionNames {
@@ -311,39 +324,41 @@ pub async fn search_collection_for_profile(
     let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
         return Ok(Vec::new());
     };
-    search_collection_handle(handle, query_vector, limit)
+    search_collection_handle(handle, query_vector, limit).await
 }
 
-fn search_collection_handle(
+async fn search_collection_handle(
     handle: CollectionHandle,
     query_vector: &[f32],
     limit: usize,
 ) -> anyhow::Result<Vec<VectorHit>> {
-    let mut query = VectorQuery::new()?;
-    query.set_field_name(VECTOR_FIELD)?;
-    query.set_query_vector_fp32(query_vector)?;
-    query.set_topk(limit.max(1).min(i32::MAX as usize) as i32)?;
-    query.set_include_vector(false)?;
-    query.set_include_doc_id(false)?;
-    query.set_output_fields(&[CHUNK_ID_FIELD])?;
+    let query_vector = query_vector.to_vec();
+    zvec_blocking("query zvec collection", move || {
+        let mut query = VectorQuery::new()?;
+        query.set_field_name(VECTOR_FIELD)?;
+        query.set_query_vector_fp32(&query_vector)?;
+        query.set_topk(limit.max(1).min(i32::MAX as usize) as i32)?;
+        query.set_include_vector(false)?;
+        query.set_include_doc_id(false)?;
+        query.set_output_fields(&[CHUNK_ID_FIELD])?;
 
-    let docs = {
         let guard = handle
             .lock()
             .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
-        guard.query(&query)?
-    };
+        let docs = guard.query(&query)?;
 
-    Ok(docs
-        .iter()
-        .filter_map(|doc| {
-            let chunk_id = doc.get_string(CHUNK_ID_FIELD).ok().flatten()?;
-            Some(VectorHit {
-                chunk_id,
-                score: doc.score(),
+        Ok(docs
+            .iter()
+            .filter_map(|doc| {
+                let chunk_id = doc.get_string(CHUNK_ID_FIELD).ok().flatten()?;
+                Some(VectorHit {
+                    chunk_id,
+                    score: doc.score(),
+                })
             })
-        })
-        .collect())
+            .collect())
+    })
+    .await
 }
 
 pub async fn retrieve_collection_vectors(
@@ -357,7 +372,7 @@ pub async fn retrieve_collection_vectors(
     let Some(handle) = collection_handle_existing(paths, collection)? else {
         return Ok(HashMap::new());
     };
-    retrieve_collection_vectors_from_handle(handle, chunk_ids)
+    retrieve_collection_vectors_from_handle(handle, chunk_ids).await
 }
 
 pub async fn retrieve_collection_vectors_for_profile(
@@ -372,45 +387,47 @@ pub async fn retrieve_collection_vectors_for_profile(
     let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
         return Ok(HashMap::new());
     };
-    retrieve_collection_vectors_from_handle(handle, chunk_ids)
+    retrieve_collection_vectors_from_handle(handle, chunk_ids).await
 }
 
-fn retrieve_collection_vectors_from_handle(
+async fn retrieve_collection_vectors_from_handle(
     handle: CollectionHandle,
     chunk_ids: &[String],
 ) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
-    let mut ids = Vec::with_capacity(chunk_ids.len() * 2);
-    let mut seen_ids = HashSet::new();
-    for id in chunk_ids {
-        for point_key in [id.clone(), format!("{id}:image")] {
-            let zvec_id = point_id(&point_key);
-            if seen_ids.insert(zvec_id.clone()) {
-                ids.push(zvec_id);
+    let chunk_ids = chunk_ids.to_vec();
+    zvec_blocking("fetch zvec collection vectors", move || {
+        let mut ids = Vec::with_capacity(chunk_ids.len() * 2);
+        let mut seen_ids = HashSet::new();
+        for id in &chunk_ids {
+            for point_key in [id.clone(), format!("{id}:image")] {
+                let zvec_id = point_id(&point_key);
+                if seen_ids.insert(zvec_id.clone()) {
+                    ids.push(zvec_id);
+                }
             }
         }
-    }
-    let refs = ids.iter().map(String::as_str).collect::<Vec<_>>();
-    let docs = {
+        let refs = ids.iter().map(String::as_str).collect::<Vec<_>>();
         let guard = handle
             .lock()
             .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
-        guard.fetch(&refs)?
-    };
+        let docs = guard.fetch(&refs)?;
 
-    let mut vectors = HashMap::new();
-    for doc in docs.iter() {
-        let Some(chunk_id) = doc.get_string(CHUNK_ID_FIELD).ok().flatten() else {
-            continue;
-        };
-        let Ok(vector) = doc.get_vector_fp32(VECTOR_FIELD) else {
-            continue;
-        };
-        vectors
-            .entry(chunk_id)
-            .or_insert_with(Vec::new)
-            .push(vector);
-    }
-    Ok(vectors)
+        let mut vectors = HashMap::new();
+        for doc in docs.iter() {
+            let Some(chunk_id) = doc.get_string(CHUNK_ID_FIELD).ok().flatten() else {
+                continue;
+            };
+            let Ok(vector) = doc.get_vector_fp32(VECTOR_FIELD) else {
+                continue;
+            };
+            vectors
+                .entry(chunk_id)
+                .or_insert_with(Vec::new)
+                .push(vector);
+        }
+        Ok(vectors)
+    })
+    .await
 }
 
 async fn replace_collection_item_embeddings(
@@ -432,24 +449,30 @@ async fn upsert_collection_embeddings(
         if batch.is_empty() {
             continue;
         }
-        let docs = batch
-            .iter()
-            .map(record_to_doc)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let refs = docs.iter().collect::<Vec<_>>();
+        let batch = batch.to_vec();
         let handle = collection_handle_existing(paths, collection)?.ok_or_else(|| {
             anyhow::anyhow!("zvec collection {collection} does not exist before vector upsert")
         })?;
-        let guard = handle
-            .lock()
-            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
-        let summary = guard.upsert(&refs)?;
-        anyhow::ensure!(
-            summary.error == 0,
-            "zvec upsert for collection {collection} failed for {} records",
-            summary.error
-        );
-        guard.flush()?;
+        let collection = collection.to_string();
+        zvec_blocking("upsert zvec collection vectors", move || {
+            let docs = batch
+                .iter()
+                .map(record_to_doc)
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let refs = docs.iter().collect::<Vec<_>>();
+            let guard = handle
+                .lock()
+                .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+            let summary = guard.upsert(&refs)?;
+            anyhow::ensure!(
+                summary.error == 0,
+                "zvec upsert for collection {collection} failed for {} records",
+                summary.error
+            );
+            guard.flush()?;
+            Ok(())
+        })
+        .await?;
     }
     Ok(())
 }
@@ -463,12 +486,15 @@ async fn delete_collection_item_embeddings(
         return Ok(());
     };
     let filter = equality_filter(ITEM_ID_FIELD, item_id);
-    let guard = handle
-        .lock()
-        .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
-    guard.delete_by_filter(&filter)?;
-    guard.flush()?;
-    Ok(())
+    zvec_blocking("delete zvec collection item vectors", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        guard.delete_by_filter(&filter)?;
+        guard.flush()?;
+        Ok(())
+    })
+    .await
 }
 
 async fn delete_stale_collection_item_embeddings(
@@ -482,31 +508,35 @@ async fn delete_stale_collection_item_embeddings(
     };
     let filter = stale_item_filter(item_id, keep_records);
     let stale_point_ids = stale_sibling_point_ids(keep_records);
-    let guard = handle
-        .lock()
-        .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
-    let before_filter_delete = guard.stats()?.doc_count() as usize;
-    guard.delete_by_filter(&filter)?;
-    guard.flush()?;
-    let after_filter_delete = guard.stats()?.doc_count() as usize;
-    let filter_deleted = before_filter_delete.saturating_sub(after_filter_delete);
-
-    let stale_siblings = existing_point_ids(&guard, &stale_point_ids)?;
-    let sibling_deleted = stale_siblings.len();
-    if !stale_siblings.is_empty() {
-        let refs = stale_siblings
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let summary = guard.delete(&refs)?;
-        anyhow::ensure!(
-            summary.error == 0,
-            "zvec stale delete for collection {collection} failed for {} records",
-            summary.error
-        );
+    let collection = collection.to_string();
+    zvec_blocking("delete stale zvec collection vectors", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        let before_filter_delete = guard.stats()?.doc_count() as usize;
+        guard.delete_by_filter(&filter)?;
         guard.flush()?;
-    }
-    Ok(filter_deleted + sibling_deleted)
+        let after_filter_delete = guard.stats()?.doc_count() as usize;
+        let filter_deleted = before_filter_delete.saturating_sub(after_filter_delete);
+
+        let stale_siblings = existing_point_ids(&guard, &stale_point_ids)?;
+        let sibling_deleted = stale_siblings.len();
+        if !stale_siblings.is_empty() {
+            let refs = stale_siblings
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let summary = guard.delete(&refs)?;
+            anyhow::ensure!(
+                summary.error == 0,
+                "zvec stale delete for collection {collection} failed for {} records",
+                summary.error
+            );
+            guard.flush()?;
+        }
+        Ok(filter_deleted + sibling_deleted)
+    })
+    .await
 }
 
 fn ensure_collection(
