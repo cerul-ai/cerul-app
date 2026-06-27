@@ -54,13 +54,15 @@ fn stage_zvec_runtime_library(target_os: &str) -> Result<(), String> {
         return Ok(());
     };
     let destination = target_dir.join(file_name);
-    fs::copy(&source, &destination).map_err(|err| {
-        format!(
-            "copy {} to {}: {err}",
-            source.display(),
-            destination.display()
-        )
-    })?;
+    if source != destination {
+        fs::copy(&source, &destination).map_err(|err| {
+            format!(
+                "copy {} to {}: {err}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -96,6 +98,17 @@ fn find_zvec_runtime_library(
     target_dir: &Path,
     file_name: &str,
 ) -> Result<Option<PathBuf>, String> {
+    for candidate in zvec_runtime_override_candidates(file_name) {
+        if candidate.is_file() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    let direct = target_dir.join(file_name);
+    if direct.is_file() {
+        return Ok(Some(direct));
+    }
+
     let build_dir = target_dir.join("build");
     let entries = match fs::read_dir(&build_dir) {
         Ok(entries) => entries,
@@ -125,4 +138,17 @@ fn find_zvec_runtime_library(
     }
     candidates.sort();
     Ok(candidates.pop())
+}
+
+fn zvec_runtime_override_candidates(file_name: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = env::var_os("ZVEC_LIB_DIR") {
+        candidates.push(PathBuf::from(dir).join(file_name));
+    }
+    if let Some(root) = env::var_os("ZVEC_ROOT") {
+        let root = PathBuf::from(root);
+        candidates.push(root.join("lib").join(file_name));
+        candidates.push(root.join("lib64").join(file_name));
+    }
+    candidates
 }

@@ -298,6 +298,10 @@ has_zvec_runtime_override() {
 }
 
 check_zvec_target_prereqs() {
+  if [ -n "$PREPACKAGED_APP" ]; then
+    return
+  fi
+
   local effective_target="$TARGET"
   if [ -z "$effective_target" ] && [ "$(uname -s)" = "Darwin" ]; then
     case "$(uname -m)" in
