@@ -270,13 +270,13 @@ pub async fn search_with_vectors_for_profile_diagnostics(
             &collection,
             &text_query_vector,
             retrieval_limit,
-            &profile.distance_metric
+            profile,
         ),
     )?;
     let mut fts_hits_count = lexical_hits.len();
     let vector_hits_count = vector_hits.len();
     let vector_index_point_count =
-        cerul_storage::vectors::collection_point_count(paths, &collection)
+        cerul_storage::vectors::collection_point_count_for_profile(paths, &collection, profile)
             .await
             .ok();
     let mut fallback_reason = if vector_hits_count == 0 {
@@ -292,7 +292,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
         paths,
         &collection,
         &text_query_vector,
-        &profile.distance_metric,
+        profile,
         vector_hits,
         lexical_hits,
         retrieval_limit,
@@ -659,18 +659,24 @@ async fn vector_index_search(
     collection: &str,
     query_vector: &[f32],
     limit: usize,
-    distance_metric: &str,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
 ) -> anyhow::Result<Vec<RawHit>> {
-    let hits =
-        cerul_storage::vectors::search_collection(paths, collection, query_vector, limit).await?;
+    let hits = cerul_storage::vectors::search_collection_for_profile(
+        paths,
+        collection,
+        query_vector,
+        limit,
+        profile,
+    )
+    .await?;
     Ok(hits
         .into_iter()
         .map(|hit| RawHit {
             chunk_id: hit.chunk_id,
-            score: similarity_from_vector_index_score(hit.score, distance_metric),
+            score: similarity_from_vector_index_score(hit.score, &profile.distance_metric),
             similarity_score: Some(similarity_from_vector_index_score(
                 hit.score,
-                distance_metric,
+                &profile.distance_metric,
             )),
             exact_match: false,
             source_mask: SOURCE_TEXT_VECTOR,
@@ -682,7 +688,7 @@ async fn merge_unified_hits(
     paths: &AppPaths,
     collection: &str,
     query_vector: &[f32],
-    distance_metric: &str,
+    profile: &cerul_storage::vectors::EmbeddingProfile,
     vector_hits: Vec<RawHit>,
     lexical_hits: Vec<RawHit>,
     limit: usize,
@@ -697,10 +703,14 @@ async fn merge_unified_hits(
         .filter(|hit| !candidates.contains_key(&hit.chunk_id))
         .map(|hit| hit.chunk_id.clone())
         .collect::<Vec<_>>();
-    let lexical_vectors =
-        cerul_storage::vectors::retrieve_collection_vectors(paths, collection, &lexical_only_ids)
-            .await
-            .unwrap_or_default();
+    let lexical_vectors = cerul_storage::vectors::retrieve_collection_vectors_for_profile(
+        paths,
+        collection,
+        &lexical_only_ids,
+        profile,
+    )
+    .await
+    .unwrap_or_default();
 
     for mut hit in lexical_hits {
         if let Some(existing) = candidates.get_mut(&hit.chunk_id) {
@@ -711,7 +721,7 @@ async fn merge_unified_hits(
         if let Some(vectors) = lexical_vectors.get(&hit.chunk_id) {
             let score = vectors
                 .iter()
-                .map(|vector| vector_similarity(query_vector, vector, distance_metric))
+                .map(|vector| vector_similarity(query_vector, vector, &profile.distance_metric))
                 .fold(0.0, f32::max);
             hit.score = score;
             hit.similarity_score = Some(score);
@@ -2675,7 +2685,7 @@ mod tests {
             &paths,
             &collection,
             &fake_vector(44),
-            &profile.distance_metric,
+            &profile,
             Vec::new(),
             vec![RawHit {
                 chunk_id: unit_id.to_string(),

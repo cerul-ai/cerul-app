@@ -35,13 +35,6 @@ impl AppPaths {
         };
 
         remove_empty_legacy_lance_dir(&paths)?;
-        if let Err(error) = remove_legacy_qdrant_index_dir(&paths) {
-            tracing::warn!(
-                path = %legacy_qdrant_index_dir(&paths).display(),
-                ?error,
-                "failed to remove legacy qdrant index directory"
-            );
-        }
         for dir in [
             &paths.data,
             &paths.vector_index,
@@ -60,6 +53,23 @@ impl AppPaths {
 
     pub fn logs_dir(&self) -> PathBuf {
         self.data.join("logs")
+    }
+
+    pub fn legacy_qdrant_index_dir(&self) -> PathBuf {
+        self.data.join("indexes").join("qdrant")
+    }
+
+    pub fn remove_legacy_qdrant_index_dir(&self) -> std::io::Result<()> {
+        let legacy = self.legacy_qdrant_index_dir();
+        if !legacy.exists() {
+            return Ok(());
+        }
+        let metadata = fs::symlink_metadata(&legacy)?;
+        if metadata.is_dir() {
+            fs::remove_dir_all(legacy)
+        } else {
+            fs::remove_file(legacy)
+        }
     }
 }
 
@@ -121,23 +131,6 @@ fn remove_empty_legacy_lance_dir(paths: &AppPaths) -> anyhow::Result<()> {
         fs::remove_dir_all(&legacy)?;
     }
     Ok(())
-}
-
-fn remove_legacy_qdrant_index_dir(paths: &AppPaths) -> std::io::Result<()> {
-    let legacy = legacy_qdrant_index_dir(paths);
-    if !legacy.exists() {
-        return Ok(());
-    }
-    let metadata = fs::symlink_metadata(&legacy)?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(legacy)
-    } else {
-        fs::remove_file(legacy)
-    }
-}
-
-fn legacy_qdrant_index_dir(paths: &AppPaths) -> PathBuf {
-    paths.data.join("indexes").join("qdrant")
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -214,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn from_data_dir_removes_legacy_qdrant_index_directory() {
+    fn from_data_dir_preserves_legacy_qdrant_index_directory() {
         let temp = tempfile::tempdir().unwrap();
         let legacy_qdrant = temp.path().join("indexes").join("qdrant");
         std::fs::create_dir_all(&legacy_qdrant).unwrap();
@@ -222,7 +215,20 @@ mod tests {
 
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
 
-        assert!(!legacy_qdrant.exists());
+        assert!(legacy_qdrant.exists());
         assert!(paths.vector_index.is_dir());
+    }
+
+    #[test]
+    fn remove_legacy_qdrant_index_directory_is_explicit() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy_qdrant = temp.path().join("indexes").join("qdrant");
+        std::fs::create_dir_all(&legacy_qdrant).unwrap();
+        std::fs::write(legacy_qdrant.join("collection.bin"), b"vectors").unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+
+        paths.remove_legacy_qdrant_index_dir().unwrap();
+
+        assert!(!legacy_qdrant.exists());
     }
 }

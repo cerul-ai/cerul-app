@@ -2480,16 +2480,24 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         &profile,
         cerul_storage::SEARCH_INDEX_VERSION,
     );
-    diagnostics.embedding_profile_id = Some(profile.id);
+    diagnostics.embedding_profile_id = Some(profile.id.clone());
     diagnostics.vector_index_collection = Some(collection.clone());
 
-    let unified_points = cerul_storage::vectors::collection_point_count(paths, &collection).await;
+    let unified_points =
+        cerul_storage::vectors::collection_point_count_for_profile(paths, &collection, &profile)
+            .await;
     match unified_points {
         Ok(count) => {
             diagnostics.vector_index_point_count = Some(count);
             diagnostics.vector_index_text_points = Some(count);
             diagnostics.embedded_text_chunk_count = Some(count);
             diagnostics.text_embedding_gap_count = Some(retrieval_unit_count.saturating_sub(count));
+            cleanup_legacy_qdrant_index_after_zvec_verified(
+                paths,
+                retrieval_unit_count,
+                items_needing_rebuild,
+                count,
+            );
         }
         Err(error) => {
             tracing::warn!(%error, collection, "failed to count vector index unified points for search diagnostics");
@@ -2501,6 +2509,45 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
     diagnostics.image_embedding_gap_count = Some(0);
 
     Ok(diagnostics)
+}
+
+fn cleanup_legacy_qdrant_index_after_zvec_verified(
+    paths: &AppPaths,
+    retrieval_unit_count: usize,
+    items_needing_rebuild: usize,
+    vector_point_count: usize,
+) {
+    if retrieval_unit_count == 0
+        || items_needing_rebuild > 0
+        || vector_point_count < retrieval_unit_count
+    {
+        return;
+    }
+
+    let legacy = paths.legacy_qdrant_index_dir();
+    if !legacy.exists() {
+        return;
+    }
+
+    match paths.remove_legacy_qdrant_index_dir() {
+        Ok(()) => {
+            tracing::info!(
+                path = %legacy.display(),
+                retrieval_unit_count,
+                vector_point_count,
+                "removed legacy qdrant index after zvec index verification"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %legacy.display(),
+                retrieval_unit_count,
+                vector_point_count,
+                ?error,
+                "failed to remove legacy qdrant index after zvec index verification"
+            );
+        }
+    }
 }
 
 fn count_missing_raw_paths(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
@@ -8907,6 +8954,86 @@ mod tests {
                 .as_deref(),
             Some(ACTIVE_VECTOR_INDEX_BACKEND)
         );
+    }
+
+    #[tokio::test]
+    async fn search_diagnostics_cleans_legacy_qdrant_only_after_zvec_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let legacy_qdrant = paths.legacy_qdrant_index_dir();
+        std::fs::create_dir_all(&legacy_qdrant).unwrap();
+        std::fs::write(legacy_qdrant.join("collection.bin"), b"vectors").unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit = cerul_storage::StorageRetrievalUnit {
+            id: "item-1:unit:v2:000000".to_string(),
+            item_id: "item-1".to_string(),
+            unit_index: 0,
+            unit_kind: "transcript".to_string(),
+            start_sec: Some(0.0),
+            end_sec: Some(5.0),
+            content_text: "legacy qdrant cleanup waits for verified zvec points".to_string(),
+            transcript_text: Some("verified zvec points".to_string()),
+            ocr_text: None,
+            visual_text: None,
+            summary_text: None,
+            representative_chunk_id: Some("item-1:transcript:000000".to_string()),
+            representative_frame_path: None,
+            embedding_profile_id: profile.id.clone(),
+            index_version: cerul_storage::SEARCH_INDEX_VERSION,
+            metadata: Default::default(),
+        };
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata
+                )
+                VALUES ('item-1', 'source-1', 'video', 'video.mp4', 'Video', 100, 'indexed', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", std::slice::from_ref(&unit))
+            .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 0)
+            .unwrap();
+
+        let diagnostics = search_health_diagnostics(&paths).await.unwrap();
+        assert_eq!(diagnostics.retrieval_unit_count, 1);
+        assert_eq!(diagnostics.vector_index_point_count, Some(0));
+        assert!(legacy_qdrant.exists());
+
+        let mut vector = vec![0.0; profile.output_dimension as usize];
+        vector[0] = 1.0;
+        let record = cerul_storage::vectors::VectorRecord::new_for_dimensions(
+            unit.id.clone(),
+            "item-1".to_string(),
+            vector,
+            profile.output_dimension,
+        )
+        .unwrap();
+        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 1)
+            .unwrap();
+
+        let diagnostics = search_health_diagnostics(&paths).await.unwrap();
+        assert_eq!(diagnostics.vector_index_point_count, Some(1));
+        assert!(!legacy_qdrant.exists());
     }
 
     #[test]

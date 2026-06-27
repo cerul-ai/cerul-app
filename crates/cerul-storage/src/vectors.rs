@@ -266,6 +266,21 @@ pub async fn collection_point_count(paths: &AppPaths, collection: &str) -> anyho
     let Some(handle) = collection_handle_existing(paths, collection)? else {
         return Ok(0);
     };
+    collection_doc_count(handle)
+}
+
+pub async fn collection_point_count_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<usize> {
+    let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
+        return Ok(0);
+    };
+    collection_doc_count(handle)
+}
+
+fn collection_doc_count(handle: CollectionHandle) -> anyhow::Result<usize> {
     let guard = handle
         .lock()
         .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
@@ -286,15 +301,24 @@ pub fn unified_collection_name(
     format!("{namespace}__retrieval_units_v{index_version}__{sanitized}")
 }
 
-pub async fn search_collection(
+pub async fn search_collection_for_profile(
     paths: &AppPaths,
     collection: &str,
     query_vector: &[f32],
     limit: usize,
+    profile: &EmbeddingProfile,
 ) -> anyhow::Result<Vec<VectorHit>> {
-    let Some(handle) = collection_handle_existing(paths, collection)? else {
+    let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
         return Ok(Vec::new());
     };
+    search_collection_handle(handle, query_vector, limit)
+}
+
+fn search_collection_handle(
+    handle: CollectionHandle,
+    query_vector: &[f32],
+    limit: usize,
+) -> anyhow::Result<Vec<VectorHit>> {
     let mut query = VectorQuery::new()?;
     query.set_field_name(VECTOR_FIELD)?;
     query.set_query_vector_fp32(query_vector)?;
@@ -333,7 +357,28 @@ pub async fn retrieve_collection_vectors(
     let Some(handle) = collection_handle_existing(paths, collection)? else {
         return Ok(HashMap::new());
     };
+    retrieve_collection_vectors_from_handle(handle, chunk_ids)
+}
 
+pub async fn retrieve_collection_vectors_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    chunk_ids: &[String],
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
+    if chunk_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let Some(handle) = collection_handle_existing_for_profile(paths, collection, profile)? else {
+        return Ok(HashMap::new());
+    };
+    retrieve_collection_vectors_from_handle(handle, chunk_ids)
+}
+
+fn retrieve_collection_vectors_from_handle(
+    handle: CollectionHandle,
+    chunk_ids: &[String],
+) -> anyhow::Result<HashMap<String, Vec<Vec<f32>>>> {
     let mut ids = Vec::with_capacity(chunk_ids.len() * 2);
     let mut seen_ids = HashSet::new();
     for id in chunk_ids {
@@ -488,7 +533,7 @@ fn collection_handle_for_profile(
         .map_err(|_| anyhow::anyhow!("zvec collection cache mutex poisoned"))?;
 
     if let Some(handle) = guard.get(&path) {
-        if collection_path_has_data(&path)? && collection_config_exists(&path) {
+        if collection_path_has_data(&path)? && collection_config_is_readable(&path) {
             validate_collection_config(paths, collection, profile, handle)?;
             return Ok(Arc::clone(handle));
         }
@@ -507,6 +552,22 @@ fn collection_handle_existing(
     paths: &AppPaths,
     collection: &str,
 ) -> anyhow::Result<Option<CollectionHandle>> {
+    collection_handle_existing_with_profile(paths, collection, None)
+}
+
+fn collection_handle_existing_for_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: &EmbeddingProfile,
+) -> anyhow::Result<Option<CollectionHandle>> {
+    collection_handle_existing_with_profile(paths, collection, Some(profile))
+}
+
+fn collection_handle_existing_with_profile(
+    paths: &AppPaths,
+    collection: &str,
+    profile: Option<&EmbeddingProfile>,
+) -> anyhow::Result<Option<CollectionHandle>> {
     let path = collection_path(paths, collection);
     let cache = ZVEC_COLLECTIONS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache
@@ -514,13 +575,16 @@ fn collection_handle_existing(
         .map_err(|_| anyhow::anyhow!("zvec collection cache mutex poisoned"))?;
 
     if let Some(handle) = guard.get(&path) {
-        if collection_path_has_data(&path)? && collection_config_exists(&path) {
+        if collection_path_has_data(&path)? && collection_config_is_readable(&path) {
+            if let Some(profile) = profile {
+                validate_collection_config(paths, collection, profile, handle)?;
+            }
             return Ok(Some(Arc::clone(handle)));
         }
         guard.remove(&path);
     }
 
-    if !collection_path_has_data(&path)? || !collection_config_exists(&path) {
+    if !collection_path_has_data(&path)? || !collection_config_is_readable(&path) {
         return Ok(None);
     }
 
@@ -533,6 +597,9 @@ fn collection_handle_existing(
             )
         })?,
     ));
+    if let Some(profile) = profile {
+        validate_collection_config(paths, collection, profile, &collection_handle)?;
+    }
     guard.insert(path, Arc::clone(&collection_handle));
     Ok(Some(collection_handle))
 }
@@ -545,7 +612,7 @@ fn open_or_create_collection(
     fs::create_dir_all(&profile_index_root(path))?;
     let collection_path = path_to_string(path)?;
     if collection_path_has_data(path)? {
-        if collection_config_exists(path) {
+        if collection_config_is_readable(path) {
             return Collection::open(&collection_path, None).with_context(|| {
                 format!(
                     "failed to open zvec collection {collection} at {}",
@@ -555,7 +622,7 @@ fn open_or_create_collection(
         }
         fs::remove_dir_all(path).with_context(|| {
             format!(
-                "failed to remove zvec collection {collection} with missing config at {}",
+                "failed to remove zvec collection {collection} with missing or invalid config at {}",
                 path.display()
             )
         })?;
@@ -690,8 +757,8 @@ fn collection_config_path(collection_path: &Path) -> PathBuf {
     collection_path.with_file_name(format!("{file_name}{ZVEC_COLLECTION_CONFIG_SUFFIX}"))
 }
 
-fn collection_config_exists(collection_path: &Path) -> bool {
-    collection_config_path(collection_path).is_file()
+fn collection_config_is_readable(collection_path: &Path) -> bool {
+    read_collection_config(&collection_config_path(collection_path)).is_ok()
 }
 
 fn read_collection_config(path: &Path) -> anyhow::Result<ZvecCollectionConfig> {
@@ -724,8 +791,26 @@ fn write_collection_config(
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(config_path, serde_json::to_vec_pretty(&config)?)?;
+    let tmp_path = collection_config_tmp_path(&config_path);
+    let _ = fs::remove_file(&tmp_path);
+    fs::write(&tmp_path, serde_json::to_vec_pretty(&config)?)?;
+    if let Err(error) = fs::rename(&tmp_path, &config_path) {
+        if config_path.exists() {
+            fs::remove_file(&config_path)?;
+            fs::rename(&tmp_path, &config_path)?;
+        } else {
+            return Err(error.into());
+        }
+    }
     Ok(())
+}
+
+fn collection_config_tmp_path(config_path: &Path) -> PathBuf {
+    let file_name = config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("collection.cerul.json");
+    config_path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()))
 }
 
 fn profile_index_root(path: &Path) -> PathBuf {
@@ -1208,9 +1293,10 @@ mod tests {
         .unwrap();
 
         let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
-        let hits = search_collection(&paths, &collection, &[1.0, 0.0, 0.0], 2)
-            .await
-            .unwrap();
+        let hits =
+            search_collection_for_profile(&paths, &collection, &[1.0, 0.0, 0.0], 2, &profile)
+                .await
+                .unwrap();
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].chunk_id, "chunk-same");
@@ -1366,5 +1452,75 @@ mod tests {
             collection_point_count(&paths, &collection).await.unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_collection_recreates_when_config_is_corrupt() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&record),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let path = collection_path(&paths, &collection);
+        let config = collection_config_path(&path);
+        fs::write(&config, b"{").unwrap();
+
+        ensure_unified_collection_for_profile(&paths, &profile, crate::SEARCH_INDEX_VERSION)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            0
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn search_collection_for_profile_rejects_distance_metric_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[record],
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let mismatched = test_profile("l2");
+        let error =
+            search_collection_for_profile(&paths, &collection, &[1.0, 0.0, 0.0], 1, &mismatched)
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("config does not match profile"));
     }
 }
