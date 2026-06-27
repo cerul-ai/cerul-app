@@ -303,10 +303,11 @@ check_zvec_target_prereqs() {
   fi
 
   local effective_target="$TARGET"
-  if [ -z "$effective_target" ] && [ "$(uname -s)" = "Darwin" ]; then
-    case "$(uname -m)" in
-      arm64) effective_target="aarch64-apple-darwin" ;;
-      x86_64) effective_target="x86_64-apple-darwin" ;;
+  if [ -z "$effective_target" ]; then
+    case "$(uname -s)-$(uname -m)" in
+      Darwin-arm64) effective_target="aarch64-apple-darwin" ;;
+      Darwin-x86_64) effective_target="x86_64-apple-darwin" ;;
+      MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) effective_target="x86_64-pc-windows-msvc" ;;
     esac
   fi
 

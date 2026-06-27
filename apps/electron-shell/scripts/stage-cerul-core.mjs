@@ -1,4 +1,4 @@
-import { access, chmod, copyFile, mkdir, readdir, rm } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, resolve } from "node:path";
@@ -53,10 +53,22 @@ if (zvecLibrary) {
 }
 
 function zvecRuntimeLibraryName() {
-  if (targetTriple.includes("windows") || process.platform === "win32") {
+  if (targetTriple) {
+    if (targetTriple.includes("windows")) {
+      return "zvec_c_api.dll";
+    }
+    if (targetTriple.includes("apple-darwin")) {
+      return "libzvec_c_api.dylib";
+    }
+    if (targetTriple.includes("linux")) {
+      return "libzvec_c_api.so";
+    }
+    throw new Error(`unsupported zvec runtime target triple: ${targetTriple}`);
+  }
+  if (process.platform === "win32") {
     return "zvec_c_api.dll";
   }
-  if (targetTriple.includes("apple-darwin") || process.platform === "darwin") {
+  if (process.platform === "darwin") {
     return "libzvec_c_api.dylib";
   }
   return "libzvec_c_api.so";
@@ -90,8 +102,7 @@ async function findZvecRuntimeLibrary(profileDir) {
       candidates.push(candidate);
     }
   }
-  candidates.sort();
-  const path = candidates.at(-1);
+  const path = await newestFile(candidates);
   if (path) {
     return { fileName, path };
   }
@@ -99,6 +110,17 @@ async function findZvecRuntimeLibrary(profileDir) {
     return { fileName, path: direct };
   }
   return null;
+}
+
+async function newestFile(paths) {
+  let newest = null;
+  for (const path of paths) {
+    const metadata = await stat(path);
+    if (!newest || metadata.mtimeMs > newest.mtimeMs) {
+      newest = { path, mtimeMs: metadata.mtimeMs };
+    }
+  }
+  return newest?.path ?? null;
 }
 
 function zvecRuntimeOverrideCandidates(fileName) {

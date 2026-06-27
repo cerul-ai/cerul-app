@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 fn main() {
@@ -138,8 +139,7 @@ fn find_zvec_runtime_library(
             candidates.push(candidate);
         }
     }
-    candidates.sort();
-    if let Some(candidate) = candidates.pop() {
+    if let Some(candidate) = newest_file(candidates)? {
         return Ok(Some(candidate));
     }
 
@@ -148,6 +148,22 @@ fn find_zvec_runtime_library(
         return Ok(Some(direct));
     }
     Ok(None)
+}
+
+fn newest_file(candidates: Vec<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let mut newest = None::<(PathBuf, SystemTime)>;
+    for candidate in candidates {
+        let modified = fs::metadata(&candidate)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|err| format!("read modified time for {}: {err}", candidate.display()))?;
+        if newest
+            .as_ref()
+            .is_none_or(|(_, newest_modified)| modified > *newest_modified)
+        {
+            newest = Some((candidate, modified));
+        }
+    }
+    Ok(newest.map(|(candidate, _)| candidate))
 }
 
 fn zvec_runtime_override_candidates(file_name: &str) -> Vec<PathBuf> {
