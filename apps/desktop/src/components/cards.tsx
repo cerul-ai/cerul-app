@@ -82,6 +82,47 @@ function itemSearchability(
   return { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
 }
 
+function itemCapabilityChips(
+  item: Item,
+  t: TFunction,
+): { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] {
+  const hasVisual =
+    item.contentType === "image" ||
+    (item.contentType === "video" && item.visualIndexStatus === "indexed");
+  const hasSpeech =
+    (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
+
+  if (item.status === "failed") {
+    return [{ key: "failed", label: t("library.status.failed"), tone: "danger" }];
+  }
+  if (item.status === "indexing") {
+    const pct =
+      item.progressLabel ??
+      (item.progress !== null ? `${Math.round(item.progress * 100)}%` : null);
+    return [
+      {
+        key: "indexing",
+        label: pct ? t("library.itemCard.indexingPct", { pct }) : t("library.status.indexing"),
+        tone: "warn",
+      },
+    ];
+  }
+
+  const chips: { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] = [
+    { key: "indexed", label: t("library.status.indexed"), tone: "accent" },
+  ];
+  if (hasSpeech) {
+    chips.push({ key: "speech", label: t("library.itemCard.capability.speech"), tone: "neutral" });
+  }
+  if (hasVisual) {
+    chips.push({ key: "visual", label: t("library.itemCard.capability.visual"), tone: "neutral" });
+  }
+  if (item.embeddingIndexStatus === "failed") {
+    chips.push({ key: "partial", label: t("library.itemCard.partialIndexShort"), tone: "warn" });
+  }
+  return chips;
+}
+
 export function ResultModalityIcon({
   result,
   size,
@@ -243,6 +284,7 @@ export function ItemCard({
 }) {
   const t = useT();
   const searchability = itemSearchability(item, t);
+  const capabilityChips = itemCapabilityChips(item, t);
   const metaLine = [
     item.source,
     item.indexedAtEpoch === null
@@ -258,10 +300,14 @@ export function ItemCard({
       : item.indexedAtEpoch === null
         ? "—"
         : item.indexedAt;
-  const searchabilityChip = (
-    <span className={`item-searchability chip ${searchability.tone}`}>
-      <span className="dot" />
-      {searchability.label}
+  const capabilityRow = (
+    <span className="item-capability-row" title={searchability.label}>
+      {capabilityChips.map((chip) => (
+        <span className={`item-capability ${chip.tone}`} key={chip.key}>
+          <span className="dot" />
+          {chip.label}
+        </span>
+      ))}
     </span>
   );
   return (
@@ -305,7 +351,7 @@ export function ItemCard({
             <span className="item-list-cell item-list-source clamp1">{sourceLabel}</span>
             <span className="item-list-cell item-list-duration mono">{item.duration}</span>
             <span className="item-list-cell item-list-indexed">{indexedCell}</span>
-            <span className="item-list-cell item-list-search">{searchabilityChip}</span>
+            <span className="item-list-cell item-list-search">{capabilityRow}</span>
           </>
         ) : (
           <>
@@ -368,7 +414,7 @@ export function ItemCard({
                   )}
                 </span>
               ) : null}
-              {searchabilityChip}
+              {capabilityRow}
             </span>
           </>
         )}

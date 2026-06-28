@@ -69,11 +69,16 @@ export function itemSourceLabel(record: api.ItemRecord, t: TFunction) {
   // and fall back to the raw_path basename. Never expose the raw source
   // UUID (`source-18b0ea0aaaf9b510`) to the user.
   const fromMetadata =
-    metadataString(record.metadata, "channel") ??
-    metadataString(record.metadata, "uploader") ??
-    metadataString(record.metadata, "playlist") ??
-    metadataString(record.metadata, "source");
+    [
+      metadataString(record.metadata, "channel"),
+      metadataString(record.metadata, "uploader"),
+      metadataString(record.metadata, "playlist"),
+      metadataString(record.metadata, "source"),
+    ].find((label) => label && !looksLikeMachineSourceLabel(label)) ?? null;
   if (fromMetadata) return fromMetadata;
+
+  const platformSource = platformSourceLabel(record, t);
+  if (platformSource) return platformSource;
 
   const rawPath =
     record.raw_path ?? metadataString(record.metadata, "raw_path") ?? null;
@@ -82,6 +87,28 @@ export function itemSourceLabel(record: api.ItemRecord, t: TFunction) {
   }
 
   return t("item.source.local");
+}
+
+function looksLikeMachineSourceLabel(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "" || /^\d{4,}$/.test(normalized) || /^source-[0-9a-f-]{8,}$/i.test(normalized);
+}
+
+function platformSourceLabel(record: api.ItemRecord, t: TFunction): string | null {
+  const platform = (
+    metadataString(record.metadata, "platform") ??
+    metadataString(record.metadata, "extractor_key") ??
+    metadataString(record.metadata, "extractor") ??
+    ""
+  ).toLowerCase();
+  const playlistId =
+    metadataString(record.metadata, "playlist_id") ??
+    metadataString(record.metadata, "playlist") ??
+    null;
+  if (platform.includes("bilibili") && playlistId) {
+    return t("item.source.bilibiliAuthor", { id: playlistId });
+  }
+  return null;
 }
 
 export function itemOriginalUrl(record: api.ItemRecord) {
@@ -97,6 +124,90 @@ export function itemOriginalUrl(record: api.ItemRecord) {
     return `https://www.youtube.com/watch?v=${record.external_id}`;
   }
   return null;
+}
+
+function metadataNumber(metadata: Record<string, unknown>, key: string): number | null {
+  const value = metadata?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+const HUMAN_TITLE_METADATA_KEYS = [
+  "fulltitle",
+  "webpage_title",
+  "media_title",
+  "original_title",
+  "display_title",
+  "episode_title",
+  "track",
+  "title",
+];
+
+function looksLikeMachineTitle(value: string, externalId: string | null | undefined) {
+  const normalized = value.trim().toLowerCase();
+  const normalizedExternalId = externalId?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return true;
+  }
+  if (normalizedExternalId && normalized === normalizedExternalId) {
+    return true;
+  }
+  if (
+    normalizedExternalId &&
+    (normalized === `bilibili ${normalizedExternalId}` ||
+      normalized === `youtube ${normalizedExternalId}` ||
+      normalized.endsWith(` ${normalizedExternalId}`))
+  ) {
+    return true;
+  }
+  return (
+    /^bilibili\s+bv[0-9a-z]{8,}$/i.test(value) ||
+    /^youtube\s+[0-9a-z_-]{8,}$/i.test(value) ||
+    /^source-[0-9a-f-]{8,}$/i.test(value)
+  );
+}
+
+function generatedRemoteTitle(record: api.ItemRecord, t: TFunction): string | null {
+  const platform = (
+    metadataString(record.metadata, "platform") ??
+    metadataString(record.metadata, "extractor_key") ??
+    metadataString(record.metadata, "extractor") ??
+    ""
+  ).toLowerCase();
+  const index =
+    metadataNumber(record.metadata, "playlist_index") ??
+    metadataNumber(record.metadata, "playlist_autonumber");
+  if (platform.includes("bilibili")) {
+    const label = t("item.titleFallback.bilibili");
+    return index !== null ? `${label} #${index}` : label;
+  }
+  if (itemOriginalUrl(record)) {
+    const label = t("item.titleFallback.webVideo");
+    return index !== null ? `${label} #${index}` : label;
+  }
+  return null;
+}
+
+export function itemDisplayTitle(record: api.ItemRecord, t: TFunction) {
+  const rawPath = record.raw_path ?? metadataString(record.metadata, "raw_path");
+  const primaryTitle = cleanMediaTitle(record.title ?? "");
+  const metadataTitle = HUMAN_TITLE_METADATA_KEYS.map((key) =>
+    cleanMediaTitle(metadataString(record.metadata, key)),
+  ).find((title) => title && !looksLikeMachineTitle(title, record.external_id));
+
+  if (
+    primaryTitle &&
+    !looksLikeMachineTitle(primaryTitle, record.external_id)
+  ) {
+    return primaryTitle;
+  }
+  return metadataTitle ?? generatedRemoteTitle(record, t) ?? cleanMediaTitle(rawPath ?? record.external_id ?? record.id);
 }
 
 export function itemSourceKind(
@@ -389,7 +500,7 @@ export function mapItemRecord(
 
   return {
     id: record.id,
-    title: cleanMediaTitle(record.title ?? rawPath ?? record.external_id ?? record.id),
+    title: itemDisplayTitle(record, t),
     sourceId: record.source_id,
     contentType: record.content_type,
     source: itemSourceLabel(record, t),
