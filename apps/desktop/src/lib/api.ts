@@ -555,6 +555,7 @@ export async function listItems(params?: {
   limit?: number;
   cursor?: number;
   light?: boolean;
+  includeUsage?: boolean;
 }) {
   const qs = new URLSearchParams();
   if (params?.status) qs.set("status", params.status);
@@ -562,6 +563,7 @@ export async function listItems(params?: {
   if (params?.limit != null) qs.set("limit", String(params.limit));
   if (params?.cursor != null) qs.set("cursor", String(params.cursor));
   if (params?.light) qs.set("light", "true");
+  if (params?.includeUsage != null) qs.set("include_usage", params.includeUsage ? "true" : "false");
   const suffix = qs.toString();
   return fetchJson<ItemRecord[]>(`/items${suffix ? `?${suffix}` : ""}`);
 }

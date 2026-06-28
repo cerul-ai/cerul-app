@@ -179,12 +179,18 @@ import {
   isActiveJob,
   itemColor,
   itemDetailIssue,
+  itemEmbeddingIndexStatus,
+  itemHasPartialIndex,
+  itemHasSpeechSearch,
+  itemHasVisualSearch,
+  itemHasAudio,
   itemKindLabel,
   itemOriginalUrl,
   itemProgressLabel,
   itemSourceKind,
   itemSourceLabel,
   itemStatus,
+  itemVisualIndexStatus,
   isNearEndPosition,
   latestActiveJobForItem,
   mapItemRecord,
@@ -4196,8 +4202,14 @@ async function openOriginalSourceForItem(item: Item, t: TFunction) {
 
 async function writeClipboardText(text: string) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back to the legacy copy path below. Browser automation and some
+      // embedded webviews can reject Clipboard API writes when focus briefly
+      // moves outside the document.
+    }
   }
 
   const textarea = document.createElement("textarea");
@@ -4206,7 +4218,9 @@ async function writeClipboardText(text: string) {
   textarea.style.position = "fixed";
   textarea.style.opacity = "0";
   document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
   textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
   const copied = document.execCommand("copy");
   document.body.removeChild(textarea);
 
@@ -4423,6 +4437,37 @@ function EntityDetailScreen({
   );
 }
 
+type LibraryCapabilityCounts = {
+  speechOnly: number;
+  visual: number;
+  partial: number;
+};
+
+type LibraryCapabilityItem = Pick<
+  Item,
+  "contentType" | "embeddingIndexStatus" | "hasAudio" | "status" | "visualIndexStatus"
+>;
+
+function libraryCapabilityItemFromRecord(record: api.ItemRecord): LibraryCapabilityItem {
+  return {
+    contentType: record.content_type,
+    embeddingIndexStatus: itemEmbeddingIndexStatus(record),
+    hasAudio: itemHasAudio(record),
+    status: itemStatus(record),
+    visualIndexStatus: itemVisualIndexStatus(record),
+  };
+}
+
+function countLibraryCapabilities(items: LibraryCapabilityItem[]): LibraryCapabilityCounts {
+  const indexedItems = items.filter((item) => item.status === "indexed");
+  return {
+    speechOnly: indexedItems.filter((item) => itemHasSpeechSearch(item) && !itemHasVisualSearch(item))
+      .length,
+    visual: indexedItems.filter(itemHasVisualSearch).length,
+    partial: indexedItems.filter(itemHasPartialIndex).length,
+  };
+}
+
 function LibraryScreen({
   items,
   jobs,
@@ -4469,11 +4514,22 @@ function LibraryScreen({
   }>({ status: "idle", message: null });
   const [entities, setEntities] = useState<api.EntitySummary[]>([]);
   const [failedCleanupIds, setFailedCleanupIds] = useState<string[]>([]);
+  const [allCapabilityCounts, setAllCapabilityCounts] = useState<LibraryCapabilityCounts | null>(null);
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
   const itemStatusSignature = useMemo(
     () => items.map((item) => `${item.id}:${item.status}`).join("|"),
+    [items],
+  );
+  const itemCapabilitySignature = useMemo(
+    () =>
+      items
+        .map(
+          (item) =>
+            `${item.id}:${item.status}:${item.contentType}:${item.embeddingIndexStatus ?? ""}:${item.visualIndexStatus ?? ""}:${String(item.hasAudio)}`,
+        )
+        .join("|"),
     [items],
   );
   const jobStatusSignature = useMemo(
@@ -4498,11 +4554,14 @@ function LibraryScreen({
     })
     .sort((a, b) => sortLibraryItems(a, b, sortKey));
   const selectedCount = selectedItemIds.size;
+  const selectedItems = items.filter((item) => selectedItemIds.has(item.id));
   const filteredItemIds = filteredItems.map((item) => item.id);
   const visibleSelectedCount = filteredItemIds.filter((itemId) => selectedItemIds.has(itemId)).length;
   const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
   const failedCleanupCount = failedCleanupIds.length;
+  const loadedCapabilityCounts = useMemo(() => countLibraryCapabilities(items), [items]);
+  const capabilityCounts = allCapabilityCounts ?? loadedCapabilityCounts;
 
   useEffect(() => {
     const itemIds = new Set(items.map((item) => item.id));
@@ -4617,6 +4676,45 @@ function LibraryScreen({
     }
   }
 
+  async function copySelectedDiagnostics() {
+    if (selectedItems.length === 0) {
+      return;
+    }
+    const payload = {
+      generated_at: new Date().toISOString(),
+      selected_count: selectedItems.length,
+      items: selectedItems.map((item) => ({
+        id: item.id,
+        title: item.title,
+        source_id: item.sourceId,
+        source: item.source,
+        source_kind: item.sourceKind,
+        content_type: item.contentType,
+        status: item.status,
+        indexed_at: item.indexedAtEpoch,
+        raw_path: item.rawPath,
+        raw_path_exists: item.rawPathExists,
+        original_url: item.originalUrl,
+        visual_index_status: item.visualIndexStatus,
+        visual_index_message: item.visualIndexMessage,
+        embedding_index_status: item.embeddingIndexStatus,
+        embedding_index_message: item.embeddingIndexMessage,
+        has_audio: item.hasAudio,
+        usage: item.usage,
+        error: item.error,
+      })),
+    };
+    try {
+      await writeClipboardText(JSON.stringify(payload, null, 2));
+      setBatchState({
+        status: "idle",
+        message: t("library.batch.diagnosticsCopied", { count: selectedItems.length }),
+      });
+    } catch (error) {
+      setBatchState({ status: "error", message: errorMessage(error) });
+    }
+  }
+
   // Page through the API to collect *all* failed item ids, not just the loaded
   // first page, so the cleanup matches what the button promises.
   async function collectAllFailedItemIds(): Promise<string[]> {
@@ -4639,6 +4737,45 @@ function LibraryScreen({
     }
     return ids;
   }
+
+  async function collectAllCapabilityCounts(): Promise<LibraryCapabilityCounts> {
+    const pageSize = 1000; // MAX_LIST_LIMIT on the core
+    const allItems: LibraryCapabilityItem[] = [];
+    for (let cursor = 0; ; cursor += pageSize) {
+      const page = await api.listItems({
+        limit: pageSize,
+        cursor,
+        includeUsage: false,
+      });
+      allItems.push(...page.map(libraryCapabilityItemFromRecord));
+      if (page.length < pageSize) {
+        break;
+      }
+    }
+    return countLibraryCapabilities(allItems);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!actionsEnabled || items.length === 0) {
+      setAllCapabilityCounts(null);
+      return;
+    }
+    collectAllCapabilityCounts()
+      .then((counts) => {
+        if (!cancelled) {
+          setAllCapabilityCounts(counts);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAllCapabilityCounts(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, itemCapabilitySignature, jobStatusSignature]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4814,6 +4951,24 @@ function LibraryScreen({
           <option value="title">{t("library.sort.title")}</option>
         </select>
       </div>
+      {items.length > 0 ? (
+        <div className="library-capability-summary" aria-label={t("library.capability.summary.aria")}>
+          <span className="library-capability-pill warn">
+            <Mic size={13} />
+            {t("library.capability.speechOnly", { count: capabilityCounts.speechOnly })}
+          </span>
+          <span className="library-capability-pill accent">
+            <Eye size={13} />
+            {t("library.capability.visual", { count: capabilityCounts.visual })}
+          </span>
+          {capabilityCounts.partial > 0 ? (
+            <span className="library-capability-pill warn">
+              <AlertTriangle size={13} />
+              {t("library.capability.partial", { count: capabilityCounts.partial })}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="row" style={{ alignItems: "center", gap: 10, marginTop: 12 }}>
         <span className="muted">
           {t("library.summary.count", { count: filteredItems.length, total: items.length })}
@@ -4875,15 +5030,23 @@ function LibraryScreen({
       ) : null}
       {selectedCount > 0 ? (
         <div
-          className="card pad row gap-2"
+          className="library-batch-toolbar"
           aria-label={t("library.batch.aria")}
-          style={{ alignItems: "center", position: "sticky", top: 12, zIndex: 5, marginTop: 12 }}
         >
           <span className="chip accent">
             <span className="dot" />
             {t("library.batch.selected", { count: selectedCount })}
           </span>
           <span className="grow" />
+          <button
+            type="button"
+            className="btn btn-secondary sm"
+            disabled={batchPending}
+            onClick={() => void copySelectedDiagnostics()}
+          >
+            <Copy size={15} />
+            <span>{t("library.batch.copyDiagnostics")}</span>
+          </button>
           <button
             type="button"
             className="btn btn-secondary sm"
@@ -5709,7 +5872,7 @@ function SettingsScreen({
         <div className="settings-shell-scroll">
         <div className="settings-panel">
           {apiStatus !== "online" ? (
-            <p className="field-hint" style={{ marginBottom: 18 }}>{t("settings.offlineNotice")}</p>
+            <InlineNotice tone="error" message={t("settings.offlineNotice")} />
           ) : null}
           {activeSection === "General" ? (
             <GeneralSettings
@@ -8122,7 +8285,7 @@ function StorageSettings({
       </div>
       <section className="settings-group settings-danger-group">
         <p className="settings-group-title settings-danger-title">{t("settings.storage.dangerZone")}</p>
-        <div className="settings-danger-card">
+        <div className="settings-danger-card settings-danger-card--standard">
           <span className="settings-danger-ic" aria-hidden="true">
             <AlertTriangle size={18} />
           </span>
@@ -8140,7 +8303,7 @@ function StorageSettings({
             <span>{t("settings.storage.resetLocalData")}</span>
           </button>
         </div>
-        <div className="settings-danger-card">
+        <div className="settings-danger-card settings-danger-card--critical">
           <span className="settings-danger-ic" aria-hidden="true">
             <AlertTriangle size={18} />
           </span>
@@ -8260,7 +8423,7 @@ function AdvancedSettings({
           description={t("settings.advanced.port.description")}
           control={
             <input
-              className="settings-input"
+              className="input settings-input settings-port-input"
               type="number"
               min={1024}
               max={65535}
@@ -8278,7 +8441,7 @@ function AdvancedSettings({
             description={remoteApiKeySet ? t("settings.advanced.remoteKey.setHint") : undefined}
             control={
               <input
-                className="settings-input"
+                className="input settings-input"
                 type="password"
                 value={remoteKeyDraft}
                 disabled={disabled}
