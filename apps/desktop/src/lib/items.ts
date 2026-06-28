@@ -71,9 +71,9 @@ export function itemHasPartialIndex(
 }
 
 export function itemHasSpeechSearch(
-  item: Pick<Item, "contentType" | "embeddingIndexStatus" | "hasAudio">,
+  item: Pick<Item, "contentType" | "embeddingIndexStatus" | "hasAudio" | "visualIndexStatus">,
 ) {
-  if (item.embeddingIndexStatus === "failed") {
+  if (itemHasPartialIndex(item)) {
     return false;
   }
   return (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
@@ -82,7 +82,7 @@ export function itemHasSpeechSearch(
 export function itemHasVisualSearch(
   item: Pick<Item, "contentType" | "embeddingIndexStatus" | "visualIndexStatus">,
 ) {
-  if (item.embeddingIndexStatus === "failed") {
+  if (itemHasPartialIndex(item)) {
     return false;
   }
   return item.contentType === "image" || (item.contentType === "video" && item.visualIndexStatus === "indexed");

@@ -65,10 +65,9 @@ function itemSearchability(
       tone: "warn",
     };
   }
-  // A failed embedding index means semantic/vector search is incomplete even
-  // though the item is otherwise indexed — surface that, don't claim it's fully
-  // searchable.
-  if (item.embeddingIndexStatus === "failed") {
+  // Partial index failures leave at least one search path incomplete, so keep
+  // the card in a warning state instead of advertising a full modality.
+  if (itemHasPartialIndex(item)) {
     return { label: t("library.itemCard.partialIndex"), tone: "warn" };
   }
   // Visual search is real only once the visual index is actually indexed
