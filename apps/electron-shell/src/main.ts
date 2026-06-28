@@ -101,6 +101,7 @@ let macUpdatePreparationRunId = 0;
 let updateInstallWhenPrepared = false;
 let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
+let standardMenuAcceleratorsCache: Set<string> | null = null;
 
 type OAuthProvider = "google" | "github";
 type MainWindowCommand = {
@@ -936,7 +937,7 @@ function registerGlobalHotkey(
 }
 
 function normalizeAccelerator(label: string) {
-  let accelerator = label.replace(/\s*\+\s*/g, "+").replace(/^Alt Space$/i, "Alt+Space");
+  let accelerator = label.trim().replace(/\s*\+\s*/g, "+").replace(/^Alt Space$/i, "Alt+Space");
   if (process.platform !== "darwin") {
     accelerator = accelerator.replace(/\b(Command|Cmd)\b/gi, "Super");
   }
@@ -3028,15 +3029,21 @@ async function handleManualUpdateCheck() {
 }
 
 async function buildApplicationMenu(options: { fallbackOnError?: boolean } = { fallbackOnError: true }) {
-  const shortcuts = await readApplicationMenuShortcuts();
+  const shortcuts = await readApplicationMenuShortcuts(options);
   setApplicationMenu(shortcuts, options);
 }
 
-async function readApplicationMenuShortcuts(): Promise<ApplicationMenuShortcuts> {
+async function readApplicationMenuShortcuts(
+  options: { fallbackOnError?: boolean } = { fallbackOnError: true },
+): Promise<ApplicationMenuShortcuts> {
   try {
-    const settings = await readApiSettings();
+    const settings =
+      options.fallbackOnError === false ? await readApiSettingsOrThrow(1_500) : await readApiSettings();
     return resolveApplicationMenuShortcuts(settings);
   } catch (error) {
+    if (options.fallbackOnError === false) {
+      throw error;
+    }
     console.warn("failed to read application menu shortcuts", error);
     return defaultApplicationMenuShortcuts();
   }
@@ -3052,34 +3059,52 @@ function defaultApplicationMenuShortcuts(): ApplicationMenuShortcuts {
 
 function resolveApplicationMenuShortcuts(settings: Record<string, unknown>): ApplicationMenuShortcuts {
   const reserved = new Set<string>();
+  reserveStandardMenuAccelerators(reserved);
   reserveAccelerator(reserved, settingString(settings, "global_hotkey", defaultHotkey));
 
-  const newSource = explicitShortcutSetting(settings, "hotkey_new_source") ??
+  const newSource = explicitShortcutUnlessReserved(settings, "hotkey_new_source", reserved) ??
     defaultShortcutUnlessReserved(defaultNewSourceHotkey, reserved);
   reserveAccelerator(reserved, newSource);
 
-  const openSettings = explicitShortcutSetting(settings, "hotkey_open_settings") ??
+  const openSettings = explicitShortcutUnlessReserved(settings, "hotkey_open_settings", reserved) ??
     defaultShortcutUnlessReserved(defaultOpenSettingsHotkey, reserved);
   reserveAccelerator(reserved, openSettings);
 
-  const closeWindow = explicitShortcutSetting(settings, "hotkey_close_window") ??
+  const closeWindow = explicitShortcutUnlessReserved(settings, "hotkey_close_window", reserved) ??
     defaultShortcutUnlessReserved(defaultCloseWindowHotkey, reserved);
 
   return { newSource, openSettings, closeWindow };
 }
 
+function explicitShortcutUnlessReserved(
+  settings: Record<string, unknown>,
+  key: string,
+  reserved: Set<string>,
+) {
+  const accelerator = explicitShortcutSetting(settings, key);
+  if (!accelerator) {
+    return undefined;
+  }
+  if (reserved.has(canonicalAccelerator(accelerator))) {
+    console.warn(`skipping menu shortcut ${key} because it conflicts with another menu accelerator`);
+    return undefined;
+  }
+  return accelerator;
+}
+
 function explicitShortcutSetting(settings: Record<string, unknown>, key: string) {
   const value = settings[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  return typeof value === "string" && value.trim() ? normalizeAccelerator(value) : undefined;
 }
 
 function defaultShortcutUnlessReserved(accelerator: string, reserved: Set<string>) {
-  return reserved.has(canonicalAccelerator(accelerator)) ? undefined : accelerator;
+  const normalized = normalizeAccelerator(accelerator);
+  return reserved.has(canonicalAccelerator(normalized)) ? undefined : normalized;
 }
 
 function reserveAccelerator(reserved: Set<string>, accelerator?: string) {
   if (accelerator) {
-    reserved.add(canonicalAccelerator(accelerator));
+    reserved.add(canonicalAccelerator(normalizeAccelerator(accelerator)));
   }
 }
 
@@ -3094,9 +3119,12 @@ function canonicalAccelerator(accelerator: string) {
 }
 
 function assertValidMenuAccelerator(accelerator: string) {
-  const normalized = accelerator.trim();
+  const normalized = normalizeAccelerator(accelerator).trim();
   if (!normalized) {
     throw new Error("Shortcut cannot be empty");
+  }
+  if (standardMenuAccelerators().has(canonicalAccelerator(normalized))) {
+    throw new Error("Shortcut conflicts with a standard application menu shortcut");
   }
   Menu.buildFromTemplate([
     {
@@ -3104,6 +3132,67 @@ function assertValidMenuAccelerator(accelerator: string) {
       submenu: [{ label: "Shortcut", accelerator: normalized, click: () => undefined }],
     },
   ]);
+}
+
+function reserveStandardMenuAccelerators(reserved: Set<string>) {
+  for (const accelerator of standardMenuAccelerators()) {
+    reserved.add(accelerator);
+  }
+}
+
+function standardMenuAccelerators() {
+  if (standardMenuAcceleratorsCache) {
+    return standardMenuAcceleratorsCache;
+  }
+  const accelerators = new Set<string>();
+  reserveKnownStandardMenuAccelerators(accelerators);
+  try {
+    collectMenuAccelerators(Menu.buildFromTemplate(applicationMenuTemplate({})), accelerators);
+  } catch (error) {
+    console.warn("failed to collect standard application menu accelerators", error);
+  }
+  standardMenuAcceleratorsCache = accelerators;
+  return accelerators;
+}
+
+function reserveKnownStandardMenuAccelerators(reserved: Set<string>) {
+  const accelerators = [
+    "CommandOrControl+Z",
+    "Shift+CommandOrControl+Z",
+    "CommandOrControl+Y",
+    "CommandOrControl+X",
+    "CommandOrControl+C",
+    "CommandOrControl+V",
+    "CommandOrControl+A",
+    "CommandOrControl+R",
+    "Shift+CommandOrControl+R",
+    "CommandOrControl+Plus",
+    "CommandOrControl+-",
+    "CommandOrControl+0",
+    "CommandOrControl+Shift+I",
+    "F11",
+    "F12",
+    ...(process.platform === "darwin"
+      ? ["Command+Q", "Command+H", "Command+Option+H", "Command+M", "Control+Command+F"]
+      : []),
+  ];
+  for (const accelerator of accelerators) {
+    reserveAccelerator(reserved, accelerator);
+  }
+}
+
+function collectMenuAccelerators(
+  menu: ReturnType<typeof Menu.buildFromTemplate>,
+  reserved: Set<string>,
+) {
+  for (const item of menu.items) {
+    if (item.accelerator) {
+      reserveAccelerator(reserved, item.accelerator);
+    }
+    if (item.submenu) {
+      collectMenuAccelerators(item.submenu, reserved);
+    }
+  }
 }
 
 function setApplicationMenu(
