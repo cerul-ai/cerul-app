@@ -15,7 +15,6 @@ const VIEW_IDS: View[] = [
   "result-detail",
   "library",
   "moments",
-  "entity-detail",
   "item-detail",
   "sources",
   "settings",

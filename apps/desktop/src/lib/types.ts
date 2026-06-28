@@ -14,7 +14,6 @@ export type View =
   | "result-detail"
   | "library"
   | "moments"
-  | "entity-detail"
   | "item-detail"
   | "sources"
   | "settings";
