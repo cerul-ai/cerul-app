@@ -335,6 +335,20 @@ function hasOpenModalSurface() {
   );
 }
 
+function isEditableTarget(target: EventTarget | Element | null) {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT")
+  );
+}
+
+function shouldIgnoreNewSourceShortcut(target: EventTarget | Element | null = document.activeElement) {
+  return hasOpenModalSurface() || isEditableTarget(target);
+}
+
 function syncVideoToTimestamp(
   video: HTMLVideoElement,
   timestamp: string,
@@ -1124,7 +1138,7 @@ function AppWorkspace() {
   const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
     return subscribeDesktopMenuCommand((command) => {
-      if (command === "new_source" && !hasOpenModalSurface()) {
+      if (command === "new_source" && !shouldIgnoreNewSourceShortcut()) {
         setShowAddSource(true);
       }
     });
@@ -1135,14 +1149,7 @@ function AppWorkspace() {
       if (acceleratorMatchesEvent(newSourceHotkey, event)) {
         // Don't stack a new dialog on top of an open modal or steal the
         // shortcut while the user is typing in a field.
-        const target = event.target;
-        const inEditable =
-          target instanceof HTMLElement &&
-          (target.isContentEditable ||
-            target.tagName === "INPUT" ||
-            target.tagName === "TEXTAREA" ||
-            target.tagName === "SELECT");
-        if (hasOpenModalSurface() || inEditable) {
+        if (shouldIgnoreNewSourceShortcut(event.target)) {
           return;
         }
         event.preventDefault();
