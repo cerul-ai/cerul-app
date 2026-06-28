@@ -19,7 +19,12 @@ import {
 } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
 import { formatUsd } from "../lib/formatters";
-import { itemKindLabel } from "../lib/items";
+import {
+  itemHasPartialIndex,
+  itemHasSpeechSearch,
+  itemHasVisualSearch,
+  itemKindLabel,
+} from "../lib/items";
 import { resultModality } from "../lib/results";
 import type { Item, Result } from "../lib/types";
 import { ProgressBar, highlightSnippet } from "./transcript";
@@ -60,10 +65,9 @@ function itemSearchability(
       tone: "warn",
     };
   }
-  // A failed embedding index means semantic/vector search is incomplete even
-  // though the item is otherwise indexed — surface that, don't claim it's fully
-  // searchable.
-  if (item.embeddingIndexStatus === "failed") {
+  // Partial index failures leave at least one search path incomplete, so keep
+  // the card in a warning state instead of advertising a full modality.
+  if (itemHasPartialIndex(item)) {
     return { label: t("library.itemCard.partialIndex"), tone: "warn" };
   }
   // Visual search is real only once the visual index is actually indexed
@@ -80,6 +84,44 @@ function itemSearchability(
     return { label: t("library.itemCard.searchVisualOnly"), tone: "accent" };
   }
   return { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
+}
+
+function itemCapabilityChips(
+  item: Item,
+  t: TFunction,
+): { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] {
+  const hasVisual = itemHasVisualSearch(item);
+  const hasSpeech = itemHasSpeechSearch(item);
+
+  if (item.status === "failed") {
+    return [{ key: "failed", label: t("library.status.failed"), tone: "danger" }];
+  }
+  if (item.status === "indexing") {
+    const pct =
+      item.progressLabel ??
+      (item.progress !== null ? `${Math.round(item.progress * 100)}%` : null);
+    return [
+      {
+        key: "indexing",
+        label: pct ? t("library.itemCard.indexingPct", { pct }) : t("library.status.indexing"),
+        tone: "warn",
+      },
+    ];
+  }
+
+  const chips: { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] = [
+    { key: "indexed", label: t("library.status.indexed"), tone: "accent" },
+  ];
+  if (hasSpeech) {
+    chips.push({ key: "speech", label: t("library.itemCard.capability.speech"), tone: "neutral" });
+  }
+  if (hasVisual) {
+    chips.push({ key: "visual", label: t("library.itemCard.capability.visual"), tone: "neutral" });
+  }
+  if (itemHasPartialIndex(item)) {
+    chips.push({ key: "partial", label: t("library.itemCard.partialIndexShort"), tone: "warn" });
+  }
+  return chips;
 }
 
 export function ResultModalityIcon({
@@ -243,6 +285,7 @@ export function ItemCard({
 }) {
   const t = useT();
   const searchability = itemSearchability(item, t);
+  const capabilityChips = itemCapabilityChips(item, t);
   const metaLine = [
     item.source,
     item.indexedAtEpoch === null
@@ -258,10 +301,14 @@ export function ItemCard({
       : item.indexedAtEpoch === null
         ? "—"
         : item.indexedAt;
-  const searchabilityChip = (
-    <span className={`item-searchability chip ${searchability.tone}`}>
-      <span className="dot" />
-      {searchability.label}
+  const capabilityRow = (
+    <span className="item-capability-row" title={searchability.label}>
+      {capabilityChips.map((chip) => (
+        <span className={`item-capability ${chip.tone}`} key={chip.key}>
+          <span className="dot" />
+          {chip.label}
+        </span>
+      ))}
     </span>
   );
   return (
@@ -305,7 +352,7 @@ export function ItemCard({
             <span className="item-list-cell item-list-source clamp1">{sourceLabel}</span>
             <span className="item-list-cell item-list-duration mono">{item.duration}</span>
             <span className="item-list-cell item-list-indexed">{indexedCell}</span>
-            <span className="item-list-cell item-list-search">{searchabilityChip}</span>
+            <span className="item-list-cell item-list-search">{capabilityRow}</span>
           </>
         ) : (
           <>
@@ -368,7 +415,7 @@ export function ItemCard({
                   )}
                 </span>
               ) : null}
-              {searchabilityChip}
+              {capabilityRow}
             </span>
           </>
         )}

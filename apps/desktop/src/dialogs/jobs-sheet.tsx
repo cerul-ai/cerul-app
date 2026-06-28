@@ -24,6 +24,7 @@ import {
 import type { Item, Source } from "../lib/types";
 import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { useNowSeconds } from "../lib/use-now";
+import { ItemModalityIcon } from "../components/cards";
 import { EmptyState } from "../components/leaf";
 import { ProgressBar } from "../components/transcript";
 
@@ -88,6 +89,10 @@ export function JobsSheet({
   const failedJobs = sortedJobs.filter((job) => jobGroup(job) === "failed");
   const doneJobs = sortedJobs.filter((job) => jobGroup(job) === "done");
   const now = useNowSeconds(activeCount > 0);
+  const itemForJob = (job: api.JobRecord) =>
+    job.item_id ? items.find((item) => item.id === job.item_id) ?? null : null;
+  const focusJob = activeJobs[0] ?? doneJobs[0] ?? failedJobs[0] ?? sortedJobs[0] ?? null;
+  const focusItem = focusJob ? itemForJob(focusJob) : null;
 
   const filters: { id: "all" | JobGroup; label: string; n: number }[] = [
     { id: "all", label: t("jobs.filter.all"), n: totalCount },
@@ -109,22 +114,63 @@ export function JobsSheet({
           count: activeCount,
         })
       : null;
+  const subtitle =
+    totalCount > 0
+      ? t("jobs.subtitle", {
+          done: doneJobs.length,
+          failed: failedJobs.length,
+          running: activeCount,
+        })
+      : t("jobs.emptyBody");
+  const emptyTitle =
+    filter === "failed"
+      ? t("jobs.emptyFailedTitle")
+      : filter === "running"
+        ? t("jobs.emptyRunningTitle")
+        : t("jobs.noneTitle");
+  const emptyBody =
+    filter === "failed"
+      ? t("jobs.emptyFailedBody")
+      : filter === "running"
+        ? t("jobs.emptyRunningBody")
+        : t("jobs.emptyBody");
+
+  const renderJobThumb = (job: api.JobRecord) => {
+    const item = itemForJob(job);
+    return (
+      <span
+        className={`jobs-media-thumb ${item?.thumbnailUrl ? "has-image" : item?.color ?? "steel"}`}
+        aria-hidden="true"
+      >
+        {item?.thumbnailUrl ? (
+          <img src={item.thumbnailUrl} alt="" loading="lazy" />
+        ) : item ? (
+          <ItemModalityIcon item={item} size={20} />
+        ) : (
+          <Play size={20} fill="currentColor" />
+        )}
+        {item?.duration && item.contentType !== "image" ? (
+          <small className="mono">{item.duration}</small>
+        ) : null}
+      </span>
+    );
+  };
 
   const renderSyncingSourceCard = (source: Source) => (
-    <div className="jobs-tl-item" key={`source:${source.id}`}>
-      <span className="jobs-tl-node steel" aria-hidden="true" />
-      <div className="jobs-tl-card steel">
-        <div className="jobs-tl-head">
-          <span className="jobs-tl-title clamp1">{source.name}</span>
-          <span className="jobs-tl-pill steel">
-            <span className="jobs-tl-pill-dot pulse" />
-            {t("jobs.status.discovering")}
-          </span>
-        </div>
-        <div className="jobs-tl-type">{t("jobs.type.source_discovery")}</div>
-        <p className="muted jobs-tl-stage">{t("jobs.sourceDiscovery.body")}</p>
+    <article className="job-card-v2 steel" key={`source:${source.id}`}>
+      <span className="jobs-media-thumb steel" aria-hidden="true">
+        <Play size={20} fill="currentColor" />
+      </span>
+      <div className="job-card-copy">
+        <strong className="job-card-title clamp1">{source.name}</strong>
+        <span className="job-card-type clamp1">{t("jobs.type.source_discovery")}</span>
+        <p className="muted job-card-stage">{t("jobs.sourceDiscovery.body")}</p>
       </div>
-    </div>
+      <span className="job-status-pill steel">
+        <span className="jobs-tl-pill-dot pulse" />
+        {t("jobs.status.discovering")}
+      </span>
+    </article>
   );
 
   const renderCard = (job: api.JobRecord) => {
@@ -154,38 +200,19 @@ export function JobsSheet({
     const canCancel = onCancelJob && controlsEnabled && job.item_id && (isRunning || job.status === "queued");
 
     return (
-      <div className="jobs-tl-item" key={job.id}>
-        <span className={`jobs-tl-node ${tone}`} aria-hidden="true" />
-        <div className={`jobs-tl-card ${tone}`}>
-          <div className="jobs-tl-head">
-            <span className="jobs-tl-title clamp1">{jobItemTitle(job, items, t)}</span>
-            <span className={`jobs-tl-pill ${tone}`}>
-              {isDone ? (
-                <Check size={11} />
-              ) : (
-                <span className={`jobs-tl-pill-dot ${isRunning ? "pulse" : ""}`} />
-              )}
-              {jobDisplayStatus(job, t)}
-            </span>
-            {canCancel ? (
-              <button
-                type="button"
-                className="btn-icon sm job-cancel"
-                aria-label={t("jobs.cancelAria")}
-                title={t("jobs.cancelAria")}
-                onClick={() => onCancelJob?.(job)}
-              >
-                <Trash2 size={13} />
-              </button>
-            ) : null}
+      <article className={`job-card-v2 ${tone}`} key={job.id}>
+        {renderJobThumb(job)}
+        <div className="job-card-copy">
+          <div className="job-card-head">
+            <strong className="job-card-title clamp1">{jobItemTitle(job, items, t)}</strong>
           </div>
 
-          <div className="jobs-tl-type">{typeLine}</div>
+          <div className="job-card-type clamp1">{typeLine}</div>
 
           {isRunning ? (
-            <div className="jobs-tl-progress">
+            <div className="job-card-progress">
               <ProgressBar value={jobStepProgressPercent(job)} animated />
-              <span className="jobs-tl-pct mono">{jobStepProgressPercent(job)}%</span>
+              <span className="job-card-pct mono">{jobStepProgressPercent(job)}%</span>
             </div>
           ) : null}
 
@@ -214,7 +241,7 @@ export function JobsSheet({
             </div>
           ) : null}
 
-          {!isFailed && !isRunning && stage ? <p className="muted jobs-tl-stage">{stage}</p> : null}
+          {!isFailed && !isRunning && stage ? <p className="muted job-card-stage">{stage}</p> : null}
 
           {meta.length > 0 && !isDone ? (
             <p className="job-meta faint mono">{meta.join(" · ")}</p>
@@ -228,24 +255,45 @@ export function JobsSheet({
             </details>
           ) : null}
         </div>
-      </div>
+        <div className="job-card-actions">
+          <span className={`job-status-pill ${tone}`}>
+              {isDone ? (
+                <Check size={11} />
+              ) : (
+                <span className={`jobs-tl-pill-dot ${isRunning ? "pulse" : ""}`} />
+              )}
+              {jobDisplayStatus(job, t)}
+          </span>
+          {canCancel ? (
+            <button
+              type="button"
+              className="btn-icon sm job-cancel"
+              aria-label={t("jobs.cancelAria")}
+              title={t("jobs.cancelAria")}
+              onClick={() => onCancelJob?.(job)}
+            >
+              <Trash2 size={13} />
+            </button>
+          ) : null}
+        </div>
+      </article>
     );
   };
 
   return (
-    <div className="scrim sheet-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="scrim sheet-backdrop jobs-center-backdrop" role="presentation" onMouseDown={onClose}>
       <aside
         ref={dialogRef}
-        className="drawer jobs-sheet"
+        className="jobs-center jobs-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="jobs-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="drawer-head dialog-header">
+        <header className="jobs-center-head dialog-header">
           <div className="grow">
             <p className="section-label eyebrow">{t("jobs.eyebrow")}</p>
-            <h2 id="jobs-title" className="drawer-title">
+            <h2 id="jobs-title" className="jobs-center-title">
               {runningLabel ? <span>{runningLabel}</span> : null}
               {runningLabel && failedJobs.length > 0 ? <span> · </span> : null}
               {failedJobs.length > 0 ? (
@@ -253,6 +301,7 @@ export function JobsSheet({
               ) : null}
               {!runningLabel && failedJobs.length === 0 ? <span>{t("jobs.noneTitle")}</span> : null}
             </h2>
+            <p className="jobs-center-subtitle">{subtitle}</p>
           </div>
           {onTogglePause && controlsEnabled ? (
             <button
@@ -269,7 +318,81 @@ export function JobsSheet({
           </button>
         </header>
 
-        <div className="drawer-body jobs-body">
+        <div className="jobs-summary-row">
+          <div className="jobs-summary-card">
+            <span className="jobs-summary-label">
+              <span>{t("jobs.summary.total")}</span>
+              <span>{t("jobs.summary.recent")}</span>
+            </span>
+            <strong className="jobs-summary-value mono">{totalCount}</strong>
+          </div>
+          <div className="jobs-summary-card">
+            <span className="jobs-summary-label">
+              <span>{t(paused ? "jobs.groupQueued" : "jobs.groupRunning")}</span>
+              <span>{activeCount > 0 ? t("jobs.summary.live") : t("jobs.summary.idle")}</span>
+            </span>
+            <strong className="jobs-summary-value mono">{activeCount}</strong>
+          </div>
+          <div className="jobs-summary-card success">
+            <span className="jobs-summary-label">
+              <span>{t("jobs.status.completed")}</span>
+              <span>{t("jobs.summary.done")}</span>
+            </span>
+            <strong className="jobs-summary-value mono">{doneJobs.length}</strong>
+          </div>
+          <div className="jobs-summary-card danger">
+            <span className="jobs-summary-label">
+              <span>{t("jobs.status.failed")}</span>
+              <span>{failedJobs.length > 0 ? t("jobs.summary.needsFix") : t("jobs.summary.clear")}</span>
+            </span>
+            <strong className="jobs-summary-value mono">{failedJobs.length}</strong>
+          </div>
+        </div>
+
+        <div className="jobs-center-body">
+          <aside className="jobs-focus-panel" aria-label={t("jobs.focus.aria")}>
+            <p className="jobs-focus-label">{t("jobs.focus.title")}</p>
+            {focusJob ? (
+              <article className="jobs-focus-card">
+                {renderJobThumb(focusJob)}
+                <div className="jobs-focus-copy">
+                  <strong className="clamp1">{jobItemTitle(focusJob, items, t)}</strong>
+                  <span className="muted clamp1">
+                    {jobTypeLabel(focusJob.job_type, t)}
+                    {jobElapsedSeconds(focusJob, now) !== null
+                      ? ` · ${t("jobs.elapsed", { duration: formatClock(jobElapsedSeconds(focusJob, now) ?? 0) })}`
+                      : ""}
+                  </span>
+                  <div className="jobs-focus-metrics">
+                    <span>
+                      <small>{t("jobs.focus.cost")}</small>
+                      <b className="mono">{focusJob.usage?.estimated_usd ? `$${focusJob.usage.estimated_usd.toFixed(4)}` : "$0.00"}</b>
+                    </span>
+                    <span>
+                      <small>{t("jobs.focus.duration")}</small>
+                      <b className="mono">{focusItem?.duration ?? "-"}</b>
+                    </span>
+                    <span>
+                      <small>{t("jobs.focus.images")}</small>
+                      <b className="mono">{focusJob.usage?.image_count ?? 0}</b>
+                    </span>
+                    <span>
+                      <small>{t("jobs.focus.input")}</small>
+                      <b className="mono">{(focusJob.usage?.input_tokens ?? 0).toLocaleString()}</b>
+                    </span>
+                  </div>
+                </div>
+              </article>
+            ) : (
+              <div className="jobs-focus-empty">{t("jobs.focus.empty")}</div>
+            )}
+            <div className="jobs-focus-note">
+              <span className="jobs-cost-pill-dot" />
+              {t("jobs.localProcessing")}
+            </div>
+          </aside>
+
+          <section className="jobs-center-main">
           {paused ? (
             <div className="jobs-paused-note">
               <Pause size={13} />
@@ -279,12 +402,14 @@ export function JobsSheet({
 
           {totalCount > 0 ? (
             <>
-              <div className="jobs-filters">
+              <div className="jobs-filters jobs-center-filters" role="tablist" aria-label={t("jobs.filter.aria")}>
                 {filters.map((f) => (
                   <button
                     key={f.id}
                     type="button"
                     className={filter === f.id ? "jobs-filter on" : "jobs-filter"}
+                    role="tab"
+                    aria-selected={filter === f.id}
                     onClick={() => setFilter(f.id)}
                   >
                     {f.label} <span className="jobs-filter-n">{f.n}</span>
@@ -296,19 +421,23 @@ export function JobsSheet({
                 </span>
               </div>
 
-              {visibleJobs.length > 0 || visibleSyncingSources.length > 0 ? (
-                <div className="jobs-timeline">
-                  <span className="jobs-timeline-line" aria-hidden="true" />
-                  {visibleSyncingSources.map(renderSyncingSourceCard)}
-                  {visibleJobs.map(renderCard)}
-                </div>
-              ) : (
-                <EmptyState title={t("jobs.noneTitle")} body={t("jobs.emptyBody")} />
-              )}
+              <div className="jobs-center-scroll">
+                {visibleJobs.length > 0 || visibleSyncingSources.length > 0 ? (
+                  <div className="jobs-list-v2">
+                    {visibleSyncingSources.map(renderSyncingSourceCard)}
+                    {visibleJobs.map(renderCard)}
+                  </div>
+                ) : (
+                  <EmptyState title={emptyTitle} body={emptyBody} />
+                )}
+              </div>
             </>
           ) : (
-            <EmptyState title={t("jobs.noneTitle")} body={t("jobs.emptyBody")} />
+            <div className="jobs-center-scroll">
+              <EmptyState title={t("jobs.noneTitle")} body={t("jobs.emptyBody")} />
+            </div>
           )}
+          </section>
         </div>
       </aside>
     </div>
