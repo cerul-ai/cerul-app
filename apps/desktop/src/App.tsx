@@ -236,6 +236,7 @@ import {
   subscribeDesktopMenuCommand,
   subscribeDesktopUpdater,
   syncDesktopApplicationMenu,
+  validateDesktopApplicationMenuShortcut,
 } from "./lib/desktopHost";
 import type { DesktopUpdate, DesktopUpdaterState } from "./lib/desktopHost";
 
@@ -547,6 +548,12 @@ async function setGlobalHotkey(label: string) {
 async function syncApplicationMenu() {
   if (hasDesktopHost()) {
     await syncDesktopApplicationMenu();
+  }
+}
+
+async function validateApplicationMenuShortcut(accelerator: string) {
+  if (hasDesktopHost()) {
+    await validateDesktopApplicationMenuShortcut(accelerator);
   }
 }
 
@@ -1138,9 +1145,13 @@ function AppWorkspace() {
   const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
     return subscribeDesktopMenuCommand((command) => {
-      if (command === "new_source" && !shouldIgnoreNewSourceShortcut()) {
-        setShowAddSource(true);
+      if (command.type !== "new_source" || hasOpenModalSurface()) {
+        return;
       }
+      if (command.triggeredByAccelerator && isEditableTarget(document.activeElement)) {
+        return;
+      }
+      setShowAddSource(true);
     });
   }, []);
 
@@ -5836,6 +5847,9 @@ function SettingsScreen({
 
     setSaveState({ status: "saving", message: t("settings.save.saving") });
     try {
+      if (command.nativeMenu) {
+        await validateApplicationMenuShortcut(accelerator);
+      }
       if (command.globalShortcut) {
         await setGlobalHotkey(accelerator);
       }

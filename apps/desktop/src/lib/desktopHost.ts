@@ -42,7 +42,10 @@ export type DesktopUpdaterCheckOptions = {
   installWhenDownloaded?: boolean;
 };
 
-export type DesktopMenuCommand = "new_source";
+export type DesktopMenuCommand = {
+  type: "new_source";
+  triggeredByAccelerator: boolean;
+};
 
 type ElectronDesktopHost = {
   apiBaseUrl?: string;
@@ -161,12 +164,18 @@ export function subscribeDesktopMenuCommand(
 ): () => void {
   if (window.cerulDesktop) {
     return window.cerulDesktop.onMenuCommand((command) => {
-      if (command === "new_source") {
+      if (command && typeof command === "object" && command.type === "new_source") {
         callback(command);
       }
     });
   }
   return () => undefined;
+}
+
+export async function validateDesktopApplicationMenuShortcut(accelerator: string): Promise<void> {
+  if (window.cerulDesktop) {
+    await window.cerulDesktop.invoke("validate_application_menu_shortcut", { accelerator });
+  }
 }
 
 export async function syncDesktopApplicationMenu(): Promise<void> {

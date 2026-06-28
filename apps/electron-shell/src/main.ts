@@ -103,12 +103,15 @@ let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
-type MainWindowCommand = "new_source";
+type MainWindowCommand = {
+  type: "new_source";
+  triggeredByAccelerator: boolean;
+};
 
 type ApplicationMenuShortcuts = {
-  newSource: string;
-  openSettings: string;
-  closeWindow: string;
+  newSource?: string;
+  openSettings?: string;
+  closeWindow?: string;
 };
 
 type GitHubRelease = {
@@ -990,6 +993,12 @@ function focusMainWindow() {
   }
   mainWindow.show();
   mainWindow.focus();
+}
+
+function closeMainWindowFromMenu() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close();
+  }
 }
 
 function shouldShowMainWindowAtLaunch() {
@@ -3018,19 +3027,15 @@ async function handleManualUpdateCheck() {
   });
 }
 
-async function buildApplicationMenu() {
+async function buildApplicationMenu(options: { fallbackOnError?: boolean } = { fallbackOnError: true }) {
   const shortcuts = await readApplicationMenuShortcuts();
-  setApplicationMenu(shortcuts);
+  setApplicationMenu(shortcuts, options);
 }
 
 async function readApplicationMenuShortcuts(): Promise<ApplicationMenuShortcuts> {
   try {
     const settings = await readApiSettings();
-    return {
-      newSource: nonEmptySettingString(settings, "hotkey_new_source", defaultNewSourceHotkey),
-      openSettings: nonEmptySettingString(settings, "hotkey_open_settings", defaultOpenSettingsHotkey),
-      closeWindow: nonEmptySettingString(settings, "hotkey_close_window", defaultCloseWindowHotkey),
-    };
+    return resolveApplicationMenuShortcuts(settings);
   } catch (error) {
     console.warn("failed to read application menu shortcuts", error);
     return defaultApplicationMenuShortcuts();
@@ -3045,21 +3050,74 @@ function defaultApplicationMenuShortcuts(): ApplicationMenuShortcuts {
   };
 }
 
-function nonEmptySettingString(settings: Record<string, unknown>, key: string, fallback: string) {
-  const value = settingString(settings, key, fallback).trim();
-  return value || fallback;
+function resolveApplicationMenuShortcuts(settings: Record<string, unknown>): ApplicationMenuShortcuts {
+  const reserved = new Set<string>();
+  reserveAccelerator(reserved, settingString(settings, "global_hotkey", defaultHotkey));
+
+  const newSource = explicitShortcutSetting(settings, "hotkey_new_source") ??
+    defaultShortcutUnlessReserved(defaultNewSourceHotkey, reserved);
+  reserveAccelerator(reserved, newSource);
+
+  const openSettings = explicitShortcutSetting(settings, "hotkey_open_settings") ??
+    defaultShortcutUnlessReserved(defaultOpenSettingsHotkey, reserved);
+  reserveAccelerator(reserved, openSettings);
+
+  const closeWindow = explicitShortcutSetting(settings, "hotkey_close_window") ??
+    defaultShortcutUnlessReserved(defaultCloseWindowHotkey, reserved);
+
+  return { newSource, openSettings, closeWindow };
 }
 
-function setApplicationMenu(shortcuts: ApplicationMenuShortcuts, isFallback = false) {
+function explicitShortcutSetting(settings: Record<string, unknown>, key: string) {
+  const value = settings[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function defaultShortcutUnlessReserved(accelerator: string, reserved: Set<string>) {
+  return reserved.has(canonicalAccelerator(accelerator)) ? undefined : accelerator;
+}
+
+function reserveAccelerator(reserved: Set<string>, accelerator?: string) {
+  if (accelerator) {
+    reserved.add(canonicalAccelerator(accelerator));
+  }
+}
+
+function canonicalAccelerator(accelerator: string) {
+  let normalized = accelerator.trim().toLowerCase().replace(/\s*\+\s*/g, "+");
+  normalized = normalized
+    .replace(/\b(cmdorctrl|commandorcontrol)\b/g, process.platform === "darwin" ? "cmd" : "ctrl")
+    .replace(/\b(command|cmd)\b/g, process.platform === "darwin" ? "cmd" : "super")
+    .replace(/\b(control|ctrl)\b/g, "ctrl")
+    .replace(/\b(option|alt)\b/g, "alt");
+  return normalized;
+}
+
+function assertValidMenuAccelerator(accelerator: string) {
+  const normalized = accelerator.trim();
+  if (!normalized) {
+    throw new Error("Shortcut cannot be empty");
+  }
+  Menu.buildFromTemplate([
+    {
+      label: "Validate",
+      submenu: [{ label: "Shortcut", accelerator: normalized, click: () => undefined }],
+    },
+  ]);
+}
+
+function setApplicationMenu(
+  shortcuts: ApplicationMenuShortcuts,
+  options: { fallbackOnError?: boolean } = { fallbackOnError: true },
+) {
   try {
     Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(shortcuts)));
   } catch (error) {
-    if (isFallback) {
-      console.error("failed to build default application menu", error);
-      return;
+    if (!options.fallbackOnError) {
+      throw error;
     }
     console.warn("failed to build application menu with custom shortcuts", error);
-    setApplicationMenu(defaultApplicationMenuShortcuts(), true);
+    Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(defaultApplicationMenuShortcuts())));
   }
 }
 
@@ -3067,18 +3125,26 @@ function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemC
   const isMac = process.platform === "darwin";
   const settingsMenuItem: MenuItemConstructorOptions = {
     label: "Settings…",
-    accelerator: shortcuts.openSettings,
+    ...(shortcuts.openSettings ? { accelerator: shortcuts.openSettings } : {}),
     click: () => openMainRoute("settings"),
   };
   const fileSubmenu: MenuItemConstructorOptions[] = [
     {
       label: "New Source",
-      accelerator: shortcuts.newSource,
-      click: () => sendMainWindowCommand("new_source"),
+      ...(shortcuts.newSource ? { accelerator: shortcuts.newSource } : {}),
+      click: (_menuItem, _window, event) =>
+        sendMainWindowCommand({
+          type: "new_source",
+          triggeredByAccelerator: Boolean(event.triggeredByAccelerator),
+        }),
     },
     { type: "separator" },
     ...(isMac ? [] : [settingsMenuItem, { type: "separator" as const }]),
-    { label: "Close Window", accelerator: shortcuts.closeWindow, role: "close" },
+    {
+      label: "Close Window",
+      ...(shortcuts.closeWindow ? { accelerator: shortcuts.closeWindow } : {}),
+      click: () => closeMainWindowFromMenu(),
+    },
     ...(isMac ? [] : [{ type: "separator" as const }, { role: "quit" as const }]),
   ];
   return [
@@ -3106,8 +3172,18 @@ function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemC
     { label: "File", submenu: fileSubmenu },
     { role: "editMenu" },
     { role: "viewMenu" },
-    { role: "windowMenu" },
+    windowMenuTemplate(isMac),
   ];
+}
+
+function windowMenuTemplate(isMac: boolean): MenuItemConstructorOptions {
+  return {
+    label: "Window",
+    submenu: [
+      { role: "minimize" },
+      ...(isMac ? [{ role: "zoom" as const }, { type: "separator" as const }, { role: "front" as const }] : []),
+    ],
+  };
 }
 
 async function startDesktopUpdateDownload() {
@@ -3564,8 +3640,11 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
     case "set_global_hotkey":
       registerGlobalHotkey(String(args.label ?? defaultHotkey));
       return null;
+    case "validate_application_menu_shortcut":
+      assertValidMenuAccelerator(String(args.accelerator ?? ""));
+      return null;
     case "sync_application_menu":
-      await buildApplicationMenu();
+      await buildApplicationMenu({ fallbackOnError: false });
       return null;
     case "sync_native_theme":
       await syncNativeThemeFromSettings();
