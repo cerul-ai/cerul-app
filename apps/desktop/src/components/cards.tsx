@@ -19,7 +19,12 @@ import {
 } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
 import { formatUsd } from "../lib/formatters";
-import { itemKindLabel } from "../lib/items";
+import {
+  itemHasPartialIndex,
+  itemHasSpeechSearch,
+  itemHasVisualSearch,
+  itemKindLabel,
+} from "../lib/items";
 import { resultModality } from "../lib/results";
 import type { Item, Result } from "../lib/types";
 import { ProgressBar, highlightSnippet } from "./transcript";
@@ -86,11 +91,8 @@ function itemCapabilityChips(
   item: Item,
   t: TFunction,
 ): { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] {
-  const hasVisual =
-    item.contentType === "image" ||
-    (item.contentType === "video" && item.visualIndexStatus === "indexed");
-  const hasSpeech =
-    (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
+  const hasVisual = itemHasVisualSearch(item);
+  const hasSpeech = itemHasSpeechSearch(item);
 
   if (item.status === "failed") {
     return [{ key: "failed", label: t("library.status.failed"), tone: "danger" }];
@@ -117,7 +119,7 @@ function itemCapabilityChips(
   if (hasVisual) {
     chips.push({ key: "visual", label: t("library.itemCard.capability.visual"), tone: "neutral" });
   }
-  if (item.embeddingIndexStatus === "failed" || item.visualIndexStatus === "failed") {
+  if (itemHasPartialIndex(item)) {
     chips.push({ key: "partial", label: t("library.itemCard.partialIndexShort"), tone: "warn" });
   }
   return chips;

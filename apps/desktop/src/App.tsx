@@ -179,12 +179,18 @@ import {
   isActiveJob,
   itemColor,
   itemDetailIssue,
+  itemEmbeddingIndexStatus,
+  itemHasPartialIndex,
+  itemHasSpeechSearch,
+  itemHasVisualSearch,
+  itemHasAudio,
   itemKindLabel,
   itemOriginalUrl,
   itemProgressLabel,
   itemSourceKind,
   itemSourceLabel,
   itemStatus,
+  itemVisualIndexStatus,
   isNearEndPosition,
   latestActiveJobForItem,
   mapItemRecord,
@@ -4431,6 +4437,37 @@ function EntityDetailScreen({
   );
 }
 
+type LibraryCapabilityCounts = {
+  speechOnly: number;
+  visual: number;
+  partial: number;
+};
+
+type LibraryCapabilityItem = Pick<
+  Item,
+  "contentType" | "embeddingIndexStatus" | "hasAudio" | "status" | "visualIndexStatus"
+>;
+
+function libraryCapabilityItemFromRecord(record: api.ItemRecord): LibraryCapabilityItem {
+  return {
+    contentType: record.content_type,
+    embeddingIndexStatus: itemEmbeddingIndexStatus(record),
+    hasAudio: itemHasAudio(record),
+    status: itemStatus(record),
+    visualIndexStatus: itemVisualIndexStatus(record),
+  };
+}
+
+function countLibraryCapabilities(items: LibraryCapabilityItem[]): LibraryCapabilityCounts {
+  const indexedItems = items.filter((item) => item.status === "indexed");
+  return {
+    speechOnly: indexedItems.filter((item) => itemHasSpeechSearch(item) && !itemHasVisualSearch(item))
+      .length,
+    visual: indexedItems.filter(itemHasVisualSearch).length,
+    partial: indexedItems.filter(itemHasPartialIndex).length,
+  };
+}
+
 function LibraryScreen({
   items,
   jobs,
@@ -4477,11 +4514,22 @@ function LibraryScreen({
   }>({ status: "idle", message: null });
   const [entities, setEntities] = useState<api.EntitySummary[]>([]);
   const [failedCleanupIds, setFailedCleanupIds] = useState<string[]>([]);
+  const [allCapabilityCounts, setAllCapabilityCounts] = useState<LibraryCapabilityCounts | null>(null);
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
   const itemStatusSignature = useMemo(
     () => items.map((item) => `${item.id}:${item.status}`).join("|"),
+    [items],
+  );
+  const itemCapabilitySignature = useMemo(
+    () =>
+      items
+        .map(
+          (item) =>
+            `${item.id}:${item.status}:${item.contentType}:${item.embeddingIndexStatus ?? ""}:${item.visualIndexStatus ?? ""}:${String(item.hasAudio)}`,
+        )
+        .join("|"),
     [items],
   );
   const jobStatusSignature = useMemo(
@@ -4512,21 +4560,8 @@ function LibraryScreen({
   const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
   const failedCleanupCount = failedCleanupIds.length;
-  const capabilityCounts = useMemo(() => {
-    const indexedItems = items.filter((item) => item.status === "indexed");
-    const hasVisualSearch = (item: Item) =>
-      item.contentType === "image" ||
-      (item.contentType === "video" && item.visualIndexStatus === "indexed");
-    const hasSpeechSearch = (item: Item) =>
-      (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
-    return {
-      speechOnly: indexedItems.filter((item) => hasSpeechSearch(item) && !hasVisualSearch(item))
-        .length,
-      visual: indexedItems.filter(hasVisualSearch).length,
-      partial: indexedItems.filter((item) => item.embeddingIndexStatus === "failed" || item.visualIndexStatus === "failed")
-        .length,
-    };
-  }, [items]);
+  const loadedCapabilityCounts = useMemo(() => countLibraryCapabilities(items), [items]);
+  const capabilityCounts = allCapabilityCounts ?? loadedCapabilityCounts;
 
   useEffect(() => {
     const itemIds = new Set(items.map((item) => item.id));
@@ -4702,6 +4737,45 @@ function LibraryScreen({
     }
     return ids;
   }
+
+  async function collectAllCapabilityCounts(): Promise<LibraryCapabilityCounts> {
+    const pageSize = 1000; // MAX_LIST_LIMIT on the core
+    const allItems: LibraryCapabilityItem[] = [];
+    for (let cursor = 0; ; cursor += pageSize) {
+      const page = await api.listItems({
+        limit: pageSize,
+        cursor,
+        includeUsage: false,
+      });
+      allItems.push(...page.map(libraryCapabilityItemFromRecord));
+      if (page.length < pageSize) {
+        break;
+      }
+    }
+    return countLibraryCapabilities(allItems);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!actionsEnabled || items.length === 0) {
+      setAllCapabilityCounts(null);
+      return;
+    }
+    collectAllCapabilityCounts()
+      .then((counts) => {
+        if (!cancelled) {
+          setAllCapabilityCounts(counts);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAllCapabilityCounts(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionsEnabled, itemCapabilitySignature, jobStatusSignature]);
 
   useEffect(() => {
     let cancelled = false;

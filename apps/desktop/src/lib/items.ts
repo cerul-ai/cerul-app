@@ -64,6 +64,30 @@ export function itemKindLabel(item: Item, t: TFunction): string {
   }
 }
 
+export function itemHasPartialIndex(
+  item: Pick<Item, "embeddingIndexStatus" | "visualIndexStatus">,
+) {
+  return item.embeddingIndexStatus === "failed" || item.visualIndexStatus === "failed";
+}
+
+export function itemHasSpeechSearch(
+  item: Pick<Item, "contentType" | "embeddingIndexStatus" | "hasAudio">,
+) {
+  if (item.embeddingIndexStatus === "failed") {
+    return false;
+  }
+  return (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
+}
+
+export function itemHasVisualSearch(
+  item: Pick<Item, "contentType" | "embeddingIndexStatus" | "visualIndexStatus">,
+) {
+  if (item.embeddingIndexStatus === "failed") {
+    return false;
+  }
+  return item.contentType === "image" || (item.contentType === "video" && item.visualIndexStatus === "indexed");
+}
+
 export function itemSourceLabel(record: api.ItemRecord, t: TFunction) {
   // Prefer descriptive metadata (channel / uploader / playlist / source)
   // and fall back to the raw_path basename. Never expose the raw source
@@ -166,9 +190,12 @@ function looksLikeMachineTitle(value: string, externalId: string | null | undefi
   ) {
     return true;
   }
+  const youtubeTitleIdMatch = value.trim().match(/^youtube\s+([0-9a-z_-]{11})$/i);
+  if (youtubeTitleIdMatch && /[0-9_-]/i.test(youtubeTitleIdMatch[1])) {
+    return true;
+  }
   return (
     /^bilibili\s+bv[0-9a-z]{8,}$/i.test(value) ||
-    /^youtube\s+[0-9a-z_-]{8,}$/i.test(value) ||
     /^source-[0-9a-f-]{8,}$/i.test(value)
   );
 }
