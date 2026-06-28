@@ -28,7 +28,6 @@ import {
   ChevronDown,
   ArrowLeft,
   ChevronRight,
-  CircleDot,
   Clock,
   Command,
   Copy,
@@ -253,7 +252,6 @@ const viewIds: View[] = [
   "result-detail",
   "library",
   "moments",
-  "entity-detail",
   "item-detail",
   "sources",
   "settings",
@@ -265,7 +263,6 @@ const viewIds: View[] = [
 const sidebarParentFor: Partial<Record<View, View>> = {
   "results": "home",
   "result-detail": "home",
-  "entity-detail": "library",
   "item-detail": "library",
 };
 const NEW_SOURCE_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
@@ -1884,7 +1881,6 @@ function AppWorkspace() {
             actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onOpenJobs={() => setShowJobsSheet(true)}
-            onOpenEntity={(entity) => navigate("entity-detail", { itemId: entity.id })}
             onDeleteItems={async (itemIds, onProgress, options) => {
               const deletingIds = new Set(itemIds);
               setData((current) => ({
@@ -1944,20 +1940,6 @@ function AppWorkspace() {
             actionsEnabled={apiStatus === "online"}
             onOpenItem={(moment) =>
               navigate("item-detail", { itemId: moment.item_id, timestamp: moment.timestamp })
-            }
-          />
-        ) : null}
-        {view === "entity-detail" ? (
-          <EntityDetailScreen
-            entityId={selectedItemId}
-            actionsEnabled={apiStatus === "online"}
-            onBack={() => navigate("library")}
-            onOpenMention={(mention) =>
-              navigate("item-detail", {
-                itemId: mention.item_id,
-                playbackChunkId: mention.chunk_id,
-                timestamp: mention.timestamp,
-              })
             }
           />
         ) : null}
@@ -2643,13 +2625,6 @@ function HomeScreen({
                   watched: weeklyReview.watched_percent,
                 })}
               </p>
-              {weeklyReview.topics.length > 0 ? (
-                <div className="weekly-topics">
-                  {weeklyReview.topics.map((topic) => (
-                    <span className="chip neutral" key={topic.id}>{topic.label}</span>
-                  ))}
-                </div>
-              ) : null}
             </div>
             <button
               type="button"
@@ -4407,95 +4382,6 @@ function MomentsScreen({
   );
 }
 
-function EntityDetailScreen({
-  entityId,
-  actionsEnabled,
-  onBack,
-  onOpenMention,
-}: {
-  entityId: string | null;
-  actionsEnabled: boolean;
-  onBack: () => void;
-  onOpenMention: (mention: api.EntityMention) => void;
-}) {
-  const t = useT();
-  const [detail, setDetail] = useState<api.EntityDetail | null>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [message, setMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!actionsEnabled || !entityId) {
-      setStatus("ready");
-      setDetail(null);
-      return;
-    }
-    setStatus("loading");
-    setMessage(null);
-    api
-      .getEntity(entityId)
-      .then((next) => {
-        if (!cancelled) {
-          setDetail(next);
-          setStatus("ready");
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setMessage(errorMessage(error));
-          setStatus("error");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [actionsEnabled, entityId]);
-
-  return (
-    <div className="page wide">
-      <div className="page-head">
-        <button className="btn btn-ghost sm" type="button" onClick={onBack}>
-          <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
-          <span>{t("library.heading")}</span>
-        </button>
-        <p className="page-eyebrow" style={{ marginTop: 18 }}>{t("entities.eyebrow")}</p>
-        <h1 className="page-h1">{detail?.entity.label ?? t("entities.heading")}</h1>
-        {detail ? (
-          <p className="page-sub">
-            {t("entities.detail.sub", {
-              count: detail.entity.mention_count,
-              items: detail.entity.item_count,
-            })}
-          </p>
-        ) : null}
-      </div>
-      {message ? <InlineNotice tone="error" message={message} /> : null}
-      {status === "loading" ? (
-        <div className="state"><Loader2 size={22} /><span>{t("common.loading")}</span></div>
-      ) : null}
-      {status !== "loading" && !detail ? (
-        <EmptyState title={t("entities.empty.title")} body={t("entities.empty.body")} />
-      ) : null}
-      {detail ? (
-        <div className="entity-mentions">
-          {detail.mentions.map((mention) => (
-            <button
-              key={`${mention.item_id}-${mention.chunk_id ?? mention.timestamp}`}
-              type="button"
-              className="entity-mention"
-              onClick={() => onOpenMention(mention)}
-            >
-              <span className="mono entity-mention__time">{mention.timestamp}</span>
-              <strong>{mention.item_title}</strong>
-              <p>{mention.quote}</p>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 type LibraryCapabilityCounts = {
   speechOnly: number;
   visual: number;
@@ -4538,7 +4424,6 @@ function LibraryScreen({
   onDeleteItems,
   onReindexItems,
   onOpenItem,
-  onOpenEntity,
   onOpenJobs,
   requestConfirm,
 }: {
@@ -4556,7 +4441,6 @@ function LibraryScreen({
   ) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
-  onOpenEntity: (entity: api.EntitySummary) => void;
   onOpenJobs: () => void;
   requestConfirm: RequestConfirm;
 }) {
@@ -4571,7 +4455,6 @@ function LibraryScreen({
     status: "idle" | "reindexing" | "deleting" | "error";
     message: string | null;
   }>({ status: "idle", message: null });
-  const [entities, setEntities] = useState<api.EntitySummary[]>([]);
   const [failedCleanupIds, setFailedCleanupIds] = useState<string[]>([]);
   const [allCapabilityCounts, setAllCapabilityCounts] = useState<LibraryCapabilityCounts | null>(null);
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
@@ -4629,25 +4512,6 @@ function LibraryScreen({
       return next.size === current.size ? current : next;
     });
   }, [items]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!actionsEnabled) {
-      setEntities([]);
-      return;
-    }
-    api
-      .listEntities()
-      .then((records) => {
-        if (!cancelled) {
-          setEntities(records.slice(0, 10));
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [actionsEnabled, items.length]);
 
   function clearLibraryFilters() {
     setLibraryQuery("");
@@ -5065,22 +4929,6 @@ function LibraryScreen({
           </button>
         ) : null}
       </div>
-      {entities.length > 0 ? (
-        <div className="entity-chip-row" aria-label={t("entities.eyebrow")}>
-          {entities.map((entity) => (
-            <button
-              key={entity.id}
-              type="button"
-              className="entity-chip"
-              onClick={() => onOpenEntity(entity)}
-            >
-              <CircleDot size={12} />
-              <span>{entity.label}</span>
-              <small className="mono">{entity.mention_count}</small>
-            </button>
-          ))}
-        </div>
-      ) : null}
       {batchState.message ? (
         <InlineNotice
           tone={batchState.status === "error" ? "error" : "muted"}
