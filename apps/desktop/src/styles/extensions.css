@@ -3724,13 +3724,6 @@ body.overlay-body {
   font-size: var(--fs-meta);
   color: var(--text-muted);
 }
-.weekly-topics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-
 .seg-btn {
   position: relative;
 }
@@ -3774,8 +3767,7 @@ body.overlay-body {
   cursor: default;
 }
 
-.moments-list,
-.entity-mentions {
+.moments-list {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -3790,8 +3782,7 @@ body.overlay-body {
   background: var(--surface);
   padding: 14px;
 }
-.moment-card__main,
-.entity-mention {
+.moment-card__main {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
   gap: 4px 12px;
@@ -3804,55 +3795,16 @@ body.overlay-body {
   font: inherit;
   padding: 0;
 }
-.moment-card__main p,
-.entity-mention p {
+.moment-card__main p {
   grid-column: 2;
   margin: 0;
   color: var(--text-muted);
   font-size: var(--fs-meta);
   line-height: 1.55;
 }
-.moment-card__time,
-.entity-mention__time {
+.moment-card__time {
   color: var(--accent-press);
   font-size: var(--fs-caption);
-}
-.entity-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin-top: 12px;
-}
-.entity-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
-  cursor: pointer;
-}
-.entity-chip:hover {
-  border-color: var(--accent-line);
-  color: var(--accent-press);
-  background: var(--accent-soft);
-}
-.entity-chip small {
-  color: var(--text-faint);
-}
-.entity-mention {
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  padding: 14px;
-}
-.entity-mention:hover {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
 }
 
 /* ============================================================
