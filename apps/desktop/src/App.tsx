@@ -4513,16 +4513,17 @@ function LibraryScreen({
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
   const failedCleanupCount = failedCleanupIds.length;
   const capabilityCounts = useMemo(() => {
+    const indexedItems = items.filter((item) => item.status === "indexed");
     const hasVisualSearch = (item: Item) =>
       item.contentType === "image" ||
       (item.contentType === "video" && item.visualIndexStatus === "indexed");
     const hasSpeechSearch = (item: Item) =>
       (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
     return {
-      speechOnly: items.filter((item) => item.status !== "failed" && hasSpeechSearch(item) && !hasVisualSearch(item))
+      speechOnly: indexedItems.filter((item) => hasSpeechSearch(item) && !hasVisualSearch(item))
         .length,
-      visual: items.filter((item) => item.status !== "failed" && hasVisualSearch(item)).length,
-      partial: items.filter((item) => item.embeddingIndexStatus === "failed" || item.visualIndexStatus === "failed")
+      visual: indexedItems.filter(hasVisualSearch).length,
+      partial: indexedItems.filter((item) => item.embeddingIndexStatus === "failed" || item.visualIndexStatus === "failed")
         .length,
     };
   }, [items]);

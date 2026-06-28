@@ -117,7 +117,7 @@ function itemCapabilityChips(
   if (hasVisual) {
     chips.push({ key: "visual", label: t("library.itemCard.capability.visual"), tone: "neutral" });
   }
-  if (item.embeddingIndexStatus === "failed") {
+  if (item.embeddingIndexStatus === "failed" || item.visualIndexStatus === "failed") {
     chips.push({ key: "partial", label: t("library.itemCard.partialIndexShort"), tone: "warn" });
   }
   return chips;
