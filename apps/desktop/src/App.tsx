@@ -5702,7 +5702,7 @@ function SettingsScreen({
         await setGlobalHotkey(accelerator);
       }
       await onSettingsChange({ [command.settingKey]: accelerator });
-      if (command.nativeMenu) {
+      if (command.nativeMenu || command.globalShortcut) {
         await syncApplicationMenu();
       }
       setSaveState({ status: "saved", message: t("settings.save.shortcutUpdated") });
