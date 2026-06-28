@@ -232,7 +232,10 @@ import {
   invokeHostCommand,
   openDialog,
   runDesktopUpdaterCheck,
+  subscribeDesktopMenuCommand,
   subscribeDesktopUpdater,
+  syncDesktopApplicationMenu,
+  validateDesktopApplicationMenuShortcut,
 } from "./lib/desktopHost";
 import type { DesktopUpdate, DesktopUpdaterState } from "./lib/desktopHost";
 
@@ -265,6 +268,12 @@ const sidebarParentFor: Partial<Record<View, View>> = {
 const NEW_SOURCE_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
   ? "Cmd+N"
   : "Ctrl+N";
+const OPEN_SETTINGS_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
+  ? "Cmd+,"
+  : "Ctrl+,";
+const CLOSE_WINDOW_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
+  ? "Cmd+W"
+  : "Ctrl+W";
 const recentSearchesStorageKey = "cerul.recentSearches.v1";
 const lastOpenedStorageKey = "cerul.lastOpened.v1";
 const lastAutomaticUpdateCheckStorageKey = "cerul.updater.lastAutomaticCheckAt.v1";
@@ -322,6 +331,20 @@ function hasOpenModalSurface() {
   return Boolean(
     document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
   );
+}
+
+function isEditableTarget(target: EventTarget | Element | null) {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT")
+  );
+}
+
+function shouldIgnoreNewSourceShortcut(target: EventTarget | Element | null = document.activeElement) {
+  return hasOpenModalSurface() || isEditableTarget(target);
 }
 
 function syncVideoToTimestamp(
@@ -519,6 +542,18 @@ async function setGlobalHotkey(label: string) {
   await invokeHostCommand("set_global_hotkey", { label });
 }
 
+async function syncApplicationMenu() {
+  if (hasDesktopHost()) {
+    await syncDesktopApplicationMenu();
+  }
+}
+
+async function validateApplicationMenuShortcut(accelerator: string) {
+  if (hasDesktopHost()) {
+    await validateDesktopApplicationMenuShortcut(accelerator);
+  }
+}
+
 async function syncNativeTheme() {
   await invokeHostCommand("sync_native_theme");
 }
@@ -613,8 +648,27 @@ function searchIndexIsSettling(data: AppData) {
 // offline) — intentionally empty so the UI never shows placeholder content.
 const transcript: TranscriptLine[] = [];
 
-const settingsSections = ["Models", "Usage", "General", "Indexing", "Storage", "Advanced", "About"] as const;
+const settingsSections = [
+  "Models",
+  "Usage",
+  "General",
+  "Shortcuts",
+  "Indexing",
+  "Storage",
+  "Advanced",
+  "About",
+] as const;
 type SettingsSection = (typeof settingsSections)[number];
+
+type ShortcutCommandDefinition = {
+  id: string;
+  settingKey: string;
+  defaultValue: string;
+  label: string;
+  description: string;
+  nativeMenu?: boolean;
+  globalShortcut?: boolean;
+};
 
 function normalizeSettingsSection(section?: string | null): SettingsSection {
   if (section === "Cerul Cloud") {
@@ -1087,18 +1141,23 @@ function AppWorkspace() {
 
   const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
+    return subscribeDesktopMenuCommand((command) => {
+      if (command.type !== "new_source" || hasOpenModalSurface()) {
+        return;
+      }
+      if (command.triggeredByAccelerator && isEditableTarget(document.activeElement)) {
+        return;
+      }
+      setShowAddSource(true);
+    });
+  }, []);
+
+  useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
       if (acceleratorMatchesEvent(newSourceHotkey, event)) {
         // Don't stack a new dialog on top of an open modal or steal the
         // shortcut while the user is typing in a field.
-        const target = event.target;
-        const inEditable =
-          target instanceof HTMLElement &&
-          (target.isContentEditable ||
-            target.tagName === "INPUT" ||
-            target.tagName === "TEXTAREA" ||
-            target.tagName === "SELECT");
-        if (hasOpenModalSurface() || inEditable) {
+        if (shouldIgnoreNewSourceShortcut(event.target)) {
           return;
         }
         event.preventDefault();
@@ -5551,6 +5610,7 @@ function SettingsScreen({
   }, [onBack]);
   const sectionIcons: Record<string, LucideIcon> = {
     General: SlidersHorizontal,
+    Shortcuts: Command,
     Models: Cpu,
     Usage: Wallet,
     Indexing: ListChecks,
@@ -5560,6 +5620,7 @@ function SettingsScreen({
   };
   const sectionLabels: Record<string, string> = {
     General: t("settings.section.general"),
+    Shortcuts: t("settings.section.shortcuts"),
     Models: t("settings.section.models"),
     Usage: t("settings.section.usage"),
     Indexing: t("settings.section.indexing"),
@@ -5569,6 +5630,7 @@ function SettingsScreen({
   };
   const sectionEyebrows: Record<string, string> = {
     General: t("settings.section.general.eyebrow"),
+    Shortcuts: t("settings.section.shortcuts.eyebrow"),
     Indexing: t("settings.section.indexing.eyebrow"),
     Models: t("settings.section.models.eyebrow"),
     Usage: t("settings.section.usage.eyebrow"),
@@ -5622,7 +5684,7 @@ function SettingsScreen({
     }
   }
 
-  async function saveGlobalHotkey(label: string) {
+  async function saveShortcut(command: ShortcutCommandDefinition, accelerator: string) {
     if (controlsDisabled) {
       setSaveState({
         status: "error",
@@ -5633,9 +5695,17 @@ function SettingsScreen({
 
     setSaveState({ status: "saving", message: t("settings.save.saving") });
     try {
-      await setGlobalHotkey(label);
-      await onSettingsChange({ global_hotkey: label });
-      setSaveState({ status: "saved", message: t("settings.save.hotkeyUpdated") });
+      if (command.nativeMenu) {
+        await validateApplicationMenuShortcut(accelerator);
+      }
+      if (command.globalShortcut) {
+        await setGlobalHotkey(accelerator);
+      }
+      await onSettingsChange({ [command.settingKey]: accelerator });
+      if (command.nativeMenu || command.globalShortcut) {
+        await syncApplicationMenu();
+      }
+      setSaveState({ status: "saved", message: t("settings.save.shortcutUpdated") });
     } catch (error) {
       setSaveState({ status: "error", message: errorMessage(error) });
     }
@@ -5718,7 +5788,7 @@ function SettingsScreen({
           </span>
         </div>
         <div className="settings-shell-scroll">
-        <div className="settings-panel">
+        <div className={activeSection === "Shortcuts" ? "settings-panel settings-panel-wide" : "settings-panel"}>
           {apiStatus !== "online" ? (
             <InlineNotice tone="error" message={t("settings.offlineNotice")} />
           ) : null}
@@ -5729,7 +5799,13 @@ function SettingsScreen({
               disabled={controlsDisabled}
               onSettingsChange={saveSettings}
               onStartAtLoginChange={saveStartAtLogin}
-              onHotkeyChange={saveGlobalHotkey}
+            />
+          ) : null}
+          {activeSection === "Shortcuts" ? (
+            <ShortcutsSettings
+              settings={settings}
+              disabled={controlsDisabled}
+              onShortcutChange={saveShortcut}
             />
           ) : null}
           {activeSection === "Indexing" ? (
@@ -5776,20 +5852,16 @@ function GeneralSettings({
   disabled,
   onSettingsChange,
   onStartAtLoginChange,
-  onHotkeyChange,
 }: {
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
   disabled: boolean;
   onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
   onStartAtLoginChange: (enabled: boolean) => Promise<void>;
-  onHotkeyChange: (label: string) => Promise<void>;
 }) {
   const t = useT();
   const { lang, setLang } = useLang();
   const theme = settingString(settings, "theme", "System");
-  const globalHotkey = settingString(settings, "global_hotkey", "Alt+Space");
-  const newSourceHotkey = settingString(settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   const startAtLoginEnabled =
     daemonStatus?.installed ?? settingBoolean(settings, "start_at_login", true);
   // The description explains what the toggle does; transient daemon status
@@ -5874,44 +5946,143 @@ function GeneralSettings({
           }
         />
       </SettingsGroup>
-      <SettingsGroup title={t("settings.general.shortcuts")}>
-        <SettingRow
-          label={t("settings.general.globalHotkey")}
-          description={t("settings.general.globalHotkey.hint")}
-          control={
-            <KeyRecorder
-              value={globalHotkey}
-              defaultValue="Alt+Space"
-              disabled={disabled}
-              conflicts={{ [newSourceHotkey]: t("settings.shortcuts.newSource") }}
-              onChange={(accelerator) => void onHotkeyChange(accelerator)}
-            />
-          }
-        />
-        <SettingRow
-          label={t("settings.shortcuts.newSource")}
-          description={t("settings.shortcuts.newSource.hint")}
-          control={
-            <KeyRecorder
-              value={newSourceHotkey}
-              defaultValue={NEW_SOURCE_DEFAULT_HOTKEY}
-              disabled={disabled}
-              conflicts={{ [globalHotkey]: t("settings.general.globalHotkey") }}
-              onChange={(accelerator) => void onSettingsChange({ hotkey_new_source: accelerator })}
-            />
-          }
-        />
-        <SettingRow
-          label={t("settings.general.accessibility.label")}
-          description={t("settings.general.accessibility.description")}
-          control={
-            <button className="btn btn-secondary sm" type="button" onClick={openAccessibilitySettings}>
-              {t("settings.general.accessibility.openButton")}
-            </button>
-          }
-        />
-      </SettingsGroup>
     </>
+  );
+}
+
+function shortcutDefinitions(t: TFunction): ShortcutCommandDefinition[] {
+  return [
+    {
+      id: "global-search",
+      settingKey: "global_hotkey",
+      defaultValue: "Alt+Space",
+      label: t("settings.shortcuts.globalSearch"),
+      description: t("settings.shortcuts.globalSearch.hint"),
+      globalShortcut: true,
+    },
+    {
+      id: "new-source",
+      settingKey: "hotkey_new_source",
+      defaultValue: NEW_SOURCE_DEFAULT_HOTKEY,
+      label: t("settings.shortcuts.newSource"),
+      description: t("settings.shortcuts.newSource.hint"),
+      nativeMenu: true,
+    },
+    {
+      id: "open-settings",
+      settingKey: "hotkey_open_settings",
+      defaultValue: OPEN_SETTINGS_DEFAULT_HOTKEY,
+      label: t("settings.shortcuts.openSettings"),
+      description: t("settings.shortcuts.openSettings.hint"),
+      nativeMenu: true,
+    },
+    {
+      id: "close-window",
+      settingKey: "hotkey_close_window",
+      defaultValue: CLOSE_WINDOW_DEFAULT_HOTKEY,
+      label: t("settings.shortcuts.closeWindow"),
+      description: t("settings.shortcuts.closeWindow.hint"),
+      nativeMenu: true,
+    },
+  ];
+}
+
+function shortcutValue(settings: api.SettingsMap, command: ShortcutCommandDefinition) {
+  return settingString(settings, command.settingKey, command.defaultValue);
+}
+
+function ShortcutsSettings({
+  settings,
+  disabled,
+  onShortcutChange,
+}: {
+  settings: api.SettingsMap;
+  disabled: boolean;
+  onShortcutChange: (command: ShortcutCommandDefinition, accelerator: string) => Promise<void>;
+}) {
+  const t = useT();
+  const [query, setQuery] = useState("");
+  const commands = shortcutDefinitions(t);
+  const commandRows = commands.map((command) => ({
+    ...command,
+    value: shortcutValue(settings, command),
+  }));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredRows = normalizedQuery
+    ? commandRows.filter((command) =>
+        [
+          command.label,
+          command.description,
+          command.settingKey,
+          formatHotkeyLabel(command.value),
+        ]
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(normalizedQuery),
+      )
+    : commandRows;
+
+  function conflictsFor(commandId: string) {
+    return commandRows.reduce<Record<string, string>>((conflicts, command) => {
+      if (command.id !== commandId && command.value) {
+        conflicts[command.value] = command.label;
+      }
+      return conflicts;
+    }, {});
+  }
+
+  return (
+    <div className="shortcuts-directory">
+      <label className="shortcut-search">
+        <Search size={15} />
+        <input
+          type="search"
+          value={query}
+          placeholder={t("settings.shortcuts.searchPlaceholder")}
+          aria-label={t("settings.shortcuts.searchAria")}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
+
+      <div className="shortcut-table" role="table" aria-label={t("settings.shortcuts.tableAria")}>
+        <div className="shortcut-table-head" role="row">
+          <span role="columnheader">{t("settings.shortcuts.commandColumn")}</span>
+          <span role="columnheader">{t("settings.shortcuts.bindingColumn")}</span>
+        </div>
+        <div className="shortcut-table-body">
+          {filteredRows.map((command) => (
+            <div className="shortcut-row" role="row" key={command.id}>
+              <div className="shortcut-command" role="cell">
+                <strong>{command.label}</strong>
+                <span>{command.description}</span>
+              </div>
+              <div className="shortcut-binding" role="cell">
+                <KeyRecorder
+                  value={command.value}
+                  defaultValue={command.defaultValue}
+                  disabled={disabled}
+                  conflicts={conflictsFor(command.id)}
+                  onChange={(accelerator) => void onShortcutChange(command, accelerator)}
+                />
+              </div>
+            </div>
+          ))}
+          {filteredRows.length === 0 ? (
+            <div className="shortcut-empty">{t("settings.shortcuts.empty")}</div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="shortcut-accessibility-callout">
+        <div>
+          <strong>{t("settings.general.accessibility.label")}</strong>
+          <span>{t("settings.general.accessibility.description")}</span>
+        </div>
+        <button className="btn btn-secondary sm" type="button" onClick={openAccessibilitySettings}>
+          {t("settings.general.accessibility.openButton")}
+        </button>
+      </div>
+    </div>
   );
 }
 

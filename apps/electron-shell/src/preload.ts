@@ -24,6 +24,11 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
     ipcRenderer.on("cerul:updater-event", listener);
     return () => ipcRenderer.removeListener("cerul:updater-event", listener);
   },
+  onMenuCommand: (callback: (command: unknown) => void) => {
+    const listener = (_event: IpcRendererEvent, command: unknown) => callback(command);
+    ipcRenderer.on("cerul:menu-command", listener);
+    return () => ipcRenderer.removeListener("cerul:menu-command", listener);
+  },
   storeGet: <T>(path: string, key: string) =>
     ipcRenderer.invoke("cerul:store-get", path, key) as Promise<T | undefined>,
   storeSet: <T>(path: string, key: string, value: T) =>

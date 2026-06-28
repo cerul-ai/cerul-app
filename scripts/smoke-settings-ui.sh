@@ -18,11 +18,18 @@ rg -qF "await installDaemon()" apps/desktop/src
 rg -qF "await uninstallDaemon()" apps/desktop/src
 rg -qF "start_at_login: result.installed" apps/desktop/src
 rg -qF "Start at login is not available on this platform." apps/desktop/src
-rg -qF "const globalHotkeyOptions" apps/desktop/src
 rg -qF "Global hotkey" apps/desktop/src
 rg -qF "global_hotkey" apps/desktop/src
-rg -qF "async function saveGlobalHotkey" apps/desktop/src
-rg -qF "setGlobalHotkey(label)" apps/desktop/src
+rg -qF "function ShortcutsSettings" apps/desktop/src/App.tsx
+rg -qF "settings.section.shortcuts" apps/desktop/src
+rg -qF "hotkey_new_source" apps/desktop/src apps/electron-shell/src/main.ts
+rg -qF "hotkey_open_settings" apps/desktop/src apps/electron-shell/src/main.ts
+rg -qF "hotkey_close_window" apps/desktop/src apps/electron-shell/src/main.ts
+rg -qF "async function saveShortcut" apps/desktop/src/App.tsx
+rg -qF "setGlobalHotkey(accelerator)" apps/desktop/src/App.tsx
+rg -qF "sync_application_menu" apps/desktop/src apps/electron-shell/src/main.ts
+rg -qF "subscribeDesktopMenuCommand" apps/desktop/src
+rg -qF "onMenuCommand" apps/desktop/src apps/electron-shell/src/preload.ts
 rg -qF "Pause in low-power mode" apps/desktop/src
 rg -qF "Inference mode" apps/desktop/src
 rg -qF "Remote API" apps/desktop/src
@@ -69,4 +76,4 @@ rg -qF ".settings-stack-control" apps/desktop/src/styles/extensions.css
 rg -qF ".setting-row-control > .select" apps/desktop/src/styles/extensions.css
 rg -qF ".select:disabled" apps/desktop/src/styles/ui.css
 
-echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled updater_auto_install=enabled advanced_actions=remote_auth about_actions=enabled"
+echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced shortcuts_directory=configurable native_menu_shortcuts=synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled updater_auto_install=enabled advanced_actions=remote_auth about_actions=enabled"

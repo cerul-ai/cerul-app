@@ -16,6 +16,7 @@ import {
   screen,
   session,
   shell,
+  type MenuItemConstructorOptions,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -53,6 +54,9 @@ const appScheme = "app";
 const appHost = "cerul";
 const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
+const defaultNewSourceHotkey = "CommandOrControl+N";
+const defaultOpenSettingsHotkey = "CommandOrControl+,";
+const defaultCloseWindowHotkey = "CommandOrControl+W";
 const cloudAccountOrigin = "https://accounts.cerul.ai";
 const defaultUpdateRepository = "cerul-ai/cerul-app";
 const macBundleIdentifier = "ai.cerul.desktop";
@@ -75,6 +79,7 @@ let lastApiExit: ApiExitInfo | null = null;
 let mainWindowLoaded = false;
 let pendingDeepLink = firstDeepLinkArg(process.argv);
 let queuedMainRoute: string | null = null;
+let queuedMainCommands: MainWindowCommand[] = [];
 let registeredGlobalHotkey: string | null = null;
 let statusMonitor: NodeJS.Timeout | null = null;
 let hadActiveIndexing = false;
@@ -96,8 +101,19 @@ let macUpdatePreparationRunId = 0;
 let updateInstallWhenPrepared = false;
 let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
+let standardMenuAcceleratorsCache: Set<string> | null = null;
 
 type OAuthProvider = "google" | "github";
+type MainWindowCommand = {
+  type: "new_source";
+  triggeredByAccelerator: boolean;
+};
+
+type ApplicationMenuShortcuts = {
+  newSource?: string;
+  openSettings?: string;
+  closeWindow?: string;
+};
 
 type GitHubRelease = {
   tag_name?: string;
@@ -270,7 +286,7 @@ app
     createMainWindow();
     createOverlayWindow();
     setupTray();
-    buildApplicationMenu();
+    await buildApplicationMenu();
     startStatusMonitor();
     registerGlobalHotkey(await initialGlobalHotkey(), { throwOnFailure: false });
     routeDeepLink(pendingDeepLink);
@@ -632,6 +648,7 @@ function createMainWindow() {
     console.log("cerul_electron_main_window_loaded");
     mainWindowLoaded = true;
     flushQueuedMainRoute();
+    flushQueuedMainCommands();
     maybeRunRendererVideoSmoke();
   });
   mainWindow.on("closed", () => {
@@ -920,7 +937,7 @@ function registerGlobalHotkey(
 }
 
 function normalizeAccelerator(label: string) {
-  let accelerator = label.replace(/\s*\+\s*/g, "+").replace(/^Alt Space$/i, "Alt+Space");
+  let accelerator = label.trim().replace(/\s*\+\s*/g, "+").replace(/^Alt Space$/i, "Alt+Space");
   if (process.platform !== "darwin") {
     accelerator = accelerator.replace(/\b(Command|Cmd)\b/gi, "Super");
   }
@@ -977,6 +994,12 @@ function focusMainWindow() {
   }
   mainWindow.show();
   mainWindow.focus();
+}
+
+function closeMainWindowFromMenu() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close();
+  }
 }
 
 function shouldShowMainWindowAtLaunch() {
@@ -3005,34 +3028,251 @@ async function handleManualUpdateCheck() {
   });
 }
 
-function buildApplicationMenu() {
-  // Native menu integration is the macOS convention — "Check for Updates…" lives
-  // in the app menu. On Windows/Linux the tray entry covers manual checks, so we
-  // leave Electron's default menu untouched rather than rebuild a full menu bar.
-  if (process.platform !== "darwin") {
-    return;
+async function buildApplicationMenu(options: { fallbackOnError?: boolean } = { fallbackOnError: true }) {
+  const shortcuts = await readApplicationMenuShortcuts(options);
+  setApplicationMenu(shortcuts, options);
+}
+
+async function readApplicationMenuShortcuts(
+  options: { fallbackOnError?: boolean } = { fallbackOnError: true },
+): Promise<ApplicationMenuShortcuts> {
+  try {
+    const settings =
+      options.fallbackOnError === false ? await readApiSettingsOrThrow(1_500) : await readApiSettings();
+    return resolveApplicationMenuShortcuts(settings);
+  } catch (error) {
+    if (options.fallbackOnError === false) {
+      throw error;
+    }
+    console.warn("failed to read application menu shortcuts", error);
+    return defaultApplicationMenuShortcuts();
   }
-  const template: Parameters<typeof Menu.buildFromTemplate>[0] = [
+}
+
+function defaultApplicationMenuShortcuts(): ApplicationMenuShortcuts {
+  return {
+    newSource: defaultNewSourceHotkey,
+    openSettings: defaultOpenSettingsHotkey,
+    closeWindow: defaultCloseWindowHotkey,
+  };
+}
+
+function resolveApplicationMenuShortcuts(settings: Record<string, unknown>): ApplicationMenuShortcuts {
+  const reserved = new Set<string>();
+  reserveStandardMenuAccelerators(reserved);
+  reserveAccelerator(reserved, settingString(settings, "global_hotkey", defaultHotkey));
+
+  const newSource = explicitShortcutUnlessReserved(settings, "hotkey_new_source", reserved) ??
+    defaultShortcutUnlessReserved(defaultNewSourceHotkey, reserved);
+  reserveAccelerator(reserved, newSource);
+
+  const openSettings = explicitShortcutUnlessReserved(settings, "hotkey_open_settings", reserved) ??
+    defaultShortcutUnlessReserved(defaultOpenSettingsHotkey, reserved);
+  reserveAccelerator(reserved, openSettings);
+
+  const closeWindow = explicitShortcutUnlessReserved(settings, "hotkey_close_window", reserved) ??
+    defaultShortcutUnlessReserved(defaultCloseWindowHotkey, reserved);
+
+  return { newSource, openSettings, closeWindow };
+}
+
+function explicitShortcutUnlessReserved(
+  settings: Record<string, unknown>,
+  key: string,
+  reserved: Set<string>,
+) {
+  const accelerator = explicitShortcutSetting(settings, key);
+  if (!accelerator) {
+    return undefined;
+  }
+  if (reserved.has(canonicalAccelerator(accelerator))) {
+    console.warn(`skipping menu shortcut ${key} because it conflicts with another menu accelerator`);
+    return undefined;
+  }
+  return accelerator;
+}
+
+function explicitShortcutSetting(settings: Record<string, unknown>, key: string) {
+  const value = settings[key];
+  return typeof value === "string" && value.trim() ? normalizeAccelerator(value) : undefined;
+}
+
+function defaultShortcutUnlessReserved(accelerator: string, reserved: Set<string>) {
+  const normalized = normalizeAccelerator(accelerator);
+  return reserved.has(canonicalAccelerator(normalized)) ? undefined : normalized;
+}
+
+function reserveAccelerator(reserved: Set<string>, accelerator?: string) {
+  if (accelerator) {
+    reserved.add(canonicalAccelerator(normalizeAccelerator(accelerator)));
+  }
+}
+
+function canonicalAccelerator(accelerator: string) {
+  let normalized = accelerator.trim().toLowerCase().replace(/\s*\+\s*/g, "+");
+  normalized = normalized
+    .replace(/\b(cmdorctrl|commandorcontrol)\b/g, process.platform === "darwin" ? "cmd" : "ctrl")
+    .replace(/\b(command|cmd)\b/g, process.platform === "darwin" ? "cmd" : "super")
+    .replace(/\b(control|ctrl)\b/g, "ctrl")
+    .replace(/\b(option|alt)\b/g, "alt");
+  return normalized;
+}
+
+function assertValidMenuAccelerator(accelerator: string) {
+  const normalized = normalizeAccelerator(accelerator).trim();
+  if (!normalized) {
+    throw new Error("Shortcut cannot be empty");
+  }
+  if (standardMenuAccelerators().has(canonicalAccelerator(normalized))) {
+    throw new Error("Shortcut conflicts with a standard application menu shortcut");
+  }
+  Menu.buildFromTemplate([
     {
-      label: app.name,
-      submenu: [
-        { role: "about" },
-        { label: "Check for Updates…", click: () => void handleManualUpdateCheck() },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        { role: "quit" },
-      ],
+      label: "Validate",
+      submenu: [{ label: "Shortcut", accelerator: normalized, click: () => undefined }],
     },
+  ]);
+}
+
+function reserveStandardMenuAccelerators(reserved: Set<string>) {
+  for (const accelerator of standardMenuAccelerators()) {
+    reserved.add(accelerator);
+  }
+}
+
+function standardMenuAccelerators() {
+  if (standardMenuAcceleratorsCache) {
+    return standardMenuAcceleratorsCache;
+  }
+  const accelerators = new Set<string>();
+  reserveKnownStandardMenuAccelerators(accelerators);
+  try {
+    collectMenuAccelerators(Menu.buildFromTemplate(applicationMenuTemplate({})), accelerators);
+  } catch (error) {
+    console.warn("failed to collect standard application menu accelerators", error);
+  }
+  standardMenuAcceleratorsCache = accelerators;
+  return accelerators;
+}
+
+function reserveKnownStandardMenuAccelerators(reserved: Set<string>) {
+  const accelerators = [
+    "CommandOrControl+Z",
+    "Shift+CommandOrControl+Z",
+    "CommandOrControl+Y",
+    "CommandOrControl+X",
+    "CommandOrControl+C",
+    "CommandOrControl+V",
+    "CommandOrControl+A",
+    "CommandOrControl+R",
+    "Shift+CommandOrControl+R",
+    "CommandOrControl+Plus",
+    "CommandOrControl+-",
+    "CommandOrControl+0",
+    "CommandOrControl+Shift+I",
+    "F11",
+    "F12",
+    ...(process.platform === "darwin"
+      ? ["Command+Q", "Command+H", "Command+Option+H", "Command+M", "Control+Command+F"]
+      : []),
+  ];
+  for (const accelerator of accelerators) {
+    reserveAccelerator(reserved, accelerator);
+  }
+}
+
+function collectMenuAccelerators(
+  menu: ReturnType<typeof Menu.buildFromTemplate>,
+  reserved: Set<string>,
+) {
+  for (const item of menu.items) {
+    if (item.accelerator) {
+      reserveAccelerator(reserved, item.accelerator);
+    }
+    if (item.submenu) {
+      collectMenuAccelerators(item.submenu, reserved);
+    }
+  }
+}
+
+function setApplicationMenu(
+  shortcuts: ApplicationMenuShortcuts,
+  options: { fallbackOnError?: boolean } = { fallbackOnError: true },
+) {
+  try {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(shortcuts)));
+  } catch (error) {
+    if (!options.fallbackOnError) {
+      throw error;
+    }
+    console.warn("failed to build application menu with custom shortcuts", error);
+    Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(defaultApplicationMenuShortcuts())));
+  }
+}
+
+function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemConstructorOptions[] {
+  const isMac = process.platform === "darwin";
+  const settingsMenuItem: MenuItemConstructorOptions = {
+    label: "Settings…",
+    ...(shortcuts.openSettings ? { accelerator: shortcuts.openSettings } : {}),
+    click: () => openMainRoute("settings"),
+  };
+  const fileSubmenu: MenuItemConstructorOptions[] = [
+    {
+      label: "New Source",
+      ...(shortcuts.newSource ? { accelerator: shortcuts.newSource } : {}),
+      click: (_menuItem, _window, event) =>
+        sendMainWindowCommand({
+          type: "new_source",
+          triggeredByAccelerator: Boolean(event.triggeredByAccelerator),
+        }),
+    },
+    { type: "separator" },
+    ...(isMac ? [] : [settingsMenuItem, { type: "separator" as const }]),
+    {
+      label: "Close Window",
+      ...(shortcuts.closeWindow ? { accelerator: shortcuts.closeWindow } : {}),
+      click: () => closeMainWindowFromMenu(),
+    },
+    ...(isMac ? [] : [{ type: "separator" as const }, { role: "quit" as const }]),
+  ];
+  return [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: "about" as const },
+              { label: "Check for Updates…", click: () => void handleManualUpdateCheck() },
+              { type: "separator" as const },
+              settingsMenuItem,
+              { type: "separator" as const },
+              { role: "services" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              { role: "quit" as const },
+            ],
+          },
+        ]
+      : []),
+    { label: "File", submenu: fileSubmenu },
     { role: "editMenu" },
     { role: "viewMenu" },
-    { role: "windowMenu" },
+    windowMenuTemplate(isMac),
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function windowMenuTemplate(isMac: boolean): MenuItemConstructorOptions {
+  return {
+    label: "Window",
+    submenu: [
+      { role: "minimize" },
+      ...(isMac ? [{ role: "zoom" as const }, { type: "separator" as const }, { role: "front" as const }] : []),
+    ],
+  };
 }
 
 async function startDesktopUpdateDownload() {
@@ -3489,6 +3729,12 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
     case "set_global_hotkey":
       registerGlobalHotkey(String(args.label ?? defaultHotkey));
       return null;
+    case "validate_application_menu_shortcut":
+      assertValidMenuAccelerator(String(args.accelerator ?? ""));
+      return null;
+    case "sync_application_menu":
+      await buildApplicationMenu({ fallbackOnError: false });
+      return null;
     case "sync_native_theme":
       await syncNativeThemeFromSettings();
       return null;
@@ -3693,6 +3939,24 @@ function flushQueuedMainRoute() {
   const route = queuedMainRoute;
   queuedMainRoute = null;
   void mainWindow.webContents.executeJavaScript(`window.location.hash = ${JSON.stringify(route)};`);
+}
+
+function sendMainWindowCommand(command: MainWindowCommand) {
+  overlayWindow?.hide();
+  queuedMainCommands.push(command);
+  focusMainWindow();
+  flushQueuedMainCommands();
+}
+
+function flushQueuedMainCommands() {
+  if (!mainWindow || !mainWindowLoaded || queuedMainCommands.length === 0) {
+    return;
+  }
+  const commands = queuedMainCommands;
+  queuedMainCommands = [];
+  for (const command of commands) {
+    mainWindow.webContents.send("cerul:menu-command", command);
+  }
 }
 
 function showNotification(title: string, body: string) {
