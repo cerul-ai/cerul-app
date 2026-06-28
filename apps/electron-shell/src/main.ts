@@ -16,6 +16,7 @@ import {
   screen,
   session,
   shell,
+  type MenuItemConstructorOptions,
 } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -53,6 +54,9 @@ const appScheme = "app";
 const appHost = "cerul";
 const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
+const defaultNewSourceHotkey = "CommandOrControl+N";
+const defaultOpenSettingsHotkey = "CommandOrControl+,";
+const defaultCloseWindowHotkey = "CommandOrControl+W";
 const cloudAccountOrigin = "https://accounts.cerul.ai";
 const defaultUpdateRepository = "cerul-ai/cerul-app";
 const macBundleIdentifier = "ai.cerul.desktop";
@@ -75,6 +79,7 @@ let lastApiExit: ApiExitInfo | null = null;
 let mainWindowLoaded = false;
 let pendingDeepLink = firstDeepLinkArg(process.argv);
 let queuedMainRoute: string | null = null;
+let queuedMainCommands: MainWindowCommand[] = [];
 let registeredGlobalHotkey: string | null = null;
 let statusMonitor: NodeJS.Timeout | null = null;
 let hadActiveIndexing = false;
@@ -98,6 +103,13 @@ let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 
 type OAuthProvider = "google" | "github";
+type MainWindowCommand = "new_source";
+
+type ApplicationMenuShortcuts = {
+  newSource: string;
+  openSettings: string;
+  closeWindow: string;
+};
 
 type GitHubRelease = {
   tag_name?: string;
@@ -270,7 +282,7 @@ app
     createMainWindow();
     createOverlayWindow();
     setupTray();
-    buildApplicationMenu();
+    await buildApplicationMenu();
     startStatusMonitor();
     registerGlobalHotkey(await initialGlobalHotkey(), { throwOnFailure: false });
     routeDeepLink(pendingDeepLink);
@@ -632,6 +644,7 @@ function createMainWindow() {
     console.log("cerul_electron_main_window_loaded");
     mainWindowLoaded = true;
     flushQueuedMainRoute();
+    flushQueuedMainCommands();
     maybeRunRendererVideoSmoke();
   });
   mainWindow.on("closed", () => {
@@ -3005,34 +3018,96 @@ async function handleManualUpdateCheck() {
   });
 }
 
-function buildApplicationMenu() {
-  // Native menu integration is the macOS convention — "Check for Updates…" lives
-  // in the app menu. On Windows/Linux the tray entry covers manual checks, so we
-  // leave Electron's default menu untouched rather than rebuild a full menu bar.
-  if (process.platform !== "darwin") {
-    return;
+async function buildApplicationMenu() {
+  const shortcuts = await readApplicationMenuShortcuts();
+  setApplicationMenu(shortcuts);
+}
+
+async function readApplicationMenuShortcuts(): Promise<ApplicationMenuShortcuts> {
+  try {
+    const settings = await readApiSettings();
+    return {
+      newSource: nonEmptySettingString(settings, "hotkey_new_source", defaultNewSourceHotkey),
+      openSettings: nonEmptySettingString(settings, "hotkey_open_settings", defaultOpenSettingsHotkey),
+      closeWindow: nonEmptySettingString(settings, "hotkey_close_window", defaultCloseWindowHotkey),
+    };
+  } catch (error) {
+    console.warn("failed to read application menu shortcuts", error);
+    return defaultApplicationMenuShortcuts();
   }
-  const template: Parameters<typeof Menu.buildFromTemplate>[0] = [
+}
+
+function defaultApplicationMenuShortcuts(): ApplicationMenuShortcuts {
+  return {
+    newSource: defaultNewSourceHotkey,
+    openSettings: defaultOpenSettingsHotkey,
+    closeWindow: defaultCloseWindowHotkey,
+  };
+}
+
+function nonEmptySettingString(settings: Record<string, unknown>, key: string, fallback: string) {
+  const value = settingString(settings, key, fallback).trim();
+  return value || fallback;
+}
+
+function setApplicationMenu(shortcuts: ApplicationMenuShortcuts, isFallback = false) {
+  try {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(shortcuts)));
+  } catch (error) {
+    if (isFallback) {
+      console.error("failed to build default application menu", error);
+      return;
+    }
+    console.warn("failed to build application menu with custom shortcuts", error);
+    setApplicationMenu(defaultApplicationMenuShortcuts(), true);
+  }
+}
+
+function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemConstructorOptions[] {
+  const isMac = process.platform === "darwin";
+  const settingsMenuItem: MenuItemConstructorOptions = {
+    label: "Settings…",
+    accelerator: shortcuts.openSettings,
+    click: () => openMainRoute("settings"),
+  };
+  const fileSubmenu: MenuItemConstructorOptions[] = [
     {
-      label: app.name,
-      submenu: [
-        { role: "about" },
-        { label: "Check for Updates…", click: () => void handleManualUpdateCheck() },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        { role: "quit" },
-      ],
+      label: "New Source",
+      accelerator: shortcuts.newSource,
+      click: () => sendMainWindowCommand("new_source"),
     },
+    { type: "separator" },
+    ...(isMac ? [] : [settingsMenuItem, { type: "separator" as const }]),
+    { label: "Close Window", accelerator: shortcuts.closeWindow, role: "close" },
+    ...(isMac ? [] : [{ type: "separator" as const }, { role: "quit" as const }]),
+  ];
+  return [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: "about" as const },
+              { label: "Check for Updates…", click: () => void handleManualUpdateCheck() },
+              { type: "separator" as const },
+              settingsMenuItem,
+              { type: "separator" as const },
+              { role: "services" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              { role: "quit" as const },
+            ],
+          },
+        ]
+      : []),
+    { label: "File", submenu: fileSubmenu },
     { role: "editMenu" },
     { role: "viewMenu" },
     { role: "windowMenu" },
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 async function startDesktopUpdateDownload() {
@@ -3489,6 +3564,9 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
     case "set_global_hotkey":
       registerGlobalHotkey(String(args.label ?? defaultHotkey));
       return null;
+    case "sync_application_menu":
+      await buildApplicationMenu();
+      return null;
     case "sync_native_theme":
       await syncNativeThemeFromSettings();
       return null;
@@ -3693,6 +3771,24 @@ function flushQueuedMainRoute() {
   const route = queuedMainRoute;
   queuedMainRoute = null;
   void mainWindow.webContents.executeJavaScript(`window.location.hash = ${JSON.stringify(route)};`);
+}
+
+function sendMainWindowCommand(command: MainWindowCommand) {
+  overlayWindow?.hide();
+  queuedMainCommands.push(command);
+  focusMainWindow();
+  flushQueuedMainCommands();
+}
+
+function flushQueuedMainCommands() {
+  if (!mainWindow || !mainWindowLoaded || queuedMainCommands.length === 0) {
+    return;
+  }
+  const commands = queuedMainCommands;
+  queuedMainCommands = [];
+  for (const command of commands) {
+    mainWindow.webContents.send("cerul:menu-command", command);
+  }
 }
 
 function showNotification(title: string, body: string) {

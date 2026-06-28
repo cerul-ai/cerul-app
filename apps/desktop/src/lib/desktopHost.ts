@@ -42,6 +42,8 @@ export type DesktopUpdaterCheckOptions = {
   installWhenDownloaded?: boolean;
 };
 
+export type DesktopMenuCommand = "new_source";
+
 type ElectronDesktopHost = {
   apiBaseUrl?: string;
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -54,6 +56,7 @@ type ElectronDesktopHost = {
   updaterDownload(): Promise<DesktopUpdaterState>;
   updaterInstall(): Promise<void>;
   onUpdaterEvent(callback: (state: DesktopUpdaterState) => void): () => void;
+  onMenuCommand(callback: (command: DesktopMenuCommand) => void): () => void;
   storeGet<T>(path: string, key: string): Promise<T | undefined>;
   storeSet<T>(path: string, key: string, value: T): Promise<void>;
   storeSave(path: string): Promise<void>;
@@ -151,6 +154,25 @@ export function subscribeDesktopUpdater(
     return window.cerulDesktop.onUpdaterEvent(callback);
   }
   return () => undefined;
+}
+
+export function subscribeDesktopMenuCommand(
+  callback: (command: DesktopMenuCommand) => void,
+): () => void {
+  if (window.cerulDesktop) {
+    return window.cerulDesktop.onMenuCommand((command) => {
+      if (command === "new_source") {
+        callback(command);
+      }
+    });
+  }
+  return () => undefined;
+}
+
+export async function syncDesktopApplicationMenu(): Promise<void> {
+  if (window.cerulDesktop) {
+    await window.cerulDesktop.invoke("sync_application_menu");
+  }
 }
 
 export async function loadDesktopStore(path: string): Promise<DesktopStore | null> {
