@@ -771,7 +771,7 @@ fn classify_web_video_url(value: &str) -> anyhow::Result<ClassifiedWebVideo> {
             return Ok(ClassifiedWebVideo {
                 platform: WebVideoPlatform::Bilibili,
                 kind: WebVideoSourceKind::Single,
-                canonical_url: canonical_bilibili_video_url(&path_parts[1], &parsed),
+                canonical_url: canonical_bilibili_video_url(path_parts[1], &parsed),
             });
         }
         if host == "space.bilibili.com" && !path_parts.is_empty() {

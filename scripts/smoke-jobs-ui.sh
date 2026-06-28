@@ -9,7 +9,7 @@ rg -qF 'const visibleJobs = apiStatus === "online" ? data.jobs : []' apps/deskto
 rg -qF "const drawerJobs = visibleJobs.filter" apps/desktop/src
 rg -qF "jobs={drawerJobs}" apps/desktop/src
 rg -qF "onClick={() => setShowJobsSheet(true)}" apps/desktop/src
-rg -qF "activeJobCount > 0" apps/desktop/src
+rg -qF "hasActiveJobs={visibleJobs.some(isActiveJob)}" apps/desktop/src
 rg -qF "export function JobsSheet" apps/desktop/src
 rg -qF "role=\"dialog\"" apps/desktop/src
 rg -qF "aria-labelledby=\"jobs-title\"" apps/desktop/src

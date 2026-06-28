@@ -605,7 +605,7 @@ impl Write for CoreLogGuard {
         let mut file = self
             .file
             .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "core log lock poisoned"))?;
+            .map_err(|_| io::Error::other("core log lock poisoned"))?;
         file.write_all(buf)?;
         io::stderr().write_all(buf)?;
         Ok(buf.len())
@@ -615,7 +615,7 @@ impl Write for CoreLogGuard {
         let mut file = self
             .file
             .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "core log lock poisoned"))?;
+            .map_err(|_| io::Error::other("core log lock poisoned"))?;
         file.flush()?;
         io::stderr().flush()
     }
@@ -1509,8 +1509,7 @@ async fn v1_list_item_chunks(
         } else {
             sql.push_str(" AND chunk_type IN (");
             sql.push_str(
-                &std::iter::repeat("?")
-                    .take(chunk_types.len())
+                &std::iter::repeat_n("?", chunk_types.len())
                     .collect::<Vec<_>>()
                     .join(","),
             );
@@ -2025,8 +2024,7 @@ fn v1_search_item_metadata(
     if item_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = std::iter::repeat("?")
-        .take(item_ids.len())
+    let placeholders = std::iter::repeat_n("?", item_ids.len())
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
@@ -2091,8 +2089,7 @@ fn v1_existing_preview_chunk_ids(
         return Ok(HashSet::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(chunk_ids.len())
+    let placeholders = std::iter::repeat_n("?", chunk_ids.len())
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
@@ -4893,18 +4890,14 @@ fn classify_job_error(job_type: &str, message: &str) -> Option<JobErrorInfo> {
             "视频下载器可能过旧，需要更新后重试。".to_string(),
             "About",
         )
-    } else if downloader_error
+    } else if (downloader_error
         && (normalized.contains("http error 401")
             || normalized.contains("401: unauthorized")
             || normalized.contains("unauthorized")
-            || normalized.contains("401"))
+            || normalized.contains("401")))
+        || normalized.contains("http error 403")
+        || normalized.contains("403: forbidden")
     {
-        (
-            "download_forbidden",
-            "平台拒绝下载请求。连接浏览器登录状态，稍后再重试失败视频。".to_string(),
-            "Indexing",
-        )
-    } else if normalized.contains("http error 403") || normalized.contains("403: forbidden") {
         (
             "download_forbidden",
             "平台拒绝下载请求。连接浏览器登录状态，稍后再重试失败视频。".to_string(),
@@ -6435,8 +6428,8 @@ struct PathUsage {
 
 fn path_usage(path: &FsPath) -> anyhow::Result<PathUsage> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => return Ok(metadata_usage(&metadata)),
-        Ok(metadata) if !metadata.is_dir() => return Ok(PathUsage::default()),
+        Ok(metadata) if metadata.is_file() => Ok(metadata_usage(&metadata)),
+        Ok(metadata) if !metadata.is_dir() => Ok(PathUsage::default()),
         Ok(_metadata) => {
             let mut total = PathUsage::default();
             let mut stack = vec![path.to_path_buf()];
@@ -6451,12 +6444,10 @@ fn path_usage(path: &FsPath) -> anyhow::Result<PathUsage> {
                     }
                 }
             }
-            return Ok(total);
+            Ok(total)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PathUsage::default())
-        }
-        Err(error) => return Err(error.into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PathUsage::default()),
+        Err(error) => Err(error.into()),
     }
 }
 

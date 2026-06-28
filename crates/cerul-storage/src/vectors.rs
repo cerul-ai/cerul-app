@@ -639,7 +639,7 @@ fn open_or_create_collection(
     collection: &str,
     profile: &EmbeddingProfile,
 ) -> anyhow::Result<Collection> {
-    fs::create_dir_all(&profile_index_root(path))?;
+    fs::create_dir_all(profile_index_root(path))?;
     let collection_path = path_to_string(path)?;
     if collection_path_has_data(path)? {
         if collection_config_is_readable(path) {
