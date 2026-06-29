@@ -353,7 +353,7 @@ export function AddSourceDialog({
               )
             }
           >
-            {isSaving ? <Loader2 size={16} /> : <Plus size={16} />}
+            {isSaving ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
             <span>{isSaving ? t("addSource.adding") : t("addSource.title")}</span>
           </button>
         </footer>
@@ -486,7 +486,7 @@ function YoutubeTab({
         onClick={onValidate}
         disabled={!url.trim() || validation.status === "validating"}
       >
-        {validation.status === "validating" ? <Loader2 size={15} /> : <Check size={15} />}
+        {validation.status === "validating" ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
         <span>
           {validation.status === "validating"
             ? t("common.validating")
@@ -580,7 +580,7 @@ function PodcastTab({
         onClick={onValidate}
         disabled={!url.trim() || validation.status === "validating"}
       >
-        {validation.status === "validating" ? <Loader2 size={15} /> : <Check size={15} />}
+        {validation.status === "validating" ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
         <span>
           {validation.status === "validating"
             ? t("common.validating")

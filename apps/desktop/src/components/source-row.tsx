@@ -124,7 +124,7 @@ export function SourceRow({
           disabled={isPending}
           onClick={() => setMenuOpen((open) => !open)}
         >
-          {isPending ? <Loader2 size={16} /> : <MoreHorizontal size={16} />}
+          {isPending ? <Loader2 size={16} className="spin" /> : <MoreHorizontal size={16} />}
         </button>
         {menuOpen ? (
           <div className="menu source-action-menu">
