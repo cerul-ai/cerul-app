@@ -9,6 +9,7 @@ import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
 import { loadPersistedUiState, persistFirstRunActive } from "./lib/uiStore";
 import { isBackendFallbackSnippet } from "./lib/results";
+import { BrandMark } from "./components/brand";
 
 type OverlayResult = {
   itemId: string;
@@ -673,13 +674,7 @@ export function OverlayApp() {
             <div className="overlay-empty">
               <strong>{t("overlay.empty.noMatchesTitle")}</strong>
               <span>{t("overlay.empty.noMatchesBody")}</span>
-              <span className="overlay-watermark" aria-hidden="true">
-                <svg width="34" height="34" viewBox="0 0 508 508" fill="currentColor">
-                  <rect width="211" height="508" rx="30" />
-                  <rect x="297" y="91" width="211" height="112" rx="30" />
-                  <rect x="297" y="301" width="211" height="207" rx="30" />
-                </svg>
-              </span>
+              <BrandMark className="overlay-watermark" />
             </div>
           ) : null}
           </>
@@ -691,15 +686,7 @@ export function OverlayApp() {
 }
 
 function OverlayMark() {
-  return (
-    <span className="overlay-mark" aria-hidden="true">
-      <svg width="19" height="19" viewBox="0 0 508 508" fill="currentColor">
-        <rect width="211" height="508" rx="38" />
-        <rect x="297" y="91" width="211" height="112" rx="38" />
-        <rect x="297" y="301" width="211" height="207" rx="38" />
-      </svg>
-    </span>
-  );
+  return <BrandMark className="overlay-mark" />;
 }
 
 function OverlayHint({

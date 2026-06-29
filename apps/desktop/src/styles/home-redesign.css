@@ -104,7 +104,7 @@
 .home-firstrun { display: flex; justify-content: center; }
 .fr-indexing { width: 100%; max-width: 600px; text-align: center; padding: 7vh 24px 48px; }
 .fr-illo { margin: 0 auto 14px; }
-.fr-indexing .onb-folder svg { width: 26px; height: 26px; }
+.fr-indexing .onb-folder-mark { width: 28px; height: 28px; }
 .fr-eyebrow {
   display: inline-flex; align-items: center; gap: 8px; margin: 0 0 10px;
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;

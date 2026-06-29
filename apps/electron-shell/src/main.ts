@@ -3215,7 +3215,7 @@ function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemC
   const settingsMenuItem: MenuItemConstructorOptions = {
     label: "Settings…",
     ...(shortcuts.openSettings ? { accelerator: shortcuts.openSettings } : {}),
-    click: () => openMainRoute("settings"),
+    click: () => openMainRoute("settings?section=General"),
   };
   const fileSubmenu: MenuItemConstructorOptions[] = [
     {
@@ -3772,7 +3772,7 @@ async function handleCommand(command: string, args: Record<string, unknown>) {
       return null;
     case "open_main_settings":
       openMainRoute(
-        args.section ? `settings?section=${encodeURIComponent(String(args.section))}` : "settings",
+        args.section ? `settings?section=${encodeURIComponent(String(args.section))}` : "settings?section=General",
       );
       return null;
     case "notify_first_items_indexed":

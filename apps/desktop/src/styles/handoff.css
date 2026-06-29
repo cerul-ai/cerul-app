@@ -155,7 +155,14 @@
 
 /* ---- Step 0: welcome ---- */
 .onb-logo-wrap { position: relative; display: grid; place-items: center; height: 128px; margin-bottom: 2px; }
-.onb-logo-tile { width: 72px; height: 72px; }
+.onb-logo-mark {
+  width: 72px;
+  height: 72px;
+  filter: drop-shadow(0 16px 24px rgba(28, 40, 60, 0.22));
+}
+[data-theme="dark"] .onb-logo-mark {
+  filter: drop-shadow(0 0 28px rgba(90, 134, 184, 0.45));
+}
 .onb-shortcut {
   display: inline-flex;
   align-items: center;
@@ -206,7 +213,11 @@
   border: 1px solid var(--accent-line-soft);
   border-bottom: 0;
 }
-.onb-illo-source .onb-folder svg { fill: var(--accent); }
+.onb-illo-source .onb-folder-mark {
+  width: 28px;
+  height: 28px;
+  opacity: 0.94;
+}
 .onb-file {
   position: absolute;
   width: 74px;

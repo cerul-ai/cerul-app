@@ -7,6 +7,29 @@ cd "$ROOT"
 rg -qF 'type SaveStatus = "idle" | "saving" | "saved" | "error"' apps/desktop/src
 rg -qF "const controlsDisabled = apiStatus !== \"online\"" apps/desktop/src
 rg -qF "async function saveSettings" apps/desktop/src
+rg -qF 'const settingsDefaultSection: SettingsSection = "General"' apps/desktop/src/App.tsx
+rg -qF 'if (section === "Search" || section === "Summon search" || section === "唤起搜索")' apps/desktop/src/App.tsx
+! rg -qF "function SearchSettings" apps/desktop/src/App.tsx
+rg -qF '"Library",' apps/desktop/src/App.tsx
+rg -qF "function LibrarySettings" apps/desktop/src/App.tsx
+rg -qF "settings.section.library" apps/desktop/src/lib/i18n-catalog.ts
+rg -qF "settings-shell-brand-minimal" apps/desktop/src/App.tsx
+! rg -qF '<span>{t("settings.shell.subtitle")}</span>' apps/desktop/src/App.tsx
+rg -qF '"settings.shell.title": "Cerul"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF 'className="settings-core-status"' apps/desktop/src/App.tsx
+rg -qF "settings.coreStatus.ready" apps/desktop/src/lib/i18n-catalog.ts
+rg -qF ".settings-core-status" apps/desktop/src/styles/settings-redesign.css
+rg -qF "function SettingsQuietNotice" apps/desktop/src/App.tsx
+rg -qF "settings.models.providers.unavailable.title" apps/desktop/src/lib/i18n-catalog.ts
+rg -qF "settings.storage.unavailable.desktopTitle" apps/desktop/src/lib/i18n-catalog.ts
+rg -qF "settings.usage.unavailable.title" apps/desktop/src/lib/i18n-catalog.ts
+rg -qF ".settings-quiet-notice" apps/desktop/src/styles/settings-redesign.css
+! rg -qF 'message={loadError}' apps/desktop/src/App.tsx
+! rg -qF 'InlineNotice tone="error" message={error}' apps/desktop/src/App.tsx
+rg -qF "openMainRoute(\"settings?section=General\")" apps/electron-shell/src/main.ts
+rg -qF "settings?section=General" apps/electron-shell/src/main.ts
+rg -qF "requestConfirm={requestConfirm}" apps/desktop/src/App.tsx
+rg -qF "settings.advanced.maintenance.title" apps/desktop/src
 rg -qF "Saving..." apps/desktop/src
 rg -qF "Settings saved" apps/desktop/src
 rg -qF "Cerul Core is not reachable." apps/desktop/src
@@ -76,4 +99,4 @@ rg -qF ".settings-stack-control" apps/desktop/src/styles/extensions.css
 rg -qF ".setting-row-control > .select" apps/desktop/src/styles/extensions.css
 rg -qF ".select:disabled" apps/desktop/src/styles/ui.css
 
-echo "settings_ui_smoke disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced shortcuts_directory=configurable native_menu_shortcuts=synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled updater_auto_install=enabled advanced_actions=remote_auth about_actions=enabled"
+echo "settings_ui_smoke default_section=general preferences_shell=enabled shell_brand=minimal search_section=merged_into_shortcuts core_sidebar_status=enabled quiet_error_states=enabled library_storage_combined=enabled disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced shortcuts_directory=configurable native_menu_shortcuts=synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled updater_auto_install=enabled advanced_actions=remote_auth maintenance_actions=advanced about_actions=enabled"
