@@ -236,7 +236,7 @@ fn build_item_retrieval_units_with_conn(
 fn load_item(conn: &rusqlite::Connection, item_id: &str) -> anyhow::Result<ItemInfo> {
     conn.query_row(
         r#"
-        SELECT i.id, i.title, i.content_type, s.type, s.config
+        SELECT i.id, i.title, i.content_type, s.type, s.config, i.metadata
         FROM items i
         JOIN sources s ON s.id = i.source_id
         WHERE i.id = ?1
@@ -244,9 +244,15 @@ fn load_item(conn: &rusqlite::Connection, item_id: &str) -> anyhow::Result<ItemI
         [item_id],
         |row| {
             let source_config: String = row.get(4)?;
+            let metadata: Option<String> = row.get(5)?;
+            let metadata = metadata
+                .as_deref()
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or(Value::Null);
+            let title = item_display_title(row.get(1)?, &metadata);
             Ok(ItemInfo {
                 id: row.get(0)?,
-                title: row.get(1)?,
+                title,
                 content_type: row.get(2)?,
                 source_type: row.get(3)?,
                 source_config: serde_json::from_str(&source_config).unwrap_or(Value::Null),
@@ -257,6 +263,20 @@ fn load_item(conn: &rusqlite::Connection, item_id: &str) -> anyhow::Result<ItemI
         rusqlite::Error::QueryReturnedNoRows => anyhow::anyhow!("item not found: {item_id}"),
         other => anyhow::Error::new(other),
     })
+}
+
+fn item_display_title(raw_title: Option<String>, metadata: &Value) -> Option<String> {
+    metadata
+        .get("display_title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            raw_title
+                .map(|title| title.trim().to_string())
+                .filter(|title| !title.is_empty())
+        })
 }
 
 fn load_chunks(conn: &rusqlite::Connection, item_id: &str) -> anyhow::Result<Vec<ChunkInfo>> {
@@ -1233,6 +1253,38 @@ mod tests {
         assert!(units[0].content_text.contains("embeddings"));
         assert!(units[0].content_text.contains("search"));
         assert_eq!(retrieval_unit_count(&paths).unwrap(), 1);
+    }
+
+    #[test]
+    fn build_units_prefers_display_title_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "UPDATE items SET metadata = ?1 WHERE id = 'item-1'",
+            [serde_json::json!({ "display_title": "Human checkout walkthrough" }).to_string()],
+        )
+        .unwrap();
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 0.0,
+                end: 12.0,
+                text: "checkout narration".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert!(units[0].content_text.contains("Human checkout walkthrough"));
+        assert!(!units[0].content_text.contains("Title: Demo video"));
     }
 
     #[test]

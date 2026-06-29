@@ -1,5 +1,5 @@
 // AUTO-GENERATED from design map (.artifacts/redesign/i18n-catalog.json).
-// 525 user-facing strings, Simplified-Chinese (zh) + English (en).
+// 526 user-facing strings, Simplified-Chinese (zh) + English (en).
 // Default language is zh (matches the Cerul design mock). Edit via the generator,
 // not by hand, to keep zh/en in lockstep. Interpolation tokens look like {count}.
 
@@ -18,6 +18,7 @@ export const zh: Record<string, string> = {
   "dt.frames.legend.here": "跳转点",
   "dt.frames.hoverHint": "悬停某一帧查看说明 · 黄点 = 关键片段 · 虚线 = 章节边界",
   "dt.frames.hoverHint.noAnalysis": "悬停帧可跳到对应时间；暂无画面说明",
+  "dt.frames.visualPrefix": "画面 · {visual}",
   "dt.frames.notMarked": "（这一帧没有关键片段说明）",
   "dt.frames.plainFrame": "（普通帧）",
   "dt.split.transcript": "字幕 · 随播放同步",
@@ -1385,6 +1386,7 @@ export const en: Record<string, string> = {
   "dt.frames.legend.here": "jump-in point",
   "dt.frames.hoverHint": "Hover a frame to read its caption · yellow dot = key moment · dashed = chapter boundary",
   "dt.frames.hoverHint.noAnalysis": "Hover to jump to that time; no visual description yet",
+  "dt.frames.visualPrefix": "Visual · {visual}",
   "dt.frames.notMarked": "(this frame has no key-moment note)",
   "dt.frames.plainFrame": "(plain frame)",
   "dt.split.transcript": "Transcript · follows playhead",

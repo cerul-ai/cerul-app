@@ -858,18 +858,23 @@ fn parse_video_understanding_output(text: &str) -> anyhow::Result<Value> {
 }
 
 fn searchable_text_from_result(result: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(display_title) = display_title_from_result(result) {
+        push_search_part(&mut parts, display_title);
+    }
+
     let explicit = result
         .get("searchable_text")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(explicit) = explicit {
-        return Some(explicit.to_string());
+        push_search_part(&mut parts, explicit.to_string());
+        return Some(parts.join("\n"));
     }
 
-    let mut parts = Vec::new();
     if let Some(summary) = result.get("summary").and_then(Value::as_str) {
-        parts.push(summary.trim().to_string());
+        push_search_part(&mut parts, summary);
     }
     parts.extend(chapters_from_result(result).into_iter().map(|chapter| {
         format!("{} {}", chapter.title, chapter.summary)
@@ -893,6 +898,14 @@ fn searchable_text_from_result(result: &Value) -> Option<String> {
     } else {
         Some(combined)
     }
+}
+
+fn push_search_part(parts: &mut Vec<String>, part: impl Into<String>) {
+    let part = part.into().trim().to_string();
+    if part.is_empty() || parts.iter().any(|existing| existing == &part) {
+        return;
+    }
+    parts.push(part);
 }
 
 fn display_title_from_result(result: &Value) -> Option<String> {
@@ -1193,7 +1206,7 @@ mod tests {
         assert_eq!(events_from_result(&value)[0].actions, vec!["open settings"]);
         assert_eq!(
             searchable_text_from_result(&value).as_deref(),
-            Some("settings api key")
+            Some("Configuring an API key in settings\nsettings api key")
         );
     }
 
@@ -1281,6 +1294,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        assert!(retrieval_text.contains("Checkout flow with code XR-42"));
         assert!(retrieval_text.contains("XR-42"));
         let item_index_state: (String, i64, i64) = conn
             .query_row(

@@ -280,7 +280,9 @@ export function FrameStrip({
             <div className="strip-tip-text">
               <div className="strip-tip-caption">{hovered.caption}</div>
               {hovered.visual ? (
-                <div className="faint strip-tip-meta">画面 · {hovered.visual}</div>
+                <div className="faint strip-tip-meta">
+                  {t("dt.frames.visualPrefix", { visual: hovered.visual })}
+                </div>
               ) : null}
               <div className="faint mono strip-tip-meta">
                 {hovered.label}
