@@ -3828,10 +3828,14 @@ body.overlay-body {
 }
 .indexing-strip:hover { background: color-mix(in srgb, var(--warn-tint) 84%, var(--warn) 16%); }
 .indexing-strip:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+.indexing-strip__icon,
 .indexing-strip__spin {
   flex: none;
   color: var(--warn);
+}
+.indexing-strip__spin {
   animation: indexing-spin 1s linear infinite;
+  transform-origin: center;
 }
 @keyframes indexing-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {

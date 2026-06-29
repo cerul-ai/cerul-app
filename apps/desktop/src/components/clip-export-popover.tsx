@@ -275,7 +275,7 @@ function ClipTrimPanel({ target, onClose }: { target: ClipTarget; onClose: () =>
           disabled={status === "exporting"}
           onClick={() => void exportClip()}
         >
-          {status === "exporting" ? <Loader2 size={15} /> : null}
+          {status === "exporting" ? <Loader2 size={15} className="spin" /> : null}
           <span>
             {status === "exporting"
               ? t("detail.action.exportingClip")

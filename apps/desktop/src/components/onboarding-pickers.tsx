@@ -195,7 +195,7 @@ export function OnboardingYoutubePicker({
         onClick={() => void validateAndAddChannel()}
         disabled={!url.trim() || validation.status === "validating"}
       >
-        {validation.status === "validating" ? <Loader2 size={15} /> : <Check size={15} />}
+        {validation.status === "validating" ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
         <span>
           {validation.status === "validating"
             ? t("common.validating")
