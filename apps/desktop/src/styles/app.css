@@ -255,8 +255,17 @@
   margin-top: 16px;
   flex-wrap: wrap;
 }
-/* spinner utility (reuses the indexing-spin keyframe in extensions.css) */
-.spin { animation: indexing-spin 1s linear infinite; }
+@keyframes cerul-spin { to { transform: rotate(360deg); } }
+
+/* Shared spinner utility for circular loading icons across app surfaces. */
+.spin {
+  animation: cerul-spin 1s linear infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
 
 /* amber "indexing" chip for the home status line */
 .chip.indexing {

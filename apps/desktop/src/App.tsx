@@ -3397,7 +3397,7 @@ function MomentLineAction({
       aria-label={saved ? t("moments.unsave") : t("moments.save")}
       onClick={onToggle}
     >
-      {pending ? <Loader2 size={14} /> : <Star size={14} fill={saved ? "currentColor" : "none"} />}
+      {pending ? <Loader2 size={14} className="spin" /> : <Star size={14} fill={saved ? "currentColor" : "none"} />}
     </button>
   );
 }
@@ -3966,7 +3966,7 @@ function ResultDetail({
               <div className={`video-frame thumb ${item.color}`}>
                 <div className="stripes" aria-hidden="true" />
                 <div className="player-loading" role="status">
-                  <Loader2 size={24} />
+                  <Loader2 size={24} className="spin" />
                   <span>{t("detail.player.preparing")}</span>
                 </div>
               </div>
@@ -4354,7 +4354,7 @@ function VideoUnderstandingPanel({
         disabled={!canAnalyze}
         onClick={() => void analyze()}
       >
-        {isPending ? <Loader2 size={15} /> : <Sparkles size={15} />}
+        {isPending ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
         <span>
           {isPending
             ? t("understanding.status.analyzing")
@@ -4494,7 +4494,7 @@ function MomentsScreen({
       {message ? <InlineNotice tone={status === "error" ? "error" : "muted"} message={message} /> : null}
       {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
       {status === "loading" ? (
-        <div className="state"><Loader2 size={22} /><span>{t("common.loading")}</span></div>
+        <div className="state"><Loader2 size={22} className="spin" /><span>{t("common.loading")}</span></div>
       ) : null}
       {status !== "loading" && moments.length === 0 ? (
         <EmptyState
@@ -6026,7 +6026,7 @@ function SettingsScreen({
             </div>
           </div>
           <span className={saveChipClass} role="status" aria-live="polite">
-            {saveState.status === "saving" ? <Loader2 size={13} /> : <Check size={13} />}
+            {saveState.status === "saving" ? <Loader2 size={13} className="spin" /> : <Check size={13} />}
             {saveState.message}
           </span>
         </div>
@@ -8533,7 +8533,7 @@ function StorageSettings({
           disabled={busy}
           onClick={() => void runStorageAction("clear-cache")}
         >
-          {busy ? <Loader2 size={16} /> : <HardDrive size={16} />}
+          {busy ? <Loader2 size={16} className="spin" /> : <HardDrive size={16} />}
           <span>{t("settings.storage.clearCache")}</span>
         </button>
       </div>
@@ -8780,7 +8780,7 @@ function AdvancedSettings({
           disabled={logAction.status === "running"}
           onClick={() => void openLogsFolder()}
         >
-          {logAction.status === "running" ? <Loader2 size={16} /> : <Folder size={16} />}
+          {logAction.status === "running" ? <Loader2 size={16} className="spin" /> : <Folder size={16} />}
           <span>{t("settings.advanced.openLogs")}</span>
         </button>
         <button
@@ -8789,7 +8789,7 @@ function AdvancedSettings({
           disabled={diagnosticBundleAction.status === "running"}
           onClick={() => void copyDiagnosticBundle()}
         >
-          {diagnosticBundleAction.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+          {diagnosticBundleAction.status === "running" ? <Loader2 size={16} className="spin" /> : <Copy size={16} />}
           <span>{t("settings.advanced.copyDiagnostics")}</span>
         </button>
         <button
@@ -8838,7 +8838,7 @@ function AdvancedSettings({
             disabled={maintenanceBusy || !hasDesktopHost()}
             onClick={() => void resetAllLocalData()}
           >
-            {maintenanceBusy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+            {maintenanceBusy ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
             <span>{t("settings.storage.resetLocalData")}</span>
           </button>
         </div>
@@ -8856,7 +8856,7 @@ function AdvancedSettings({
             disabled={maintenanceBusy || !hasDesktopHost()}
             onClick={() => void factoryResetAllLocalData()}
           >
-            {maintenanceBusy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+            {maintenanceBusy ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
             <span>{t("settings.storage.factoryReset")}</span>
           </button>
         </div>
@@ -9184,7 +9184,7 @@ function AboutSettings() {
       aboutUpdaterState.phase === "preparing" ||
       aboutUpdaterState.phase === "installing"
     ) {
-      return <Loader2 size={16} />;
+      return <Loader2 size={16} className="spin" />;
     }
     if (aboutUpdaterState.phase === "downloaded") {
       return <RefreshCcw size={16} />;
@@ -9267,7 +9267,7 @@ function AboutSettings() {
             disabled={updateState.status === "running"}
             onClick={() => void checkForUpdates()}
           >
-            {updateState.status === "running" ? <Loader2 size={16} /> : <RefreshCcw size={16} />}
+            {updateState.status === "running" ? <Loader2 size={16} className="spin" /> : <RefreshCcw size={16} />}
             <span>{t("settings.about.checkUpdates")}</span>
           </button>
           <span className="about-update-fill" />
@@ -9342,7 +9342,7 @@ function AboutSettings() {
               disabled={diagnosticsState.status === "running"}
               onClick={() => void copyUpdateDiagnostics()}
             >
-              {diagnosticsState.status === "running" ? <Loader2 size={16} /> : <Copy size={16} />}
+              {diagnosticsState.status === "running" ? <Loader2 size={16} className="spin" /> : <Copy size={16} />}
               <span>{t("settings.about.update.copyDiagnostics")}</span>
             </button>
           ) : null}

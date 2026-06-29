@@ -125,7 +125,7 @@ export function IndexingStrip({
       aria-label={t("indexing.strip.openAria")}
     >
       {onlyPausedQueuedJobs ? (
-        <Pause size={16} className="indexing-strip__spin" aria-hidden="true" />
+        <Pause size={16} className="indexing-strip__icon" aria-hidden="true" />
       ) : (
         <Loader2 size={16} className="indexing-strip__spin" aria-hidden="true" />
       )}

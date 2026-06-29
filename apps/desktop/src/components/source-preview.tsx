@@ -37,7 +37,7 @@ export function SourcePreview({
   if (validation.status === "validating") {
     return (
       <div className="preview-row muted">
-        <Loader2 size={18} />
+        <Loader2 size={18} className="spin" />
         <span>{t("sourcePreview.checking")}</span>
       </div>
     );
