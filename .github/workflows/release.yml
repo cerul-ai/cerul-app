@@ -138,7 +138,7 @@ jobs:
 
       - name: Restore same-SHA macOS update prebuild
         id: prebuilt-update
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             target/electron/*.zip
@@ -198,7 +198,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Cache signed MLX runtime
         if: steps.prebuilt-update.outputs.cache-hit != 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: apps/electron-shell/mlx-runtime
           key: mlx-runtime-signed-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mlx-sidecar/runtime-lock.txt', 'scripts/build-mlx-runtime.sh', 'apps/electron-shell/scripts/sign-mlx-runtime.cjs', 'apps/electron-shell/entitlements/entitlements.mlx-runtime.plist') }}
