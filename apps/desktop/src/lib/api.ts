@@ -275,6 +275,10 @@ export type VideoUnderstandingRecord = {
   model_id: string | null;
   status: "not_started" | "running" | "completed" | "failed";
   summary: string | null;
+  // A short human-readable title produced by the video understanding pass. It
+  // is also written back to items.metadata.display_title by Cerul Core so
+  // library cards and detail pages can use it as the primary content title.
+  display_title?: string | null;
   chapters: VideoUnderstandingChapter[];
   events: VideoUnderstandingEvent[];
   topics: string[];

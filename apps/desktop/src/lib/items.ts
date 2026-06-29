@@ -167,7 +167,6 @@ const HUMAN_TITLE_METADATA_KEYS = [
   "webpage_title",
   "media_title",
   "original_title",
-  "display_title",
   "episode_title",
   "track",
   "title",
@@ -223,11 +222,15 @@ function generatedRemoteTitle(record: api.ItemRecord, t: TFunction): string | nu
 
 export function itemDisplayTitle(record: api.ItemRecord, t: TFunction) {
   const rawPath = record.raw_path ?? metadataString(record.metadata, "raw_path");
+  const displayTitle = cleanMediaTitle(metadataString(record.metadata, "display_title"));
   const primaryTitle = cleanMediaTitle(record.title ?? "");
   const metadataTitle = HUMAN_TITLE_METADATA_KEYS.map((key) =>
     cleanMediaTitle(metadataString(record.metadata, key)),
   ).find((title) => title && !looksLikeMachineTitle(title, record.external_id));
 
+  if (displayTitle && !looksLikeMachineTitle(displayTitle, record.external_id)) {
+    return displayTitle;
+  }
   if (
     primaryTitle &&
     !looksLikeMachineTitle(primaryTitle, record.external_id)

@@ -6,6 +6,25 @@
 export type Lang = "zh" | "en";
 
 export const zh: Record<string, string> = {
+  // Video detail redesign — naming + 视频摘要 + 关键帧胶片条 + 可拖 split.
+  "dt.source.file": "原始文件 / BV 号",
+  "dt.summary.title": "视频摘要",
+  "dt.summary.full": "完整摘要 ▾",
+  "dt.summary.fullCollapse": "收起 ▴",
+  "dt.frames.title": "关键帧 · 点击跳转",
+  "dt.frames.total": "共 {n} 帧已采样",
+  "dt.frames.legend.chapter": "章节",
+  "dt.frames.legend.hi": "关键片段",
+  "dt.frames.legend.here": "跳转点",
+  "dt.frames.hoverHint": "悬停某一帧查看说明 · 黄点 = 关键片段 · 虚线 = 章节边界",
+  "dt.frames.hoverHint.noAnalysis": "悬停帧可跳到对应时间；暂无画面说明",
+  "dt.frames.notMarked": "（这一帧没有关键片段说明）",
+  "dt.frames.plainFrame": "（普通帧）",
+  "dt.split.transcript": "字幕 · 随播放同步",
+  "dt.split.resize": "拖动调整左右比例",
+  "dt.chapters.direct": "章节 · 直达",
+  "dt.search.audioOnly": "仅语音可搜 · 字幕已索引",
+  "dt.search.audioVisual": "语音 + 画面可搜 · 已做视频理解",
   "results.eyebrow": "结果",
   "results.heading": "搜索",
   "results.backHome": "返回首页",
@@ -1313,6 +1332,25 @@ export const zh: Record<string, string> = {
 };
 
 export const en: Record<string, string> = {
+  // Video detail redesign — naming + summary + keyframe strip + resizable split.
+  "dt.source.file": "source file / BV id",
+  "dt.summary.title": "Summary",
+  "dt.summary.full": "Full summary ▾",
+  "dt.summary.fullCollapse": "Collapse ▴",
+  "dt.frames.title": "Keyframes · click to jump",
+  "dt.frames.total": "{n} frames sampled",
+  "dt.frames.legend.chapter": "chapter",
+  "dt.frames.legend.hi": "key moment",
+  "dt.frames.legend.here": "jump-in point",
+  "dt.frames.hoverHint": "Hover a frame to read its caption · yellow dot = key moment · dashed = chapter boundary",
+  "dt.frames.hoverHint.noAnalysis": "Hover to jump to that time; no visual description yet",
+  "dt.frames.notMarked": "(this frame has no key-moment note)",
+  "dt.frames.plainFrame": "(plain frame)",
+  "dt.split.transcript": "Transcript · follows playhead",
+  "dt.split.resize": "drag to resize the two panes",
+  "dt.chapters.direct": "Chapters · jump",
+  "dt.search.audioOnly": "audio-only · transcript indexed",
+  "dt.search.audioVisual": "audio + visual searchable · understanding complete",
   "results.eyebrow": "Results",
   "results.heading": "Search",
   "results.backHome": "Back to home",

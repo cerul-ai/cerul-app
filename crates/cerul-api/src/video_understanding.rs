@@ -36,6 +36,7 @@ pub struct VideoUnderstandingRecord {
     pub model_id: Option<String>,
     pub status: String,
     pub summary: Option<String>,
+    pub display_title: Option<String>,
     pub chapters: Vec<VideoUnderstandingChapter>,
     pub events: Vec<VideoUnderstandingEvent>,
     pub topics: Vec<String>,
@@ -534,6 +535,7 @@ fn write_completed_record(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
+    let display_title = display_title_from_result(&result);
     let searchable_text = searchable_text_from_result(&result);
     let conn = cerul_storage::sqlite::open(paths)?;
     conn.execute(
@@ -559,6 +561,14 @@ fn write_completed_record(
             result.to_string(),
         ),
     )?;
+    if let Some(display_title) = display_title.as_deref() {
+        cerul_storage::update_item_metadata(paths, item_id, |metadata| {
+            metadata.insert(
+                "display_title".to_string(),
+                Value::String(display_title.to_string()),
+            );
+        })?;
+    }
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
     crate::refresh_item_retrieval_units_after_understanding_update(
         paths, item_id, false, true, true,
@@ -717,6 +727,7 @@ pub(crate) fn read_understanding_record(
             model_id: None,
             status: STATUS_NOT_STARTED.to_string(),
             summary: None,
+            display_title: None,
             chapters: Vec::new(),
             events: Vec::new(),
             topics: Vec::new(),
@@ -734,6 +745,7 @@ pub(crate) fn read_understanding_record(
         model_id,
         status,
         summary,
+        display_title: display_title_from_result(&result),
         chapters: chapters_from_result(&result),
         events: events_from_result(&result),
         topics: string_array(result.get("topics")),
@@ -762,11 +774,12 @@ fn video_understanding_prompt() -> &'static str {
     "Analyze this video for a local media memory index. Return JSON only. Include what happens \
      visually and audibly. Use seconds for timestamps. Detect the video's primary spoken \
      language (or, if there is no speech, the dominant on-screen text language) and write every \
-     natural-language field — summary, chapter titles and summaries, event captions, visual and \
-     audio descriptions, topics, and searchable_text — in that same language. For example, if the \
-     speech is Chinese, respond in Chinese. Prefer concise, searchable language. If exact timing \
-     is uncertain, estimate a short range. Do not invent people, brands, or text that are not \
-     visible or audible."
+     natural-language field — display_title, summary, chapter titles and summaries, event captions, \
+     visual and audio descriptions, topics, and searchable_text — in that same language. For example, \
+     if the speech is Chinese, respond in Chinese. Prefer concise, searchable language. Make \
+     display_title a short content title, not a source filename, URL, platform ID, model name, or \
+     provider name. If exact timing is uncertain, estimate a short range. Do not invent people, \
+     brands, or text that are not visible or audible."
 }
 
 fn video_understanding_schema() -> Value {
@@ -779,6 +792,10 @@ fn video_understanding_schema() -> Value {
             "summary": {
                 "type": "STRING",
                 "description": "A concise full-video summary."
+            },
+            "display_title": {
+                "type": "STRING",
+                "description": "A concise human-readable title for this video, written in the video's primary language. Do not include source filenames, URLs, platform IDs, or model/provider names."
             },
             "chapters": {
                 "type": "ARRAY",
@@ -825,7 +842,7 @@ fn video_understanding_schema() -> Value {
                 "description": "Dense search text combining summary, topics, chapters, and key visual/audio events."
             }
         },
-        "required": ["summary", "chapters", "events", "topics", "searchable_text"]
+        "required": ["summary", "display_title", "chapters", "events", "topics", "searchable_text"]
     })
 }
 
@@ -876,6 +893,15 @@ fn searchable_text_from_result(result: &Value) -> Option<String> {
     } else {
         Some(combined)
     }
+}
+
+fn display_title_from_result(result: &Value) -> Option<String> {
+    result
+        .get("display_title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(120).collect::<String>())
 }
 
 fn chapters_from_result(result: &Value) -> Vec<VideoUnderstandingChapter> {
@@ -1145,6 +1171,7 @@ mod tests {
             r#"```json
             {
               "summary": "A screen recording shows an API key being configured.",
+              "display_title": "Configuring an API key in settings",
               "chapters": [{"start_sec":0,"end_sec":30,"title":"Setup","summary":"The user opens settings."}],
               "events": [{"start_sec":4,"end_sec":8,"caption":"The settings page is opened.","visual":"A settings panel appears.","audio":"","actions":["open settings"],"entities":["settings"],"confidence":0.8}],
               "topics": ["settings", "api"],
@@ -1159,6 +1186,10 @@ mod tests {
             "A screen recording shows an API key being configured."
         );
         assert_eq!(chapters_from_result(&value).len(), 1);
+        assert_eq!(
+            display_title_from_result(&value).as_deref(),
+            Some("Configuring an API key in settings")
+        );
         assert_eq!(events_from_result(&value)[0].actions, vec!["open settings"]);
         assert_eq!(
             searchable_text_from_result(&value).as_deref(),
@@ -1208,6 +1239,7 @@ mod tests {
             "model-1",
             json!({
                 "summary": "A checkout flow highlights code XR-42.",
+                "display_title": "Checkout flow with code XR-42",
                 "chapters": [],
                 "events": [{
                     "start_sec": 4.0,
@@ -1226,6 +1258,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(record.status, STATUS_COMPLETED);
+        assert_eq!(
+            record.display_title.as_deref(),
+            Some("Checkout flow with code XR-42")
+        );
+        let item_metadata: String = conn
+            .query_row(
+                "SELECT metadata FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let item_metadata: Value = serde_json::from_str(&item_metadata).unwrap();
+        assert_eq!(
+            item_metadata.get("display_title").and_then(Value::as_str),
+            Some("Checkout flow with code XR-42")
+        );
         let retrieval_text: String = conn
             .query_row(
                 "SELECT content_text FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",

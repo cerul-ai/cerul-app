@@ -111,6 +111,9 @@ import {
 } from "./components/transcript";
 import { DetailIssuePanel } from "./components/detail-issue-panel";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "./components/player";
+import { SummaryCard } from "./components/SummaryCard";
+import { FrameStrip } from "./components/FrameStrip";
+import { SplitStage } from "./components/SplitStage";
 import {
   ClipExportButton,
   resolveClipTarget as resolveClipTarget_,
@@ -3963,15 +3966,19 @@ function ResultDetail({
 function VideoUnderstandingPanel({
   item,
   enabled,
-  onSeek,
   requestConfirm,
   onChapters,
+  onUnderstanding,
 }: {
   item: Item;
   enabled: boolean;
   onSeek?: (timestamp: string) => void;
   requestConfirm: RequestConfirm;
   onChapters?: (chapters: api.VideoUnderstandingChapter[]) => void;
+  // Reports the full understanding record whenever it changes (loaded / cleared)
+  // so the parent (ItemDetail) can drive the summary, chapters, and frame strip
+  // without issuing a second GET /items/{id}/understanding.
+  onUnderstanding?: (record: api.VideoUnderstandingRecord | null) => void;
 }) {
   const t = useT();
   const [state, setState] = useState<{
@@ -4028,6 +4035,10 @@ function VideoUnderstandingPanel({
   useEffect(() => {
     onChapters?.(record?.chapters ?? []);
   }, [record, onChapters]);
+
+  useEffect(() => {
+    onUnderstanding?.(record ?? null);
+  }, [record, onUnderstanding]);
 
   useEffect(() => {
     if (state.status !== "analyzing") {
@@ -4100,12 +4111,20 @@ function VideoUnderstandingPanel({
         : state.status === "analyzing" || state.status === "loading"
           ? "chip accent"
           : "chip neutral";
-  const summary = record?.summary?.trim() ?? "";
-  const chapters = record?.chapters ?? [];
-  const events = record?.events ?? [];
-  const topics = record?.topics ?? [];
+  const hasUnderstandingContent =
+    analysisStatus === "completed" &&
+    Boolean(
+      record?.summary?.trim() ||
+        record?.chapters?.length ||
+        record?.events?.length ||
+        record?.topics?.length,
+    );
   const canAnalyze = enabled && !isPending;
   const privacyNote = t("understanding.privacyNote");
+
+  if (hasUnderstandingContent && state.status !== "analyzing" && !state.message && !record?.error) {
+    return null;
+  }
 
   return (
     <section className={`understanding-panel ${analysisStatus}`}>
@@ -4138,9 +4157,7 @@ function VideoUnderstandingPanel({
         </div>
       ) : null}
 
-      {summary ? (
-        <p className="understanding-summary">{summary}</p>
-      ) : state.status === "loading" ? (
+      {state.status === "loading" ? (
         <div className="understanding-skeleton" aria-hidden="true">
           <span className="sk" />
           <span className="sk" />
@@ -4149,59 +4166,7 @@ function VideoUnderstandingPanel({
         <p className="field-hint">{t("understanding.empty")}</p>
       )}
 
-      {topics.length > 0 ? (
-        <div className="understanding-topics" aria-label={t("understanding.topics.aria")}>
-          {topics.slice(0, 8).map((topic) => (
-            <span key={topic} className="chip neutral">{topic}</span>
-          ))}
-        </div>
-      ) : null}
-
       <p className="field-hint">{privacyNote}</p>
-
-      {chapters.length > 0 ? (
-        <div className="understanding-list">
-          <strong>{t("understanding.chapters")}</strong>
-          {chapters.slice(0, 4).map((chapter, index) => (
-            <button
-              className="understanding-row"
-              key={`${chapter.title}-${index}`}
-              type="button"
-              disabled={!onSeek}
-              onClick={() => onSeek?.(formatTimestamp(chapter.start_sec))}
-            >
-              <span className="kbd">{formatTimestamp(chapter.start_sec)}</span>
-              <p>
-                <b>{chapter.title}</b>
-                {chapter.summary ? ` ${chapter.summary}` : ""}
-              </p>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {events.length > 0 ? (
-        <div className="understanding-list">
-          <strong>{t("understanding.keyMoments")}</strong>
-          {events.slice(0, 5).map((event, index) => (
-            <button
-              className="understanding-row"
-              key={`${event.caption}-${index}`}
-              type="button"
-              disabled={!onSeek}
-              onClick={() => onSeek?.(formatTimestamp(event.start_sec))}
-            >
-              <span className="kbd">{formatTimestamp(event.start_sec)}</span>
-              <p>
-                {event.caption}
-                {typeof event.confidence === "number"
-                  ? ` · ${Math.round(event.confidence * 100)}%`
-                  : ""}
-              </p>
-            </button>
-          ))}
-        </div>
-      ) : null}
 
       <button
         type="button"
@@ -5063,6 +5028,25 @@ function ItemDetail({
         .map((chapter) => ({ seconds: chapter.start_sec as number, title: chapter.title })),
     );
   }, []);
+  // The full understanding record, reported back from VideoUnderstandingPanel
+  // via onUnderstanding. Drives the summary, chapters, and frame strip without
+  // issuing a duplicate GET /items/{id}/understanding.
+  const [understandingRecord, setUnderstandingRecord] =
+    useState<api.VideoUnderstandingRecord | null>(null);
+  const handleUnderstanding = useCallback(
+    (record: api.VideoUnderstandingRecord | null) => {
+      setUnderstandingRecord(record);
+    },
+    [],
+  );
+  const understood =
+    understandingRecord?.status === "completed" &&
+    Boolean(
+      understandingRecord.summary?.trim() ||
+        understandingRecord.chapters.length ||
+        understandingRecord.events.length ||
+        understandingRecord.topics.length,
+    );
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
@@ -5369,9 +5353,8 @@ function ItemDetail({
 
 
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
-  // full source video with Range support, so the loaded src is the whole file —
-  // we just move currentTime. Drives the transcript rows and the Gemini chapters
-  // / key moments.
+  // full source video with Range support, so the loaded src is the whole file.
+  // This drives the transcript rows, chapters, and key moments.
   function seekTo(timestamp: string) {
     const targetSeconds = parseTimestampSeconds(timestamp);
     if (!Number.isFinite(targetSeconds)) {
@@ -5408,12 +5391,22 @@ function ItemDetail({
           style={{ alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginTop: 12 }}
         >
           <div style={{ minWidth: 0 }}>
-            <h1 className="page-h1">{item.title}</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h1 className="page-h1">{item.title}</h1>
+              {/* Source file / BV id — quiet mono chip so the original mapping is
+                  never lost, never the lead. */}
+              {item.rawPath ? (
+                <span className="chip neutral" title={t("dt.source.file")}>
+                  <span className="mono">{item.rawPath.split("/").pop() ?? item.rawPath}</span>
+                </span>
+              ) : null}
+            </div>
             {/* One inline subtitle (source · duration · searchable · indexed),
                 replacing the old 6-row table that exposed chunk count / model
                 / per-item $. */}
             <p className="page-sub">
-              {item.source} · <span className="mono">{item.duration}</span> · {itemModalityLabel(item, t)} ·{" "}
+              {item.source} · <span className="mono">{item.duration}</span> ·{" "}
+              {understood ? t("dt.search.audioVisual") : t("dt.search.audioOnly")} ·{" "}
               {item.indexedAtEpoch === null
                 ? t("detail.notIndexed")
                 : t("detail.indexedAt", { when: item.indexedAt })}
@@ -5469,9 +5462,25 @@ function ItemDetail({
         </div>
       </div>
 
-      <div className="detail-split">
-        <div className="detail-media">
-          {detailIssue ? (
+      {/* ===== Scheme B: summary above, player+chapters next to transcript,
+          keyframes below the main viewing stage. Empty data does not render
+          placeholder chrome. */}
+      {understood ? (
+        <SummaryCard
+          summary={understandingRecord?.summary ?? null}
+          topics={understandingRecord?.topics ?? []}
+        />
+      ) : null}
+
+      <SplitStage
+        currentSec={parseTimestampSeconds(currentTimestamp)}
+        chapters={understandingRecord?.chapters ?? []}
+        onSeek={seekTo}
+        understood={understood}
+        left={
+          /* The exact chrome that used to live in `.detail-media`: issue panel,
+             or the live CerulPlayer, or the placeholder big play-button. */
+          detailIssue ? (
             <div className="detail-media-issue">
               <DetailIssuePanel
                 issue={detailIssue}
@@ -5510,67 +5519,76 @@ function ItemDetail({
                 <Play size={24} fill="currentColor" />
               </button>
             </div>
-          )}
-          {/* The 6-row metadata table (source / ingested / duration / chunks /
-              usage / model) was removed: source·duration·searchable·indexed now
-              live in the header subtitle, and chunk count / per-item $ / model
-              were internal/diagnostic noise. Per-item spend lives in
-              Settings → Account & Usage. */}
-        </div>
-        <div className="detail-transcript">
-          <VideoUnderstandingPanel
-            item={item}
-            enabled={actionsEnabled}
-            onSeek={seekTo}
-            requestConfirm={requestConfirm}
-            onChapters={handleUnderstandingChapters}
-          />
-          {itemAction.message ? (
-            <p
-              className={itemAction.status === "error" ? "field-error" : "field-hint"}
-              role="status"
-            >
-              {itemAction.message}
-            </p>
-          ) : null}
-          {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
-          {chunkState.status === "loading" ? <TranscriptSkeleton /> : null}
-          {chunkState.status === "error" && chunkState.message ? (
-            <InlineNotice tone="error" message={chunkState.message} />
-          ) : null}
-          {chunkState.status === "loaded" &&
-          transcriptLines.length === 0 &&
-          item.status === "indexing" ? (
-            <InlineNotice tone="muted" message={t("detail.stillProcessing")} />
-          ) : null}
-          {item.visualIndexMessage ? (
-            <InlineNotice tone="muted" message={item.visualIndexMessage} />
-          ) : null}
-          {item.embeddingIndexMessage ? (
-            <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
-          ) : null}
-          {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
-            <TranscriptList
-              lines={transcriptLines}
-              videoRef={videoRef}
-              videoReady={Boolean(itemPlaybackUrl)}
-              activeTime={currentTimestamp}
+          )
+        }
+        right={
+          /* The exact right rail that used to live in `.detail-transcript`:
+             understanding panel + notices + transcript. */
+          <>
+            <VideoUnderstandingPanel
+              item={item}
+              enabled={actionsEnabled}
               onSeek={seekTo}
-              renderAction={(line) => {
-                const saved = Boolean(momentActions.momentForLine(line));
-                return (
-                  <MomentLineAction
-                    saved={saved}
-                    pending={momentActions.pendingLineId === line.id}
-                    disabled={!actionsEnabled}
-                    onToggle={() => void momentActions.toggle(line)}
-                  />
-                );
-              }}
+              requestConfirm={requestConfirm}
+              onChapters={handleUnderstandingChapters}
+              onUnderstanding={handleUnderstanding}
             />
-          ) : null}
-        </div>
-      </div>
+            {itemAction.message ? (
+              <p
+                className={itemAction.status === "error" ? "field-error" : "field-hint"}
+                role="status"
+              >
+                {itemAction.message}
+              </p>
+            ) : null}
+            {momentActions.message ? <InlineNotice tone="error" message={momentActions.message} /> : null}
+            {chunkState.status === "loading" ? <TranscriptSkeleton /> : null}
+            {chunkState.status === "error" && chunkState.message ? (
+              <InlineNotice tone="error" message={chunkState.message} />
+            ) : null}
+            {chunkState.status === "loaded" &&
+            transcriptLines.length === 0 &&
+            item.status === "indexing" ? (
+              <InlineNotice tone="muted" message={t("detail.stillProcessing")} />
+            ) : null}
+            {item.visualIndexMessage ? (
+              <InlineNotice tone="muted" message={item.visualIndexMessage} />
+            ) : null}
+            {item.embeddingIndexMessage ? (
+              <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
+            ) : null}
+            {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
+              <TranscriptList
+                lines={transcriptLines}
+                videoRef={videoRef}
+                videoReady={Boolean(itemPlaybackUrl)}
+                activeTime={currentTimestamp}
+                onSeek={seekTo}
+                renderAction={(line) => {
+                  const saved = Boolean(momentActions.momentForLine(line));
+                  return (
+                    <MomentLineAction
+                      saved={saved}
+                      pending={momentActions.pendingLineId === line.id}
+                      disabled={!actionsEnabled}
+                      onToggle={() => void momentActions.toggle(line)}
+                    />
+                  );
+                }}
+              />
+            ) : null}
+          </>
+        }
+      />
+      <FrameStrip
+        events={understandingRecord?.events ?? []}
+        chapters={understandingRecord?.chapters ?? []}
+        chunks={chunkState.records}
+        durationSec={item.durationSec}
+        currentTime={parseTimestampSeconds(currentTimestamp)}
+        understood={understood}
+        onSeek={seekTo}
+      />
     </div>
   );
 }
@@ -6292,7 +6310,7 @@ type CapabilityRowModel = {
   locked: boolean;
   // Whether the model is user-selectable here (combobox) vs a fixed display.
   // Embedding is locked; on-device ASR is the one bundled model; video lets you
-  // pick a local VLM or a remote model.
+  // pick a local or remote video understanding model.
   modelEditable: boolean;
   localLabel: string;
   modelValue: string;
