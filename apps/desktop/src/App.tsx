@@ -126,7 +126,7 @@ import {
   ResultModalityIcon,
   itemModalityLabel,
 } from "./components/cards";
-import { CoreStatusToast, useCoreStatus } from "./components/core-banner";
+import { CoreStatusToast, useCoreStatus, type CoreLevel } from "./components/core-banner";
 import { SourceRow } from "./components/source-row";
 import { SourcePreview } from "./components/source-preview";
 import {
@@ -652,16 +652,16 @@ function searchIndexIsSettling(data: AppData) {
 const transcript: TranscriptLine[] = [];
 
 const settingsSections = [
-  "Models",
-  "Usage",
   "General",
   "Shortcuts",
-  "Indexing",
-  "Storage",
+  "Models",
+  "Library",
+  "Usage",
   "Advanced",
   "About",
 ] as const;
 type SettingsSection = (typeof settingsSections)[number];
+const settingsDefaultSection: SettingsSection = "General";
 
 type ShortcutCommandDefinition = {
   id: string;
@@ -674,13 +674,28 @@ type ShortcutCommandDefinition = {
 };
 
 function normalizeSettingsSection(section?: string | null): SettingsSection {
-  if (section === "Cerul Cloud") {
+  if (!section) {
+    return settingsDefaultSection;
+  }
+  if (section === "Cerul Cloud" || section === "Processing" || section === "Smart processing") {
     return "Models";
+  }
+  if (section === "Indexing" || section === "Storage" || section === "Library & Storage") {
+    return "Library";
+  }
+  if (section === "Account" || section === "Account & Usage") {
+    return "Usage";
+  }
+  if (section === "Settings" || section === "Preferences") {
+    return settingsDefaultSection;
+  }
+  if (section === "Search" || section === "Summon search" || section === "唤起搜索") {
+    return "Shortcuts";
   }
   if (settingsSections.includes(section as SettingsSection)) {
     return section as SettingsSection;
   }
-  return "Models";
+  return settingsDefaultSection;
 }
 
 function hashQueryParam(name: string): string | null {
@@ -694,6 +709,114 @@ function hashQueryParam(name: string): string | null {
 // CoreBanner keeps its own prominent starting→unresponsive escalation.
 function coreStatusText(status: ApiStatus, t: TFunction): string {
   return status === "connecting" ? t("shell.coreConnecting") : t("shell.coreOffline");
+}
+
+function coreLevelDataLevel(level: CoreLevel): Exclude<CoreLevel, "grace"> {
+  return level === "grace" ? "ok" : level;
+}
+
+function shortSettingsCoreStatus(level: CoreLevel, t: TFunction) {
+  if (level === "ok" || level === "grace") {
+    return {
+      state: t("settings.coreStatus.ready"),
+      label: t("settings.coreStatus.readyLabel"),
+    };
+  }
+  if (level === "starting") {
+    return {
+      state: t("settings.coreStatus.starting"),
+      label: t("settings.coreStatus.startingLabel"),
+    };
+  }
+  return {
+    state: t("settings.coreStatus.offline"),
+    label: t("settings.coreStatus.offlineLabel"),
+  };
+}
+
+function isCoreUnavailableError(message: string) {
+  const normalized = message.toLocaleLowerCase();
+  return (
+    message.includes("Cerul Core 暂时无法连接") ||
+    message.includes("Cerul Core 无法连接") ||
+    normalized.includes("cerul core is not reachable") ||
+    normalized.includes("cerul core is not ready") ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("networkerror")
+  );
+}
+
+function isDesktopCommandUnavailableError(message: string) {
+  return message.includes("desktop command is unavailable outside the desktop shell");
+}
+
+function storageUnavailableCopy(message: string, t: TFunction) {
+  if (isDesktopCommandUnavailableError(message)) {
+    return {
+      title: t("settings.storage.unavailable.desktopTitle"),
+      body: t("settings.storage.unavailable.desktopBody"),
+    };
+  }
+  if (isCoreUnavailableError(message)) {
+    return {
+      title: t("settings.storage.unavailable.coreTitle"),
+      body: t("settings.storage.unavailable.coreBody"),
+    };
+  }
+  return {
+    title: t("settings.storage.unavailable.genericTitle"),
+    body: t("settings.storage.unavailable.genericBody"),
+  };
+}
+
+function SettingsQuietNotice({
+  title,
+  body,
+  detail,
+  action,
+}: {
+  title: string;
+  body?: string;
+  detail?: string | null;
+  action?: { label: string; onClick: () => void };
+}) {
+  const t = useT();
+  const [showDetail, setShowDetail] = useState(false);
+  const hasDetail = Boolean(detail && detail !== title && detail !== body);
+
+  return (
+    <div className="settings-quiet-notice" role="status">
+      <span className="settings-quiet-notice-dot" aria-hidden="true" />
+      <div className="settings-quiet-notice-body">
+        <strong>{title}</strong>
+        {body ? <span>{body}</span> : null}
+        {hasDetail && showDetail ? <pre>{detail}</pre> : null}
+      </div>
+      {hasDetail ? (
+        <div className="settings-quiet-notice-actions">
+          <button
+            type="button"
+            className="settings-quiet-notice-link"
+            aria-expanded={showDetail}
+            onClick={() => setShowDetail((open) => !open)}
+          >
+            {t("common.details")}
+          </button>
+          {action ? (
+            <button type="button" className="settings-quiet-notice-action" onClick={action.onClick}>
+              {action.label}
+            </button>
+          ) : null}
+        </div>
+      ) : action ? (
+        <div className="settings-quiet-notice-actions">
+          <button type="button" className="settings-quiet-notice-action" onClick={action.onClick}>
+            {action.label}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 // Tracks, per running job, the wall-clock second its current coarse step began.
@@ -1335,10 +1458,7 @@ function AppWorkspace() {
       nextView === "settings"
         ? {
             ...params,
-            settingsSection:
-              params.settingsSection === undefined
-                ? params.settingsSection
-                : normalizeSettingsSection(params.settingsSection),
+            settingsSection: normalizeSettingsSection(params.settingsSection),
           }
         : params;
     if (nextView === "settings" && routeParams.settingsSection) {
@@ -2021,6 +2141,7 @@ function AppWorkspace() {
             section={settingsSection}
             setSection={setSettingsSection}
             apiStatus={apiStatus}
+            coreLevel={coreLevel}
             settings={data.settings}
             daemonStatus={data.daemonStatus}
             onSettingsChange={async (settings) => {
@@ -2053,7 +2174,7 @@ function AppWorkspace() {
       </nav>
 
       <CoreStatusToast
-        show={coreLevel === "unresponsive"}
+        show={view !== "settings" && coreLevel === "unresponsive"}
         error={apiError}
         onAction={restartCoreConnection}
       />
@@ -2273,11 +2394,7 @@ function FirstRunIndexing({ statusLabel, globalHotkey }: { statusLabel: string; 
           <span className="onb-file onb-file-r"><span className="onb-play" /></span>
           <span className="onb-file onb-file-c"><span className="onb-play" /></span>
           <span className="onb-folder">
-            <svg viewBox="0 0 508 508" width={26} height={26} aria-hidden="true">
-              <rect width="211" height="508" />
-              <rect x="297" y="91" width="211" height="112" />
-              <rect x="297" y="301" width="211" height="207" />
-            </svg>
+            <BrandMark className="onb-folder-mark" />
           </span>
         </div>
         <p className="fr-eyebrow"><span className="dot" />{t("firstRun.indexing.eyebrow")}</p>
@@ -5597,6 +5714,7 @@ function SettingsScreen({
   section,
   setSection,
   apiStatus,
+  coreLevel,
   settings,
   daemonStatus,
   onSettingsChange,
@@ -5606,6 +5724,7 @@ function SettingsScreen({
   section: string;
   setSection: (section: string) => void;
   apiStatus: ApiStatus;
+  coreLevel: CoreLevel;
   settings: api.SettingsMap;
   daemonStatus: DaemonStatus | null;
   onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
@@ -5631,8 +5750,7 @@ function SettingsScreen({
     Shortcuts: Command,
     Models: Cpu,
     Usage: Wallet,
-    Indexing: ListChecks,
-    Storage: HardDrive,
+    Library,
     Advanced: Wrench,
     About: Info,
   };
@@ -5640,24 +5758,24 @@ function SettingsScreen({
     General: t("settings.section.general"),
     Shortcuts: t("settings.section.shortcuts"),
     Models: t("settings.section.models"),
+    Library: t("settings.section.library"),
     Usage: t("settings.section.usage"),
-    Indexing: t("settings.section.indexing"),
-    Storage: t("settings.section.storage"),
     Advanced: t("settings.section.advanced"),
     About: t("settings.section.about"),
   };
   const sectionEyebrows: Record<string, string> = {
     General: t("settings.section.general.eyebrow"),
     Shortcuts: t("settings.section.shortcuts.eyebrow"),
-    Indexing: t("settings.section.indexing.eyebrow"),
     Models: t("settings.section.models.eyebrow"),
+    Library: t("settings.section.library.eyebrow"),
     Usage: t("settings.section.usage.eyebrow"),
-    Storage: t("settings.section.storage.eyebrow"),
     Advanced: t("settings.section.advanced.eyebrow"),
     About: t("settings.section.about.eyebrow"),
   };
   const controlsDisabled = apiStatus !== "online";
   const activeSection = normalizeSettingsSection(section);
+  const settingsCoreLevel = coreLevelDataLevel(coreLevel);
+  const settingsCoreStatus = shortSettingsCoreStatus(coreLevel, t);
   const [saveState, setSaveState] = useState<{
     status: SaveStatus;
     message: string;
@@ -5770,6 +5888,12 @@ function SettingsScreen({
           <ArrowLeft size={16} />
           <span>{t("settings.back")}</span>
         </button>
+        <div className="settings-shell-brand settings-shell-brand-minimal" aria-label={t("settings.shell.title")}>
+          <BrandMark className="settings-shell-brand-mark" />
+          <div>
+            <strong>{t("settings.shell.title")}</strong>
+          </div>
+        </div>
         <nav className="settings-nav" aria-label={t("settings.nav.aria")}>
           {settingsSections.map((item) => {
             const Icon = sectionIcons[item];
@@ -5786,6 +5910,18 @@ function SettingsScreen({
             );
           })}
         </nav>
+        <div
+          className="settings-core-status"
+          data-level={settingsCoreLevel}
+          role="status"
+          aria-live="polite"
+          aria-label={settingsCoreStatus.label}
+          title={settingsCoreStatus.label}
+        >
+          <span className="settings-core-status-dot" aria-hidden="true" />
+          <span className="settings-core-status-name">{t("settings.coreStatus.name")}</span>
+          <span className="settings-core-status-state">{settingsCoreStatus.state}</span>
+        </div>
       </aside>
       <section className="settings-shell-main" aria-labelledby="settings-shell-title">
         <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
@@ -5807,9 +5943,6 @@ function SettingsScreen({
         </div>
         <div className="settings-shell-scroll">
         <div className={activeSection === "Shortcuts" ? "settings-panel settings-panel-wide" : "settings-panel"}>
-          {apiStatus !== "online" ? (
-            <InlineNotice tone="error" message={t("settings.offlineNotice")} />
-          ) : null}
           {activeSection === "General" ? (
             <GeneralSettings
               settings={settings}
@@ -5826,8 +5959,8 @@ function SettingsScreen({
               onShortcutChange={saveShortcut}
             />
           ) : null}
-          {activeSection === "Indexing" ? (
-            <IndexingSettings
+          {activeSection === "Library" ? (
+            <LibrarySettings
               settings={settings}
               disabled={controlsDisabled}
               onSettingsChange={saveSettings}
@@ -5842,18 +5975,12 @@ function SettingsScreen({
             />
           ) : null}
           {activeSection === "Usage" ? <UsageSettings /> : null}
-          {activeSection === "Storage" ? (
-            <StorageSettings
-              settings={settings}
-              onSettingsChange={saveSettings}
-              requestConfirm={requestConfirm}
-            />
-          ) : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
               settings={settings}
               disabled={controlsDisabled}
               onSettingsChange={saveSettings}
+              requestConfirm={requestConfirm}
             />
           ) : null}
           {activeSection === "About" ? <AboutSettings /> : null}
@@ -6101,6 +6228,23 @@ function ShortcutsSettings({
         </button>
       </div>
     </div>
+  );
+}
+
+function LibrarySettings({
+  settings,
+  disabled,
+  onSettingsChange,
+}: {
+  settings: api.SettingsMap;
+  disabled: boolean;
+  onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
+}) {
+  return (
+    <>
+      <IndexingSettings settings={settings} disabled={disabled} onSettingsChange={onSettingsChange} />
+      <StorageSettings settings={settings} onSettingsChange={onSettingsChange} />
+    </>
   );
 }
 
@@ -7581,12 +7725,30 @@ function ProviderConnections({
   }
 
   const activeType = providerTypeOptions.find((item) => item.value === form.type);
+  const discoverErrorIsCoreUnavailable = discoverError ? isCoreUnavailableError(discoverError) : false;
 
   return (
     <section className="cap-list-shell">
-      {error ? <InlineNotice tone="error" message={error} /> : null}
+      {error ? (
+        <SettingsQuietNotice
+          title={t("settings.models.providers.unavailable.title")}
+          body={t("settings.models.providers.unavailable.body")}
+          detail={error}
+          action={{ label: t("common.retry"), onClick: () => void onRefresh() }}
+        />
+      ) : null}
       {flash ? <InlineNotice tone={flash.tone} message={flash.message} /> : null}
-      {discoverError ? <InlineNotice tone="error" message={discoverError} /> : null}
+      {discoverError ? (
+        discoverErrorIsCoreUnavailable ? (
+          <SettingsQuietNotice
+            title={t("settings.models.providers.discoverUnavailable.title")}
+            body={t("settings.models.providers.discoverUnavailable.body")}
+            detail={discoverError}
+          />
+        ) : (
+          <InlineNotice tone="error" message={discoverError} />
+        )
+      ) : null}
 
       <LocalDownloadStatus
         localPrep={localPrep}
@@ -8031,13 +8193,11 @@ function storageCategoryLabel(key: string, fallback: string, t: TFunction) {
 function StorageSettings({
   settings,
   onSettingsChange,
-  requestConfirm,
 }: {
   settings: api.SettingsMap;
   // Resolves true only when the patch was actually persisted, so the download
   // dir actions don't report success after a swallowed save failure.
   onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
-  requestConfirm: RequestConfirm;
 }) {
   const t = useT();
   const [locations, setLocations] = useState<StorageLocations | null>(null);
@@ -8056,6 +8216,7 @@ function StorageSettings({
   const configuredDownloadDir =
     typeof settings.media_dir === "string" ? settings.media_dir.trim() : "";
   const effectiveDownloadDir = configuredDownloadDir || locations?.cache_dir || "";
+  const loadUnavailable = loadError ? storageUnavailableCopy(loadError, t) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -8158,52 +8319,8 @@ function StorageSettings({
     }
   }
 
-  async function resetAllLocalData() {
-    const confirmed = await requestConfirm({
-      title: t("settings.storage.reset.confirm.title"),
-      body: t("settings.storage.reset.confirm.body"),
-      confirmLabel: t("settings.storage.reset.confirm.label"),
-    });
-    if (!confirmed) {
-      return;
-    }
-    setAction({ status: "running", message: t("settings.storage.message.resetStarting") });
-    try {
-      await resetLocalDataAndRestart();
-    } catch (error) {
-      setAction({ status: "error", message: errorMessage(error) });
-    }
-  }
-
-  async function factoryResetAllLocalData() {
-    const confirmed = await requestConfirm({
-      title: t("settings.storage.factoryReset.confirm.title"),
-      body: t("settings.storage.factoryReset.confirm.body"),
-      confirmLabel: t("settings.storage.factoryReset.confirm.label"),
-    });
-    if (!confirmed) {
-      return;
-    }
-    setAction({ status: "running", message: t("settings.storage.message.resetStarting") });
-    try {
-      await factoryResetLocalDataAndRestart();
-    } catch (error) {
-      setAction({ status: "error", message: errorMessage(error) });
-    }
-  }
-
   return (
     <>
-      {loadError ? (
-        <InlineNotice
-          tone="error"
-          message={loadError}
-          action={{
-            label: t("common.retry"),
-            onClick: () => setLoadAttempt((attempt) => attempt + 1),
-          }}
-        />
-      ) : null}
       <SettingsGroup title={t("settings.storage.location.title")}>
         <div className="setting-row">
           <div className="setting-row-label">
@@ -8265,6 +8382,17 @@ function StorageSettings({
         </div>
       </SettingsGroup>
       <p className="field-hint" style={{ marginTop: -8 }}>{t("settings.storage.downloadDir.desc")}</p>
+      {loadUnavailable ? (
+        <SettingsQuietNotice
+          title={loadUnavailable.title}
+          body={loadUnavailable.body}
+          detail={loadError}
+          action={{
+            label: t("common.retry"),
+            onClick: () => setLoadAttempt((attempt) => attempt + 1),
+          }}
+        />
+      ) : null}
       <SettingsGroup title={t("settings.storage.usage.title")}>
         <div className="storage-usage">
           <div className="storage-usage-head">
@@ -8320,45 +8448,6 @@ function StorageSettings({
           <span>{t("settings.storage.clearCache")}</span>
         </button>
       </div>
-      <section className="settings-group settings-danger-group">
-        <p className="settings-group-title settings-danger-title">{t("settings.storage.dangerZone")}</p>
-        <div className="settings-danger-card settings-danger-card--standard">
-          <span className="settings-danger-ic" aria-hidden="true">
-            <AlertTriangle size={18} />
-          </span>
-          <div className="settings-danger-main">
-            <strong>{t("settings.storage.resetLocalData")}</strong>
-            <p>{t("settings.storage.resetLocalData.desc")}</p>
-          </div>
-          <button
-            className="btn btn-danger sm"
-            type="button"
-            disabled={busy || !hasDesktopHost()}
-            onClick={() => void resetAllLocalData()}
-          >
-            {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
-            <span>{t("settings.storage.resetLocalData")}</span>
-          </button>
-        </div>
-        <div className="settings-danger-card settings-danger-card--critical">
-          <span className="settings-danger-ic" aria-hidden="true">
-            <AlertTriangle size={18} />
-          </span>
-          <div className="settings-danger-main">
-            <strong>{t("settings.storage.factoryReset")}</strong>
-            <p>{t("settings.storage.factoryReset.desc")}</p>
-          </div>
-          <button
-            className="btn btn-danger sm"
-            type="button"
-            disabled={busy || !hasDesktopHost()}
-            onClick={() => void factoryResetAllLocalData()}
-          >
-            {busy ? <Loader2 size={16} /> : <Trash2 size={16} />}
-            <span>{t("settings.storage.factoryReset")}</span>
-          </button>
-        </div>
-      </section>
       {action.message ? (
         <InlineNotice tone={action.status === "error" ? "error" : "muted"} message={action.message} />
       ) : null}
@@ -8370,10 +8459,12 @@ function AdvancedSettings({
   settings,
   disabled,
   onSettingsChange,
+  requestConfirm,
 }: {
   settings: api.SettingsMap;
   disabled: boolean;
   onSettingsChange: (settings: api.SettingsMap) => Promise<boolean>;
+  requestConfirm: RequestConfirm;
 }) {
   const t = useT();
   const binding = settingString(settings, "api_binding", "127");
@@ -8392,7 +8483,12 @@ function AdvancedSettings({
     status: SettingsActionStatus;
     message: string | null;
   }>({ status: "idle", message: null });
+  const [maintenanceAction, setMaintenanceAction] = useState<{
+    status: SettingsActionStatus;
+    message: string | null;
+  }>({ status: "idle", message: null });
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
+  const maintenanceBusy = maintenanceAction.status === "running";
 
   useEffect(() => {
     setApiPortDraft(String(apiPort));
@@ -8419,6 +8515,40 @@ function AdvancedSettings({
       });
     } catch (error) {
       setDiagnosticBundleAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function resetAllLocalData() {
+    const confirmed = await requestConfirm({
+      title: t("settings.storage.reset.confirm.title"),
+      body: t("settings.storage.reset.confirm.body"),
+      confirmLabel: t("settings.storage.reset.confirm.label"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    setMaintenanceAction({ status: "running", message: t("settings.storage.message.resetStarting") });
+    try {
+      await resetLocalDataAndRestart();
+    } catch (error) {
+      setMaintenanceAction({ status: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function factoryResetAllLocalData() {
+    const confirmed = await requestConfirm({
+      title: t("settings.storage.factoryReset.confirm.title"),
+      body: t("settings.storage.factoryReset.confirm.body"),
+      confirmLabel: t("settings.storage.factoryReset.confirm.label"),
+    });
+    if (!confirmed) {
+      return;
+    }
+    setMaintenanceAction({ status: "running", message: t("settings.storage.message.resetStarting") });
+    try {
+      await factoryResetLocalDataAndRestart();
+    } catch (error) {
+      setMaintenanceAction({ status: "error", message: errorMessage(error) });
     }
   }
 
@@ -8603,6 +8733,51 @@ function AdvancedSettings({
           message={diagnosticBundleAction.message}
         />
       ) : null}
+      <section className="settings-group settings-danger-group">
+        <p className="settings-group-title">{t("settings.advanced.maintenance.title")}</p>
+        <div className="settings-danger-card settings-danger-card--standard">
+          <span className="settings-danger-ic" aria-hidden="true">
+            <AlertTriangle size={18} />
+          </span>
+          <div className="settings-danger-main">
+            <strong>{t("settings.storage.resetLocalData")}</strong>
+            <p>{t("settings.storage.resetLocalData.desc")}</p>
+          </div>
+          <button
+            className="btn btn-danger sm"
+            type="button"
+            disabled={maintenanceBusy || !hasDesktopHost()}
+            onClick={() => void resetAllLocalData()}
+          >
+            {maintenanceBusy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+            <span>{t("settings.storage.resetLocalData")}</span>
+          </button>
+        </div>
+        <div className="settings-danger-card settings-danger-card--critical">
+          <span className="settings-danger-ic" aria-hidden="true">
+            <AlertTriangle size={18} />
+          </span>
+          <div className="settings-danger-main">
+            <strong>{t("settings.storage.factoryReset")}</strong>
+            <p>{t("settings.storage.factoryReset.desc")}</p>
+          </div>
+          <button
+            className="btn btn-danger sm"
+            type="button"
+            disabled={maintenanceBusy || !hasDesktopHost()}
+            onClick={() => void factoryResetAllLocalData()}
+          >
+            {maintenanceBusy ? <Loader2 size={16} /> : <Trash2 size={16} />}
+            <span>{t("settings.storage.factoryReset")}</span>
+          </button>
+        </div>
+      </section>
+      {maintenanceAction.message ? (
+        <InlineNotice
+          tone={maintenanceAction.status === "error" ? "error" : "muted"}
+          message={maintenanceAction.message}
+        />
+      ) : null}
     </>
   );
 }
@@ -8613,6 +8788,7 @@ function UsageSettings() {
   const t = useT();
   const [summary, setSummary] = useState<api.UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const user = useAuthStore((state) => state.user);
   const status = useAuthStore((state) => state.status);
   const signedIn = status === "signedIn" && !!user;
@@ -8624,6 +8800,7 @@ function UsageSettings() {
         const next = await api.usageSummary();
         if (active) {
           setSummary(next);
+          setError(null);
         }
       } catch (err) {
         if (active) {
@@ -8634,7 +8811,7 @@ function UsageSettings() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadAttempt]);
 
   const total = summary?.total.estimated_usd ?? 0;
   const events = summary?.total.event_count ?? 0;
@@ -8651,7 +8828,6 @@ function UsageSettings() {
   // restrained per-capability list, ending on the local-only reassurance.
   return (
     <section className="usage-b">
-      {error ? <InlineNotice tone="error" message={error} /> : null}
       <div className="usage-b__wrap">
         {signedIn && user ? (
           <div className="usage-b__acct">
@@ -8725,6 +8901,17 @@ function UsageSettings() {
           <ShieldCheck size={13} />
           <span>{t("settings.usage.localOnly")}</span>
         </div>
+        {error ? (
+          <SettingsQuietNotice
+            title={t("settings.usage.unavailable.title")}
+            body={t("settings.usage.unavailable.body")}
+            detail={error}
+            action={{
+              label: t("common.retry"),
+              onClick: () => setLoadAttempt((attempt) => attempt + 1),
+            }}
+          />
+        ) : null}
       </div>
     </section>
   );

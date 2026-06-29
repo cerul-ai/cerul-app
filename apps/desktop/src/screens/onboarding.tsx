@@ -12,6 +12,7 @@ import type {
   OnboardingYoutubeChannel,
 } from "../lib/types";
 import { useT } from "../lib/i18n";
+import { BrandMark } from "../components/brand";
 import { InlineNotice } from "../components/leaf";
 import {
   AccessibilityPermissionCallout,
@@ -21,17 +22,6 @@ import {
 
 const STEP_COUNT = 3;
 
-// Inline geometric brand mark (handoff: reproduce as SVG, do not redraw).
-function BrandGlyph({ size = 30 }: { size?: number }) {
-  return (
-    <svg viewBox="0 0 508 508" width={size} height={size} aria-hidden="true">
-      <rect width="211" height="508" />
-      <rect x="297" y="91" width="211" height="112" />
-      <rect x="297" y="301" width="211" height="207" />
-    </svg>
-  );
-}
-
 // Step 0 — welcome / shortcut. Logo squircle with steel glow + sheen, a
 // two-line headline, and the ⌥+Space shortcut card.
 function WelcomeStep() {
@@ -40,10 +30,7 @@ function WelcomeStep() {
     <div className="onb-step onb-welcome">
       <div className="onb-logo-wrap">
         <span className="logo-glow" />
-        <span className="logo-tile onb-logo-tile">
-          <BrandGlyph size={34} />
-          <span className="sheen" />
-        </span>
+        <BrandMark className="onb-logo-mark" />
       </div>
       <h1 className="onb-h3">{t("onboarding.step0.title")}</h1>
       <p className="onb-lead">{t("onboarding.welcome.body")}</p>
@@ -85,7 +72,7 @@ function AddSourceStep({
           <span className="onb-play" />
         </span>
         <span className="onb-folder">
-          <BrandGlyph size={26} />
+          <BrandMark className="onb-folder-mark" />
         </span>
       </div>
       <h1 className="onb-h3">{t("onboarding.addSource.title")}</h1>
