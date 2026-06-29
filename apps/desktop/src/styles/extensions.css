@@ -1370,10 +1370,9 @@ body.overlay-body {
   flex: none;
   display: grid;
   place-items: center;
+  width: 24px;
+  height: 24px;
   color: var(--accent);
-}
-.overlay-mark svg {
-  display: block;
 }
 .overlay-input {
   flex: 1 1 auto;
@@ -1717,6 +1716,8 @@ body.overlay-body {
   position: absolute;
   right: 14px;
   bottom: 11px;
+  width: 34px;
+  height: 34px;
   opacity: 0.10;
   pointer-events: none;
   color: var(--text);

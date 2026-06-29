@@ -82,11 +82,11 @@ export function CoreStatusToast({
       role="status"
       aria-live="polite"
       aria-hidden={show ? undefined : "true"}
+      title={error ?? undefined}
     >
       <AlertTriangle size={16} className="ic" aria-hidden="true" />
       <span className="core-toast-text">
         <strong>{t("coreBanner.unresponsive")}</strong>
-        {error ? <small>{error}</small> : null}
         {actionState.message ? <small>{actionState.message}</small> : null}
       </span>
       <button
@@ -101,8 +101,8 @@ export function CoreStatusToast({
         )}
         <span>
           {actionState.status === "running"
-            ? t("coreBanner.restarting")
-            : t("coreBanner.restart")}
+            ? t("coreBanner.retrying")
+            : t("coreBanner.retry")}
         </span>
       </button>
     </div>

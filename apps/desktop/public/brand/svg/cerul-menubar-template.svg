@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 576" fill="#000000" role="img" aria-label="Cerul menu bar template"><g transform="translate(34 34)"><rect width="211" height="508"></rect><rect x="297" y="91" width="211" height="112"></rect><rect x="297" y="301" width="211" height="207"></rect></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 576" role="img" aria-label="Cerul menu bar template">
+  <mask id="cerul-app-icon-cutout" maskUnits="userSpaceOnUse">
+    <rect width="576" height="576" rx="129" fill="#fff"></rect>
+    <g transform="translate(127 127) scale(0.637)" fill="#000">
+      <rect width="211" height="508" rx="22"></rect>
+      <rect x="297" y="91" width="211" height="112" rx="22"></rect>
+      <rect x="297" y="301" width="211" height="207" rx="22"></rect>
+    </g>
+  </mask>
+  <rect width="576" height="576" rx="129" fill="#000" mask="url(#cerul-app-icon-cutout)"></rect>
+</svg>
