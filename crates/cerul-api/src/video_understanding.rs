@@ -561,14 +561,16 @@ fn write_completed_record(
             result.to_string(),
         ),
     )?;
-    if let Some(display_title) = display_title.as_deref() {
-        cerul_storage::update_item_metadata(paths, item_id, |metadata| {
+    cerul_storage::update_item_metadata(paths, item_id, |metadata| {
+        if let Some(display_title) = display_title.as_deref() {
             metadata.insert(
                 "display_title".to_string(),
                 Value::String(display_title.to_string()),
             );
-        })?;
-    }
+        } else {
+            metadata.remove("display_title");
+        }
+    })?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
     crate::refresh_item_retrieval_units_after_understanding_update(
         paths, item_id, false, true, true,
@@ -1351,6 +1353,68 @@ mod tests {
             .unwrap();
         assert_eq!(remaining_understanding_chunks, 0);
         assert_eq!(remaining_retrieval_units, 0);
+    }
+
+    #[test]
+    fn write_completed_record_clears_stale_display_title_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (id, source_id, content_type, title, status, metadata)
+            VALUES (
+              'item-1',
+              'source-1',
+              'video',
+              'Demo video',
+              'indexed',
+              '{"display_title":"Old generated title"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let record = write_completed_record(
+            &paths,
+            "item-1",
+            "provider-1",
+            "model-1",
+            json!({
+                "summary": "Fresh analysis without a generated title.",
+                "chapters": [],
+                "events": [],
+                "topics": ["fresh"],
+                "searchable_text": "fresh searchable text"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(record.display_title, None);
+        let item_metadata: String = conn
+            .query_row(
+                "SELECT metadata FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let item_metadata: Value = serde_json::from_str(&item_metadata).unwrap();
+        assert!(item_metadata.get("display_title").is_none());
+        let retrieval_text: String = conn
+            .query_row(
+                "SELECT content_text FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!retrieval_text.contains("Old generated title"));
+        assert!(retrieval_text.contains("fresh searchable text"));
     }
 
     #[test]

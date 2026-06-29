@@ -80,6 +80,7 @@ import {
   errorMessage,
   extractChunkIdFromThumbnail,
   formatBytes,
+  basenameFromPath,
   formatDuration,
   formatSpeed,
   formatTimestamp,
@@ -5243,12 +5244,7 @@ function ItemDetail({
     );
   const detailTitle =
     activeUnderstandingRecord?.display_title?.trim() || item.title;
-  const modalityLabel =
-    item.contentType === "video"
-      ? understood
-        ? t("dt.search.audioVisual")
-        : t("dt.search.audioOnly")
-      : itemModalityLabel(item, t);
+  const modalityLabel = itemModalityLabel(item, t);
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
@@ -5601,7 +5597,7 @@ function ItemDetail({
                   never lost, never the lead. */}
               {item.rawPath ? (
                 <span className="chip neutral" title={t("dt.source.file")}>
-                  <span className="mono">{item.rawPath.split("/").pop() ?? item.rawPath}</span>
+                  <span className="mono">{basenameFromPath(item.rawPath) ?? item.rawPath}</span>
                 </span>
               ) : null}
             </div>
