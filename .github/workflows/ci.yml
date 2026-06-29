@@ -186,7 +186,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Cache signed MLX runtime
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: apps/electron-shell/mlx-runtime
           key: mlx-runtime-signed-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mlx-sidecar/runtime-lock.txt', 'scripts/build-mlx-runtime.sh', 'apps/electron-shell/scripts/sign-mlx-runtime.cjs', 'apps/electron-shell/entitlements/entitlements.mlx-runtime.plist') }}
@@ -254,7 +254,7 @@ jobs:
           fi
           scripts/smoke-macos-signing.sh "${args[@]}"
       - name: Save same-SHA macOS update prebuild
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
