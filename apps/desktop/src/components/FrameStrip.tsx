@@ -54,10 +54,11 @@ function frameForTime(
   t: number,
   chunks: api.ChunkRecord[],
 ): { chunk: api.ChunkRecord | null; url: string | null } {
-  if (chunks.length === 0) {
+  const frameChunks = chunks.filter((c) => c.frame_path && c.start_sec !== null);
+  if (frameChunks.length === 0) {
     return { chunk: null, url: null };
   }
-  const inside = chunks.find(
+  const inside = frameChunks.find(
     (c) =>
       c.start_sec !== null && c.end_sec !== null &&
       t >= (c.start_sec as number) &&
@@ -65,20 +66,37 @@ function frameForTime(
   );
   const pick =
     inside ??
-    chunks
-      .filter((c) => c.start_sec !== null)
-      .reduce<api.ChunkRecord | null>(
-        (best, c) =>
-          best === null
+    frameChunks.reduce<api.ChunkRecord | null>(
+      (best, c) =>
+        best === null
+          ? c
+          : Math.abs((c.start_sec as number) - t) <
+            Math.abs((best.start_sec as number) - t)
             ? c
-            : Math.abs((c.start_sec as number) - t) <
-              Math.abs((best.start_sec as number) - t)
-              ? c
-              : best,
-        null,
-      );
-  const url = pick?.frame_path ? api.chunkFrameUrl(pick.id) : null;
+            : best,
+      null,
+    );
+  const url = pick ? api.chunkFrameUrl(pick.id) : null;
   return { chunk: pick ?? null, url };
+}
+
+function sampleEvenly<T>(items: T[], max: number): T[] {
+  if (items.length <= max) {
+    return items;
+  }
+  if (max <= 1) {
+    return [items[0]];
+  }
+  const selected: T[] = [];
+  let lastIndex = -1;
+  for (let i = 0; i < max; i += 1) {
+    const index = Math.round((i * (items.length - 1)) / (max - 1));
+    if (index !== lastIndex) {
+      selected.push(items[index]);
+      lastIndex = index;
+    }
+  }
+  return selected;
 }
 
 export function FrameStrip({
@@ -117,20 +135,22 @@ export function FrameStrip({
         };
       });
   } else {
-    frames = chunks
-      .filter((c) => c.frame_path && c.start_sec !== null)
-      .slice(0, 16)
-      .map((c) => {
-        const sec = c.start_sec as number;
-        return {
-          seconds: sec,
-          label: formatTs(sec),
-          url: api.chunkFrameUrl(c.id),
-          caption: null,
-          visual: null,
-          isHi: false,
-        };
-      });
+    frames = sampleEvenly(
+      chunks
+        .filter((c) => c.frame_path && c.start_sec !== null)
+        .sort((a, b) => (a.start_sec as number) - (b.start_sec as number)),
+      16,
+    ).map((c) => {
+      const sec = c.start_sec as number;
+      return {
+        seconds: sec,
+        label: formatTs(sec),
+        url: api.chunkFrameUrl(c.id),
+        caption: null,
+        visual: null,
+        isHi: false,
+      };
+    });
   }
   // sort by time for the strip
   frames.sort((a, b) => a.seconds - b.seconds);

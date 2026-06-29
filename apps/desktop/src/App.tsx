@@ -3996,6 +3996,7 @@ function ResultDetail({
               onSeek={seekTo}
               requestConfirm={requestConfirm}
               onChapters={handleUnderstandingChapters}
+              onAnalyzed={() => void onItemUpdated()}
             />
           </div>
 
@@ -4083,9 +4084,12 @@ function ResultDetail({
 function VideoUnderstandingPanel({
   item,
   enabled,
+  onSeek,
   requestConfirm,
   onChapters,
   onUnderstanding,
+  onAnalyzed,
+  compactCompleted = false,
 }: {
   item: Item;
   enabled: boolean;
@@ -4096,6 +4100,8 @@ function VideoUnderstandingPanel({
   // so the parent (ItemDetail) can drive the summary, chapters, and frame strip
   // without issuing a second GET /items/{id}/understanding.
   onUnderstanding?: (record: api.VideoUnderstandingRecord | null) => void;
+  onAnalyzed?: (record: api.VideoUnderstandingRecord) => void | Promise<void>;
+  compactCompleted?: boolean;
 }) {
   const t = useT();
   const [state, setState] = useState<{
@@ -4111,7 +4117,7 @@ function VideoUnderstandingPanel({
   // for a previous item can detect they are stale.
   const itemIdRef = useRef(item.id);
   itemIdRef.current = item.id;
-  const record = state.record;
+  const record = state.record?.item_id === item.id ? state.record : null;
   const isPending = state.status === "loading" || state.status === "analyzing";
   // Elapsed timer for the analyze run. The request is a single blocking call
   // (upload → Gemini processing → generate) with no server-side progress, so an
@@ -4199,6 +4205,7 @@ function VideoUnderstandingPanel({
       const next = await api.analyzeItemUnderstanding(analyzedItemId);
       if (!isCurrent()) return;
       setState({ status: "loaded", record: next, message: null });
+      void Promise.resolve(onAnalyzed?.(next)).catch(() => undefined);
     } catch (error) {
       if (!isCurrent()) return;
       setState((current) => ({
@@ -4236,12 +4243,13 @@ function VideoUnderstandingPanel({
         record?.events?.length ||
         record?.topics?.length,
     );
+  const summary = record?.summary?.trim() ?? "";
+  const chapters = record?.chapters ?? [];
+  const events = record?.events ?? [];
+  const topics = record?.topics ?? [];
+  const shouldRenderCompletedDetails = hasUnderstandingContent && !compactCompleted;
   const canAnalyze = enabled && !isPending;
   const privacyNote = t("understanding.privacyNote");
-
-  if (hasUnderstandingContent && state.status !== "analyzing" && !state.message && !record?.error) {
-    return null;
-  }
 
   return (
     <section className={`understanding-panel ${analysisStatus}`}>
@@ -4279,11 +4287,66 @@ function VideoUnderstandingPanel({
           <span className="sk" />
           <span className="sk" />
         </div>
-      ) : (
+      ) : !hasUnderstandingContent ? (
         <p className="field-hint">{t("understanding.empty")}</p>
-      )}
+      ) : null}
+
+      {shouldRenderCompletedDetails && summary ? (
+        <p className="understanding-summary">{summary}</p>
+      ) : null}
+
+      {shouldRenderCompletedDetails && topics.length > 0 ? (
+        <div className="understanding-topics" aria-label={t("understanding.topics.aria")}>
+          {topics.slice(0, 8).map((topic) => (
+            <span key={topic} className="chip neutral">{topic}</span>
+          ))}
+        </div>
+      ) : null}
 
       <p className="field-hint">{privacyNote}</p>
+
+      {shouldRenderCompletedDetails && chapters.length > 0 ? (
+        <div className="understanding-list">
+          <strong>{t("understanding.chapters")}</strong>
+          {chapters.slice(0, 4).map((chapter, index) => (
+            <button
+              className="understanding-row"
+              key={`${chapter.title}-${index}`}
+              type="button"
+              disabled={!onSeek}
+              onClick={() =>
+                chapter.start_sec !== null ? onSeek?.(formatTimestamp(chapter.start_sec)) : undefined
+              }
+            >
+              <span className="kbd">{formatTimestamp(chapter.start_sec)}</span>
+              <p>
+                <b>{chapter.title}</b>
+                {chapter.summary ? ` ${chapter.summary}` : ""}
+              </p>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {shouldRenderCompletedDetails && events.length > 0 ? (
+        <div className="understanding-list">
+          <strong>{t("understanding.keyMoments")}</strong>
+          {events.slice(0, 5).map((event, index) => (
+            <button
+              className="understanding-row"
+              key={`${event.caption}-${index}`}
+              type="button"
+              disabled={!onSeek}
+              onClick={() =>
+                event.start_sec !== null ? onSeek?.(formatTimestamp(event.start_sec)) : undefined
+              }
+            >
+              <span className="kbd">{formatTimestamp(event.start_sec)}</span>
+              <p>{event.caption}</p>
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <button
         type="button"
@@ -5152,18 +5215,40 @@ function ItemDetail({
     useState<api.VideoUnderstandingRecord | null>(null);
   const handleUnderstanding = useCallback(
     (record: api.VideoUnderstandingRecord | null) => {
+      if (record && record.item_id !== item.id) {
+        return;
+      }
       setUnderstandingRecord(record);
     },
-    [],
+    [item.id],
   );
+  const handleUnderstandingAnalyzed = useCallback(
+    (record: api.VideoUnderstandingRecord) => {
+      if (record.item_id === item.id) {
+        setUnderstandingRecord(record);
+      }
+      void onItemUpdated();
+    },
+    [item.id, onItemUpdated],
+  );
+  const activeUnderstandingRecord =
+    understandingRecord?.item_id === item.id ? understandingRecord : null;
   const understood =
-    understandingRecord?.status === "completed" &&
+    activeUnderstandingRecord?.status === "completed" &&
     Boolean(
-      understandingRecord.summary?.trim() ||
-        understandingRecord.chapters.length ||
-        understandingRecord.events.length ||
-        understandingRecord.topics.length,
+      activeUnderstandingRecord.summary?.trim() ||
+        activeUnderstandingRecord.chapters.length ||
+        activeUnderstandingRecord.events.length ||
+        activeUnderstandingRecord.topics.length,
     );
+  const detailTitle =
+    activeUnderstandingRecord?.display_title?.trim() || item.title;
+  const modalityLabel =
+    item.contentType === "video"
+      ? understood
+        ? t("dt.search.audioVisual")
+        : t("dt.search.audioOnly")
+      : itemModalityLabel(item, t);
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
@@ -5252,6 +5337,8 @@ function ItemDetail({
 
   useEffect(() => {
     setItemAction({ status: "idle", message: null });
+    setUnderstandingRecord(null);
+    setPlayerChapters([]);
   }, [item.id]);
 
   useEffect(() => {
@@ -5509,7 +5596,7 @@ function ItemDetail({
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <h1 className="page-h1">{item.title}</h1>
+              <h1 className="page-h1">{detailTitle}</h1>
               {/* Source file / BV id — quiet mono chip so the original mapping is
                   never lost, never the lead. */}
               {item.rawPath ? (
@@ -5523,7 +5610,7 @@ function ItemDetail({
                 / per-item $. */}
             <p className="page-sub">
               {item.source} · <span className="mono">{item.duration}</span> ·{" "}
-              {understood ? t("dt.search.audioVisual") : t("dt.search.audioOnly")} ·{" "}
+              {modalityLabel} ·{" "}
               {item.indexedAtEpoch === null
                 ? t("detail.notIndexed")
                 : t("detail.indexedAt", { when: item.indexedAt })}
@@ -5553,8 +5640,8 @@ function ItemDetail({
                 transcriptLines.length > 0
                   ? () =>
                       downloadTextFile(
-                        `${transcriptFilenameBase(item.title)}.md`,
-                        transcriptToMarkdown(item.title, transcriptLines),
+                        `${transcriptFilenameBase(detailTitle)}.md`,
+                        transcriptToMarkdown(detailTitle, transcriptLines),
                         "text/markdown;charset=utf-8",
                       )
                   : undefined
@@ -5563,7 +5650,7 @@ function ItemDetail({
                 transcriptLines.length > 0
                   ? () =>
                       downloadTextFile(
-                        `${transcriptFilenameBase(item.title)}.srt`,
+                        `${transcriptFilenameBase(detailTitle)}.srt`,
                         transcriptToSrt(transcriptLines),
                         "text/plain;charset=utf-8",
                       )
@@ -5584,14 +5671,14 @@ function ItemDetail({
           placeholder chrome. */}
       {understood ? (
         <SummaryCard
-          summary={understandingRecord?.summary ?? null}
-          topics={understandingRecord?.topics ?? []}
+          summary={activeUnderstandingRecord?.summary ?? null}
+          topics={activeUnderstandingRecord?.topics ?? []}
         />
       ) : null}
 
       <SplitStage
         currentSec={parseTimestampSeconds(currentTimestamp)}
-        chapters={understandingRecord?.chapters ?? []}
+        chapters={activeUnderstandingRecord?.chapters ?? []}
         onSeek={seekTo}
         understood={understood}
         left={
@@ -5616,7 +5703,7 @@ function ItemDetail({
               src={itemPlaybackUrl}
               markers={playerMarkers}
               chapters={playerChapters}
-              ariaLabel={t("itemDetail.player.aria", { title: item.title })}
+              ariaLabel={t("itemDetail.player.aria", { title: detailTitle })}
               fallbackDurationSec={item.durationSec}
               onSeekMarker={(marker) => seekTo(marker.label)}
               onVideoElement={handleVideoElement}
@@ -5649,6 +5736,8 @@ function ItemDetail({
               requestConfirm={requestConfirm}
               onChapters={handleUnderstandingChapters}
               onUnderstanding={handleUnderstanding}
+              onAnalyzed={handleUnderstandingAnalyzed}
+              compactCompleted
             />
             {itemAction.message ? (
               <p
@@ -5698,8 +5787,8 @@ function ItemDetail({
         }
       />
       <FrameStrip
-        events={understandingRecord?.events ?? []}
-        chapters={understandingRecord?.chapters ?? []}
+        events={activeUnderstandingRecord?.events ?? []}
+        chapters={activeUnderstandingRecord?.chapters ?? []}
         chunks={chunkState.records}
         durationSec={item.durationSec}
         currentTime={parseTimestampSeconds(currentTimestamp)}
