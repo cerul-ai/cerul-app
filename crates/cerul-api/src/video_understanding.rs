@@ -561,8 +561,21 @@ fn write_completed_record(
             result.to_string(),
         ),
     )?;
+    write_item_display_title(paths, item_id, display_title.as_deref())?;
+    replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
+    crate::refresh_item_retrieval_units_after_understanding_update(
+        paths, item_id, false, true, true,
+    )?;
+    read_understanding_record(paths, item_id)
+}
+
+fn write_item_display_title(
+    paths: &cerul_storage::AppPaths,
+    item_id: &str,
+    display_title: Option<&str>,
+) -> anyhow::Result<()> {
     cerul_storage::update_item_metadata(paths, item_id, |metadata| {
-        if let Some(display_title) = display_title.as_deref() {
+        if let Some(display_title) = display_title {
             metadata.insert(
                 "display_title".to_string(),
                 Value::String(display_title.to_string()),
@@ -570,12 +583,7 @@ fn write_completed_record(
         } else {
             metadata.remove("display_title");
         }
-    })?;
-    replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
-    crate::refresh_item_retrieval_units_after_understanding_update(
-        paths, item_id, false, true, true,
-    )?;
-    read_understanding_record(paths, item_id)
+    })
 }
 
 fn write_status_record(
@@ -604,6 +612,7 @@ fn write_status_record(
         (item_id, provider_id, model_id, status, error),
     )?;
     if status == STATUS_FAILED {
+        write_item_display_title(paths, item_id, None)?;
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
         crate::refresh_item_retrieval_units_after_understanding_update(
             paths, item_id, false, false, true,
@@ -1353,6 +1362,15 @@ mod tests {
             .unwrap();
         assert_eq!(remaining_understanding_chunks, 0);
         assert_eq!(remaining_retrieval_units, 0);
+        let item_metadata: String = conn
+            .query_row(
+                "SELECT metadata FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let item_metadata: Value = serde_json::from_str(&item_metadata).unwrap();
+        assert!(item_metadata.get("display_title").is_none());
     }
 
     #[test]

@@ -3499,6 +3499,7 @@ async fn retry_failed_source_items(
             "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
             [item_id.as_str()],
         )?;
+        clear_generated_display_title_with_tx(&tx, item_id)?;
         clear_item_unified_search_index_with_tx(&tx, item_id)?;
         if enqueue_embedding_rebuild_job(&tx, item_id, content_type, true)? {
             queued_jobs += 1;
@@ -4037,6 +4038,7 @@ async fn reindex_item(
         "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type = 'understanding'",
         [id.as_str()],
     )?;
+    clear_generated_display_title_with_tx(&tx, &id)?;
     clear_item_unified_search_index_with_tx(&tx, &id)?;
     let queued_job = enqueue_embedding_rebuild_job(&tx, &id, content_type, true)?;
     tx.commit()?;
@@ -5644,6 +5646,32 @@ fn clear_item_unified_search_index_with_tx(
     Ok(())
 }
 
+fn clear_generated_display_title_with_tx(
+    tx: &Transaction<'_>,
+    item_id: &str,
+) -> anyhow::Result<()> {
+    let current: Option<String> = tx.query_row(
+        "SELECT metadata FROM items WHERE id = ?1",
+        [item_id],
+        |row| row.get(0),
+    )?;
+    let Some(raw_metadata) = current.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+    let mut metadata: Value = serde_json::from_str(&raw_metadata)?;
+    let Some(object) = metadata.as_object_mut() else {
+        return Ok(());
+    };
+    if object.remove("display_title").is_none() {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE items SET metadata = ?2 WHERE id = ?1",
+        (item_id, serde_json::to_string(&metadata)?),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     paths: &AppPaths,
     item_id: &str,
@@ -7146,7 +7174,8 @@ mod tests {
                     id, source_id, content_type, external_id, title, status, error, metadata
                 )
                 VALUES (
-                    'item-1', 'source-1', 'video', 'video-1', 'Video 1', 'failed', 'bot check', '{}'
+                    'item-1', 'source-1', 'video', 'video-1', 'Video 1', 'failed', 'bot check',
+                    '{"display_title":"Old generated title"}'
                 )
                 "#,
                 [],
@@ -7215,14 +7244,16 @@ mod tests {
         assert_eq!(body["queued_jobs"], 1);
 
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
-        let item: (String, Option<String>) = conn
+        let item: (String, Option<String>, String) = conn
             .query_row(
-                "SELECT status, error FROM items WHERE id = 'item-1'",
+                "SELECT status, error, metadata FROM items WHERE id = 'item-1'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(item, ("discovered".to_string(), None));
+        assert_eq!((item.0, item.1), ("discovered".to_string(), None));
+        let item_metadata = parse_json(&item.2);
+        assert!(item_metadata.get("display_title").is_none());
 
         let understanding_count: i64 = conn
             .query_row(
@@ -9648,7 +9679,17 @@ mod tests {
                 INSERT INTO items (
                     id, source_id, content_type, external_id, title, raw_path, indexed_at, status, metadata
                 )
-                VALUES ('item-1', 'source-1', 'video', 'clip.mp4', 'Clip', ?1, 10, 'indexed', '{}')
+                VALUES (
+                    'item-1',
+                    'source-1',
+                    'video',
+                    'clip.mp4',
+                    'Clip',
+                    ?1,
+                    10,
+                    'indexed',
+                    '{"display_title":"Old generated title"}'
+                )
                 "#,
                 [raw_path.as_str()],
             )
@@ -9712,14 +9753,16 @@ mod tests {
 
         {
             let conn = cerul_storage::sqlite::open(&paths).unwrap();
-            let item: (String, Option<i64>) = conn
+            let item: (String, Option<i64>, String) = conn
                 .query_row(
-                    "SELECT status, indexed_at FROM items WHERE id = 'item-1'",
+                    "SELECT status, indexed_at, metadata FROM items WHERE id = 'item-1'",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .unwrap();
-            assert_eq!(item, ("indexed".to_string(), Some(10)));
+            assert_eq!((item.0, item.1), ("indexed".to_string(), Some(10)));
+            let item_metadata = parse_json(&item.2);
+            assert!(item_metadata.get("display_title").is_none());
             let jobs: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM jobs WHERE item_id = 'item-1' AND job_type = 'index_video' AND status = 'queued'",

@@ -5246,6 +5246,9 @@ function ItemDetail({
     activeUnderstandingRecord?.display_title?.trim() || item.title;
   const modalityLabel = itemModalityLabel(item, t);
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
+  const [currentPlayheadSec, setCurrentPlayheadSec] = useState(() =>
+    parseTimestampSeconds(startTimestamp),
+  );
   const [chunkState, setChunkState] = useState<{
     status: "idle" | "loading" | "loaded" | "error";
     records: api.ChunkRecord[];
@@ -5302,17 +5305,23 @@ function ItemDetail({
     itemAction.status === "deleting" ||
     itemAction.status === "locating";
   const timestampLink = timestampDeepLink(item.id, currentTimestamp, playableChunkId, "item-detail");
+  const handlePlayerTimeUpdate = useCallback((seconds: number) => {
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return;
+    }
+    setCurrentPlayheadSec((current) =>
+      Math.abs(current - seconds) < 0.1 ? current : seconds,
+    );
+    const timestamp = formatTimestamp(seconds);
+    setCurrentTimestamp((current) => (current === timestamp ? current : timestamp));
+  }, []);
   // Resolve the chunk to clip from the LIVE playhead when the export popover
   // opens (falls back to currentTimestamp / the thumbnail chunk).
   function resolveClipTarget(): ClipTarget | null {
-    const video = videoRef.current;
-    // Use the live playhead once the video has actually moved; before that,
-    // fall back to the timestamp the screen opened at.
-    const liveSec =
-      video && Number.isFinite(video.currentTime) && video.currentTime > 0.1
-        ? video.currentTime
-        : parseTimestampSeconds(currentTimestamp);
-    return resolveClipTarget_(transcriptLines, liveSec);
+    const targetSec = Number.isFinite(currentPlayheadSec)
+      ? currentPlayheadSec
+      : parseTimestampSeconds(currentTimestamp);
+    return resolveClipTarget_(transcriptLines, targetSec);
   }
 
   useEffect(() => {
@@ -5339,6 +5348,7 @@ function ItemDetail({
 
   useEffect(() => {
     setCurrentTimestamp(startTimestamp);
+    setCurrentPlayheadSec(parseTimestampSeconds(startTimestamp));
   }, [item.id, startTimestamp]);
 
   useEffect(() => {
@@ -5561,6 +5571,7 @@ function ItemDetail({
       return;
     }
     setCurrentTimestamp(timestamp);
+    setCurrentPlayheadSec(targetSeconds);
     const video = videoRef.current;
     if (!video) {
       return;
@@ -5673,7 +5684,7 @@ function ItemDetail({
       ) : null}
 
       <SplitStage
-        currentSec={parseTimestampSeconds(currentTimestamp)}
+        currentSec={currentPlayheadSec}
         chapters={activeUnderstandingRecord?.chapters ?? []}
         onSeek={seekTo}
         understood={understood}
@@ -5702,6 +5713,7 @@ function ItemDetail({
               ariaLabel={t("itemDetail.player.aria", { title: detailTitle })}
               fallbackDurationSec={item.durationSec}
               onSeekMarker={(marker) => seekTo(marker.label)}
+              onTimeUpdate={handlePlayerTimeUpdate}
               onVideoElement={handleVideoElement}
             />
           ) : (
@@ -5787,7 +5799,7 @@ function ItemDetail({
         chapters={activeUnderstandingRecord?.chapters ?? []}
         chunks={chunkState.records}
         durationSec={item.durationSec}
-        currentTime={parseTimestampSeconds(currentTimestamp)}
+        currentTime={currentPlayheadSec}
         understood={understood}
         onSeek={seekTo}
       />
