@@ -43,6 +43,7 @@ export function CerulPlayer({
   onPlay,
   onPause,
   onSeekMarker,
+  onTimeUpdate,
   onVideoElement,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -56,6 +57,7 @@ export function CerulPlayer({
   onPlay?: () => void;
   onPause?: () => void;
   onSeekMarker?: (marker: PlayerMarker) => void;
+  onTimeUpdate?: (seconds: number) => void;
   onVideoElement?: (video: HTMLVideoElement | null) => void;
 }) {
   const t = useT();
@@ -93,7 +95,10 @@ export function CerulPlayer({
     if (!video) {
       return;
     }
-    const syncTime = () => setTime(video.currentTime);
+    const syncTime = () => {
+      setTime(video.currentTime);
+      onTimeUpdate?.(video.currentTime);
+    };
     // Only upgrade to the real duration once known; never reset to 0, so the
     // fallback (known media length) stays visible until then.
     const syncDuration = () => {
@@ -127,7 +132,7 @@ export function CerulPlayer({
     syncVolume();
     syncAspect();
     setPlaying(!video.paused);
-    setTime(video.currentTime);
+    syncTime();
     video.addEventListener("timeupdate", syncTime);
     video.addEventListener("durationchange", syncDuration);
     video.addEventListener("loadedmetadata", syncDuration);
@@ -146,7 +151,7 @@ export function CerulPlayer({
       video.removeEventListener("pause", syncPause);
       video.removeEventListener("volumechange", syncVolume);
     };
-  }, [videoRef, src, onPlay, onPause]);
+  }, [videoRef, src, onPlay, onPause, onTimeUpdate]);
 
   // On item/src change, show the known length immediately; the video's real
   // duration upgrades it once metadata loads.
@@ -204,7 +209,10 @@ export function CerulPlayer({
     if (!video || !track || !(duration > 0)) return;
     const rect = track.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    video.currentTime = ratio * duration;
+    const nextTime = ratio * duration;
+    video.currentTime = nextTime;
+    setTime(nextTime);
+    onTimeUpdate?.(nextTime);
   };
   const onTrackDown = (event: React.PointerEvent) => {
     seekToClientX(event.clientX);
@@ -266,7 +274,10 @@ export function CerulPlayer({
   const seekBy = (deltaSeconds: number) => {
     const video = videoRef.current;
     if (!video || !(duration > 0)) return;
-    video.currentTime = Math.min(duration, Math.max(0, video.currentTime + deltaSeconds));
+    const nextTime = Math.min(duration, Math.max(0, video.currentTime + deltaSeconds));
+    video.currentTime = nextTime;
+    setTime(nextTime);
+    onTimeUpdate?.(nextTime);
   };
   const onTrackKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "ArrowRight") {
@@ -309,9 +320,11 @@ export function CerulPlayer({
       const video = videoRef.current;
       if (video) {
         video.currentTime = marker.seconds;
+        setTime(marker.seconds);
+        onTimeUpdate?.(marker.seconds);
       }
     },
-    [onSeekMarker, videoRef],
+    [onSeekMarker, onTimeUpdate, videoRef],
   );
 
   const toggleMute = () => {
