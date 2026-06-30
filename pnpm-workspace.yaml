@@ -1,5 +1,8 @@
 packages:
   - "apps/*"
+overrides:
+  "@babel/core": "7.29.6"
+  undici: "6.27.0"
 allowBuilds:
   electron: true
   electron-winstaller: true
