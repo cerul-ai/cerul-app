@@ -46,7 +46,7 @@
 需要做：
 
 - 只有当错误文本明确包含 `source file does not exist` / `file not found` 等源文件缺失信号，并且当前 raw path 确实不存在时，才展示“文件找不到”。
-- ffmpeg、ASR、OCR、embedding、Qdrant、模型缺失、权限错误要显示真实类别。
+- ffmpeg、ASR、OCR、embedding、vector index、模型缺失、权限错误要显示真实类别。
 - UI 面板保留“技术详情”，便于复制诊断。
 - 日志里记录 `raw_path_exists=true/false`、错误分类、原始错误。
 
@@ -75,7 +75,7 @@
 
 ### 4. 搜索结果和 API 增加检索模式诊断
 
-状态：已完成并推送到 PR #60，commit `860ea69`。`POST /search` 返回 `results + diagnostics`，包含 `retrieval_mode`、fallback reason、vector/FTS 命中数、active embedding profile、Qdrant collection 和 point count hint；前端结果页显示本次检索模式 debug 文案；新增 `GET /search/diagnostics` 返回 item/chunk/Qdrant point 健康计数。
+状态：已完成并推送到 PR #60，commit `860ea69`。`POST /search` 返回 `results + diagnostics`，包含 `retrieval_mode`、fallback reason、vector/FTS 命中数、active embedding profile、vector index collection 和 point count hint；前端结果页显示本次检索模式 debug 文案；新增 `GET /search/diagnostics` 返回 item/chunk/vector point 健康计数。
 
 问题：用户无法判断搜索是语义向量、hybrid 还是文本 fallback；图 2/图 3 表现更像 FTS 文本匹配或向量索引缺失。
 
@@ -83,14 +83,14 @@
 
 - 搜索 API 返回诊断字段：
   - `retrieval_mode`: `hybrid` / `vector` / `fts` / `fts_fallback` / `empty`
-  - `fallback_reason`: 例如 `embedding_unavailable`、`qdrant_empty`、`query_embedding_failed`
+  - `fallback_reason`: 例如 `embedding_unavailable`、`vector_index_empty`、`query_embedding_failed`
   - `vector_hits_count`
   - `fts_hits_count`
   - `embedding_profile_id`
-  - `qdrant_collection`
+  - `vector_index_collection`
 - UI debug 区或复制诊断中显示本次检索模式。
-- 日志记录 query embedding 是否成功、Qdrant 查询耗时、FTS fallback 原因。
-- 增加健康检查：当前库 item/chunk 数、已 embedding chunk 数、Qdrant point count 是否一致。
+- 日志记录 query embedding 是否成功、vector index 查询耗时、FTS fallback 原因。
+- 增加健康检查：当前库 item/chunk 数、已 embedding chunk 数、vector point count 是否一致。
 
 验收：
 
@@ -325,7 +325,7 @@
 
 ### 16. 索引和搜索健康检查
 
-状态：已完成并推送到 PR #60。`GET /search/diagnostics` 已扩展 item/chunk/FTS/Qdrant/embedding gap/orphan jobs/missing raw paths 计数；新增 `POST /search/rebuild` 只重建 SQLite FTS 表并返回最新诊断，不重新转写视频。向量缺口会在 diagnostics 里明确暴露，避免把全量重索引伪装成“搜索索引修复”。
+状态：已完成并推送到 PR #60。`GET /search/diagnostics` 已扩展 item/chunk/FTS/vector index/embedding gap/orphan jobs/missing raw paths 计数；新增 `POST /search/rebuild` 只重建 SQLite FTS 表并返回最新诊断，不重新转写视频。向量缺口会在 diagnostics 里明确暴露，避免把全量重索引伪装成“搜索索引修复”。
 
 需要做：
 
@@ -334,7 +334,7 @@
   - chunks count
   - transcript chunks count
   - embedding chunks count
-  - Qdrant points count
+  - vector index points count
   - FTS rows count
   - orphan jobs count
   - missing raw paths count
@@ -342,7 +342,7 @@
 
 验收：
 
-- 搜索异常时，可以判断是 embedding 没建、Qdrant 空、还是 query fallback。
+- 搜索异常时，可以判断是 embedding 没建、vector index 为空、还是 query fallback。
 
 ### 17. 诊断包
 
@@ -384,7 +384,7 @@
 
 - 搜索 API retrieval diagnostics
 - UI/debug/复制诊断展示
-- Qdrant point count / embedding 状态检查
+- vector index point count / embedding 状态检查
 - 重建搜索索引入口的设计或第一版 API
 
 为什么第二：用户现在无法判断“语义搜索到底有没有生效”。

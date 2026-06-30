@@ -17,9 +17,6 @@ import json
 import math
 import os
 import shutil
-import signal
-import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -75,7 +72,6 @@ class BenchContext:
     workdir: Path
     k: int
     delete_count: int
-    qdrant_bin: Path | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,16 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260627)
     parser.add_argument(
         "--backends",
-        default="zvec,lancedb,sqlite_vec,usearch,turbovec,qdrant_sidecar",
+        default="zvec,lancedb,sqlite_vec,usearch,turbovec",
         help="Comma-separated backend names",
     )
     parser.add_argument(
         "--out-dir",
         default=".artifacts/vector-db-bench/latest",
-    )
-    parser.add_argument(
-        "--qdrant-bin",
-        default="third-party/aarch64-apple-darwin/qdrant",
     )
     return parser.parse_args()
 
@@ -715,164 +707,6 @@ def bench_turbovec(ctx: BenchContext) -> BackendResult:
     return result
 
 
-def free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
-
-
-def wait_http(url: str, timeout_s: float) -> None:
-    import requests
-
-    deadline = time.time() + timeout_s
-    last_error = None
-    while time.time() < deadline:
-        try:
-            response = requests.get(url, timeout=1)
-            if response.status_code < 500:
-                return
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-        time.sleep(0.25)
-    raise RuntimeError(f"{url} did not become ready: {last_error}")
-
-
-@contextlib.contextmanager
-def without_proxy_env():
-    keys = [
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-    ]
-    old = {key: os.environ.get(key) for key in keys}
-    for key in keys:
-        os.environ.pop(key, None)
-    try:
-        yield
-    finally:
-        for key, value in old.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
-def bench_qdrant_sidecar(ctx: BenchContext) -> BackendResult:
-    from qdrant_client import QdrantClient, models
-
-    result = BackendResult("qdrant_sidecar", n=len(ctx.vectors), dim=ctx.vectors.shape[1], queries=len(ctx.queries))
-    result.import_version, result.package_bytes = module_version_and_size("qdrant_client")
-    if ctx.qdrant_bin is None or not ctx.qdrant_bin.exists():
-        result.status = "skipped"
-        result.error = f"qdrant binary not found: {ctx.qdrant_bin}"
-        return result
-    result.package_bytes = ctx.qdrant_bin.stat().st_size
-    port = free_port()
-    grpc_port = free_port()
-    storage = ctx.workdir / "qdrant_storage"
-    storage.mkdir(parents=True, exist_ok=True)
-    log = (ctx.workdir / "qdrant.log").open("wb")
-    env = os.environ.copy()
-    env.update(
-        {
-            "QDRANT__STORAGE__STORAGE_PATH": str(storage),
-            "QDRANT__STORAGE__SNAPSHOTS_PATH": str(storage / "snapshots"),
-            "QDRANT__SERVICE__HTTP_PORT": str(port),
-            "QDRANT__SERVICE__GRPC_PORT": str(grpc_port),
-            "QDRANT__LOG_LEVEL": "WARN",
-            "QDRANT__TELEMETRY_DISABLED": "true",
-        }
-    )
-    start_sidecar = time.perf_counter()
-    proc = subprocess.Popen([str(ctx.qdrant_bin)], cwd=storage, stdout=log, stderr=subprocess.STDOUT, env=env)
-    try:
-        wait_http(f"http://127.0.0.1:{port}/collections", 45)
-        result.notes.append(f"sidecar_ready_s={time.perf_counter() - start_sidecar:.3f}")
-        with without_proxy_env():
-            client = QdrantClient(url=f"http://127.0.0.1:{port}", timeout=30)
-            before = rss_bytes()
-            started = time.perf_counter()
-            collection_name = "bench_vectors"
-            client.create_collection(
-                collection_name,
-                vectors_config=models.VectorParams(size=ctx.vectors.shape[1], distance=models.Distance.COSINE),
-                hnsw_config=models.HnswConfigDiff(m=16, ef_construct=200),
-            )
-            for start in batch_iter(len(ctx.vectors), 256):
-                stop = min(start + 256, len(ctx.vectors))
-                points = [
-                    models.PointStruct(
-                        id=int(i),
-                        vector=ctx.vectors[i].tolist(),
-                        payload={"item_id": int(i // 8), "unit_kind": "transcript"},
-                    )
-                    for i in range(start, stop)
-                ]
-                client.upsert(collection_name, points=points, wait=True)
-            result.build_s = time.perf_counter() - started
-            result.rss_delta_bytes = rss_bytes() - before
-
-            def search(qs: np.ndarray, k: int) -> list[list[int]]:
-                out: list[list[int]] = []
-                for q in qs:
-                    rows = client.query_points(
-                        collection_name,
-                        query=q,
-                        limit=k,
-                        with_payload=False,
-                        search_params=models.SearchParams(hnsw_ef=200),
-                    ).points
-                    out.append([int(point.id) for point in rows])
-                return out
-
-            hits, latencies = timed_query(search, ctx.queries, ctx.k)
-            result.query_total_s = sum(latencies)
-            result.query_avg_ms = 1000 * result.query_total_s / len(latencies)
-            result.query_p50_ms = 1000 * percentile(latencies, 50)
-            result.query_p95_ms = 1000 * percentile(latencies, 95)
-            result.recall_at_k = recall_at_k(hits, ctx.ground_truth, ctx.k)
-            delete_ids = set(range(ctx.delete_count))
-            client.delete(collection_name, models.PointIdsList(points=list(delete_ids)), wait=True)
-
-            def reopen() -> BatchSearch:
-                reopened = QdrantClient(url=f"http://127.0.0.1:{port}", timeout=30)
-
-                def reopened_search(qs: np.ndarray, k: int) -> list[list[int]]:
-                    return [
-                        [
-                            int(point.id)
-                            for point in reopened.query_points(collection_name, query=q, limit=k, with_payload=False).points
-                        ]
-                        for q in qs
-                    ]
-
-                return reopened_search
-
-            def concurrent_write() -> None:
-                base = len(ctx.vectors)
-                points = [
-                    models.PointStruct(id=int(base + i), vector=ctx.vectors[i].tolist(), payload={"item_id": int(base + i)})
-                    for i in range(16)
-                ]
-                client.upsert(collection_name, points=points, wait=True)
-
-            run_common_checks(result, search, ctx.queries, ctx.k, delete_ids, reopen, concurrent_write)
-    finally:
-        with contextlib.suppress(Exception):
-            proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=10)
-        with contextlib.suppress(Exception):
-            proc.kill()
-        log.close()
-    result.disk_bytes = dir_size(storage)
-    return result
-
-
 def bench_chroma(ctx: BenchContext) -> BackendResult:
     import chromadb
 
@@ -939,7 +773,6 @@ BACKENDS: dict[str, Callable[[BenchContext], BackendResult]] = {
     "usearch_high_recall": bench_usearch_high_recall,
     "usearch_exact": bench_usearch_exact,
     "turbovec": bench_turbovec,
-    "qdrant_sidecar": bench_qdrant_sidecar,
 }
 
 
@@ -967,7 +800,6 @@ def main() -> int:
     print(f"Generating dataset n={args.n} dim={args.dim} queries={args.queries} k={args.k}", flush=True)
     vectors, queries, ground_truth = generate_dataset(args.n, args.dim, args.queries, args.seed, args.k)
 
-    qdrant_bin = Path(args.qdrant_bin).resolve()
     ctx = BenchContext(
         vectors=vectors,
         queries=queries,
@@ -975,7 +807,6 @@ def main() -> int:
         workdir=workdir,
         k=args.k,
         delete_count=min(100, args.n // 20),
-        qdrant_bin=qdrant_bin,
     )
 
     metadata = {
@@ -987,7 +818,6 @@ def main() -> int:
         "k": args.k,
         "seed": args.seed,
         "backends": args.backends,
-        "qdrant_bin": str(qdrant_bin),
     }
     results: list[BackendResult] = []
     for backend in [name.strip() for name in args.backends.split(",") if name.strip()]:

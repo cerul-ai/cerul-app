@@ -14,7 +14,6 @@ Tested:
 - `sqlite-vec 0.1.9`
 - `USearch 2.25.3`, default and high-recall modes
 - `turbovec 0.8.0`
-- Cerul-bundled Qdrant sidecar binary, actual local version `qdrant 1.18.1`
 
 Not tested as local desktop candidates:
 
@@ -28,7 +27,6 @@ Environment:
 
 - macOS arm64, Python 3.11.5
 - Current repo: `/Users/jessytsui/cerul-ai/cerul-app`
-- Qdrant binary: `third-party/aarch64-apple-darwin/qdrant`, reports `qdrant 1.18.1`
 
 Dataset:
 
@@ -66,7 +64,7 @@ Reproduce:
   --queries 50 \
   --k 10 \
   --out-dir .artifacts/vector-db-bench/50k-2048-core \
-  --backends zvec,lancedb,sqlite_vec,usearch_high_recall,turbovec,qdrant_sidecar
+  --backends zvec,lancedb,sqlite_vec,usearch_high_recall,turbovec
 ```
 
 ## 50k x 2048 Core Results
@@ -78,7 +76,6 @@ Reproduce:
 | LanceDB exact | 0.44 | 84.68 | 90.48 | 1.000 | 391 | ok | ok | ok |
 | USearch high-recall | 11.60 | 15.28 | 16.30 | 0.804 | 202 | ok | ok | ok |
 | turbovec | 1.17 | 2.12 | 2.57 | 0.824 | 49 | ok | ok | ok |
-| Qdrant sidecar | 37.59 | 17.55 | 21.74 | 0.830 | 1498 | ok | ok | ok |
 | LanceDB IVF_HNSW_PQ | 17.28 | 6.22 | 12.06 | 0.204 | 403 | ok | ok | ok |
 
 ## Scaling Snapshot
@@ -90,7 +87,6 @@ Reproduce:
 | LanceDB exact | 15.09 / 1.000 | 37.53 / 1.000 | 84.68 / 1.000 |
 | USearch high-recall | 5.07 / 0.990 | 11.73 / 0.925 | 15.28 / 0.804 |
 | turbovec | 0.60 / 0.851 | 1.28 / 0.853 | 2.12 / 0.824 |
-| Qdrant sidecar | 3.49 / 0.990 | 16.59 / 0.910 | 17.55 / 0.830 |
 
 ## Findings
 
@@ -101,31 +97,14 @@ Best local default candidate from this benchmark.
 Strengths:
 
 - Fast enough at 50k x 2048: about 13 ms average query latency with perfect recall on this synthetic benchmark.
-- In-process local library, so it removes Qdrant's sidecar, port, readiness, proxy, and process lifecycle risks.
+- In-process local library, so it avoids sidecar, port, readiness, proxy, and process lifecycle risks.
 - Delete, post-close reopen, concurrent read, and concurrent write smoke tests passed.
 - Disk footprint is roughly raw-vector-sized plus index overhead, not tiny but reasonable.
 
 Risks:
 
 - Single collection lock: while one `zvec` collection handle is open, a second handle cannot open the same collection, even read-only. Cerul should route vector access through one backend owner and avoid helper processes opening the same index directly.
-- Newer ecosystem than Qdrant/LanceDB. We still need Rust integration, crash-recovery, packaging, and real Cerul data tests.
-
-### Qdrant sidecar
-
-Good database, weaker desktop-local fit.
-
-Strengths:
-
-- Mature vector database behavior.
-- Delete, reopen, concurrent reads/writes passed.
-- 10k performance was acceptable.
-
-Weaknesses:
-
-- This benchmark used the repo's current `qdrant 1.18.1` binary, while the user failure log mentioned `1.18.2`; strict reproduction should retest with the exact user binary.
-- Sidecar shape keeps the failure class we are trying to remove: process startup, readiness timeout, ports, proxy/client behavior, shutdown, logs, and bundled binary management.
-- Write/build path is much heavier than zvec: 50k build was about 37.6s versus zvec about 4.0s.
-- Disk footprint was much larger in this benchmark: about 1.5GB for 50k vectors.
+- Newer ecosystem than LanceDB and sqlite-vec. We still need Rust integration, crash-recovery, packaging, and real Cerul data tests.
 
 ### sqlite-vec
 
@@ -210,7 +189,6 @@ Recommended architecture:
 - SQLite continues to own `items`, `retrieval_units`, FTS, jobs, providers, settings, index status, metadata, and rebuild state.
 - zvec stores only rebuildable vector points: `point_id`, `retrieval_unit_id`, `item_id`, `embedding_profile_id`, `index_version`, `unit_kind`, optional timing fields, and the vector.
 - Search continues to fuse SQLite FTS results with vector results.
-- Keep Qdrant available as the current baseline until the zvec implementation passes real-data and crash tests.
 
 Do not migrate local metadata ownership into the vector store. The vector index should remain disposable and rebuildable from SQLite.
 
@@ -224,4 +202,3 @@ Next required test before implementation:
 
 - Export a real Cerul retrieval benchmark from local `retrieval_units`: Chinese transcript, OCR, visual text, long videos, repeated reindex/delete cycles, and manually labeled queries with expected `item_id` plus time range.
 - Re-run the same benchmark with real embeddings from the active local model.
-- Re-run Qdrant with the exact `1.18.2` binary from the user failing environment if we need a strict regression comparison.
