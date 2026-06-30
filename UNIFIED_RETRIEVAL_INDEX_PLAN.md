@@ -412,7 +412,7 @@ Success criteria:
 - No reranker-first strategy.
 - No separate raw-image search branch in normal typed search.
 - No claim that old items are searchable before their unified index is built.
-- No user-facing Qdrant terminology.
+- No user-facing implementation-specific vector index terminology.
 
 ## Open Risks
 

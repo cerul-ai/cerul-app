@@ -641,10 +641,6 @@ write_version_markers() {
   printf '%s\n' "$YTDLP_VERSION" >"$OUT_DIR/.yt-dlp-version"
 }
 
-remove_stale_qdrant_artifacts() {
-  run rm -f "$ROOT"/third-party/*/qdrant "$ROOT"/third-party/*/qdrant.exe "$ROOT"/third-party/*/.qdrant-version
-}
-
 OUT_DIR="$ROOT/third-party/$TARGET"
 run mkdir -p "$OUT_DIR"
 
@@ -652,8 +648,6 @@ FFMPEG_EXE="ffmpeg$(exe_suffix)"
 YTDLP_EXE="yt-dlp$(exe_suffix)"
 FFMPEG_OUT="$OUT_DIR/$FFMPEG_EXE"
 YTDLP_OUT="$OUT_DIR/$YTDLP_EXE"
-
-remove_stale_qdrant_artifacts
 
 if needs_stage_binary "ffmpeg" "$FFMPEG_OUT" -version; then
   stage_ffmpeg
