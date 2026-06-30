@@ -67,6 +67,7 @@
 }
 [data-theme="dark"] .titlebar-lead { border-right-color: rgba(255, 255, 255, 0.06); }
 .titlebar-drag { flex: 1; }
+.app > .titlebar { z-index: 80; }
 .titlebar .rail-update { -webkit-app-region: no-drag; app-region: no-drag; margin-left: 0; }
 
 /* ---------------- Rail ---------------- */
@@ -117,6 +118,114 @@
 .rail-update:active { filter: brightness(0.96); }
 .rail-update[disabled] { cursor: default; opacity: 0.85; }
 .rail-update svg, .rail-update-label { color: #fff; }
+.update-hover {
+  position: relative;
+  flex: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.update-popover {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: -2px;
+  width: min(520px, calc(100vw - 28px));
+  max-height: min(520px, calc(100vh - 66px));
+  overflow: auto;
+  padding: 22px 24px 24px;
+  border: 1px solid rgba(18, 28, 42, 0.11);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 253, 255, 0.98)),
+    var(--surface);
+  color: var(--text);
+  box-shadow: 0 22px 56px rgba(27, 38, 54, 0.2), 0 4px 14px rgba(27, 38, 54, 0.08);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.985);
+  transform-origin: 24px 0;
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    visibility var(--dur-fast) var(--ease);
+  visibility: hidden;
+  z-index: 90;
+}
+.update-popover::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 22px;
+  width: 14px;
+  height: 14px;
+  border-left: 1px solid rgba(18, 28, 42, 0.11);
+  border-top: 1px solid rgba(18, 28, 42, 0.11);
+  background: rgba(255, 255, 255, 0.98);
+  transform: rotate(45deg);
+}
+.update-hover:hover .update-popover,
+.update-hover:focus-within .update-popover,
+.update-hover.is-open .update-popover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  visibility: visible;
+}
+.update-popover-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+.update-popover-date {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.update-popover-rule {
+  height: 1px;
+  margin: 16px 0 18px;
+  background: var(--line-strong);
+}
+.update-popover-section + .update-popover-section {
+  margin-top: 18px;
+}
+.update-popover-section h3 {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.update-popover-section ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0 0 0 19px;
+}
+.update-popover-section li {
+  padding-left: 6px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+.update-popover-section li::marker {
+  color: var(--text-faint);
+}
+[data-theme="dark"] .update-popover {
+  border-color: rgba(255, 255, 255, 0.11);
+  background:
+    linear-gradient(180deg, rgba(31, 37, 45, 0.98), rgba(22, 27, 34, 0.98)),
+    var(--surface);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.44), 0 4px 16px rgba(0, 0, 0, 0.32);
+}
+[data-theme="dark"] .update-popover::before {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(31, 37, 45, 0.98);
+}
 .brandmark { color: var(--accent); display: inline-grid; place-items: center; }
 /* BrandMark / BrandLogo render a brand asset sized at 100%×100%, so the wrapper must
    carry a definite size in every context (rail, empty states, overlay). Without

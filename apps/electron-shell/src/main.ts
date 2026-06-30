@@ -119,9 +119,18 @@ type GitHubRelease = {
   tag_name?: string;
   name?: string | null;
   html_url?: string;
+  body?: string | null;
   draft?: boolean;
   prerelease?: boolean;
   published_at?: string | null;
+};
+
+type DesktopReleaseNotes = {
+  publishedAt?: string;
+  sections: Array<{
+    title?: string;
+    items: string[];
+  }>;
 };
 
 type DesktopUpdateInfo = {
@@ -130,6 +139,7 @@ type DesktopUpdateInfo = {
   name?: string;
   prerelease: boolean;
   publishedAt?: string;
+  releaseNotes?: DesktopReleaseNotes;
 };
 
 // Drives the rail "Update" pill. `available` always works (GitHub-release
@@ -137,7 +147,13 @@ type DesktopUpdateInfo = {
 // signed + a latest-mac.yml that electron-updater can apply.
 type UpdaterState =
   | { phase: "idle" }
-  | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
+  | {
+      phase: "available";
+      version: string;
+      releaseUrl: string;
+      canAutoInstall: boolean;
+      releaseNotes?: DesktopReleaseNotes;
+    }
   | {
       phase: "downloading";
       version: string;
@@ -146,11 +162,18 @@ type UpdaterState =
       etaSeconds?: number;
       transferredBytes?: number;
       totalBytes?: number;
+      releaseNotes?: DesktopReleaseNotes;
     }
-  | { phase: "preparing"; version: string }
-  | { phase: "installing"; version: string }
-  | { phase: "downloaded"; version: string }
-  | { phase: "error"; version?: string; message: string; releaseUrl: string };
+  | { phase: "preparing"; version: string; releaseNotes?: DesktopReleaseNotes }
+  | { phase: "installing"; version: string; releaseNotes?: DesktopReleaseNotes }
+  | { phase: "downloaded"; version: string; releaseNotes?: DesktopReleaseNotes }
+  | {
+      phase: "error";
+      version?: string;
+      message: string;
+      releaseUrl: string;
+      releaseNotes?: DesktopReleaseNotes;
+    };
 
 type UpdaterProgress = {
   percent?: number;
@@ -2360,10 +2383,77 @@ async function checkForGitHubReleaseUpdate(): Promise<DesktopUpdateInfo | null> 
         name: release.name ?? undefined,
         prerelease: Boolean(release.prerelease),
         publishedAt: release.published_at ?? undefined,
+        releaseNotes: releaseNotesFromMarkdown(release.body, release.published_at),
       };
     }
   }
   return bestUpdate;
+}
+
+function releaseNotesFromMarkdown(
+  markdown: string | null | undefined,
+  publishedAt: string | null | undefined,
+): DesktopReleaseNotes | undefined {
+  const sections = releaseNoteSections(markdown ?? "");
+  if (sections.length === 0) {
+    return undefined;
+  }
+  return {
+    publishedAt: publishedAt ?? undefined,
+    sections,
+  };
+}
+
+function releaseNoteSections(markdown: string): DesktopReleaseNotes["sections"] {
+  const mainBody = markdown.split(/\n---\n/, 1)[0] ?? "";
+  const sections: DesktopReleaseNotes["sections"] = [];
+  let current: { title?: string; items: string[] } = { items: [] };
+
+  function pushCurrent() {
+    if (current.items.length > 0) {
+      sections.push({
+        title: current.title,
+        items: current.items.slice(0, 8),
+      });
+    }
+  }
+
+  for (const rawLine of mainBody.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("<!--")) {
+      continue;
+    }
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    if (heading) {
+      pushCurrent();
+      current = { title: cleanReleaseNoteText(heading[1]), items: [] };
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      const item = cleanReleaseNoteText(bullet[1]);
+      if (item) {
+        current.items.push(item);
+      }
+      continue;
+    }
+    if (sections.length === 0 && current.items.length === 0) {
+      const item = cleanReleaseNoteText(line);
+      if (item && !/^download:/i.test(item) && !/^github:/i.test(item)) {
+        current.items.push(item);
+      }
+    }
+  }
+  pushCurrent();
+  return sections.slice(0, 4);
+}
+
+function cleanReleaseNoteText(value: string) {
+  return value
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function updateRepository() {
@@ -2501,13 +2591,14 @@ function clearPreparedMacUpdateHandoff(version?: string) {
 }
 
 function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater, installWhenReady = false) {
+  const releaseNotes = currentUpdateReleaseNotes();
   updateInstallWhenPrepared = installWhenReady;
   if (process.platform !== "darwin") {
     if (installWhenReady) {
-      setUpdaterState({ phase: "installing", version });
+      setUpdaterState({ phase: "installing", version, releaseNotes });
       setTimeout(() => void installDesktopUpdate(version), 500);
     } else {
-      setUpdaterState({ phase: "downloaded", version });
+      setUpdaterState({ phase: "downloaded", version, releaseNotes });
     }
     return;
   }
@@ -2522,7 +2613,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
     rescueCancelPath: null,
   };
   preparedMacUpdateHandoff = macHandoff;
-  setUpdaterState({ phase: "preparing", version });
+  setUpdaterState({ phase: "preparing", version, releaseNotes });
   appendUpdaterShipItRescueLog(
     `preparing_mac_update_for_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
   );
@@ -2564,7 +2655,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
       appendUpdaterShipItRescueLog(
         `mac_update_ready_to_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
       );
-      setUpdaterState({ phase: "downloaded", version });
+      setUpdaterState({ phase: "downloaded", version, releaseNotes });
       if (shouldInstallWhenReady) {
         setTimeout(() => void installDesktopUpdate(version), 500);
       }
@@ -2719,7 +2810,11 @@ function positiveFiniteNumber(value: unknown): number | undefined {
   return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
-function updateDownloadState(version: string, progress: UpdaterProgress = {}): UpdaterState {
+function updateDownloadState(
+  version: string,
+  progress: UpdaterProgress = {},
+  releaseNotes = currentUpdateReleaseNotes(),
+): UpdaterState {
   const rawPercent = Number.isFinite(progress.percent) ? Number(progress.percent) : 0;
   const percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
   const bytesPerSecond = positiveFiniteNumber(progress.bytesPerSecond);
@@ -2741,6 +2836,7 @@ function updateDownloadState(version: string, progress: UpdaterProgress = {}): U
     etaSeconds,
     transferredBytes,
     totalBytes,
+    releaseNotes,
   };
 }
 
@@ -2753,6 +2849,10 @@ function setUpdaterState(next: UpdaterState) {
   }
 }
 
+function currentUpdateReleaseNotes(): DesktopReleaseNotes | undefined {
+  return "releaseNotes" in latestUpdaterState ? latestUpdaterState.releaseNotes : undefined;
+}
+
 function setUpdaterError(error: unknown, version?: string) {
   const message = error instanceof Error ? error.message : String(error);
   console.error("desktop updater error", error);
@@ -2761,6 +2861,7 @@ function setUpdaterError(error: unknown, version?: string) {
     version,
     message,
     releaseUrl: releasesPageUrl(),
+    releaseNotes: currentUpdateReleaseNotes(),
   });
 }
 
@@ -2802,6 +2903,7 @@ function startAutoUpdaterDownload(updater: AppUpdater, version: string) {
       version,
       message: error instanceof Error ? error.message : String(error),
       releaseUrl: releasesPageUrl(),
+      releaseNotes: currentUpdateReleaseNotes(),
     });
   });
 }
@@ -2893,6 +2995,7 @@ function wireAutoUpdater(updater: AppUpdater) {
           : undefined,
       message: error instanceof Error ? error.message : String(error),
       releaseUrl: fallbackUrl,
+      releaseNotes: currentUpdateReleaseNotes(),
     });
   });
 }
@@ -2918,6 +3021,7 @@ async function refreshManualUpdateState(): Promise<boolean> {
         version: info.version,
         releaseUrl: info.url,
         canAutoInstall: false,
+        releaseNotes: info.releaseNotes,
       });
     }
   } else if (latestUpdaterState.phase === "available") {
@@ -2942,6 +3046,23 @@ async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}): Promise
       version: normalizeVersion(fake),
       releaseUrl: releasesPageUrl(),
       canAutoInstall: false,
+      releaseNotes: {
+        publishedAt: new Date().toISOString(),
+        sections: [
+          {
+            title: "Improved",
+            items: [
+              "Show release notes from the update button before opening the download page.",
+              "Keep update status visible while the app checks, downloads, and prepares a restart.",
+              "Use GitHub release notes generated by the existing release workflow.",
+            ],
+          },
+          {
+            title: "Fixed",
+            items: ["Avoid showing an empty update card when release notes are missing."],
+          },
+        ],
+      },
     });
     return true;
   }
@@ -3279,7 +3400,7 @@ async function startDesktopUpdateDownload() {
   if (latestUpdaterState.phase !== "available") {
     return;
   }
-  const { releaseUrl, canAutoInstall, version } = latestUpdaterState;
+  const { releaseNotes, releaseUrl, canAutoInstall, version } = latestUpdaterState;
   // Without a working in-place updater, "update" means open the download page.
   if (!canAutoInstall) {
     await shell.openExternal(releaseUrl);
@@ -3292,7 +3413,7 @@ async function startDesktopUpdateDownload() {
   }
   updateInstallRequested = true;
   try {
-    setUpdaterState(updateDownloadState(version));
+    setUpdaterState(updateDownloadState(version, {}, releaseNotes));
     await updater.downloadUpdate();
   } catch (error) {
     console.error("electron-updater download failed; opening release page", error);
@@ -3302,6 +3423,7 @@ async function startDesktopUpdateDownload() {
       version,
       message: error instanceof Error ? error.message : String(error),
       releaseUrl,
+      releaseNotes,
     });
   }
 }
@@ -3573,7 +3695,11 @@ async function installDesktopUpdate(version?: string) {
         ? latestUpdaterState.version
         : app.getVersion();
   }
-  setUpdaterState({ phase: "installing", version: installingVersion });
+  setUpdaterState({
+    phase: "installing",
+    version: installingVersion,
+    releaseNotes: currentUpdateReleaseNotes(),
+  });
   let macHandoff: MacUpdateInstallHandoff | undefined;
   try {
     await prepareDesktopUpdateInstall(installingVersion);

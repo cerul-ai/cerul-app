@@ -89,6 +89,8 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
+      - name: Check release metadata
+        run: node scripts/sync-release-metadata.mjs --check
       - name: Validate bundled yt-dlp pin
         env:
           GITHUB_TOKEN: ${{ github.token }}
