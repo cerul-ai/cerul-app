@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { execFileSync } from "node:child_process";
 
 const version = process.argv[2]?.trim();
 const dryRun = process.argv.includes("--dry-run");
@@ -10,6 +11,11 @@ const manifestPaths = [
   "package.json",
   "apps/desktop/package.json",
   "apps/electron-shell/package.json",
+];
+const releaseMetadataPaths = [
+  "README.md",
+  "README.zh-CN.md",
+  "apps/desktop/src/lib/i18n-catalog.ts",
 ];
 
 if (!version) {
@@ -60,7 +66,20 @@ for (const manifest of manifests) {
   }
 }
 
-const files = manifestPaths.map((file) => path.relative(process.cwd(), file)).join(",");
+execFileSync(
+  process.execPath,
+  [
+    "scripts/sync-release-metadata.mjs",
+    "--version",
+    version,
+    dryRun ? "--dry-run" : "",
+  ].filter(Boolean),
+  { stdio: "inherit" },
+);
+
+const files = [...manifestPaths, ...releaseMetadataPaths]
+  .map((file) => path.relative(process.cwd(), file))
+  .join(",");
 console.log(
   `release_version status=${dryRun ? "validated" : "updated"} from=${currentVersion} to=${version} files=${files}`,
 );

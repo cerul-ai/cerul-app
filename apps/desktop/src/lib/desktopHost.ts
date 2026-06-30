@@ -10,14 +10,29 @@ export type DesktopUpdate = {
   name?: string;
   prerelease?: boolean;
   publishedAt?: string;
+  releaseNotes?: DesktopReleaseNotes;
 } | null;
+
+export type DesktopReleaseNotes = {
+  publishedAt?: string;
+  sections: Array<{
+    title?: string;
+    items: string[];
+  }>;
+};
 
 // Drives the rail "Update" pill. Mirrors UpdaterState in the electron shell.
 // `available` works on any build (GitHub-release detection); later phases only
 // occur once releases ship signed + a latest-mac.yml.
 export type DesktopUpdaterState =
   | { phase: "idle" }
-  | { phase: "available"; version: string; releaseUrl: string; canAutoInstall: boolean }
+  | {
+      phase: "available";
+      version: string;
+      releaseUrl: string;
+      canAutoInstall: boolean;
+      releaseNotes?: DesktopReleaseNotes;
+    }
   | {
       phase: "downloading";
       version: string;
@@ -26,11 +41,18 @@ export type DesktopUpdaterState =
       etaSeconds?: number;
       transferredBytes?: number;
       totalBytes?: number;
+      releaseNotes?: DesktopReleaseNotes;
     }
-  | { phase: "preparing"; version: string }
-  | { phase: "installing"; version: string }
-  | { phase: "downloaded"; version: string }
-  | { phase: "error"; version?: string; message: string; releaseUrl: string };
+  | { phase: "preparing"; version: string; releaseNotes?: DesktopReleaseNotes }
+  | { phase: "installing"; version: string; releaseNotes?: DesktopReleaseNotes }
+  | { phase: "downloaded"; version: string; releaseNotes?: DesktopReleaseNotes }
+  | {
+      phase: "error";
+      version?: string;
+      message: string;
+      releaseUrl: string;
+      releaseNotes?: DesktopReleaseNotes;
+    };
 
 export type DesktopStore = {
   get<T>(key: string): Promise<T | undefined>;
