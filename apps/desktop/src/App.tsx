@@ -14,7 +14,7 @@
 //     Done: Onboarding, SourcesScreen, MomentsScreen, ResultsScreen,
 //     HomeScreen, LibraryScreen, ResultDetail, ItemDetail, SettingsScreen.
 //     Remaining: none for Phase C.
-//   Phase D — extract dialogs into ./dialogs/
+//   Phase D — done: dialogs live in ./dialogs/
 //     ConfirmDialog, JobsSheet, AddSourceDialog (+ tabs).
 //   Phase E — extract item / source / job / result mappers into
 //     ./lib/mappers.ts and route helpers into ./lib/route.ts.
