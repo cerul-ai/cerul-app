@@ -3,9 +3,67 @@ use std::path::{Path, PathBuf};
 use cerul_storage::AppPaths;
 use serde_json::{Map, Value};
 
+use super::extract::update_item_duration_from_media;
+
 const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
 const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
 const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
+
+pub(crate) async fn fetch_video_media(
+    paths: &AppPaths,
+    item: &cerul_storage::StoredItem,
+    progress: Option<cerul_sources::FetchProgress>,
+) -> anyhow::Result<PathBuf> {
+    let source = cerul_sources::build(
+        &item.source_type,
+        source_config_with_app_cache(paths, &item.source_type, item.source_config.clone()),
+    )?;
+    let video_path = source
+        .fetch_with_progress(&item.as_discovered_item(), progress)
+        .await?;
+    sync_raw_path_for_source(paths, item, &video_path, &["web_video", "youtube"])?;
+    update_item_duration_from_media(paths, &item.id, &video_path).await;
+    Ok(video_path)
+}
+
+pub(crate) async fn fetch_audio_media(
+    paths: &AppPaths,
+    item: &cerul_storage::StoredItem,
+) -> anyhow::Result<PathBuf> {
+    let source = cerul_sources::build(
+        &item.source_type,
+        source_config_with_app_cache(paths, &item.source_type, item.source_config.clone()),
+    )?;
+    let audio_path = source.fetch(&item.as_discovered_item()).await?;
+    sync_raw_path_for_source(paths, item, &audio_path, &["rss_podcast"])?;
+    update_item_duration_from_media(paths, &item.id, &audio_path).await;
+    Ok(audio_path)
+}
+
+pub(crate) async fn fetch_image_media(
+    paths: &AppPaths,
+    item: &cerul_storage::StoredItem,
+) -> anyhow::Result<PathBuf> {
+    let source = cerul_sources::build(
+        &item.source_type,
+        source_config_with_app_cache(paths, &item.source_type, item.source_config.clone()),
+    )?;
+    source.fetch(&item.as_discovered_item()).await
+}
+
+fn sync_raw_path_for_source(
+    paths: &AppPaths,
+    item: &cerul_storage::StoredItem,
+    fetched_path: &Path,
+    source_types: &[&str],
+) -> anyhow::Result<()> {
+    if source_types.contains(&item.source_type.as_str())
+        && item.raw_path.as_deref() != fetched_path.to_str()
+    {
+        cerul_storage::set_item_raw_path(paths, &item.id, fetched_path)?;
+    }
+    Ok(())
+}
 
 pub(crate) fn source_config_with_app_cache(
     paths: &AppPaths,
@@ -114,5 +172,27 @@ fn setting_string(paths: &AppPaths, key: &str) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_config_with_app_cache_preserves_existing_cache_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+
+        let config = source_config_with_app_cache(
+            &paths,
+            "web_video",
+            serde_json::json!({
+                "url": "https://example.com/video",
+                "cache_dir": "/custom/cache",
+            }),
+        );
+
+        assert_eq!(config["cache_dir"], "/custom/cache");
     }
 }

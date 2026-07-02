@@ -16,14 +16,14 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::{
     ffmpeg,
     stages::{
-        extract::{read_exif_metadata, update_item_duration_from_media},
-        fetch::source_config_with_app_cache,
+        extract::read_exif_metadata,
+        fetch::{fetch_audio_media, fetch_image_media, fetch_video_media},
         ocr::read_ocr_frames_with_progress,
         retrieval::{
             rebuild_retrieval_embedding_plan, set_embedding_index_status,
             write_unified_retrieval_vectors,
         },
-        sample::keyframe_chunks,
+        sample::sample_video_keyframes,
         transcribe::{
             audio_seconds_from_segments, transcript_storage_from_segments, TranscriptStorage,
         },
@@ -428,14 +428,6 @@ impl VideoPipeline {
 
         self.report_progress(item_id, "fetching", 0.05, "Fetching source media");
         let item = cerul_storage::get_item(&self.paths, item_id)?;
-        let source = cerul_sources::build(
-            &item.source_type,
-            source_config_with_app_cache(
-                &self.paths,
-                &item.source_type,
-                item.source_config.clone(),
-            ),
-        )?;
         let fetch_progress = {
             let progress = Arc::clone(&self.progress);
             let item_id = item_id.to_string();
@@ -444,15 +436,7 @@ impl VideoPipeline {
                 progress.update(&item_id, "downloading", progress_fraction, &message);
             }) as cerul_sources::FetchProgress
         };
-        let video_path = source
-            .fetch_with_progress(&item.as_discovered_item(), Some(fetch_progress))
-            .await?;
-        if matches!(item.source_type.as_str(), "web_video" | "youtube")
-            && item.raw_path.as_deref() != video_path.to_str()
-        {
-            cerul_storage::set_item_raw_path(&self.paths, item_id, &video_path)?;
-        }
-        update_item_duration_from_media(&self.paths, item_id, &video_path).await;
+        let video_path = fetch_video_media(&self.paths, &item, Some(fetch_progress)).await?;
         let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
             .paths
@@ -468,18 +452,16 @@ impl VideoPipeline {
             .join(&cache_key);
 
         self.report_progress(item_id, "sampling_frames", 0.18, "Sampling visual frames");
-        let frames =
-            ffmpeg::sample_frames(&video_path, &frames_dir, self.frame_interval_sec).await?;
-        let keyframes = keyframe_chunks(&frames, self.frame_interval_sec);
-        match cerul_storage::replace_item_keyframes(&self.paths, item_id, &keyframes) {
-            Ok(count) if count > 0 => {
-                tracing::info!(item_id, keyframes = count, "stored early video thumbnails");
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(%error, item_id, "failed to store early video thumbnails");
-            }
-        }
+        let sampled_keyframes = sample_video_keyframes(
+            &self.paths,
+            item_id,
+            &video_path,
+            &frames_dir,
+            self.frame_interval_sec,
+        )
+        .await?;
+        let frames = sampled_keyframes.frames;
+        let keyframes = sampled_keyframes.keyframes;
 
         // Audio is optional. Many screen recordings (and capture tools'
         // intermediate files) are video-only, so probe before extracting: a
@@ -1040,21 +1022,7 @@ impl VideoPipeline {
 
     pub async fn process_audio_item(&self, item_id: &str) -> anyhow::Result<ProcessAudioSummary> {
         let item = cerul_storage::get_item(&self.paths, item_id)?;
-        let source = cerul_sources::build(
-            &item.source_type,
-            source_config_with_app_cache(
-                &self.paths,
-                &item.source_type,
-                item.source_config.clone(),
-            ),
-        )?;
-        let source_audio_path = source.fetch(&item.as_discovered_item()).await?;
-        if item.source_type == "rss_podcast"
-            && item.raw_path.as_deref() != source_audio_path.to_str()
-        {
-            cerul_storage::set_item_raw_path(&self.paths, item_id, &source_audio_path)?;
-        }
-        update_item_duration_from_media(&self.paths, item_id, &source_audio_path).await;
+        let source_audio_path = fetch_audio_media(&self.paths, &item).await?;
         let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
             .paths
@@ -1134,15 +1102,7 @@ impl VideoPipeline {
 
     pub async fn process_image_item(&self, item_id: &str) -> anyhow::Result<ProcessImageSummary> {
         let item = cerul_storage::get_item(&self.paths, item_id)?;
-        let source = cerul_sources::build(
-            &item.source_type,
-            source_config_with_app_cache(
-                &self.paths,
-                &item.source_type,
-                item.source_config.clone(),
-            ),
-        )?;
-        let image_path = source.fetch(&item.as_discovered_item()).await?;
+        let image_path = fetch_image_media(&self.paths, &item).await?;
         let exif = read_exif_metadata(&image_path)?;
         let exif_fields = exif
             .get("exif")
@@ -1877,6 +1837,8 @@ fn cache_key(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stages::fetch::source_config_with_app_cache;
+    use crate::stages::sample::keyframe_chunks;
     use anyhow::Context;
     use cerul_storage::{sqlite, vectors};
     use image::{Rgb, RgbImage};
