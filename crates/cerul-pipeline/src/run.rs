@@ -18,6 +18,7 @@ use crate::{
     stages::{
         extract::{read_exif_metadata, update_item_duration_from_media},
         fetch::source_config_with_app_cache,
+        ocr::read_ocr_frames_with_progress,
         retrieval::set_embedding_index_status,
         sample::keyframe_chunks,
         transcribe::{
@@ -708,10 +709,6 @@ impl VideoPipeline {
 
         let mut ocr_error: Option<String> = None;
         let ocr_frames = if self.ocr_enabled {
-            let ocr = Arc::clone(&self.ocr);
-            let frames_for_ocr = frames.clone();
-            let ocr_progress = Arc::clone(&self.progress);
-            let ocr_item_id = item_id.to_string();
             self.report_progress(
                 item_id,
                 "ocr_frames",
@@ -719,28 +716,15 @@ impl VideoPipeline {
                 "Reading text from visual frames",
             );
             let _model_permit = self.acquire_model_permit_with_wait(item_id, 0.64).await?;
-            let frames_result: anyhow::Result<Vec<OcrFrame>> =
-                match tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
-                    let total = frames_for_ocr.len();
-                    let mut collected = Vec::with_capacity(total);
-                    for (index, frame) in frames_for_ocr.iter().enumerate() {
-                        collected.extend(ocr.ocr_images(std::slice::from_ref(frame))?);
-                        let done = index + 1;
-                        let fraction = done as f64 / total.max(1) as f64;
-                        ocr_progress.update(
-                            &ocr_item_id,
-                            "ocr_frames",
-                            0.64 + fraction * 0.03,
-                            &format!("Reading text from visual frames · {done}/{total}"),
-                        );
-                    }
-                    Ok(collected)
-                })
-                .await
-                {
-                    Ok(result) => result,
-                    Err(error) => Err(error.into()),
-                };
+            let frames_result = read_ocr_frames_with_progress(
+                item_id,
+                frames.clone(),
+                Arc::clone(&self.ocr),
+                Arc::clone(&self.progress),
+                0.64,
+                0.03,
+            )
+            .await;
             match frames_result {
                 Ok(frames) => {
                     self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
