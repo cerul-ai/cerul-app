@@ -33,7 +33,6 @@ import {
   registerIpcHandlers,
   type OAuthProvider,
   type RendererDiagnostic,
-  type UpdaterCheckOptions,
 } from "./ipc";
 import {
   appHost,
@@ -50,14 +49,8 @@ import {
   createOverlayBrowserWindow,
 } from "./windows";
 import {
-  checkForGitHubReleaseUpdate,
-  compareVersions,
-  normalizeVersion,
-  releasesPageUrl,
-  type DesktopReleaseNotes,
-  type DesktopUpdateInfo,
-  type UpdaterProgress,
-  type UpdaterState,
+  createUpdaterController,
+  type UpdaterCheckOptions,
 } from "./updater";
 // Type-only: erased at runtime. The implementation is lazy-required in
 // getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
@@ -112,18 +105,23 @@ const dirtyStores = new Set<string>();
 const secureTokenStorePath = "secure-tokens.json";
 let oauthCallbackServer: Server | null = null;
 let oauthCallbackPort: number | null = null;
-let autoUpdaterInstance: AppUpdater | null = null;
-let autoUpdaterWired = false;
-let updateInstallRequested = false;
-let updaterCheckInstallRequested = false;
 let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
 let updateInstallFallbackRunId = 0;
 let macUpdatePreparationRunId = 0;
 let updateInstallWhenPrepared = false;
 let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
-let latestUpdaterState: UpdaterState = { phase: "idle" };
 let standardMenuAcceleratorsCache: Set<string> | null = null;
+
+const updaterController = createUpdaterController({
+  clearPreparedUpdate: clearPreparedMacUpdateHandoff,
+  getMainWindow: () => mainWindow,
+  markInstallWhenPrepared: () => {
+    updateInstallWhenPrepared = true;
+  },
+  prepareDownloadedUpdateForRestart,
+  installUpdate: installDesktopUpdate,
+});
 
 type MainWindowCommand = {
   type: "new_source";
@@ -232,11 +230,11 @@ app
     registerIpcHandlers({
       invokeCommand: handleCommand,
       getAppVersion: () => app.getVersion(),
-      checkForUpdate: checkForGitHubReleaseUpdate,
-      runUpdateCheck: runDesktopUpdateCheck,
-      getUpdaterState: () => latestUpdaterState,
+      checkForUpdate: updaterController.checkForUpdate,
+      runUpdateCheck: updaterController.runCheck,
+      getUpdaterState: updaterController.getState,
       collectUpdaterDiagnostics,
-      startUpdateDownload: startDesktopUpdateDownload,
+      startUpdateDownload: updaterController.startDownload,
       installUpdate: installDesktopUpdate,
       loadStore,
       markStoreDirty: (storePath) => {
@@ -249,6 +247,8 @@ app
       writeRendererDiagnostic,
     });
     await startRustCore();
+    // Future Agent runtime wiring belongs here, in the main-process/core
+    // boundary, so privileged work does not move into the renderer.
     // Mirror the saved in-app theme onto the native appearance before any window
     // paints, so the overlay's vibrancy / menu-bar glass and the main window's
     // native chrome don't show the macOS system appearance on the first frame.
@@ -2095,14 +2095,14 @@ function clearPreparedMacUpdateHandoff(version?: string) {
 }
 
 function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater, installWhenReady = false) {
-  const releaseNotes = currentUpdateReleaseNotes();
+  const releaseNotes = updaterController.currentReleaseNotes();
   updateInstallWhenPrepared = installWhenReady;
   if (process.platform !== "darwin") {
     if (installWhenReady) {
-      setUpdaterState({ phase: "installing", version, releaseNotes });
+      updaterController.setState({ phase: "installing", version, releaseNotes });
       setTimeout(() => void installDesktopUpdate(version), 500);
     } else {
-      setUpdaterState({ phase: "downloaded", version, releaseNotes });
+      updaterController.setState({ phase: "downloaded", version, releaseNotes });
     }
     return;
   }
@@ -2117,7 +2117,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
     rescueCancelPath: null,
   };
   preparedMacUpdateHandoff = macHandoff;
-  setUpdaterState({ phase: "preparing", version, releaseNotes });
+  updaterController.setState({ phase: "preparing", version, releaseNotes });
   appendUpdaterShipItRescueLog(
     `preparing_mac_update_for_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
   );
@@ -2133,7 +2133,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
     }
     cancelMacUpdateInstallHandoff(macHandoff);
     clearPreparedMacUpdateHandoff(version);
-    setUpdaterError(error, version);
+    updaterController.setError(error, version);
   };
   const onError = (error: unknown) => {
     fail(error);
@@ -2159,7 +2159,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
       appendUpdaterShipItRescueLog(
         `mac_update_ready_to_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
       );
-      setUpdaterState({ phase: "downloaded", version, releaseNotes });
+      updaterController.setState({ phase: "downloaded", version, releaseNotes });
       if (shouldInstallWhenReady) {
         setTimeout(() => void installDesktopUpdate(version), 500);
       }
@@ -2176,7 +2176,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
   }
 
   setTimeout(() => {
-    if (runId !== macUpdatePreparationRunId || latestUpdaterState.phase !== "preparing") {
+    if (runId !== macUpdatePreparationRunId || updaterController.getState().phase !== "preparing") {
       return;
     }
     fail(new Error("macOS updater did not finish preparing the update before timeout"));
@@ -2277,7 +2277,7 @@ function collectUpdaterDiagnostics() {
     `resourcesPath=${process.resourcesPath}`,
     `userData=${userData}`,
     `cache=${appCache}`,
-    `latestUpdaterState=${JSON.stringify(latestUpdaterState)}`,
+    `latestUpdaterState=${JSON.stringify(updaterController.getState())}`,
     "",
     "== app-update.yml ==",
     readTextIfExists(appUpdateYml) ?? "[[missing]]",
@@ -2309,323 +2309,13 @@ function collectUpdaterDiagnostics() {
   return lines.join("\n");
 }
 
-function positiveFiniteNumber(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) && number > 0 ? number : undefined;
-}
-
-function updateDownloadState(
-  version: string,
-  progress: UpdaterProgress = {},
-  releaseNotes = currentUpdateReleaseNotes(),
-): UpdaterState {
-  const rawPercent = Number.isFinite(progress.percent) ? Number(progress.percent) : 0;
-  const percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
-  const bytesPerSecond = positiveFiniteNumber(progress.bytesPerSecond);
-  const transferredBytes = positiveFiniteNumber(progress.transferred);
-  const totalBytes = positiveFiniteNumber(progress.total);
-  const remainingBytes =
-    totalBytes !== undefined && transferredBytes !== undefined
-      ? Math.max(0, totalBytes - transferredBytes)
-      : undefined;
-  const etaSeconds =
-    bytesPerSecond !== undefined && remainingBytes !== undefined
-      ? Math.ceil(remainingBytes / bytesPerSecond)
-      : undefined;
-  return {
-    phase: "downloading",
-    version,
-    percent,
-    bytesPerSecond,
-    etaSeconds,
-    transferredBytes,
-    totalBytes,
-    releaseNotes,
-  };
-}
-
-function setUpdaterState(next: UpdaterState) {
-  latestUpdaterState = next;
-  // The renderer also pulls the current state on mount (cerul:updater-get-state)
-  // in case it subscribes after the first check emits.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("cerul:updater-event", next);
-  }
-}
-
-function currentUpdateReleaseNotes(): DesktopReleaseNotes | undefined {
-  return "releaseNotes" in latestUpdaterState ? latestUpdaterState.releaseNotes : undefined;
-}
-
-function setUpdaterError(error: unknown, version?: string) {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error("desktop updater error", error);
-  setUpdaterState({
-    phase: "error",
-    version,
-    message,
-    releaseUrl: releasesPageUrl(),
-    releaseNotes: currentUpdateReleaseNotes(),
-  });
-}
-
-type AvailableUpdaterState = Extract<UpdaterState, { phase: "available" }>;
-
-function newerReleasePageUpdateForVersion(version: string): AvailableUpdaterState | null {
-  if (
-    latestUpdaterState.phase !== "available" ||
-    latestUpdaterState.canAutoInstall ||
-    compareVersions(latestUpdaterState.version, version) <= 0
-  ) {
-    return null;
-  }
-  return latestUpdaterState;
-}
-
-function keepNewerReleasePageUpdate(version: string, source: string) {
-  const newerUpdate = newerReleasePageUpdateForVersion(version);
-  if (!newerUpdate) {
-    return false;
-  }
-  updaterCheckInstallRequested = false;
-  updateInstallRequested = false;
-  console.warn(
-    `electron-updater ${source} ignored stale update metadata version=${version}; newer GitHub release=${newerUpdate.version}`,
-  );
-  setUpdaterState(newerUpdate);
-  return true;
-}
-
-function startAutoUpdaterDownload(updater: AppUpdater, version: string) {
-  void updater.downloadUpdate().catch((error) => {
-    console.error("electron-updater auto download failed; release-page fallback active", error);
-    updaterCheckInstallRequested = false;
-    updateInstallRequested = false;
-    clearPreparedMacUpdateHandoff(version);
-    setUpdaterState({
-      phase: "error",
-      version,
-      message: error instanceof Error ? error.message : String(error),
-      releaseUrl: releasesPageUrl(),
-      releaseNotes: currentUpdateReleaseNotes(),
-    });
-  });
-}
-
-function getAutoUpdater(): AppUpdater | null {
-  if (autoUpdaterInstance) {
-    return autoUpdaterInstance;
-  }
-  try {
-    const mod = require("electron-updater") as typeof import("electron-updater");
-    autoUpdaterInstance = mod.autoUpdater;
-    return autoUpdaterInstance;
-  } catch (error) {
-    console.error("electron-updater unavailable; using release-page fallback", error);
-    return null;
-  }
-}
-
-function wireAutoUpdater(updater: AppUpdater) {
-  if (autoUpdaterWired) {
-    return;
-  }
-  autoUpdaterWired = true;
-  // Keep downloads behind our own version arbitration so stale generic-provider
-  // metadata cannot replace a newer GitHub release-page update with an older
-  // auto-installable build.
-  updater.autoDownload = false;
-  // On macOS, electron-updater emits its own update-downloaded event before
-  // native Squirrel has necessarily finished its handoff. Keep the Squirrel
-  // fetch/install tied to explicit quitAndInstall so a fallback app.quit cannot
-  // strand a staged update.
-  updater.autoInstallOnAppQuit = process.platform !== "darwin";
-  updater.on("update-available", (info) => {
-    const version = normalizeVersion(info.version);
-    if (keepNewerReleasePageUpdate(version, "update-available")) {
-      return;
-    }
-    clearPreparedMacUpdateHandoff();
-    if (updaterCheckInstallRequested) {
-      updateInstallRequested = true;
-      updaterCheckInstallRequested = false;
-    }
-    setUpdaterState(updateDownloadState(version));
-    startAutoUpdaterDownload(updater, version);
-  });
-  updater.on("update-not-available", () => {
-    updaterCheckInstallRequested = false;
-    updateInstallRequested = false;
-    clearPreparedMacUpdateHandoff();
-  });
-  updater.on("download-progress", (progress) => {
-    const version =
-      latestUpdaterState.phase === "available" || latestUpdaterState.phase === "downloading"
-        ? latestUpdaterState.version
-        : normalizeVersion(app.getVersion());
-    setUpdaterState(updateDownloadState(version, progress));
-  });
-  updater.on("update-downloaded", (info) => {
-    const version = normalizeVersion(info.version);
-    if (keepNewerReleasePageUpdate(version, "update-downloaded")) {
-      return;
-    }
-    const installWhenReady = updateInstallRequested || updaterCheckInstallRequested;
-    updateInstallRequested = false;
-    updaterCheckInstallRequested = false;
-    prepareDownloadedUpdateForRestart(version, updater, installWhenReady);
-  });
-  updater.on("error", (error) => {
-    // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
-    // failure. Degrade to the GitHub-release fallback so the pill still lets the
-    // user grab the new version from the download page.
-    console.error("electron-updater error", error);
-    const fallbackUrl =
-      latestUpdaterState.phase === "available" ? latestUpdaterState.releaseUrl : releasesPageUrl();
-    updaterCheckInstallRequested = false;
-    if (updateInstallRequested) {
-      updateInstallRequested = false;
-    }
-    clearPreparedMacUpdateHandoff();
-    setUpdaterState({
-      phase: "error",
-      version:
-        latestUpdaterState.phase === "available" ||
-        latestUpdaterState.phase === "downloading" ||
-        latestUpdaterState.phase === "preparing" ||
-        latestUpdaterState.phase === "installing" ||
-        latestUpdaterState.phase === "downloaded"
-          ? latestUpdaterState.version
-          : undefined,
-      message: error instanceof Error ? error.message : String(error),
-      releaseUrl: fallbackUrl,
-      releaseNotes: currentUpdateReleaseNotes(),
-    });
-  });
-}
-
-// Signing-independent detection (GitHub releases API) that works on today's
-// ad-hoc builds. Drives the "available" pill; never clobbers an in-flight
-// download/installed state.
-// Returns false when the release probe could not reach a conclusion (network or
-// server error). Callers use this to avoid reporting a false "up to date" and to
-// retry soon instead of advancing the check throttle.
-async function refreshManualUpdateState(): Promise<boolean> {
-  let info: DesktopUpdateInfo | null = null;
-  try {
-    info = await checkForGitHubReleaseUpdate();
-  } catch (error) {
-    console.error("github update check failed", error);
-    return false;
-  }
-  if (info) {
-    if (latestUpdaterState.phase === "idle" || latestUpdaterState.phase === "available") {
-      setUpdaterState({
-        phase: "available",
-        version: info.version,
-        releaseUrl: info.url,
-        canAutoInstall: false,
-        releaseNotes: info.releaseNotes,
-      });
-    }
-  } else if (latestUpdaterState.phase === "available") {
-    setUpdaterState({ phase: "idle" });
-  }
-  return true;
-}
-
-// Resolves true when the check reached a definitive answer (update found or
-// confirmed up to date), false when it failed to reach the update server. The
-// IPC handler rejects on false so the renderer's automatic-check retry path and
-// the About page surface the failure instead of a misleading "up to date".
-async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}): Promise<boolean> {
-  const installWhenDownloaded = options.installWhenDownloaded === true;
-
-  // Dev demo hook: CERUL_FAKE_UPDATE=<version> renders the pill without a real
-  // release so the flow is reviewable before signed releases exist.
-  const fake = process.env.CERUL_FAKE_UPDATE;
-  if (fake && !app.isPackaged) {
-    setUpdaterState({
-      phase: "available",
-      version: normalizeVersion(fake),
-      releaseUrl: releasesPageUrl(),
-      canAutoInstall: false,
-      releaseNotes: {
-        publishedAt: new Date().toISOString(),
-        sections: [
-          {
-            title: "Improved",
-            items: [
-              "Show release notes from the update button before opening the download page.",
-              "Keep update status visible while the app checks, downloads, and prepares a restart.",
-              "Use GitHub release notes generated by the existing release workflow.",
-            ],
-          },
-          {
-            title: "Fixed",
-            items: ["Avoid showing an empty update card when release notes are missing."],
-          },
-        ],
-      },
-    });
-    return true;
-  }
-
-  if (
-    latestUpdaterState.phase === "downloading" ||
-    latestUpdaterState.phase === "preparing" ||
-    latestUpdaterState.phase === "downloaded" ||
-    latestUpdaterState.phase === "installing"
-  ) {
-    if (installWhenDownloaded) {
-      if (latestUpdaterState.phase === "downloading") {
-        updateInstallRequested = true;
-      } else if (latestUpdaterState.phase === "preparing") {
-        updateInstallWhenPrepared = true;
-      } else if (latestUpdaterState.phase === "downloaded") {
-        await installDesktopUpdate(latestUpdaterState.version);
-      }
-    }
-    return true;
-  }
-
-  const githubOk = await refreshManualUpdateState();
-
-  // Opportunistic in-place updater — dormant until releases ship signed +
-  // notarized with a latest-mac.yml that Squirrel.Mac can apply. When that
-  // lands, these events upgrade the pill from "open download page" to a
-  // one-click download followed by an automatic restart-to-install.
-  if (!app.isPackaged) {
-    return githubOk;
-  }
-  const updater = getAutoUpdater();
-  if (!updater) {
-    return githubOk;
-  }
-  try {
-    wireAutoUpdater(updater);
-    if (installWhenDownloaded) {
-      updaterCheckInstallRequested = true;
-    }
-    await updater.checkForUpdates();
-    return true;
-  } catch (error) {
-    if (installWhenDownloaded) {
-      updaterCheckInstallRequested = false;
-      updateInstallRequested = false;
-    }
-    console.error("electron-updater check failed; release-page fallback active", error);
-    return githubOk;
-  }
-}
-
 // Manual "Check for Updates…" entry points (tray + native app menu). Mirrors the
 // Settings → About button but surfaces feedback natively: an up-to-date result
 // shows a dialog (otherwise a silent check looks broken), while a found update
 // brings the window forward so the rail "Update" pill is visible.
 async function handleManualUpdateCheck() {
-  const reached = await runDesktopUpdateCheck();
-  if (latestUpdaterState.phase !== "idle") {
+  const reached = await updaterController.runCheck();
+  if (updaterController.getState().phase !== "idle") {
     focusMainWindow();
     return;
   }
@@ -2900,38 +2590,6 @@ function windowMenuTemplate(isMac: boolean): MenuItemConstructorOptions {
   };
 }
 
-async function startDesktopUpdateDownload() {
-  if (latestUpdaterState.phase !== "available") {
-    return;
-  }
-  const { releaseNotes, releaseUrl, canAutoInstall, version } = latestUpdaterState;
-  // Without a working in-place updater, "update" means open the download page.
-  if (!canAutoInstall) {
-    await shell.openExternal(releaseUrl);
-    return;
-  }
-  const updater = getAutoUpdater();
-  if (!updater) {
-    await shell.openExternal(releaseUrl);
-    return;
-  }
-  updateInstallRequested = true;
-  try {
-    setUpdaterState(updateDownloadState(version, {}, releaseNotes));
-    await updater.downloadUpdate();
-  } catch (error) {
-    console.error("electron-updater download failed; opening release page", error);
-    updateInstallRequested = false;
-    setUpdaterState({
-      phase: "error",
-      version,
-      message: error instanceof Error ? error.message : String(error),
-      releaseUrl,
-      releaseNotes,
-    });
-  }
-}
-
 function clearUpdateInstallFallbackTimers() {
   updateInstallFallbackRunId += 1;
   if (updateInstallFallbackTimer) {
@@ -2954,10 +2612,9 @@ async function abortDesktopUpdateInstallHandoff(
     cancelMacUpdateInstallHandoff(macHandoff);
   }
   clearPreparedMacUpdateHandoff(version);
-  updateInstallRequested = false;
-  updaterCheckInstallRequested = false;
+  updaterController.clearInstallRequests();
   isQuitting = false;
-  setUpdaterError(error, version);
+  updaterController.setError(error, version);
   try {
     await startRustCore();
   } catch (restartError) {
@@ -3022,7 +2679,8 @@ async function scheduleMacUpdateInstallExitFallback(
   if (!isFreshMacShipItState(stateBaseline)) {
     const message = "macOS updater did not stage a fresh ShipItState.plist before fallback quit";
     appendUpdaterShipItRescueLog(`${message} ${describeMacShipItState(stateBaseline)}`);
-    const version = latestUpdaterState.phase === "installing" ? latestUpdaterState.version : undefined;
+    const updaterState = updaterController.getState();
+    const version = updaterState.phase === "installing" ? updaterState.version : undefined;
     await abortDesktopUpdateInstallHandoff(new Error(message), version, macHandoff);
     return;
   }
@@ -3185,24 +2843,25 @@ async function prepareDesktopUpdateInstall(version: string) {
 }
 
 async function installDesktopUpdate(version?: string) {
-  const updater = getAutoUpdater();
+  const updater = updaterController.getAutoUpdater();
   if (!updater) {
-    setUpdaterError(new Error("electron-updater is unavailable"), version);
+    updaterController.setError(new Error("electron-updater is unavailable"), version);
     return;
   }
   let installingVersion = version;
   if (!installingVersion) {
+    const updaterState = updaterController.getState();
     installingVersion =
-      latestUpdaterState.phase === "preparing" ||
-      latestUpdaterState.phase === "downloaded" ||
-      latestUpdaterState.phase === "installing"
-        ? latestUpdaterState.version
+      updaterState.phase === "preparing" ||
+      updaterState.phase === "downloaded" ||
+      updaterState.phase === "installing"
+        ? updaterState.version
         : app.getVersion();
   }
-  setUpdaterState({
+  updaterController.setState({
     phase: "installing",
     version: installingVersion,
-    releaseNotes: currentUpdateReleaseNotes(),
+    releaseNotes: updaterController.currentReleaseNotes(),
   });
   let macHandoff: MacUpdateInstallHandoff | undefined;
   try {

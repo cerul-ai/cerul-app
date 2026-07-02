@@ -1,11 +1,8 @@
 import { app, dialog, ipcMain } from "electron";
 import { appScheme } from "./protocol";
+import type { UpdaterCheckOptions } from "./updater";
 
 export type OAuthProvider = "google" | "github";
-
-export type UpdaterCheckOptions = {
-  installWhenDownloaded?: boolean;
-};
 
 export type RendererDiagnostic = {
   window?: string;
