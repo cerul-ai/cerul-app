@@ -5,6 +5,10 @@ use axum::{
 
 use crate::ApiState;
 
+mod models;
+
+pub(crate) use models::*;
+
 pub(crate) const API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/status", &["get"]),
     ("/v1/openapi.json", &["get"]),
