@@ -546,13 +546,8 @@ dependencies = [
 name = "cerul-core"
 version = "0.0.1"
 dependencies = [
- "cerul-api",
- "cerul-embed",
- "cerul-models",
- "cerul-pipeline",
- "cerul-search",
- "cerul-sources",
- "cerul-storage",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
