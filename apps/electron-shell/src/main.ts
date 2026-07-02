@@ -11,7 +11,6 @@ import {
   nativeImage,
   nativeTheme,
   net,
-  protocol,
   safeStorage,
   screen,
   session,
@@ -24,7 +23,6 @@ import fs from "node:fs";
 import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   assertTargetsPreservePath,
   factoryResetTargets,
@@ -33,6 +31,17 @@ import {
   pathsMatch,
   type ResetTarget,
 } from "./local-data-reset";
+import {
+  appHost,
+  appScheme,
+  firstDeepLinkArg,
+  isAppUrl,
+  isDeepLinkScheme,
+  isExternalUrl,
+  registerAppProtocol,
+  registerDeepLinkProtocols,
+  registerPrivilegedAppScheme,
+} from "./protocol";
 // Type-only: erased at runtime. The implementation is lazy-required in
 // getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
 // GitHub-release fallback instead of crashing the main process at load time.
@@ -50,9 +59,6 @@ if (explicitApiPort) {
   delete process.env.CERUL_API_PORT;
 }
 process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
-const appScheme = "app";
-const appHost = "cerul";
-const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
 const defaultNewSourceHotkey = "CommandOrControl+N";
 const defaultOpenSettingsHotkey = "CommandOrControl+,";
@@ -235,18 +241,7 @@ type BundleProcessHolder = {
   knownBundleSidecar?: boolean;
 };
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: appScheme,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      stream: true,
-    },
-  },
-]);
+registerPrivilegedAppScheme();
 
 if (!loginItemCliCommand) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -280,7 +275,11 @@ app
       return;
     }
     setDockIcon();
-    registerAppProtocol();
+    registerAppProtocol({
+      desktopDistDir: desktopDistDir(),
+      apiBaseUrl,
+      cloudAccountOrigin,
+    });
     // The app:// renderer is content-hashed, but a stale index.html cached in
     // the userData partition would keep pointing at old asset hashes across
     // restarts (a rebuild then appears to "not take effect"). Clear the HTTP
@@ -412,60 +411,6 @@ function trayIconPath() {
   return desktopBrandResourcePath(
     process.platform === "darwin" ? "brand/cerul-menubarTemplate.png" : "brand/icon-192.png",
   );
-}
-
-function registerAppProtocol() {
-  protocol.handle(appScheme, async (request) => {
-    const url = new URL(request.url);
-    if (url.hostname !== appHost) {
-      return new Response("unknown app host", { status: 404 });
-    }
-
-    const dist = path.resolve(desktopDistDir());
-    const pathname = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
-    const filePath = path.resolve(dist, pathname.replace(/^\/+/, ""));
-    if (!isPathInsideDirectory(filePath, dist)) {
-      return new Response("invalid app path", { status: 403 });
-    }
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-      return new Response("not found", { status: 404 });
-    }
-
-    const response = await net.fetch(pathToFileURL(filePath).toString());
-    return withAppSecurityHeaders(response, filePath);
-  });
-}
-
-function withAppSecurityHeaders(response: Response, filePath: string) {
-  if (!filePath.endsWith(".html")) {
-    return response;
-  }
-  const headers = new Headers(response.headers);
-  headers.set("Content-Security-Policy", contentSecurityPolicy());
-  // Never cache index.html so it always references the current (content-hashed)
-  // assets after a rebuild; the hashed assets themselves remain cacheable.
-  headers.set("Cache-Control", "no-store");
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function contentSecurityPolicy() {
-  return [
-    "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
-    "font-src 'self' data:",
-    `img-src 'self' app: ${apiBaseUrl} data: blob:`,
-    `media-src 'self' ${apiBaseUrl} blob:`,
-    `connect-src 'self' ${apiBaseUrl} ${cloudAccountOrigin}`,
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'none'",
-    "frame-ancestors 'none'",
-  ].join("; ");
 }
 
 function rendererDiagnosticsLogPath() {
@@ -1056,7 +1001,7 @@ function routeDeepLink(url?: string) {
     return;
   }
   const scheme = parsed.protocol.replace(/:$/, "");
-  if (!deepLinkSchemes.includes(scheme)) {
+  if (!isDeepLinkScheme(scheme)) {
     return;
   }
   if (parsed.hostname === "item") {
@@ -2191,43 +2136,6 @@ function targetTriple() {
 
 function executableName(name: string) {
   return process.platform === "win32" ? `${name}.exe` : name;
-}
-
-function registerDeepLinkProtocols() {
-  for (const scheme of deepLinkSchemes) {
-    if (app.isPackaged) {
-      app.setAsDefaultProtocolClient(scheme);
-    } else {
-      app.setAsDefaultProtocolClient(scheme, process.execPath, [process.argv[1]].filter(Boolean));
-    }
-  }
-}
-
-function firstDeepLinkArg(argv: string[]) {
-  return argv.find((arg) => deepLinkSchemes.some((scheme) => arg.startsWith(`${scheme}://`)));
-}
-
-function isAppUrl(rawUrl: string) {
-  try {
-    const url = new URL(rawUrl);
-    return url.protocol === `${appScheme}:` && url.hostname === appHost;
-  } catch {
-    return false;
-  }
-}
-
-function isExternalUrl(rawUrl: string) {
-  try {
-    const protocol = new URL(rawUrl).protocol;
-    return protocol === "http:" || protocol === "https:" || protocol === "mailto:";
-  } catch {
-    return false;
-  }
-}
-
-function isPathInsideDirectory(filePath: string, directory: string) {
-  const relative = path.relative(directory, filePath);
-  return relative === "" || (relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 // Only frames belonging to the app shell (app:// in production, the vite
