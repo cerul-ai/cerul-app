@@ -7,10 +7,9 @@
 // phases are tracked in this comment so the next contributor can pick
 // up cleanly:
 //
-//   Phase B — extract leaf components into ./components/
-//     InlineNotice, EmptyState, Metric, ModelDownloadBanner,
-//     CoreBanner, ResultCard, ItemCard, ItemModalityIcon,
-//     DetailIssuePanel.
+//   Phase B — done: leaf components live in ./components/
+//     InlineNotice, EmptyState, Metric, CoreBanner, ResultCard,
+//     ItemCard, ItemModalityIcon, DetailIssuePanel, SettingsQuietNotice.
 //   Phase C — extract screens into ./screens/
 //     HomeScreen, ResultsScreen, ResultDetail, LibraryScreen,
 //     ItemDetail, SourcesScreen, SettingsScreen, Onboarding.
@@ -128,6 +127,7 @@ import {
   itemModalityLabel,
 } from "./components/cards";
 import { CoreStatusToast, useCoreStatus, type CoreLevel } from "./components/core-banner";
+import { SettingsQuietNotice } from "./components/settings-quiet-notice";
 import { SourceRow } from "./components/source-row";
 import { SourcePreview } from "./components/source-preview";
 import {
@@ -790,56 +790,6 @@ function storageUnavailableCopy(message: string, t: TFunction) {
     title: t("settings.storage.unavailable.genericTitle"),
     body: t("settings.storage.unavailable.genericBody"),
   };
-}
-
-function SettingsQuietNotice({
-  title,
-  body,
-  detail,
-  action,
-}: {
-  title: string;
-  body?: string;
-  detail?: string | null;
-  action?: { label: string; onClick: () => void };
-}) {
-  const t = useT();
-  const [showDetail, setShowDetail] = useState(false);
-  const hasDetail = Boolean(detail && detail !== title && detail !== body);
-
-  return (
-    <div className="settings-quiet-notice" role="status">
-      <span className="settings-quiet-notice-dot" aria-hidden="true" />
-      <div className="settings-quiet-notice-body">
-        <strong>{title}</strong>
-        {body ? <span>{body}</span> : null}
-        {hasDetail && showDetail ? <pre>{detail}</pre> : null}
-      </div>
-      {hasDetail ? (
-        <div className="settings-quiet-notice-actions">
-          <button
-            type="button"
-            className="settings-quiet-notice-link"
-            aria-expanded={showDetail}
-            onClick={() => setShowDetail((open) => !open)}
-          >
-            {t("common.details")}
-          </button>
-          {action ? (
-            <button type="button" className="settings-quiet-notice-action" onClick={action.onClick}>
-              {action.label}
-            </button>
-          ) : null}
-        </div>
-      ) : action ? (
-        <div className="settings-quiet-notice-actions">
-          <button type="button" className="settings-quiet-notice-action" onClick={action.onClick}>
-            {action.label}
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 // Tracks, per running job, the wall-clock second its current coarse step began.
