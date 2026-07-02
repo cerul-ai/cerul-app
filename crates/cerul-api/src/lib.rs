@@ -7485,6 +7485,379 @@ mod tests {
         .unwrap();
     }
 
+    fn contract_shape(value: &Value) -> Value {
+        match value {
+            Value::Null => Value::Null,
+            Value::Bool(_) => Value::from("boolean"),
+            Value::Number(_) => Value::from("number"),
+            Value::String(_) => Value::from("string"),
+            Value::Array(values) => {
+                Value::Array(values.iter().map(contract_shape).collect::<Vec<_>>())
+            }
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(key, value)| (key.clone(), contract_shape(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn assert_contract_shape(name: &str, actual: &Value, expected: Value) {
+        assert_eq!(
+            contract_shape(actual),
+            expected,
+            "{name} contract shape changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_golden_contract_shapes_cover_agent_endpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let raw_path = temp.path().join("video.mp4");
+        seed_v1_agent_search_fixture(&paths, &raw_path);
+        let app = router_with_paths(paths);
+
+        let openapi = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(openapi.status(), StatusCode::OK);
+        let openapi = response_json(openapi).await;
+        assert_eq!(openapi["openapi"], "3.1.0");
+        assert_eq!(openapi["info"]["title"], "Cerul Agent API");
+        assert_eq!(
+            openapi["paths"],
+            json!({
+                "/v1/status": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/openapi.json": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/search": {"post": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/ask": {"post": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/items": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/items/{id}": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/items/{id}/chunks": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/chunks/{id}/frame": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/chunks/{id}/video-segment": {"get": {"responses": {"200": {"description": "OK"}}}},
+                "/v1/chunks/{id}/video-clip": {"get": {"responses": {"200": {"description": "OK"}}}}
+            })
+        );
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status = response_json(status).await;
+        assert_contract_shape(
+            "v1 status",
+            &status,
+            json!({
+                "request_id": "string",
+                "status": "string",
+                "version": "string",
+                "execution": {"target": "string", "account_id": null, "privacy": "string"},
+                "library": {
+                    "total_items": "number",
+                    "indexed_items": "number",
+                    "processing_items": "number",
+                    "failed_items": "number",
+                    "chunk_count": "number"
+                },
+                "search": {
+                    "ready": "boolean",
+                    "retrieval_mode": "string",
+                    "text_ready": "boolean",
+                    "vector_ready": "boolean"
+                },
+                "indexing": {"paused": "boolean", "active_jobs": "number", "queued_jobs": "number"},
+                "account": {"signed_in": "boolean", "plan": null, "credits_remaining": null},
+                "capabilities": ["string", "string", "string", "string", "string", "string"]
+            }),
+        );
+
+        let search = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/search")
+                    .header(header::HOST, "127.0.0.1:25101")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"query": "scaling laws", "max_results": 1}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(search.status(), StatusCode::OK);
+        let search = response_json(search).await;
+        assert_contract_shape(
+            "v1 search",
+            &search,
+            json!({
+                "request_id": "string",
+                "execution": {"target": "string", "account_id": null, "privacy": "string"},
+                "results": [{
+                    "id": "string",
+                    "type": "string",
+                    "source": "string",
+                    "item": {
+                        "id": "string",
+                        "title": "string",
+                        "content_type": "string",
+                        "source_type": "string",
+                        "duration_sec": "number"
+                    },
+                    "time": {"start_sec": "number", "end_sec": "number", "timestamp": "string"},
+                    "text": {"snippet": "string", "quote": "string"},
+                    "evidence": {
+                        "id": "string",
+                        "kind": "string",
+                        "clip": {"type": "string", "url": "string"},
+                        "preview": {"type": "string", "url": "string"},
+                        "open_in_cerul": "string"
+                    },
+                    "score": {"match": "number", "exact_match": "boolean", "similarity": null}
+                }],
+                "diagnostics": {
+                    "retrieval_mode": "string",
+                    "fallback_reason": "string",
+                    "vector_hits": "number",
+                    "text_hits": "number",
+                    "result_count": "number"
+                },
+                "usage": {
+                    "billable": "boolean",
+                    "metered_events": [
+                        {"capability": "string", "quantity": "number", "credits": "number"},
+                        {"capability": "string", "quantity": "number", "credits": "number"}
+                    ],
+                    "credits_used": "number"
+                }
+            }),
+        );
+
+        let ask = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/ask")
+                    .header(header::HOST, "127.0.0.1:25102")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"question": "scaling laws", "max_results": 1}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ask.status(), StatusCode::OK);
+        let ask = response_json(ask).await;
+        assert_contract_shape(
+            "v1 ask",
+            &ask,
+            json!({
+                "request_id": "string",
+                "execution": {"target": "string", "account_id": null, "privacy": "string"},
+                "mode": "string",
+                "answer": "string",
+                "citations": [{
+                    "id": "string",
+                    "type": "string",
+                    "source": "string",
+                    "item": {
+                        "id": "string",
+                        "title": "string",
+                        "content_type": "string",
+                        "source_type": "string",
+                        "duration_sec": "number"
+                    },
+                    "time": {"start_sec": "number", "end_sec": "number", "timestamp": "string"},
+                    "text": {"snippet": "string", "quote": "string"},
+                    "evidence": {
+                        "id": "string",
+                        "kind": "string",
+                        "clip": {"type": "string", "url": "string"},
+                        "preview": {"type": "string", "url": "string"},
+                        "open_in_cerul": "string"
+                    },
+                    "score": {"match": "number", "exact_match": "boolean", "similarity": null}
+                }],
+                "warnings": [],
+                "usage": {
+                    "billable": "boolean",
+                    "metered_events": [
+                        {"capability": "string", "quantity": "number", "credits": "number"},
+                        {"capability": "string", "quantity": "number", "credits": "number"}
+                    ],
+                    "credits_used": "number"
+                }
+            }),
+        );
+
+        let items = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items?status=indexed&limit=1")
+                    .header(header::HOST, "127.0.0.1:25103")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(items.status(), StatusCode::OK);
+        let items = response_json(items).await;
+        assert_contract_shape(
+            "v1 items",
+            &items,
+            json!({
+                "request_id": "string",
+                "execution": {"target": "string", "account_id": null, "privacy": "string"},
+                "items": [{
+                    "id": "string",
+                    "title": "string",
+                    "content_type": "string",
+                    "source_type": "string",
+                    "source_url": null,
+                    "status": "string",
+                    "duration_sec": "number",
+                    "indexed_at": "number",
+                    "chunk_count": "number",
+                    "thumbnail": {"type": "string", "url": "string"},
+                    "open_in_cerul": "string"
+                }],
+                "page": {"limit": "number", "next_cursor": null}
+            }),
+        );
+
+        let item = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1")
+                    .header(header::HOST, "127.0.0.1:25104")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(item.status(), StatusCode::OK);
+        let item = response_json(item).await;
+        assert_contract_shape(
+            "v1 item",
+            &item,
+            json!({
+                "request_id": "string",
+                "execution": {"target": "string", "account_id": null, "privacy": "string"},
+                "item": {
+                    "id": "string",
+                    "title": "string",
+                    "content_type": "string",
+                    "source_type": "string",
+                    "source_url": null,
+                    "status": "string",
+                    "duration_sec": "number",
+                    "indexed_at": "number",
+                    "chunk_count": "number",
+                    "thumbnail": {"type": "string", "url": "string"},
+                    "open_in_cerul": "string"
+                }
+            }),
+        );
+
+        let chunks = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/items/item-1/chunks?type=transcript&limit=1")
+                    .header(header::HOST, "127.0.0.1:25105")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chunks.status(), StatusCode::OK);
+        let chunks = response_json(chunks).await;
+        assert_contract_shape(
+            "v1 chunks",
+            &chunks,
+            json!({
+                "request_id": "string",
+                "execution": {"target": "string", "account_id": null, "privacy": "string"},
+                "item": {
+                    "id": "string",
+                    "title": "string",
+                    "content_type": "string",
+                    "source_type": "string",
+                    "source_url": null,
+                    "status": "string",
+                    "duration_sec": "number",
+                    "indexed_at": "number",
+                    "chunk_count": "number",
+                    "thumbnail": {"type": "string", "url": "string"},
+                    "open_in_cerul": "string"
+                },
+                "chunks": [{
+                    "id": "string",
+                    "type": "string",
+                    "source": "string",
+                    "time": {"start_sec": "number", "end_sec": "number", "timestamp": "string"},
+                    "text": {"content": "string", "snippet": "string"},
+                    "evidence": {
+                        "id": "string",
+                        "kind": "string",
+                        "clip": {"type": "string", "url": "string"},
+                        "preview": null,
+                        "open_in_cerul": "string"
+                    }
+                }],
+                "page": {"limit": "number", "next_cursor": null}
+            }),
+        );
+
+        // This golden fixture uses placeholder video bytes, so segment/clip binary
+        // behavior stays covered by `v1_chunk_binary_routes_resolve_agent_evidence_urls`;
+        // here the media contract locks the deterministic frame endpoint and the
+        // OpenAPI paths for all three evidence media routes.
+        let frame = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/chunks/item-1:keyframe:000012/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(frame.status(), StatusCode::OK);
+        assert_eq!(
+            frame.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+        let bytes = to_bytes(frame.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"not a real frame");
+    }
+
     fn seed_v1_untimed_summary_fixture(paths: &AppPaths, raw_path: &FsPath) {
         fs::write(raw_path, b"not a real video").unwrap();
         let raw_path_string = raw_path.to_string_lossy().to_string();
