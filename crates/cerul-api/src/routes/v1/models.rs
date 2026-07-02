@@ -52,6 +52,51 @@ pub(crate) struct V1StatusAccount {
     pub(crate) credits_remaining: Option<i64>,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct V1AgentToolsResponse {
+    pub(crate) request_id: String,
+    pub(crate) execution: V1Execution,
+    pub(crate) runtime: V1AgentRuntime,
+    pub(crate) tools: Vec<V1AgentToolContract>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1AgentRuntime {
+    pub(crate) tool_host: &'static str,
+    pub(crate) renderer_access: &'static str,
+    pub(crate) arbitrary_shell: bool,
+    pub(crate) arbitrary_file_write: bool,
+    pub(crate) write_actions_require_confirmation: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1AgentToolContract {
+    pub(crate) name: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) method: &'static str,
+    pub(crate) path: &'static str,
+    pub(crate) stage: &'static str,
+    pub(crate) input_schema: Value,
+    pub(crate) output_contract: &'static str,
+    pub(crate) safety: V1AgentToolSafety,
+    pub(crate) evidence: V1AgentToolEvidence,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1AgentToolSafety {
+    pub(crate) read_only: bool,
+    pub(crate) billable: bool,
+    pub(crate) requires_confirmation: bool,
+    pub(crate) arbitrary_shell: bool,
+    pub(crate) arbitrary_file_write: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1AgentToolEvidence {
+    pub(crate) returns_evidence_locators: bool,
+    pub(crate) opens_in_cerul: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct V1ListItemsQuery {
     pub(crate) limit: Option<usize>,

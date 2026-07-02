@@ -30,6 +30,7 @@ pub(crate) use models::*;
 pub(crate) const API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/status", &["get"]),
     ("/v1/openapi.json", &["get"]),
+    ("/v1/agent/tools", &["get"]),
     ("/v1/search", &["post"]),
     ("/v1/ask", &["post"]),
     ("/v1/items", &["get"]),
@@ -44,6 +45,7 @@ pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .route("/status", get(v1_status))
         .route("/openapi.json", get(v1_openapi_json))
+        .route("/agent/tools", get(v1_agent_tools))
         .route("/search", post(v1_search))
         .route("/ask", post(v1_ask))
         .route("/items", get(v1_list_items))
@@ -113,8 +115,176 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             plan: None,
             credits_remaining: None,
         },
-        capabilities: vec!["status", "openapi", "search", "ask", "items", "chunks"],
+        capabilities: vec![
+            "status",
+            "openapi",
+            "agent_tools",
+            "search",
+            "ask",
+            "items",
+            "chunks",
+        ],
     }))
+}
+
+async fn v1_agent_tools() -> Json<V1AgentToolsResponse> {
+    Json(V1AgentToolsResponse {
+        request_id: new_id("req"),
+        execution: V1Execution {
+            target: "local",
+            account_id: None,
+            privacy: "local_only",
+        },
+        runtime: V1AgentRuntime {
+            tool_host: "cerul_core_v1",
+            renderer_access: "ui_only",
+            arbitrary_shell: false,
+            arbitrary_file_write: false,
+            write_actions_require_confirmation: true,
+        },
+        tools: v1_agent_tool_contracts(),
+    })
+}
+
+fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
+    vec![
+        V1AgentToolContract {
+            name: "search_library",
+            description: "Search the local Cerul library and return evidence-backed results.",
+            method: "POST",
+            path: "/v1/search",
+            stage: "a1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "target": {"type": "string", "enum": ["local"]}
+                }
+            }),
+            output_contract: "V1SearchResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "get_item",
+            description: "Fetch one local library item and its Cerul open locator.",
+            method: "GET",
+            path: "/v1/items/{id}",
+            stage: "a1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1}
+                }
+            }),
+            output_contract: "V1ItemResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "get_chunks",
+            description: "List evidence chunks for one local library item.",
+            method: "GET",
+            path: "/v1/items/{id}/chunks",
+            stage: "a1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "cursor": {"type": "string"},
+                    "from_sec": {"type": "number", "minimum": 0},
+                    "to_sec": {"type": "number", "minimum": 0},
+                    "type": {"type": "string"}
+                }
+            }),
+            output_contract: "V1ItemChunksResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "get_frame",
+            description: "Fetch a local frame preview for a chunk evidence id.",
+            method: "GET",
+            path: "/v1/chunks/{id}/frame",
+            stage: "a1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1}
+                }
+            }),
+            output_contract: "binary image response",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "get_segment",
+            description: "Fetch a local playable video segment for a chunk evidence id.",
+            method: "GET",
+            path: "/v1/chunks/{id}/video-segment",
+            stage: "a1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1}
+                }
+            }),
+            output_contract: "binary video response",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "ask",
+            description: "Answer from local indexed evidence in extractive mode.",
+            method: "POST",
+            path: "/v1/ask",
+            stage: "a1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["question"],
+                "properties": {
+                    "question": {"type": "string", "minLength": 1},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "locale": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["extractive", "auto"]},
+                    "target": {"type": "string", "enum": ["local"]}
+                }
+            }),
+            output_contract: "V1AskResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+    ]
+}
+
+fn v1_read_only_agent_tool_safety() -> V1AgentToolSafety {
+    V1AgentToolSafety {
+        read_only: true,
+        billable: false,
+        requires_confirmation: false,
+        arbitrary_shell: false,
+        arbitrary_file_write: false,
+    }
+}
+
+fn v1_agent_tool_evidence(returns_evidence_locators: bool) -> V1AgentToolEvidence {
+    V1AgentToolEvidence {
+        returns_evidence_locators,
+        opens_in_cerul: true,
+    }
 }
 
 async fn v1_search(

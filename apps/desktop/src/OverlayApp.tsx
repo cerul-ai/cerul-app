@@ -252,8 +252,8 @@ export function OverlayApp() {
     const timer = window.setTimeout(() => {
       setAskState("loading");
       setAskError(null);
-      api
-        .askLibrary(trimmedQuery, 5, lang)
+      const askLibrary = api.isAgentExperienceEnabled() ? api.askAgentLibrary : api.askLibrary;
+      askLibrary(trimmedQuery, 5, lang)
         .then((answer) => {
           if (cancelled) {
             return;
@@ -503,6 +503,20 @@ export function OverlayApp() {
               {askOverlayState === "results" && askAnswer ? (
                 <div className="overlay-answer">
                   <p>{askAnswer.answer}</p>
+                  {askAnswer.usage ? (
+                    <div className="overlay-answer-usage">
+                      <span>
+                        {askAnswer.usage.privacy === "local_only"
+                          ? t("overlay.ask.usage.local")
+                          : t("overlay.ask.usage.remote")}
+                      </span>
+                      <span>
+                        {t("overlay.ask.usage.credits", {
+                          credits: askAnswer.usage.credits_used,
+                        })}
+                      </span>
+                    </div>
+                  ) : null}
                   {askAnswer.citations.length > 0 ? (
                     <div className="overlay-answer-cites">
                       {askAnswer.citations.map((citation) => (

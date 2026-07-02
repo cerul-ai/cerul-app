@@ -105,7 +105,15 @@ async fn router_serves_v1_status_and_openapi() {
     assert_eq!(status_json["account"]["signed_in"], false);
     assert_eq!(
         status_json["capabilities"],
-        json!(["status", "openapi", "search", "ask", "items", "chunks"])
+        json!([
+            "status",
+            "openapi",
+            "agent_tools",
+            "search",
+            "ask",
+            "items",
+            "chunks"
+        ])
     );
 
     let openapi = app
@@ -123,6 +131,7 @@ async fn router_serves_v1_status_and_openapi() {
     let paths = openapi_json["paths"].as_object().unwrap();
     assert!(paths.contains_key("/v1/status"));
     assert!(paths.contains_key("/v1/openapi.json"));
+    assert!(paths.contains_key("/v1/agent/tools"));
     assert!(paths.contains_key("/v1/search"));
     assert!(paths.contains_key("/v1/ask"));
     assert!(paths.contains_key("/v1/items"));
@@ -461,6 +470,7 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
         json!({
             "/v1/status": {"get": {"responses": {"200": {"description": "OK"}}}},
             "/v1/openapi.json": {"get": {"responses": {"200": {"description": "OK"}}}},
+            "/v1/agent/tools": {"get": {"responses": {"200": {"description": "OK"}}}},
             "/v1/search": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/ask": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/items": {"get": {"responses": {"200": {"description": "OK"}}}},
@@ -508,9 +518,233 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             },
             "indexing": {"paused": "boolean", "active_jobs": "number", "queued_jobs": "number"},
             "account": {"signed_in": "boolean", "plan": null, "credits_remaining": null},
-            "capabilities": ["string", "string", "string", "string", "string", "string"]
+            "capabilities": ["string", "string", "string", "string", "string", "string", "string"]
         }),
     );
+
+    let agent_tools = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/v1/agent/tools")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(agent_tools.status(), StatusCode::OK);
+    let agent_tools = response_json(agent_tools).await;
+    assert_contract_shape(
+        "v1 agent tools",
+        &agent_tools,
+        json!({
+            "request_id": "string",
+            "execution": {"target": "string", "account_id": null, "privacy": "string"},
+            "runtime": {
+                "tool_host": "string",
+                "renderer_access": "string",
+                "arbitrary_shell": "boolean",
+                "arbitrary_file_write": "boolean",
+                "write_actions_require_confirmation": "boolean"
+            },
+            "tools": [{
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "max_results": {
+                            "maximum": "number",
+                            "minimum": "number",
+                            "type": "string"
+                        },
+                        "query": {"minLength": "number", "type": "string"},
+                        "target": {"enum": ["string"], "type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {"id": {"minLength": "number", "type": "string"}},
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "cursor": {"type": "string"},
+                        "from_sec": {"minimum": "number", "type": "string"},
+                        "id": {"minLength": "number", "type": "string"},
+                        "limit": {"maximum": "number", "minimum": "number", "type": "string"},
+                        "to_sec": {"minimum": "number", "type": "string"},
+                        "type": {"type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {"id": {"minLength": "number", "type": "string"}},
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {"id": {"minLength": "number", "type": "string"}},
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "locale": {"type": "string"},
+                        "max_results": {
+                            "maximum": "number",
+                            "minimum": "number",
+                            "type": "string"
+                        },
+                        "mode": {"enum": ["string", "string"], "type": "string"},
+                        "question": {"minLength": "number", "type": "string"},
+                        "target": {"enum": ["string"], "type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }]
+        }),
+    );
+    assert_eq!(agent_tools["runtime"]["arbitrary_shell"], false);
+    assert_eq!(agent_tools["runtime"]["arbitrary_file_write"], false);
+    assert_eq!(
+        agent_tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "search_library",
+            "get_item",
+            "get_chunks",
+            "get_frame",
+            "get_segment",
+            "ask"
+        ]
+    );
+    assert!(agent_tools["tools"].as_array().unwrap().iter().all(|tool| {
+        tool["safety"]["read_only"] == true
+            && tool["safety"]["billable"] == false
+            && tool["safety"]["requires_confirmation"] == false
+            && tool["safety"]["arbitrary_shell"] == false
+            && tool["safety"]["arbitrary_file_write"] == false
+    }));
 
     let search = app
         .clone()
