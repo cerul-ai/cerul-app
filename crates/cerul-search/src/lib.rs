@@ -73,14 +73,6 @@ pub struct RawHit {
     source_mask: u8,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct LegacyChunkHit {
-    chunk_id: String,
-    score: f32,
-    exact_match: bool,
-    source_mask: u8,
-}
-
 const SOURCE_TEXT: u8 = 1 << 0;
 const SOURCE_TEXT_VECTOR: u8 = 1 << 1;
 const SOURCE_EXACT: u8 = 1 << 2;
@@ -181,18 +173,8 @@ pub async fn search_fts_only_with_diagnostics(
 ) -> anyhow::Result<SearchResponse> {
     let limit = req.limit.clamp(1, 50);
     let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
-    let mut fts_hits_count = hits.len();
-    let mut results = hydrate(paths, &hits, &req.q)?;
-    let mut fallback_reason = fallback_reason;
-    if should_try_legacy_fts(paths) {
-        let legacy_results =
-            legacy_sqlite_text_results(paths, &req.q, retrieval_limit(limit)).await?;
-        if !legacy_results.is_empty() {
-            fts_hits_count += legacy_results.len();
-            results.extend(legacy_results);
-            fallback_reason.get_or_insert_with(|| "search_index_rebuilding_legacy_fts".to_string());
-        }
-    }
+    let fts_hits_count = hits.len();
+    let results = hydrate(paths, &hits, &req.q)?;
     let results = finalize_results(results, limit);
     Ok(SearchResponse {
         results,
@@ -273,13 +255,13 @@ pub async fn search_with_vectors_for_profile_diagnostics(
             profile,
         ),
     )?;
-    let mut fts_hits_count = lexical_hits.len();
+    let fts_hits_count = lexical_hits.len();
     let vector_hits_count = vector_hits.len();
     let vector_index_point_count =
         cerul_storage::vectors::collection_point_count_for_profile(paths, &collection, profile)
             .await
             .ok();
-    let mut fallback_reason = if vector_hits_count == 0 {
+    let fallback_reason = if vector_hits_count == 0 {
         match vector_index_point_count {
             Some(0) => Some("unified_vector_index_empty".to_string()),
             Some(_) => Some("no_unified_vector_hits".to_string()),
@@ -299,23 +281,10 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     )
     .await?;
 
-    let mut results = hydrate(paths, &top_hits, &req.q)?;
-    let mut used_legacy_fts = false;
-    if should_try_legacy_fts(paths) {
-        let legacy_results = legacy_sqlite_text_results(paths, &req.q, retrieval_limit).await?;
-        if !legacy_results.is_empty() {
-            fts_hits_count += legacy_results.len();
-            used_legacy_fts = results.is_empty();
-            results.extend(legacy_results);
-            fallback_reason.get_or_insert_with(|| "search_index_rebuilding_legacy_fts".to_string());
-        }
-    }
+    let results = hydrate(paths, &top_hits, &req.q)?;
     let results = finalize_results(results, limit);
-    let retrieval_mode = if used_legacy_fts {
-        "fts_fallback".to_string()
-    } else {
-        retrieval_mode(vector_hits_count, fts_hits_count, vector_index_point_count)
-    };
+    let retrieval_mode =
+        retrieval_mode(vector_hits_count, fts_hits_count, vector_index_point_count);
     Ok(SearchResponse {
         results,
         diagnostics: SearchDiagnostics {
@@ -507,144 +476,6 @@ async fn sqlite_literal_search(
                 chunk_id,
                 score: 0.01,
                 similarity_score: None,
-                exact_match: strong_exact,
-                source_mask: SOURCE_TEXT | if strong_exact { SOURCE_EXACT } else { 0 },
-            })
-        },
-    )?;
-
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-fn should_try_legacy_fts(paths: &AppPaths) -> bool {
-    cerul_storage::items_needing_rebuild_count(paths).unwrap_or(0) > 0
-}
-
-async fn legacy_sqlite_text_results(
-    paths: &AppPaths,
-    query: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<SearchResult>> {
-    let mut hits = legacy_sqlite_fts_search(paths, query, limit).await?;
-    let mut positions = hits
-        .iter()
-        .enumerate()
-        .map(|(index, hit)| (hit.chunk_id.clone(), index))
-        .collect::<HashMap<_, _>>();
-
-    for hit in legacy_sqlite_literal_search(paths, query, limit).await? {
-        if let Some(index) = positions.get(&hit.chunk_id).copied() {
-            let existing = &mut hits[index];
-            existing.source_mask |= hit.source_mask;
-            existing.exact_match |= hit.exact_match;
-            if hit.score > existing.score {
-                existing.score = hit.score;
-            }
-        } else if hits.len() < limit {
-            positions.insert(hit.chunk_id.clone(), hits.len());
-            hits.push(hit);
-        }
-    }
-
-    hydrate_legacy_chunks(paths, &hits)
-}
-
-async fn legacy_sqlite_fts_search(
-    paths: &AppPaths,
-    query: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<LegacyChunkHit>> {
-    let Some(match_query) = fts_match_query(query) else {
-        return Ok(Vec::new());
-    };
-    let conn = cerul_storage::sqlite::open(paths)?;
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT c.id, bm25(chunks_fts) AS rank_score
-        FROM chunks_fts
-        JOIN chunks c ON c.rowid = chunks_fts.rowid
-        JOIN items i ON i.id = c.item_id
-        WHERE chunks_fts MATCH ?1
-          AND i.status = 'indexed'
-          AND (
-            i.search_index_version IS NULL
-            OR i.search_index_version != ?2
-            OR i.search_index_status IS NULL
-            OR i.search_index_status != 'indexed'
-          )
-          AND c.chunk_type IN ('transcript', 'transcript_line', 'audio', 'ocr', 'understanding')
-        ORDER BY rank_score
-        LIMIT ?3
-        "#,
-    )?;
-    let rows = stmt.query_map(
-        (
-            &match_query,
-            cerul_storage::SEARCH_INDEX_VERSION,
-            limit as i64,
-        ),
-        |row| {
-            let chunk_id: String = row.get(0)?;
-            let rank_score: f64 = row.get(1)?;
-            Ok(LegacyChunkHit {
-                chunk_id,
-                score: (-rank_score) as f32,
-                exact_match: false,
-                source_mask: SOURCE_TEXT,
-            })
-        },
-    )?;
-
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-async fn legacy_sqlite_literal_search(
-    paths: &AppPaths,
-    query: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<LegacyChunkHit>> {
-    let Some(pattern) = sqlite_like_pattern(query) else {
-        return Ok(Vec::new());
-    };
-    let strong_exact = strong_exact_intent(query);
-    let conn = cerul_storage::sqlite::open(paths)?;
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT c.id
-        FROM chunks c
-        JOIN items i ON i.id = c.item_id
-        WHERE c.text IS NOT NULL
-          AND TRIM(c.text) <> ''
-          AND i.status = 'indexed'
-          AND (
-            i.search_index_version IS NULL
-            OR i.search_index_version != ?2
-            OR i.search_index_status IS NULL
-            OR i.search_index_status != 'indexed'
-          )
-          AND c.chunk_type IN ('transcript', 'transcript_line', 'audio', 'ocr', 'understanding')
-          AND c.text LIKE ?1 ESCAPE '\'
-        ORDER BY
-          CASE c.chunk_type
-            WHEN 'transcript_line' THEN 0
-            WHEN 'transcript' THEN 1
-            WHEN 'audio' THEN 2
-            WHEN 'ocr' THEN 3
-            WHEN 'understanding' THEN 4
-            ELSE 5
-          END,
-          COALESCE(c.start_sec, 9223372036854775807),
-          c.id
-        LIMIT ?3
-        "#,
-    )?;
-    let rows = stmt.query_map(
-        (&pattern, cerul_storage::SEARCH_INDEX_VERSION, limit as i64),
-        |row| {
-            let chunk_id: String = row.get(0)?;
-            Ok(LegacyChunkHit {
-                chunk_id,
-                score: 0.01,
                 exact_match: strong_exact,
                 source_mask: SOURCE_TEXT | if strong_exact { SOURCE_EXACT } else { 0 },
             })
@@ -909,88 +740,6 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
             item_title: unit.item_title.clone(),
             nearest_frame_chunk_id,
         });
-    }
-
-    attach_nearest_frame_chunk_ids(&conn, &mut results)?;
-    Ok(results)
-}
-
-fn hydrate_legacy_chunks(
-    paths: &AppPaths,
-    hits: &[LegacyChunkHit],
-) -> anyhow::Result<Vec<SearchResult>> {
-    if hits.is_empty() {
-        return Ok(Vec::new());
-    }
-    let conn = cerul_storage::sqlite::open(paths)?;
-    let chunk_ids = hits
-        .iter()
-        .map(|hit| hit.chunk_id.clone())
-        .collect::<Vec<_>>();
-    let placeholders = std::iter::repeat_n("?", chunk_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        r#"
-        SELECT c.id, c.item_id, c.chunk_type, c.start_sec, c.end_sec, c.text, c.frame_path, i.title
-        FROM chunks c
-        JOIN items i ON i.id = c.item_id
-        WHERE c.id IN ({placeholders})
-          AND i.status != 'deleting'
-        "#
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
-        let chunk_id = row.get::<_, String>(0)?;
-        let item_id = row.get(1)?;
-        let chunk_type = row.get::<_, String>(2)?;
-        let start_sec = row.get(3)?;
-        let end_sec = row.get(4)?;
-        let snippet = row
-            .get::<_, Option<String>>(5)?
-            .filter(|text| !text.trim().is_empty())
-            .unwrap_or_else(|| fallback_snippet(&chunk_type, start_sec));
-        let frame_path = row.get(6)?;
-        let item_title = row.get(7)?;
-        Ok((
-            chunk_id.clone(),
-            SearchResult {
-                playback_chunk_id: chunk_id,
-                item_id,
-                chunk_type,
-                start_sec,
-                end_sec,
-                snippet,
-                frame_path,
-                match_score: 0.0,
-                score: 0.0,
-                similarity_score: None,
-                exact_match: false,
-                source_mask: SOURCE_TEXT,
-                item_title,
-                nearest_frame_chunk_id: None,
-            },
-        ))
-    })?;
-
-    let mut by_id = HashMap::with_capacity(chunk_ids.len());
-    for row in rows {
-        let (chunk_id, result) = row?;
-        by_id.insert(chunk_id, result);
-    }
-
-    let mut results = Vec::with_capacity(hits.len());
-    for hit in hits {
-        let Some(mut result) = by_id.remove(&hit.chunk_id) else {
-            continue;
-        };
-        result.score = hit.score;
-        result.exact_match = hit.exact_match;
-        result.source_mask = hit.source_mask;
-        if result.frame_path.is_some() {
-            result.nearest_frame_chunk_id = Some(result.playback_chunk_id.clone());
-        }
-        results.push(result);
     }
 
     attach_nearest_frame_chunk_ids(&conn, &mut results)?;
@@ -2237,19 +1986,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fts_fallback_uses_legacy_chunks_while_units_rebuild() {
+    async fn fts_search_ignores_legacy_chunks_without_retrieval_units() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
-        let chunks = vec![StorageTranscriptChunk {
-            start: 11.0,
-            end: 19.0,
-            text: "legacy transcript survives retrieval rebuild".to_string(),
-        }];
         cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
             &paths,
             "item-1",
-            &chunks,
+            &[StorageTranscriptChunk {
+                start: 11.0,
+                end: 19.0,
+                text: "legacy transcript should not be searched".to_string(),
+            }],
             &[],
             &[],
             &[],
@@ -2267,19 +2015,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            response.diagnostics.fallback_reason.as_deref(),
-            Some("search_index_rebuilding_legacy_fts")
-        );
-        assert_eq!(
-            response.results[0].playback_chunk_id,
-            "item-1:transcript:000000"
-        );
-        assert!(response.results[0].snippet.contains("legacy transcript"));
+        assert!(response.results.is_empty());
+        assert_eq!(response.diagnostics.retrieval_mode, "empty");
+        assert_eq!(response.diagnostics.fallback_reason, None);
+        assert_eq!(response.diagnostics.fts_hits_count, 0);
     }
 
     #[tokio::test]
-    async fn fts_fallback_appends_legacy_chunks_during_partial_rebuild() {
+    async fn fts_search_uses_only_rebuilt_retrieval_units_during_partial_rebuild() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
@@ -2328,94 +2071,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(item_ids.contains(&"item-1"));
-        assert!(item_ids.contains(&"item-2"));
-        assert_eq!(
-            response.diagnostics.fallback_reason.as_deref(),
-            Some("search_index_rebuilding_legacy_fts")
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_fts_fallback_merges_literal_exact_flags_into_fts_hits() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        insert_item(&paths);
-        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
-            &paths,
-            "item-1",
-            &[StorageTranscriptChunk {
-                start: 2.0,
-                end: 8.0,
-                text: "display code XR-42 appears on the slide".to_string(),
-            }],
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
-
-        let results = legacy_sqlite_text_results(&paths, "XR-42", 5)
-            .await
-            .unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].playback_chunk_id, "item-1:transcript:000000");
-        assert!(results[0].exact_match);
-        assert_ne!(results[0].source_mask & SOURCE_EXACT, 0);
-    }
-
-    #[tokio::test]
-    async fn legacy_fts_fallback_only_queries_items_needing_rebuild() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
-        insert_item(&paths);
-        insert_item_with_type(&paths, "item-2", "video", "folder_video", "Needs rebuild");
-        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
-        let units = vec![manual_unit(
-            "item-1:unit:v2:000000",
-            "item-1",
-            0,
-            Some(1.0),
-            Some(5.0),
-            "rebuilt retrieval unit",
-            None,
-            &profile,
-        )];
-        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &units).unwrap();
-        mark_item_search_indexed(&paths, "item-1", units.len());
-        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
-            &paths,
-            "item-1",
-            &[StorageTranscriptChunk {
-                start: 1.0,
-                end: 5.0,
-                text: "shared phrase from already rebuilt legacy chunks".to_string(),
-            }],
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
-        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
-            &paths,
-            "item-2",
-            &[StorageTranscriptChunk {
-                start: 10.0,
-                end: 15.0,
-                text: "shared phrase from unrebuild legacy chunks".to_string(),
-            }],
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
-
-        let results = legacy_sqlite_text_results(&paths, "shared phrase", 5)
-            .await
-            .unwrap();
-
-        assert!(!results.is_empty());
-        assert!(results.iter().all(|result| result.item_id == "item-2"));
+        assert!(!item_ids.contains(&"item-2"));
+        assert_eq!(response.diagnostics.fallback_reason, None);
     }
 
     #[tokio::test]
@@ -2910,7 +2567,9 @@ mod tests {
             &[],
         )
         .unwrap();
-        rebuild_units(paths, item_id).1
+        let units = rebuild_units(paths, item_id).1;
+        mark_item_search_indexed(paths, item_id, units.len());
+        units
     }
 
     async fn index_video_units<F>(
