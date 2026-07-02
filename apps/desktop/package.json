@@ -8,6 +8,9 @@
     "dev": "vite --host 127.0.0.1 --port 1420",
     "dev:vite": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "check:i18n": "node ../../scripts/check-i18n-catalog.mjs",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
   },
   "dependencies": {
@@ -27,6 +30,7 @@
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.0",
     "typescript": "^5.8.3",
-    "vite": "^6.4.3"
+    "vite": "^6.4.3",
+    "vitest": "^4.1.9"
   }
 }

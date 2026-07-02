@@ -119,6 +119,10 @@ jobs:
             ripgrep
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check desktop i18n catalog
+        run: pnpm --filter @cerul/desktop check:i18n
+      - name: Run desktop unit tests
+        run: pnpm --filter @cerul/desktop test
       - name: Fetch Linux runtime binaries
         if: steps.ci-depth.outputs.full == 'true'
         run: scripts/fetch-binaries.sh --target x86_64-unknown-linux-gnu
