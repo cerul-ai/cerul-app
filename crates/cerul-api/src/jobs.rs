@@ -284,7 +284,9 @@ impl JobWorker {
                         item_id = %job.item_id,
                         "skipped artifact cleanup for cancelled indexed-item rebuild"
                     );
-                } else if let Err(error) = crate::cleanup_item_artifacts(&self.paths, &item).await {
+                } else if let Err(error) =
+                    crate::routes::library::cleanup_item_artifacts(&self.paths, &item).await
+                {
                     tracing::warn!(
                         %error,
                         job_id = %job.id,
@@ -650,7 +652,9 @@ pub async fn cleanup_deleting_items(paths: &AppPaths) -> anyhow::Result<usize> {
     for item_id in &item_ids {
         match cerul_storage::get_item(paths, item_id) {
             Ok(item) => {
-                if let Err(error) = crate::cleanup_item_artifacts(paths, &item).await {
+                if let Err(error) =
+                    crate::routes::library::cleanup_item_artifacts(paths, &item).await
+                {
                     tracing::warn!(
                         %error,
                         item_id = %item.id,

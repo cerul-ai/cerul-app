@@ -49,12 +49,18 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/items", get(v1_list_items))
         .route("/items/:id", get(v1_get_item))
         .route("/items/:id/chunks", get(v1_list_item_chunks))
-        .route("/chunks/:id/frame", get(crate::get_chunk_frame))
+        .route(
+            "/chunks/:id/frame",
+            get(crate::routes::library::get_chunk_frame),
+        )
         .route(
             "/chunks/:id/video-segment",
-            get(crate::get_chunk_video_segment),
+            get(crate::routes::library::get_chunk_video_segment),
         )
-        .route("/chunks/:id/video-clip", get(crate::get_chunk_video_clip))
+        .route(
+            "/chunks/:id/video-clip",
+            get(crate::routes::library::get_chunk_video_clip),
+        )
 }
 
 async fn v1_openapi_json() -> Json<Value> {
