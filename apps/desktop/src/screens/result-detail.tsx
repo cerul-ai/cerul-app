@@ -743,6 +743,7 @@ export function ResultDetail({
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
   const [isPlaying, setIsPlaying] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const handleVideoElement = useCallback((video: HTMLVideoElement | null) => {
     setVideoElement(video);
@@ -773,7 +774,15 @@ export function ResultDetail({
   const momentActions = useItemMoments(item, actionsEnabled && mediaState.status === "ready");
   const playbackUrl =
     item.contentType === "video" && mediaState.chunkId
-      ? api.videoSegmentUrl(mediaState.chunkId)
+      ? api.mediaSegmentUrl(mediaState.chunkId)
+      : null;
+  const audioPlaybackUrl =
+    item.contentType === "audio" && mediaState.chunkId
+      ? api.mediaSegmentUrl(mediaState.chunkId)
+      : null;
+  const imagePreviewUrl =
+    item.contentType === "image" && mediaState.chunkId
+      ? api.chunkFrameUrl(mediaState.chunkId)
       : null;
   const timestampLink = timestampDeepLink(
     item.id,
@@ -882,6 +891,36 @@ export function ResultDetail({
   }, [currentTimestamp, playbackUrl, videoElement]);
 
   useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !audioPlaybackUrl) {
+      return;
+    }
+    const targetSeconds = parseTimestampSeconds(currentTimestamp);
+    if (!Number.isFinite(targetSeconds)) {
+      return;
+    }
+
+    const applySeek = () => {
+      const maxTime =
+        Number.isFinite(audio.duration) && audio.duration > 0
+          ? Math.max(audio.duration - 0.1, 0)
+          : targetSeconds;
+      audio.currentTime = Math.min(targetSeconds, maxTime);
+      if (shouldAutoPlayRef.current) {
+        void audio.play().catch(() => setIsPlaying(false));
+      }
+    };
+
+    if (audio.readyState >= 1) {
+      applySeek();
+      return;
+    }
+
+    audio.addEventListener("loadedmetadata", applySeek, { once: true });
+    return () => audio.removeEventListener("loadedmetadata", applySeek);
+  }, [audioPlaybackUrl, currentTimestamp]);
+
+  useEffect(() => {
     if (copyStatus === "idle") {
       return;
     }
@@ -909,47 +948,48 @@ export function ResultDetail({
           target.tagName === "A" ||
           target.tagName === "SELECT" ||
           target.tagName === "VIDEO" ||
+          target.tagName === "AUDIO" ||
           target.isContentEditable ||
           target.getAttribute("role") === "button")
       ) {
         return;
       }
-      const video = videoRef.current;
+      const media = videoRef.current ?? audioRef.current;
       if (event.key === " " || event.code === "Space") {
         event.preventDefault();
-        if (video) {
-          if (video.paused) {
-            void video.play().catch(() => undefined);
+        if (media) {
+          if (media.paused) {
+            void media.play().catch(() => undefined);
           } else {
-            video.pause();
+            media.pause();
           }
         } else {
           setIsPlaying((playing) => !playing);
         }
         return;
       }
-      if (!video) {
+      if (!media) {
         return;
       }
       if (event.key === "ArrowRight") {
         event.preventDefault();
-        video.currentTime = Math.min(video.duration || Number.POSITIVE_INFINITY, video.currentTime + 5);
+        media.currentTime = Math.min(media.duration || Number.POSITIVE_INFINITY, media.currentTime + 5);
       } else if (event.key === "ArrowLeft") {
         event.preventDefault();
-        video.currentTime = Math.max(0, video.currentTime - 5);
+        media.currentTime = Math.max(0, media.currentTime - 5);
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
-        video.volume = Math.min(1, video.volume + 0.1);
+        media.volume = Math.min(1, media.volume + 0.1);
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
-        video.volume = Math.max(0, video.volume - 0.1);
+        media.volume = Math.max(0, media.volume - 0.1);
       } else if (event.key.toLowerCase() === "m") {
-        video.muted = !video.muted;
+        media.muted = !media.muted;
       } else if (event.key.toLowerCase() === "f") {
         if (document.fullscreenElement) {
           void document.exitFullscreen().catch(() => undefined);
-        } else if (video.requestFullscreen) {
-          void video.requestFullscreen().catch(() => undefined);
+        } else if (media.requestFullscreen) {
+          void media.requestFullscreen().catch(() => undefined);
         }
       }
     }
@@ -1170,6 +1210,26 @@ export function ResultDetail({
                 onSeekMarker={(marker) => seekTo(marker.label)}
                 onVideoElement={handleVideoElement}
               />
+            ) : audioPlaybackUrl ? (
+              <div className={`video-frame thumb audio-frame ${item.color}`}>
+                <div className="stripes" aria-hidden="true" />
+                <div className="audio-player-card">
+                  <p className="section-label">{t("detail.audioPlayer.label")}</p>
+                  <strong>{item.title}</strong>
+                  <audio
+                    ref={audioRef}
+                    controls
+                    src={audioPlaybackUrl}
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                    aria-label={t("itemDetail.player.aria", { title: item.title })}
+                  />
+                </div>
+              </div>
+            ) : imagePreviewUrl ? (
+              <div className="video-frame image-frame">
+                <img src={imagePreviewUrl} alt={item.title} />
+              </div>
             ) : mediaState.status === "loading" ? (
               <div className={`video-frame thumb ${item.color}`}>
                 <div className="stripes" aria-hidden="true" />

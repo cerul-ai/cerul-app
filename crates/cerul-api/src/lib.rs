@@ -4312,6 +4312,11 @@ fn video_content_type(path: &str) -> &'static str {
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
         Some("mkv") => "video/x-matroska",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("wav") => "audio/wav",
+        Some("flac") => "audio/flac",
+        Some("aac") => "audio/aac",
         _ => "application/octet-stream",
     }
 }
@@ -7953,6 +7958,15 @@ mod tests {
             image_content_type("unknown.bin"),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn segment_content_type_matches_supported_audio_sources() {
+        assert_eq!(video_content_type("episode.mp3"), "audio/mpeg");
+        assert_eq!(video_content_type("episode.m4a"), "audio/mp4");
+        assert_eq!(video_content_type("recording.wav"), "audio/wav");
+        assert_eq!(video_content_type("archive.flac"), "audio/flac");
+        assert_eq!(video_content_type("clip.aac"), "audio/aac");
     }
 
     #[cfg(unix)]

@@ -753,6 +753,10 @@ export async function listItemChunks(id: string) {
 }
 
 export function videoSegmentUrl(chunkId: string) {
+  return mediaSegmentUrl(chunkId);
+}
+
+export function mediaSegmentUrl(chunkId: string) {
   return `${localApiBaseUrl()}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/video-segment`;
 }
 
