@@ -37,6 +37,7 @@ pub mod local_models;
 pub mod local_runtime;
 pub mod models;
 pub mod providers;
+mod routes;
 pub mod video_understanding;
 
 const QUERY_EMBEDDING_TIMEOUT: Duration = Duration::from_secs(8);
@@ -458,21 +459,9 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             get(providers::discover_provider_models),
         )
         .route("/settings", get(list_settings).patch(update_settings));
-    let v1_routes = Router::new()
-        .route("/status", get(v1_status))
-        .route("/openapi.json", get(v1_openapi_json))
-        .route("/search", post(v1_search))
-        .route("/ask", post(v1_ask))
-        .route("/items", get(v1_list_items))
-        .route("/items/:id", get(v1_get_item))
-        .route("/items/:id/chunks", get(v1_list_item_chunks))
-        .route("/chunks/:id/frame", get(get_chunk_frame))
-        .route("/chunks/:id/video-segment", get(get_chunk_video_segment))
-        .route("/chunks/:id/video-clip", get(get_chunk_video_clip));
-
     Router::new()
         .nest("/internal", internal_routes)
-        .nest("/v1", v1_routes)
+        .nest("/v1", routes::v1::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_remote_auth,
@@ -838,7 +827,7 @@ async fn openapi_json() -> Json<Value> {
 }
 
 async fn v1_openapi_json() -> Json<Value> {
-    Json(openapi_document("Cerul Agent API", V1_API_PATHS))
+    Json(openapi_document("Cerul Agent API", routes::v1::API_PATHS))
 }
 
 fn openapi_document(title: &str, api_paths: &[(&str, &[&str])]) -> Value {
@@ -6746,19 +6735,6 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/providers/{id}/test", &["post"]),
     ("/internal/providers/{id}/models", &["get"]),
     ("/internal/settings", &["get", "patch"]),
-];
-
-const V1_API_PATHS: &[(&str, &[&str])] = &[
-    ("/v1/status", &["get"]),
-    ("/v1/openapi.json", &["get"]),
-    ("/v1/search", &["post"]),
-    ("/v1/ask", &["post"]),
-    ("/v1/items", &["get"]),
-    ("/v1/items/{id}", &["get"]),
-    ("/v1/items/{id}/chunks", &["get"]),
-    ("/v1/chunks/{id}/frame", &["get"]),
-    ("/v1/chunks/{id}/video-segment", &["get"]),
-    ("/v1/chunks/{id}/video-clip", &["get"]),
 ];
 
 const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
