@@ -19,7 +19,10 @@ use crate::{
         extract::{read_exif_metadata, update_item_duration_from_media},
         fetch::source_config_with_app_cache,
         ocr::read_ocr_frames_with_progress,
-        retrieval::set_embedding_index_status,
+        retrieval::{
+            rebuild_retrieval_embedding_plan, set_embedding_index_status,
+            write_unified_retrieval_vectors,
+        },
         sample::keyframe_chunks,
         transcribe::{
             audio_seconds_from_segments, transcript_storage_from_segments, TranscriptStorage,
@@ -1282,40 +1285,24 @@ impl VideoPipeline {
                 0,
             )?;
         }
-        let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
-        anyhow::ensure!(
-            !units.is_empty(),
-            "no retrieval units generated for item {item_id}"
-        );
-
-        let text_units = units
-            .iter()
-            .filter(|unit| !unit.uses_image_embedding())
-            .collect::<Vec<_>>();
-        let image_units = if include_image_embeddings {
-            units
-                .iter()
-                .filter(|unit| unit.has_image_embedding_source())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
+        let plan = rebuild_retrieval_embedding_plan(
+            &self.paths,
+            item_id,
+            &profile.id,
+            include_image_embeddings,
+        )?;
         self.log_pipeline_event(
             item_id,
             "retrieval_units_built",
             json!({
-                "units": units.len(),
-                "text_units": text_units.len(),
-                "image_units": image_units.len(),
+                "units": plan.unit_count(),
+                "text_units": plan.text_unit_count(),
+                "image_units": plan.image_unit_count(),
                 "include_image_embeddings": include_image_embeddings,
                 "replace_existing_vectors": replace_existing_vectors,
             }),
         );
 
-        let text_inputs = text_units
-            .iter()
-            .map(|unit| unit.content_text.clone())
-            .collect::<Vec<_>>();
         let text_vectors = match self
             .embed_texts_with_progress(
                 item_id,
@@ -1323,16 +1310,16 @@ impl VideoPipeline {
                 base,
                 span * 0.75,
                 "Embedding searchable moments",
-                &text_inputs,
+                plan.text_inputs(),
             )
             .await
         {
             Ok(vectors) => {
-                if !text_inputs.is_empty() {
+                if !plan.text_inputs().is_empty() {
                     self.record_embedding_text_usage(
                         item_id,
-                        estimate_text_tokens(&text_inputs),
-                        text_inputs.len(),
+                        estimate_text_tokens(plan.text_inputs()),
+                        plan.text_inputs().len(),
                         "succeeded",
                         json!({ "source": "indexing", "index": "retrieval_units" }),
                     );
@@ -1340,11 +1327,11 @@ impl VideoPipeline {
                 vectors
             }
             Err(error) => {
-                if !text_inputs.is_empty() {
+                if !plan.text_inputs().is_empty() {
                     self.record_embedding_text_usage(
                         item_id,
-                        estimate_text_tokens(&text_inputs),
-                        text_inputs.len(),
+                        estimate_text_tokens(plan.text_inputs()),
+                        plan.text_inputs().len(),
                         "failed",
                         json!({
                             "source": "indexing",
@@ -1357,10 +1344,6 @@ impl VideoPipeline {
             }
         };
 
-        let image_paths = image_units
-            .iter()
-            .filter_map(|unit| unit.representative_frame_path.as_ref().map(PathBuf::from))
-            .collect::<Vec<_>>();
         let image_vectors = match self
             .embed_images_with_progress(
                 item_id,
@@ -1368,7 +1351,7 @@ impl VideoPipeline {
                 base + span * 0.75,
                 span * 0.25,
                 "Embedding visual moments",
-                &image_paths,
+                plan.image_paths(),
             )
             .await
         {
@@ -1384,10 +1367,10 @@ impl VideoPipeline {
                 vectors
             }
             Err(error) => {
-                if !image_paths.is_empty() {
+                if !plan.image_paths().is_empty() {
                     self.record_embedding_image_usage(
                         item_id,
-                        image_paths.len(),
+                        plan.image_paths().len(),
                         "failed",
                         json!({
                             "source": "indexing",
@@ -1396,7 +1379,7 @@ impl VideoPipeline {
                         }),
                     );
                 }
-                if !image_paths.is_empty() && !text_vectors.is_empty() {
+                if !plan.image_paths().is_empty() && !text_vectors.is_empty() {
                     tracing::warn!(
                         item_id,
                         %error,
@@ -1409,102 +1392,34 @@ impl VideoPipeline {
             }
         };
 
-        anyhow::ensure!(
-            text_vectors.len() == text_units.len(),
-            "retrieval text unit count ({}) does not match vector count ({})",
-            text_units.len(),
-            text_vectors.len()
-        );
-        if !image_vectors.is_empty() {
-            anyhow::ensure!(
-                image_vectors.len() == image_units.len(),
-                "retrieval image unit count ({}) does not match vector count ({})",
-                image_units.len(),
-                image_vectors.len()
-            );
-        }
-
-        let mut records = Vec::with_capacity(text_vectors.len() + image_vectors.len());
-        for (unit, vector) in text_units.into_iter().zip(text_vectors.iter()) {
-            records.push(cerul_storage::vectors::VectorRecord::new_for_dimensions(
-                unit.id.clone(),
-                unit.item_id.clone(),
-                vector.clone(),
-                profile.output_dimension,
-            )?);
-        }
-        for (unit, vector) in image_units.into_iter().zip(image_vectors.iter()) {
-            records.push(
-                cerul_storage::vectors::VectorRecord::new_for_dimensions_with_point_key(
-                    format!("{}:image", unit.id),
-                    unit.id.clone(),
-                    unit.item_id.clone(),
-                    vector.clone(),
-                    profile.output_dimension,
-                )?,
-            );
-        }
-
-        let vector_index_started = Instant::now();
-        let stale_vectors_deleted = if replace_existing_vectors {
-            cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
-                &self.paths,
-                item_id,
-                &records,
-                &profile,
-                cerul_storage::SEARCH_INDEX_VERSION,
-            )
-            .await?;
-            0
-        } else {
-            cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
-                &self.paths,
-                &records,
-                &profile,
-                cerul_storage::SEARCH_INDEX_VERSION,
-            )
-            .await?;
-            cerul_storage::vectors::delete_stale_item_unified_embeddings_for_profile(
-                &self.paths,
-                item_id,
-                &records,
-                &profile,
-                cerul_storage::SEARCH_INDEX_VERSION,
-            )
-            .await?
-        };
-        let vector_index_write_ms = vector_index_started.elapsed().as_millis() as u64;
-        cerul_storage::set_item_search_index_status(
+        let index_write = write_unified_retrieval_vectors(
             &self.paths,
             item_id,
-            "indexed",
-            None,
-            units.len(),
-            records.len(),
-        )?;
+            &plan,
+            &text_vectors,
+            &image_vectors,
+            &profile,
+            replace_existing_vectors,
+        )
+        .await?;
         self.log_pipeline_event(
             item_id,
             "retrieval_index_written",
             json!({
-                "units": units.len(),
-                "vectors": records.len(),
-                "text_vectors": text_vectors.len(),
-                "image_vectors": image_vectors.len(),
-                "vector_index_write_ms": vector_index_write_ms,
+                "units": plan.unit_count(),
+                "vectors": index_write.vector_count,
+                "text_vectors": index_write.write_summary.text_vectors,
+                "image_vectors": index_write.write_summary.image_vectors,
+                "vector_index_write_ms": index_write.vector_index_write_ms,
                 "total_ms": started.elapsed().as_millis() as u64,
                 "embedding_profile_id": profile.id,
                 "include_image_embeddings": include_image_embeddings,
                 "replace_existing_vectors": replace_existing_vectors,
-                "stale_vectors_deleted": stale_vectors_deleted,
+                "stale_vectors_deleted": index_write.stale_vectors_deleted,
             }),
         );
 
-        Ok(StorageWriteSummary {
-            transcript_chunks: units.len(),
-            keyframes: image_paths.len(),
-            text_vectors: text_vectors.len(),
-            image_vectors: image_vectors.len(),
-        })
+        Ok(index_write.write_summary)
     }
 
     fn record_asr_usage(
