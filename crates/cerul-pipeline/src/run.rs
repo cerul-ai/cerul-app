@@ -1,6 +1,5 @@
 use std::{
-    fs::{self, File},
-    io::BufReader,
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -10,23 +9,26 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use cerul_storage::{
-    AppPaths, StorageImageChunk, StorageOcrChunk, StorageTranscriptChunk, StorageTranscriptLine,
-    StorageWriteSummary,
-};
-use serde_json::{json, Map, Value};
+use cerul_storage::{AppPaths, StorageImageChunk, StorageOcrChunk, StorageWriteSummary};
+use serde_json::{json, Value};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    chunking, ffmpeg,
+    ffmpeg,
+    stages::{
+        extract::{read_exif_metadata, update_item_duration_from_media},
+        fetch::source_config_with_app_cache,
+        retrieval::set_embedding_index_status,
+        sample::keyframe_chunks,
+        transcribe::{
+            audio_seconds_from_segments, transcript_storage_from_segments, TranscriptStorage,
+        },
+    },
     whisper::{Segment, TranscriptionProgress},
 };
 
 const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
-const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
-const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
-const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
 const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
 
 pub trait Transcriber: Send + Sync {
@@ -143,11 +145,6 @@ pub struct ProcessImageSummary {
     pub image_chunks: usize,
     pub image_vectors: usize,
     pub exif_fields: usize,
-}
-
-struct TranscriptStorage {
-    chunks: Vec<StorageTranscriptChunk>,
-    lines: Vec<StorageTranscriptLine>,
 }
 
 #[derive(Clone)]
@@ -1632,13 +1629,6 @@ const OPENAI_WHISPER_1_USD_PER_MINUTE: f64 = 0.006;
 const GEMINI_EMBEDDING_2_TEXT_USD_PER_M_TOKENS: f64 = 0.20;
 const GEMINI_EMBEDDING_2_IMAGE_USD_EACH: f64 = 0.00012;
 
-fn audio_seconds_from_segments(segments: &[Segment]) -> f64 {
-    segments
-        .iter()
-        .map(|segment| segment.end.max(segment.start))
-        .fold(0.0, f64::max)
-}
-
 fn estimate_text_tokens(texts: &[String]) -> u64 {
     let chars = texts.iter().map(|text| text.chars().count()).sum::<usize>();
     ((chars as f64 / 4.0).ceil() as u64).max(texts.len() as u64)
@@ -1983,241 +1973,6 @@ fn cache_key(input: &str) -> String {
             }
         })
         .collect()
-}
-
-async fn update_item_duration_from_media(paths: &AppPaths, item_id: &str, media_path: &Path) {
-    match ffmpeg::media_duration(media_path).await {
-        Ok(duration_sec) => {
-            if let Err(error) = cerul_storage::set_item_duration(paths, item_id, duration_sec) {
-                tracing::warn!(%error, item_id, "failed to store media duration");
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, item_id, "failed to read media duration");
-        }
-    }
-}
-
-fn keyframe_chunks(frames: &[PathBuf], interval_sec: u32) -> Vec<StorageImageChunk> {
-    let interval = f64::from(interval_sec.max(1));
-    frames
-        .iter()
-        .enumerate()
-        .map(|(index, frame)| {
-            let start = frame_index(frame).unwrap_or(index) as f64 * interval;
-            StorageImageChunk::keyframe_at(frame.clone(), start, start + interval)
-        })
-        .collect()
-}
-
-fn transcript_storage_from_segments(
-    segments: &[Segment],
-    window_sec: f64,
-    overlap_sec: f64,
-) -> TranscriptStorage {
-    let lines = segments
-        .iter()
-        .filter_map(|segment| {
-            let text = segment.text.trim();
-            if text.is_empty() {
-                return None;
-            }
-            Some(StorageTranscriptLine {
-                start: segment.start,
-                end: segment.end,
-                text: text.to_string(),
-            })
-        })
-        .collect::<Vec<_>>();
-    let chunks = chunking::chunk_segments(segments, window_sec, overlap_sec)
-        .into_iter()
-        .map(|chunk| StorageTranscriptChunk {
-            start: chunk.start,
-            end: chunk.end,
-            text: chunk.text,
-        })
-        .collect();
-
-    TranscriptStorage { chunks, lines }
-}
-
-fn frame_index(path: &Path) -> Option<usize> {
-    let stem = path.file_stem()?.to_str()?;
-    let raw = stem.strip_prefix("frame_")?;
-    raw.parse::<usize>().ok()?.checked_sub(1)
-}
-
-fn source_config_with_app_cache(
-    paths: &AppPaths,
-    source_type: &str,
-    config: serde_json::Value,
-) -> serde_json::Value {
-    if !matches!(source_type, "youtube" | "web_video" | "rss_podcast") {
-        return config;
-    }
-
-    let mut object = match config {
-        serde_json::Value::Object(object) => object,
-        other => return other,
-    };
-    object.entry("cache_dir").or_insert_with(|| {
-        serde_json::Value::String(
-            source_download_dir(paths, source_type)
-                .to_string_lossy()
-                .into_owned(),
-        )
-    });
-    apply_ytdlp_access_settings(paths, source_type, &mut object);
-    serde_json::Value::Object(object)
-}
-
-// Resolve where a source's downloaded media is written. Defaults to the app
-// cache (`<data>/cache/sources/<type>`), but honors a user-chosen download
-// directory (Settings → Storage, persisted as the `media_dir` setting) so large
-// video files can live on an external disk. The setting is read per fetch, so a
-// change takes effect for the next download without a restart; the lookup is a
-// cached single-row query. Models, the database and the vector index are never
-// relocated by this.
-fn source_download_dir(paths: &AppPaths, source_type: &str) -> PathBuf {
-    match cerul_storage::read_string_setting(paths, "media_dir") {
-        Ok(Some(dir)) => Path::new(&dir).join("sources").join(source_type),
-        Ok(None) => paths.source_cache_dir(source_type),
-        Err(error) => {
-            tracing::warn!(%error, "failed to read media_dir setting; using default cache dir");
-            paths.source_cache_dir(source_type)
-        }
-    }
-}
-
-fn apply_ytdlp_access_settings(
-    paths: &AppPaths,
-    source_type: &str,
-    object: &mut Map<String, Value>,
-) {
-    if !matches!(source_type, "youtube" | "web_video") || has_source_cookie_config(object) {
-        return;
-    }
-
-    let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
-        .unwrap_or_else(|| "browser".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    match mode.as_str() {
-        "browser" => {
-            let browser = setting_string(paths, WEB_VIDEO_COOKIE_BROWSER_SETTING)
-                .unwrap_or_else(|| "chrome".to_string());
-            let browser = browser.trim();
-            if !browser.is_empty() {
-                object.insert(
-                    "cookies_from_browser".to_string(),
-                    Value::String(browser.to_string()),
-                );
-            }
-        }
-        "file" => {
-            if let Some(path) = setting_string(paths, WEB_VIDEO_COOKIES_PATH_SETTING) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    object.insert("cookies_path".to_string(), Value::String(path.to_string()));
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn has_source_cookie_config(object: &Map<String, Value>) -> bool {
-    [
-        "cookies_from_browser",
-        "cookie_browser",
-        "ytdlp_cookies_from_browser",
-        "ytdlp_cookie_browser",
-        "cookies_path",
-        "cookies_file",
-        "ytdlp_cookies_path",
-        "ytdlp_cookies_file",
-    ]
-    .iter()
-    .any(|key| {
-        object
-            .get(*key)
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
-    })
-}
-
-fn setting_string(paths: &AppPaths, key: &str) -> Option<String> {
-    let conn = cerul_storage::sqlite::open(paths).ok()?;
-    let raw: String = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-            row.get(0)
-        })
-        .ok()?;
-    match serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw)) {
-        Value::String(value) => Some(value),
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-fn read_exif_metadata(path: &Path) -> anyhow::Result<serde_json::Value> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let exif = match exif::Reader::new().read_from_container(&mut reader) {
-        Ok(exif) => exif,
-        Err(error) => {
-            return Ok(json!({
-                "exif": {},
-                "exif_error": error.to_string(),
-            }));
-        }
-    };
-    let mut fields = Map::new();
-
-    for field in exif.fields() {
-        fields.insert(
-            format!("{:?}.{:?}", field.ifd_num, field.tag),
-            json!(field.display_value().with_unit(&exif).to_string()),
-        );
-    }
-
-    Ok(json!({ "exif": fields }))
-}
-
-fn set_embedding_index_status(
-    paths: &AppPaths,
-    item_id: &str,
-    status: &str,
-    error: Option<&str>,
-    text_vectors: usize,
-    image_vectors: usize,
-) -> anyhow::Result<()> {
-    cerul_storage::update_item_metadata(paths, item_id, |metadata| {
-        metadata.insert(
-            "embedding_index_status".to_string(),
-            serde_json::Value::String(status.to_string()),
-        );
-        metadata.insert(
-            "embedding_text_vectors".to_string(),
-            serde_json::Value::from(text_vectors as u64),
-        );
-        metadata.insert(
-            "embedding_image_vectors".to_string(),
-            serde_json::Value::from(image_vectors as u64),
-        );
-        match error {
-            Some(error) => {
-                metadata.insert(
-                    "embedding_index_error".to_string(),
-                    serde_json::Value::String(error.to_string()),
-                );
-            }
-            None => {
-                metadata.remove("embedding_index_error");
-            }
-        }
-    })
 }
 
 #[cfg(test)]
