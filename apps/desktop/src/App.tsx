@@ -16,8 +16,8 @@
 //     Remaining: none for Phase C.
 //   Phase D — done: dialogs live in ./dialogs/
 //     ConfirmDialog, JobsSheet, AddSourceDialog (+ tabs).
-//   Phase E — extract item / source / job / result mappers into
-//     ./lib/mappers.ts and route helpers into ./lib/route.ts.
+//   Phase E — done: mappers/helpers live in ./lib/
+//     items.ts, sources.ts, jobs.ts, results.ts, route.ts.
 //
 // Each phase should land as its own PR so the diff stays reviewable.
 
