@@ -11,8 +11,9 @@
 //     InlineNotice, EmptyState, Metric, CoreBanner, ResultCard,
 //     ItemCard, ItemModalityIcon, DetailIssuePanel, SettingsQuietNotice.
 //   Phase C — extract screens into ./screens/
-//     HomeScreen, ResultsScreen, ResultDetail, LibraryScreen,
-//     ItemDetail, SourcesScreen, SettingsScreen, Onboarding.
+//     Done: Onboarding, SourcesScreen, MomentsScreen.
+//     Remaining: HomeScreen, ResultsScreen, ResultDetail, LibraryScreen,
+//     ItemDetail, SettingsScreen.
 //   Phase D — extract dialogs into ./dialogs/
 //     ConfirmDialog, JobsSheet, AddSourceDialog (+ tabs).
 //   Phase E — extract item / source / job / result mappers into
@@ -144,6 +145,7 @@ import {
 } from "./lib/validation";
 import { ConfirmDialog } from "./dialogs/confirm-dialog";
 import { JobsSheet } from "./dialogs/jobs-sheet";
+import { MomentsScreen } from "./screens/moments";
 import { LocalModelConsent } from "./components/local-model-consent";
 import { useLocalModelConsent } from "./lib/use-local-model-consent";
 import { IndexingStrip } from "./components/indexing-strip";
@@ -217,6 +219,7 @@ import {
   canOpenOriginalSource,
   timestampDeepLink,
 } from "./lib/detail";
+import { writeClipboardText } from "./lib/clipboard";
 import { durationMinutes, sortLibraryItems } from "./lib/library";
 import {
   loadPersistedUiState,
@@ -4449,154 +4452,6 @@ async function openOriginalSourceForItem(item: Item, t: TFunction) {
     return t("detail.source.revealed");
   }
   throw new Error(t("detail.source.unavailable"));
-}
-
-async function writeClipboardText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall back to the legacy copy path below. Browser automation and some
-      // embedded webviews can reject Clipboard API writes when focus briefly
-      // moves outside the document.
-    }
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.focus({ preventScroll: true });
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-  const copied = document.execCommand("copy");
-  document.body.removeChild(textarea);
-
-  if (!copied) {
-    throw new Error("clipboard copy failed");
-  }
-}
-
-function MomentsScreen({
-  actionsEnabled,
-  onOpenItem,
-}: {
-  actionsEnabled: boolean;
-  onOpenItem: (moment: api.MomentRecord) => void;
-}) {
-  const t = useT();
-  const [moments, setMoments] = useState<api.MomentRecord[]>([]);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [message, setMessage] = useState<string | null>(null);
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
-
-  // Same 1.6s reset as the detail view; the button used to stay "Copied"
-  // forever, giving no feedback on subsequent copies.
-  useEffect(() => {
-    if (copyStatus === "idle") {
-      return;
-    }
-    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1600);
-    return () => window.clearTimeout(timeout);
-  }, [copyStatus]);
-
-  const load = useCallback(async () => {
-    if (!actionsEnabled) {
-      setStatus("ready");
-      setMoments([]);
-      return;
-    }
-    setStatus("loading");
-    setMessage(null);
-    try {
-      setMoments(await api.listMoments());
-      setStatus("ready");
-    } catch (error) {
-      setMessage(errorMessage(error));
-      setStatus("error");
-    }
-  }, [actionsEnabled]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function remove(moment: api.MomentRecord) {
-    try {
-      await api.deleteMoment(moment.id);
-      await load();
-    } catch (error) {
-      setMessage(errorMessage(error));
-    }
-  }
-
-  async function copyMarkdown() {
-    const markdown = moments
-      .map((moment) => `- [${moment.timestamp}] ${moment.quote}\n  - ${moment.title}`)
-      .join("\n");
-    try {
-      await writeClipboardText(markdown);
-      setCopyStatus("copied");
-    } catch {
-      setCopyStatus("error");
-    }
-  }
-
-  return (
-    <div className="page wide">
-      <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
-        <div>
-          <p className="page-eyebrow">{t("moments.eyebrow")}</p>
-          <h1 className="page-h1">{t("moments.heading")}</h1>
-          <p className="page-sub">{t("moments.sub")}</p>
-        </div>
-        <button
-          type="button"
-          className="btn btn-secondary sm"
-          disabled={moments.length === 0}
-          onClick={() => void copyMarkdown()}
-        >
-          <Copy size={15} />
-          <span>{copyStatus === "copied" ? t("detail.copy.copied") : t("moments.copyMarkdown")}</span>
-        </button>
-      </div>
-      {message ? <InlineNotice tone={status === "error" ? "error" : "muted"} message={message} /> : null}
-      {copyStatus === "error" ? <InlineNotice tone="error" message={t("detail.copy.error")} /> : null}
-      {status === "loading" ? (
-        <div className="state"><Loader2 size={22} className="spin" /><span>{t("common.loading")}</span></div>
-      ) : null}
-      {status !== "loading" && moments.length === 0 ? (
-        <EmptyState
-          title={t("moments.empty.title")}
-          body={t("moments.empty.body")}
-        />
-      ) : null}
-      {moments.length > 0 ? (
-        <div className="moments-list">
-          {moments.map((moment) => (
-            <article className="moment-card" key={moment.id}>
-              <button type="button" className="moment-card__main" onClick={() => onOpenItem(moment)}>
-                <span className="mono moment-card__time">{moment.timestamp}</span>
-                <strong>{moment.title}</strong>
-                <p>{moment.quote}</p>
-              </button>
-              <button
-                type="button"
-                className="btn-icon sm"
-                aria-label={t("moments.unsave")}
-                onClick={() => void remove(moment)}
-              >
-                <Trash2 size={15} />
-              </button>
-            </article>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 type LibraryCapabilityCounts = {
