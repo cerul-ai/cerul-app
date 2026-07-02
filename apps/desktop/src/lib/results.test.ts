@@ -25,6 +25,21 @@ const t: TFunction = (key, vars) => {
   if (key === "results.snippet.searchMatchAt") {
     return `search ${vars?.ts}`;
   }
+  if (key === "results.snippet.documentMatch") {
+    return "document match";
+  }
+  if (key === "result.timestamp.document") {
+    return "Document";
+  }
+  if (key === "detail.document.locatorWithSection") {
+    return `p. ${vars?.page} · ${vars?.section}`;
+  }
+  if (key === "detail.document.page") {
+    return `p. ${vars?.page}`;
+  }
+  if (key === "detail.document.locatorFallback") {
+    return "Document";
+  }
   return key;
 };
 
@@ -131,6 +146,31 @@ describe("results helpers", () => {
     expect(selectPlaybackChunkId(chunks, "0:26", "audio-1")).toBe("audio-1");
   });
 
+  it("maps document chunks as readable evidence rows", () => {
+    const chunks: api.ChunkRecord[] = [
+      {
+        id: "doc-1",
+        item_id: "item-1",
+        chunk_type: "document",
+        start_sec: null,
+        end_sec: null,
+        text: "The roadmap section mentions rollout risk.",
+        frame_path: null,
+        metadata: { page: 2, section: "Roadmap" },
+      },
+    ];
+
+    expect(mapChunkRecords(chunks, t)).toEqual([
+      {
+        id: "doc-1",
+        time: "p. 2 · Roadmap",
+        text: "The roadmap section mentions rollout risk.",
+        startSec: null,
+        endSec: null,
+      },
+    ]);
+  });
+
   it("filters results by modality, time, and confidence", () => {
     const audioResult = result({
       timestamp: "12:00",
@@ -144,12 +184,33 @@ describe("results helpers", () => {
       color: "rose",
       chunkType: "keyframe",
     });
+    const documentResult = result({
+      timestamp: "Document",
+      confidence: "medium",
+      chunkType: "document",
+    });
 
     expect(resultModality(audioResult)).toBe("audio");
     expect(resultModality(visualResult)).toBe("image");
+    expect(resultModality(documentResult)).toBe("document");
     expect(resultMatchesTimeFilter(audioResult, "tenToThirty")).toBe(true);
     expect(resultMatchesTimeFilter(visualResult, "thirtyPlus")).toBe(true);
     expect(resultMatchesConfidenceFilter(audioResult, "strong")).toBe(true);
     expect(resultMatchesConfidenceFilter(visualResult, "review")).toBe(true);
+  });
+
+  it("labels document search results without fake timestamps", () => {
+    const results = mapSearchResults(
+      [record({ chunk_id: "doc-1", chunk_type: "document", start_sec: null, snippet: "" })],
+      [item],
+      t,
+    );
+
+    expect(results[0]).toMatchObject({
+      playbackChunkId: "doc-1",
+      timestamp: "Document",
+      snippet: "document match",
+      chunkType: "document",
+    });
   });
 });

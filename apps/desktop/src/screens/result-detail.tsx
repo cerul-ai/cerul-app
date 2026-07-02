@@ -22,6 +22,7 @@ import {
   type ClipTarget,
 } from "../components/clip-export-popover";
 import { DetailIssuePanel } from "../components/detail-issue-panel";
+import { DocumentEvidencePanel } from "../components/document-evidence";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "../components/player";
 import { InlineNotice } from "../components/leaf";
 import {
@@ -41,8 +42,12 @@ import {
   isNearEndPosition,
   itemDetailIssue,
 } from "../lib/items";
-import { mapChunkRecords, selectPlaybackChunkId } from "../lib/results";
-import { canOpenOriginalSource, timestampDeepLink } from "../lib/detail";
+import {
+  isDocumentChunkType,
+  mapChunkRecords,
+  selectPlaybackChunkId,
+} from "../lib/results";
+import { canOpenOriginalSource, sourceFileDialogFilter, timestampDeepLink } from "../lib/detail";
 import { openDialog, invokeHostCommand } from "../lib/desktopHost";
 import { forgetLastOpened, recordLastOpened } from "../lib/last-opened";
 import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
@@ -760,9 +765,10 @@ export function ResultDetail({
   const [mediaState, setMediaState] = useState<{
     status: "idle" | "loading" | "ready" | "error";
     chunkId: string | null;
+    chunks: api.ChunkRecord[];
     lines: TranscriptLine[];
     message: string | null;
-  }>({ status: "idle", chunkId: null, lines: transcript, message: null });
+  }>({ status: "idle", chunkId: null, chunks: [], lines: transcript, message: null });
   const [itemAction, setItemAction] = useState<{
     status: "idle" | "locating" | "reindexing" | "deleting" | "queued" | "error";
     message: string | null;
@@ -783,6 +789,14 @@ export function ResultDetail({
   const imagePreviewUrl =
     item.contentType === "image" && mediaState.chunkId
       ? api.chunkFrameUrl(mediaState.chunkId)
+      : null;
+  const documentChunks = useMemo(
+    () => mediaState.chunks.filter((record) => isDocumentChunkType(record.chunk_type)),
+    [mediaState.chunks],
+  );
+  const selectedDocumentChunk =
+    item.contentType === "document"
+      ? documentChunks.find((record) => record.id === mediaState.chunkId) ?? documentChunks[0] ?? null
       : null;
   const timestampLink = timestampDeepLink(
     item.id,
@@ -838,12 +852,12 @@ export function ResultDetail({
 
   useEffect(() => {
     if (!actionsEnabled) {
-      setMediaState({ status: "idle", chunkId: null, lines: transcript, message: null });
+      setMediaState({ status: "idle", chunkId: null, chunks: [], lines: transcript, message: null });
       return;
     }
 
     let cancelled = false;
-    setMediaState({ status: "loading", chunkId: null, lines: [], message: null });
+    setMediaState({ status: "loading", chunkId: null, chunks: [], lines: [], message: null });
     api
       .listItemChunks(item.id)
       .then((records) => {
@@ -853,7 +867,8 @@ export function ResultDetail({
         setMediaState({
           status: "ready",
           chunkId: selectPlaybackChunkId(records, startTimestamp, startChunkId),
-          lines: mapChunkRecords(records),
+          chunks: records,
+          lines: mapChunkRecords(records, t),
           message: null,
         });
       })
@@ -864,6 +879,7 @@ export function ResultDetail({
         setMediaState({
           status: "error",
           chunkId: null,
+          chunks: [],
           lines: [],
           message: errorMessage(error),
         });
@@ -872,7 +888,7 @@ export function ResultDetail({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, item.id, startChunkId, startTimestamp]);
+  }, [actionsEnabled, item.id, startChunkId, startTimestamp, t]);
 
   useEffect(() => {
     shouldAutoPlayRef.current = isPlaying;
@@ -1017,13 +1033,16 @@ export function ResultDetail({
     setCurrentTimestamp(timestamp);
     setIsPlaying(true);
     const targetSeconds = parseTimestampSeconds(timestamp);
-    const nearestLine = transcriptLines
-      .filter((line) => Number.isFinite(parseTimestampSeconds(line.time)))
-      .sort(
-        (left, right) =>
-          Math.abs(parseTimestampSeconds(left.time) - targetSeconds) -
-          Math.abs(parseTimestampSeconds(right.time) - targetSeconds),
-      )[0];
+    const exactLine = transcriptLines.find((line) => line.time === timestamp);
+    const nearestLine =
+      exactLine ??
+      transcriptLines
+        .filter((line) => Number.isFinite(parseTimestampSeconds(line.time)))
+        .sort(
+          (left, right) =>
+            Math.abs(parseTimestampSeconds(left.time) - targetSeconds) -
+            Math.abs(parseTimestampSeconds(right.time) - targetSeconds),
+        )[0];
     if (nearestLine) {
       setMediaState((current) => ({ ...current, chunkId: nearestLine.id }));
     }
@@ -1034,7 +1053,7 @@ export function ResultDetail({
     const selected = await openDialog({
       multiple: false,
       directory: false,
-      filters: [{ name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] }],
+      filters: [sourceFileDialogFilter(item.contentType)],
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
       try {
@@ -1238,6 +1257,13 @@ export function ResultDetail({
                   <span>{t("detail.player.preparing")}</span>
                 </div>
               </div>
+            ) : item.contentType === "document" ? (
+              <DocumentEvidencePanel
+                item={item}
+                chunk={selectedDocumentChunk}
+                chunkCount={documentChunks.length}
+                onOpenOriginal={() => void openOriginalSource()}
+              />
             ) : (
               <div className={`video-frame thumb ${item.color}`}>
                 <div className="stripes" aria-hidden="true" />

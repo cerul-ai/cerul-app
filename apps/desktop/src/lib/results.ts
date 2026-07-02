@@ -25,7 +25,7 @@ export function mapResultMatch(
     playbackChunkId: resultPlaybackChunkId(record),
     startSec: record.start_sec,
     endSec: record.end_sec,
-    timestamp: formatTimestamp(record.start_sec),
+    timestamp: resultTimestamp(record, t),
     snippet: displaySnippet(record, t),
     chunkType: record.chunk_type,
     confidence,
@@ -53,7 +53,7 @@ export function mapSearchResult(
     endSec: record.end_sec,
     title: item?.title ?? record.item_id,
     source: item?.source ?? t("result.sourceFallback"),
-    timestamp: formatTimestamp(record.start_sec),
+    timestamp: resultTimestamp(record, t),
     indexedAtEpoch: item?.indexedAtEpoch ?? null,
     duration: item?.duration ?? "",
     snippet: displaySnippet(record, t),
@@ -184,20 +184,24 @@ function resultPlaybackChunkId(record: api.SearchResultRecord) {
   return record.playback_chunk_id ?? record.chunk_id ?? "";
 }
 
-export function mapChunkRecords(records: api.ChunkRecord[]): TranscriptLine[] {
+export function mapChunkRecords(records: api.ChunkRecord[], t?: TFunction): TranscriptLine[] {
   const transcriptLines = records.filter((record) => record.chunk_type === "transcript_line");
   const spokenRecords = transcriptLines.length > 0
     ? transcriptLines
     : records.filter((record) => record.chunk_type === "transcript" || record.chunk_type === "audio");
+  const displayRecords =
+    spokenRecords.length > 0 ? spokenRecords : records.filter((record) => isDocumentChunkType(record.chunk_type));
 
-  return spokenRecords.flatMap((record) => {
+  return displayRecords.flatMap((record) => {
     if (!record.text) {
       return [];
     }
     return [
       {
         id: record.id,
-        time: formatTimestamp(record.start_sec),
+        time: isDocumentChunkType(record.chunk_type)
+          ? documentChunkLabel(record, t)
+          : formatTimestamp(record.start_sec),
         text: record.text,
         startSec: record.start_sec,
         endSec: record.end_sec,
@@ -237,10 +241,14 @@ export function resultModality(result: Result): import("./types").ResultModality
     result.chunkType,
     ...result.moreMatches.map((match) => match.chunkType ?? ""),
   ].filter(Boolean);
+  const hasDocument = chunkTypes.some(isDocumentChunkType);
   const hasShown = chunkTypes.some(isShownChunkType);
   const hasSpoken = chunkTypes.some(isSpokenChunkType);
   const hasBoth = chunkTypes.some(isBothChunkType);
 
+  if (hasDocument) {
+    return "document";
+  }
   if (hasBoth || (hasShown && hasSpoken)) {
     return "video";
   }
@@ -309,9 +317,58 @@ function displaySnippet(record: api.SearchResultRecord, t: TFunction) {
       ? t("results.snippet.understandingMatch")
       : t("results.snippet.understandingAt", { ts: timestamp });
   }
+  if (isDocumentChunkType(record.chunk_type)) {
+    return t("results.snippet.documentMatch");
+  }
   return record.start_sec === null
     ? t("results.snippet.searchMatch")
     : t("results.snippet.searchMatchAt", { ts: timestamp });
+}
+
+export function resultTimestamp(record: api.SearchResultRecord, t?: TFunction) {
+  if (isDocumentChunkType(record.chunk_type)) {
+    return t ? t("result.timestamp.document") : "Document";
+  }
+  return formatTimestamp(record.start_sec);
+}
+
+export function documentChunkLabel(
+  record: Pick<api.ChunkRecord, "metadata" | "chunk_type" | "start_sec">,
+  t?: TFunction,
+) {
+  const page = documentChunkPage(record);
+  const section = documentChunkSection(record);
+  if (page !== null && section) {
+    return t
+      ? t("detail.document.locatorWithSection", { page, section })
+      : `p. ${page} · ${section}`;
+  }
+  if (page !== null) {
+    return t ? t("detail.document.page", { page }) : `p. ${page}`;
+  }
+  if (section) {
+    return section;
+  }
+  return t ? t("detail.document.locatorFallback") : "Document";
+}
+
+export function documentChunkPage(record: Pick<api.ChunkRecord, "metadata">): number | null {
+  const value = record.metadata?.page;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+export function documentChunkSection(record: Pick<api.ChunkRecord, "metadata">): string | null {
+  const value = record.metadata?.section;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function looksLikeLocalPath(value: string) {
@@ -332,6 +389,10 @@ function isShownChunkType(chunkType: string) {
 
 function isBothChunkType(chunkType: string) {
   return chunkType === "understanding" || chunkType === "video";
+}
+
+export function isDocumentChunkType(chunkType: string) {
+  return chunkType === "document";
 }
 
 export function resultMatchesTimeFilter(

@@ -21,3 +21,16 @@ export function timestampDeepLink(
 export function canOpenOriginalSource(item: Item) {
   return Boolean(item.originalUrl || item.rawPath);
 }
+
+export function sourceFileDialogFilter(contentType: string) {
+  if (contentType === "audio") {
+    return { name: "Audio", extensions: ["mp3", "m4a", "wav", "flac", "aac", "ogg", "opus"] };
+  }
+  if (contentType === "image") {
+    return { name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"] };
+  }
+  if (contentType === "document") {
+    return { name: "Document", extensions: ["pdf", "docx", "pptx", "md", "markdown", "txt"] };
+  }
+  return { name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] };
+}

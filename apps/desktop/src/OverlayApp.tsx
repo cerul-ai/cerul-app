@@ -690,6 +690,9 @@ export function OverlayApp() {
 }
 
 function overlayModality(contentType: string, chunkType: string, sourceType: string | null, t: TFunction) {
+  if (contentType === "document" || chunkType === "document") {
+    return { key: "document" as const, label: t("overlay.modality.document") };
+  }
   if (contentType === "image" || isVisualChunk(chunkType)) {
     return { key: "visual" as const, label: t("overlay.modality.visual") };
   }
@@ -732,7 +735,10 @@ function mapOverlayResult(
       record.item_title ?? item?.title ?? item?.raw_path ?? item?.external_id ?? record.item_id,
     ),
     source: overlaySourceLabel(item, sources, t),
-    timestamp: formatTimestamp(record.start_sec),
+    timestamp:
+      item?.content_type === "document" || record.chunk_type === "document"
+        ? t("result.timestamp.document")
+        : formatTimestamp(record.start_sec),
     snippet: overlaySnippet(record, t),
     contentType: item?.content_type ?? "video",
     chunkType: record.chunk_type,

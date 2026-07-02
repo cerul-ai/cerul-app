@@ -3,6 +3,7 @@ import {
   Check,
   Copy,
   Eye,
+  FileText,
   Library,
   ListFilter,
   Loader2,
@@ -33,6 +34,7 @@ import { useT } from "../lib/i18n";
 import type { Item, RequestConfirm, Source } from "../lib/types";
 
 type LibraryCapabilityCounts = {
+  document: number;
   speechOnly: number;
   visual: number;
   partial: number;
@@ -56,6 +58,7 @@ function libraryCapabilityItemFromRecord(record: api.ItemRecord): LibraryCapabil
 function countLibraryCapabilities(items: LibraryCapabilityItem[]): LibraryCapabilityCounts {
   const indexedItems = items.filter((item) => item.status === "indexed");
   return {
+    document: indexedItems.filter((item) => item.contentType === "document").length,
     speechOnly: indexedItems.filter((item) => itemHasSpeechSearch(item) && !itemHasVisualSearch(item))
       .length,
     visual: indexedItems.filter(itemHasVisualSearch).length,
@@ -523,6 +526,10 @@ export function LibraryScreen({
           <span className="library-capability-pill accent">
             <Eye size={13} />
             {t("library.capability.visual", { count: capabilityCounts.visual })}
+          </span>
+          <span className="library-capability-pill accent">
+            <FileText size={13} />
+            {t("library.capability.document", { count: capabilityCounts.document })}
           </span>
           {capabilityCounts.partial > 0 ? (
             <span className="library-capability-pill warn">

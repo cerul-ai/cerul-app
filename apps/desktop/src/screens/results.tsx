@@ -58,6 +58,7 @@ export function ResultsScreen({
   const modalityCounts = {
     all: results.length,
     audio: results.filter((result) => resultModality(result) === "audio").length,
+    document: results.filter((result) => resultModality(result) === "document").length,
     image: results.filter((result) => resultModality(result) === "image").length,
     video: results.filter((result) => resultModality(result) === "video").length,
   };
@@ -174,6 +175,13 @@ export function ResultsScreen({
               onClick={() => setModalityFilter("audio")}
             >
               {t("results.modeTabs.audio")} <span className="chip neutral">{modalityCounts.audio}</span>
+            </button>
+            <button
+              type="button"
+              className={modalityFilter === "document" ? "active" : ""}
+              onClick={() => setModalityFilter("document")}
+            >
+              {t("results.modeTabs.documents")} <span className="chip neutral">{modalityCounts.document}</span>
             </button>
           </div>
           <div className="row gap-2">

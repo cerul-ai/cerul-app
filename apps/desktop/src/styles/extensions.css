@@ -1824,6 +1824,51 @@ body.overlay-body {
   height: 100%;
   object-fit: contain;
 }
+.document-evidence-panel {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 18px;
+  align-items: start;
+  min-height: 260px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.document-evidence-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.document-evidence-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.document-evidence-title {
+  font-size: var(--fs-title);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+.document-evidence-meta {
+  flex-wrap: wrap;
+}
+.document-evidence-snippet {
+  display: -webkit-box;
+  margin: 0;
+  max-height: 220px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 9;
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: var(--lh-relax);
+  white-space: pre-wrap;
+}
 /* ---- Custom video player chrome (CerulPlayer) ----
    Intentionally dark + theme-independent, like a conventional video player.
    Steel scrubber maps to --accent; transcript markers sit on the track. */
@@ -2096,6 +2141,12 @@ body.overlay-body {
 }
 .transcript .seg-btn {
   margin: 0;
+}
+.transcript .seg-btn .ts {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .transcript-skeleton {
   display: grid;

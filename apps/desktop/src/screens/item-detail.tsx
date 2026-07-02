@@ -21,6 +21,7 @@ import {
   type ClipTarget,
 } from "../components/clip-export-popover";
 import { DetailIssuePanel } from "../components/detail-issue-panel";
+import { DocumentEvidencePanel } from "../components/document-evidence";
 import { FrameStrip } from "../components/FrameStrip";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "../components/player";
 import { SplitStage } from "../components/SplitStage";
@@ -29,7 +30,7 @@ import { InlineNotice } from "../components/leaf";
 import { TranscriptList, TranscriptSkeleton } from "../components/transcript";
 import * as api from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
-import { canOpenOriginalSource, timestampDeepLink } from "../lib/detail";
+import { canOpenOriginalSource, sourceFileDialogFilter, timestampDeepLink } from "../lib/detail";
 import { openDialog, invokeHostCommand } from "../lib/desktopHost";
 import {
   basenameFromPath,
@@ -45,7 +46,12 @@ import {
   itemDetailIssue,
 } from "../lib/items";
 import { forgetLastOpened, recordLastOpened } from "../lib/last-opened";
-import { mapChunkRecords, selectPlaybackChunkId } from "../lib/results";
+import {
+  documentChunkLabel,
+  isDocumentChunkType,
+  mapChunkRecords,
+  selectPlaybackChunkId,
+} from "../lib/results";
 import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
 import { itemModalityLabel } from "../components/cards";
 import type { ApiStatus, Item, RequestConfirm, TranscriptLine } from "../lib/types";
@@ -873,6 +879,17 @@ export function ItemDetail({
           : extractChunkIdFromThumbnail(item.thumbnailUrl)
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+  const documentChunks = useMemo(
+    () => chunkState.records.filter((record) => isDocumentChunkType(record.chunk_type)),
+    [chunkState.records],
+  );
+  const selectedDocumentChunk =
+    item.contentType === "document"
+      ? documentChunks.find((record) => record.id === startChunkId) ??
+        documentChunks.find((record) => documentChunkLabel(record, t) === currentTimestamp) ??
+        documentChunks[0] ??
+        null
+      : null;
 
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const itemBusy =
@@ -1015,7 +1032,7 @@ export function ItemDetail({
         setChunkState({
           status: "loaded",
           records,
-          lines: mapChunkRecords(records),
+          lines: mapChunkRecords(records, t),
           message: null,
         });
       })
@@ -1029,14 +1046,14 @@ export function ItemDetail({
     return () => {
       cancelled = true;
     };
-  }, [apiStatus, item.id]);
+  }, [apiStatus, item.id, t]);
 
   async function locateSourceFile() {
     setItemAction({ status: "locating", message: null });
     const selected = await openDialog({
       multiple: false,
       directory: false,
-      filters: [{ name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "m4v"] }],
+      filters: [sourceFileDialogFilter(item.contentType)],
     }).catch(() => null);
     if (typeof selected === "string" && selected.trim()) {
       try {
@@ -1290,6 +1307,13 @@ export function ItemDetail({
               onSeekMarker={(marker) => seekTo(marker.label)}
               onTimeUpdate={handlePlayerTimeUpdate}
               onVideoElement={handleVideoElement}
+            />
+          ) : item.contentType === "document" && chunkState.status !== "loading" ? (
+            <DocumentEvidencePanel
+              item={item}
+              chunk={selectedDocumentChunk}
+              chunkCount={documentChunks.length}
+              onOpenOriginal={() => void openOriginalSource()}
             />
           ) : (
             <div className={`video-frame ${item.color}`}>
