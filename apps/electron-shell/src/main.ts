@@ -35,13 +35,12 @@ import {
   appHost,
   appScheme,
   firstDeepLinkArg,
-  isAppUrl,
   isDeepLinkScheme,
-  isExternalUrl,
   registerAppProtocol,
   registerDeepLinkProtocols,
   registerPrivilegedAppScheme,
 } from "./protocol";
+import { secureDesktopWindow, secureRendererWebPreferences } from "./window-security";
 // Type-only: erased at runtime. The implementation is lazy-required in
 // getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
 // GitHub-release fallback instead of crashing the main process at load time.
@@ -581,12 +580,7 @@ function createMainWindow() {
       : {}),
     icon: desktopAppIconPath(),
     show: false,
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+    webPreferences: secureRendererWebPreferences(preloadPath()),
   });
 
   secureDesktopWindow(mainWindow);
@@ -646,12 +640,7 @@ function createOverlayWindow() {
     // a translucent panel alone just lets the page behind bleed through.)
     vibrancy: isMac ? "under-window" : undefined,
     visualEffectState: "active",
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+    webPreferences: secureRendererWebPreferences(preloadPath()),
   });
 
   secureDesktopWindow(overlayWindow);
@@ -695,12 +684,7 @@ function createMenuBarWindow() {
     roundedCorners: true,
     vibrancy: isMac ? "popover" : undefined,
     visualEffectState: "active",
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+    webPreferences: secureRendererWebPreferences(preloadPath()),
   });
 
   secureDesktopWindow(menuBarWindow);
@@ -718,24 +702,6 @@ function createMenuBarWindow() {
   });
   void menuBarWindow.loadURL(`${appScheme}://${appHost}/menubar.html`);
   return menuBarWindow;
-}
-
-function secureDesktopWindow(window: BrowserWindow) {
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
-    return { action: "deny" };
-  });
-  window.webContents.on("will-navigate", (event, url) => {
-    if (isAppUrl(url)) {
-      return;
-    }
-    event.preventDefault();
-    if (isExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
-  });
 }
 
 function setupTray() {
