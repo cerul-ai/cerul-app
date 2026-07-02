@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path as FsPath,
 };
 
@@ -31,6 +31,7 @@ pub(crate) const API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/status", &["get"]),
     ("/v1/openapi.json", &["get"]),
     ("/v1/agent/tools", &["get"]),
+    ("/v1/agent/material-insight", &["post"]),
     ("/v1/search", &["post"]),
     ("/v1/ask", &["post"]),
     ("/v1/items", &["get"]),
@@ -46,6 +47,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/status", get(v1_status))
         .route("/openapi.json", get(v1_openapi_json))
         .route("/agent/tools", get(v1_agent_tools))
+        .route("/agent/material-insight", post(v1_material_insight))
         .route("/search", post(v1_search))
         .route("/ask", post(v1_ask))
         .route("/items", get(v1_list_items))
@@ -119,6 +121,7 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             "status",
             "openapi",
             "agent_tools",
+            "material_insight",
             "search",
             "ask",
             "items",
@@ -265,6 +268,26 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             safety: v1_read_only_agent_tool_safety(),
             evidence: v1_agent_tool_evidence(true, true),
         },
+        V1AgentToolContract {
+            name: "material_insight",
+            description: "Summarize local indexed material into evidence-backed topics and usable-shot candidates.",
+            method: "POST",
+            path: "/v1/agent/material-insight",
+            stage: "a2",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "target": {"type": "string", "enum": ["local"]}
+                }
+            }),
+            output_contract: "V1MaterialInsightResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true, true),
+        },
     ]
 }
 
@@ -341,6 +364,57 @@ async fn v1_search(
         usage: V1Usage {
             billable: false,
             metered_events: query_execution.search_events(),
+            credits_used: 0,
+        },
+    }))
+}
+
+async fn v1_material_insight(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1MaterialInsightRequest>,
+) -> ApiResult<Json<V1MaterialInsightResponse>> {
+    let query = first_non_empty_text([req.query, req.q])
+        .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let query_execution = v1_query_execution(&state.paths);
+    let limit = req.max_results.or(req.limit).unwrap_or(12).clamp(1, 20);
+    let response = search_records(
+        &state.paths,
+        cerul_search::SearchRequest {
+            q: query.clone(),
+            limit,
+        },
+    )
+    .await?;
+    let raw_results = response.results.into_iter().take(limit).collect::<Vec<_>>();
+    let item_metadata = v1_search_item_metadata(&state.paths, &raw_results)?;
+    let existing_preview_chunk_ids = v1_existing_preview_chunk_ids(&state.paths, &raw_results)?;
+    let evidence_metadata = v1_evidence_metadata_for_results(&state.paths, &raw_results)?;
+    let base_url = v1_base_url(&headers, &state.paths);
+    let evidence = raw_results
+        .iter()
+        .map(|result| {
+            v1_search_result(
+                result,
+                &item_metadata,
+                &existing_preview_chunk_ids,
+                &evidence_metadata,
+                &base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(V1MaterialInsightResponse {
+        request_id: new_id("req"),
+        execution: query_execution.execution(),
+        summary: v1_material_insight_summary(&query, &evidence),
+        topics: v1_material_insight_topics(&evidence),
+        usable_shots: v1_material_usable_shots(&evidence),
+        evidence,
+        usage: V1Usage {
+            billable: false,
+            metered_events: query_execution.material_insight_events(),
             credits_used: 0,
         },
     }))
@@ -1024,6 +1098,124 @@ fn v1_document_answer_location(citation: &V1SearchResult, english: bool) -> Opti
         (Some(page), None, false) => Some(format!("第 {page} 页")),
         (None, Some(section), false) => Some(format!("「{section}」部分")),
         (None, None, false) => Some("文档索引中".to_string()),
+    }
+}
+
+fn v1_material_insight_summary(
+    query: &str,
+    evidence: &[V1SearchResult],
+) -> V1MaterialInsightSummary {
+    let item_count = evidence
+        .iter()
+        .map(|result| result.item.id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let present_modalities = evidence
+        .iter()
+        .map(v1_material_modality)
+        .collect::<BTreeSet<_>>();
+    let modalities = V1_MATERIAL_MODALITY_ORDER
+        .iter()
+        .copied()
+        .filter(|modality| present_modalities.contains(modality))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    V1MaterialInsightSummary {
+        query: query.to_string(),
+        result_count: evidence.len(),
+        item_count,
+        modalities,
+    }
+}
+
+fn v1_material_insight_topics(evidence: &[V1SearchResult]) -> Vec<V1MaterialInsightTopic> {
+    let mut groups: BTreeMap<&'static str, (BTreeSet<String>, Vec<String>)> = BTreeMap::new();
+    for result in evidence {
+        let modality = v1_material_modality(result);
+        let (item_ids, evidence_ids) = groups.entry(modality).or_default();
+        item_ids.insert(result.item.id.clone());
+        evidence_ids.push(result.id.clone());
+    }
+
+    V1_MATERIAL_MODALITY_ORDER
+        .iter()
+        .copied()
+        .filter_map(|modality| {
+            groups
+                .remove(modality)
+                .map(|(item_ids, evidence_ids)| V1MaterialInsightTopic {
+                    title: v1_material_topic_title(modality).to_string(),
+                    modality: modality.to_string(),
+                    item_count: item_ids.len(),
+                    evidence_ids,
+                })
+        })
+        .collect()
+}
+
+fn v1_material_usable_shots(evidence: &[V1SearchResult]) -> Vec<V1MaterialUsableShot> {
+    evidence
+        .iter()
+        .filter_map(|result| {
+            let modality = v1_material_modality(result);
+            if modality == "document" {
+                return None;
+            }
+            Some(V1MaterialUsableShot {
+                evidence_id: result.id.clone(),
+                item_id: result.item.id.clone(),
+                item_title: result.item.title.clone(),
+                modality: modality.to_string(),
+                start_sec: result.time.start_sec,
+                end_sec: result.time.end_sec,
+                reason: v1_material_usable_shot_reason(modality).to_string(),
+                open_in_cerul: result.evidence.open_in_cerul.clone(),
+                clip_url: result
+                    .evidence
+                    .clip
+                    .as_ref()
+                    .map(|locator| locator.url.clone()),
+                preview_url: result
+                    .evidence
+                    .preview
+                    .as_ref()
+                    .map(|locator| locator.url.clone()),
+            })
+        })
+        .collect()
+}
+
+const V1_MATERIAL_MODALITY_ORDER: &[&str] = &["video", "audio", "image", "document", "other"];
+
+fn v1_material_modality(result: &V1SearchResult) -> &'static str {
+    match result.item.content_type.as_str() {
+        "video" => "video",
+        "audio" => "audio",
+        "image" => "image",
+        "document" => "document",
+        _ if result.result_type == "visual" => "image",
+        _ if result.result_type == "document" => "document",
+        _ => "other",
+    }
+}
+
+fn v1_material_topic_title(modality: &str) -> &'static str {
+    match modality {
+        "video" => "Video evidence",
+        "audio" => "Audio evidence",
+        "image" => "Image evidence",
+        "document" => "Document evidence",
+        _ => "Other evidence",
+    }
+}
+
+fn v1_material_usable_shot_reason(modality: &str) -> &'static str {
+    match modality {
+        "video" => "Timed video evidence with a replayable local clip.",
+        "audio" => "Timed audio evidence that can anchor narration or interview beats.",
+        "image" => "Visual evidence with a frame preview or OCR-backed match.",
+        _ => "Indexed local evidence related to the requested material.",
     }
 }
 

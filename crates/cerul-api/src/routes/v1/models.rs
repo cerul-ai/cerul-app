@@ -137,6 +137,15 @@ pub(crate) struct V1AskRequest {
     pub(crate) target: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct V1MaterialInsightRequest {
+    pub(crate) query: Option<String>,
+    pub(crate) q: Option<String>,
+    pub(crate) max_results: Option<usize>,
+    pub(crate) limit: Option<usize>,
+    pub(crate) target: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct V1SearchResponse {
     pub(crate) request_id: String,
@@ -155,6 +164,47 @@ pub(crate) struct V1AskResponse {
     pub(crate) citations: Vec<V1SearchResult>,
     pub(crate) warnings: Vec<String>,
     pub(crate) usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1MaterialInsightResponse {
+    pub(crate) request_id: String,
+    pub(crate) execution: V1Execution,
+    pub(crate) summary: V1MaterialInsightSummary,
+    pub(crate) topics: Vec<V1MaterialInsightTopic>,
+    pub(crate) usable_shots: Vec<V1MaterialUsableShot>,
+    pub(crate) evidence: Vec<V1SearchResult>,
+    pub(crate) usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1MaterialInsightSummary {
+    pub(crate) query: String,
+    pub(crate) result_count: usize,
+    pub(crate) item_count: usize,
+    pub(crate) modalities: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1MaterialInsightTopic {
+    pub(crate) title: String,
+    pub(crate) modality: String,
+    pub(crate) item_count: usize,
+    pub(crate) evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1MaterialUsableShot {
+    pub(crate) evidence_id: String,
+    pub(crate) item_id: String,
+    pub(crate) item_title: String,
+    pub(crate) modality: String,
+    pub(crate) start_sec: Option<f64>,
+    pub(crate) end_sec: Option<f64>,
+    pub(crate) reason: String,
+    pub(crate) open_in_cerul: String,
+    pub(crate) clip_url: Option<String>,
+    pub(crate) preview_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -366,6 +416,22 @@ impl V1QueryExecution {
     pub(crate) fn ask_events(self) -> Vec<V1MeteredEvent> {
         let mut events = vec![V1MeteredEvent {
             capability: "local_ask_extractive",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+
+    pub(crate) fn material_insight_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_material_insight",
             quantity: 1,
             credits: 0,
         }];

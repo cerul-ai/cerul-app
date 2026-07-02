@@ -109,6 +109,7 @@ async fn router_serves_v1_status_and_openapi() {
             "status",
             "openapi",
             "agent_tools",
+            "material_insight",
             "search",
             "ask",
             "items",
@@ -132,6 +133,7 @@ async fn router_serves_v1_status_and_openapi() {
     assert!(paths.contains_key("/v1/status"));
     assert!(paths.contains_key("/v1/openapi.json"));
     assert!(paths.contains_key("/v1/agent/tools"));
+    assert!(paths.contains_key("/v1/agent/material-insight"));
     assert!(paths.contains_key("/v1/search"));
     assert!(paths.contains_key("/v1/ask"));
     assert!(paths.contains_key("/v1/items"));
@@ -755,6 +757,7 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             "/v1/status": {"get": {"responses": {"200": {"description": "OK"}}}},
             "/v1/openapi.json": {"get": {"responses": {"200": {"description": "OK"}}}},
             "/v1/agent/tools": {"get": {"responses": {"200": {"description": "OK"}}}},
+            "/v1/agent/material-insight": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/search": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/ask": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/items": {"get": {"responses": {"200": {"description": "OK"}}}},
@@ -802,7 +805,7 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             },
             "indexing": {"paused": "boolean", "active_jobs": "number", "queued_jobs": "number"},
             "account": {"signed_in": "boolean", "plan": null, "credits_remaining": null},
-            "capabilities": ["string", "string", "string", "string", "string", "string", "string"]
+            "capabilities": ["string", "string", "string", "string", "string", "string", "string", "string"]
         }),
     );
 
@@ -1001,6 +1004,38 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
                     "returns_evidence_locators": "boolean",
                     "opens_in_cerul": "boolean"
                 }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "max_results": {
+                            "maximum": "number",
+                            "minimum": "number",
+                            "type": "string"
+                        },
+                        "query": {"minLength": "number", "type": "string"},
+                        "target": {"enum": ["string"], "type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
             }]
         }),
     );
@@ -1023,7 +1058,8 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             "get_chunks",
             "get_frame",
             "get_segment",
-            "ask"
+            "ask",
+            "material_insight"
         ]
     );
     let tools = agent_tools["tools"].as_array().unwrap();
@@ -1169,6 +1205,86 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
                 "score": {"match": "number", "exact_match": "boolean", "similarity": null}
             }],
             "warnings": [],
+            "usage": {
+                "billable": "boolean",
+                "metered_events": [
+                    {"capability": "string", "quantity": "number", "credits": "number"},
+                    {"capability": "string", "quantity": "number", "credits": "number"}
+                ],
+                "credits_used": "number"
+            }
+        }),
+    );
+
+    let material_insight = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/material-insight")
+                .header(header::HOST, "127.0.0.1:25106")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "scaling laws", "max_results": 1}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(material_insight.status(), StatusCode::OK);
+    let material_insight = response_json(material_insight).await;
+    assert_contract_shape(
+        "v1 material insight",
+        &material_insight,
+        json!({
+            "request_id": "string",
+            "execution": {"target": "string", "account_id": null, "privacy": "string"},
+            "summary": {
+                "query": "string",
+                "result_count": "number",
+                "item_count": "number",
+                "modalities": ["string"]
+            },
+            "topics": [{
+                "title": "string",
+                "modality": "string",
+                "item_count": "number",
+                "evidence_ids": ["string"]
+            }],
+            "usable_shots": [{
+                "evidence_id": "string",
+                "item_id": "string",
+                "item_title": "string",
+                "modality": "string",
+                "start_sec": "number",
+                "end_sec": "number",
+                "reason": "string",
+                "open_in_cerul": "string",
+                "clip_url": "string",
+                "preview_url": "string"
+            }],
+            "evidence": [{
+                "id": "string",
+                "type": "string",
+                "source": "string",
+                "item": {
+                    "id": "string",
+                    "title": "string",
+                    "content_type": "string",
+                    "source_type": "string",
+                    "duration_sec": "number"
+                },
+                "time": {"start_sec": "number", "end_sec": "number", "timestamp": "string"},
+                "text": {"snippet": "string", "quote": "string"},
+                "evidence": {
+                    "id": "string",
+                    "kind": "string",
+                    "clip": {"type": "string", "url": "string"},
+                    "preview": {"type": "string", "url": "string"},
+                    "open_in_cerul": "string"
+                },
+                "score": {"match": "number", "exact_match": "boolean", "similarity": null}
+            }],
             "usage": {
                 "billable": "boolean",
                 "metered_events": [
@@ -1642,6 +1758,95 @@ async fn v1_search_mixed_modality_fixture_returns_all_evidence_types() {
     assert_eq!(
         document["evidence"]["open_in_cerul"],
         "cerul-app://item/item-doc?playbackChunkId=item-doc%3Adocument%3A000000&page=5"
+    );
+}
+
+#[tokio::test]
+async fn v1_material_insight_groups_evidence_and_usable_shots() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    seed_v1_mixed_modality_search_fixture(&paths, temp.path());
+    let app = router_with_paths(paths);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/material-insight")
+                .header(header::HOST, "127.0.0.1:25011")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "crossmodalalpha", "max_results": 10}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+
+    assert_eq!(body["summary"]["query"], "crossmodalalpha");
+    assert_eq!(body["summary"]["result_count"], 4);
+    assert_eq!(body["summary"]["item_count"], 4);
+    assert_eq!(
+        body["summary"]["modalities"],
+        json!(["video", "audio", "image", "document"])
+    );
+    assert_eq!(body["topics"].as_array().unwrap().len(), 4);
+    assert_eq!(body["topics"][0]["modality"], "video");
+    assert_eq!(body["topics"][1]["modality"], "audio");
+    assert_eq!(body["topics"][2]["modality"], "image");
+    assert_eq!(body["topics"][3]["modality"], "document");
+
+    let usable_shots = body["usable_shots"].as_array().unwrap();
+    assert_eq!(usable_shots.len(), 3);
+    let find_shot = |item_id: &str| {
+        usable_shots
+            .iter()
+            .find(|shot| shot["item_id"] == item_id)
+            .unwrap_or_else(|| panic!("missing usable shot for {item_id}: {usable_shots:?}"))
+    };
+    let video = find_shot("item-video");
+    assert_eq!(video["modality"], "video");
+    assert_eq!(video["start_sec"], 14.0);
+    assert!(video["clip_url"]
+        .as_str()
+        .unwrap()
+        .contains("/v1/chunks/item-video%3Atranscript%3A000000/video-clip"));
+    assert!(video["preview_url"]
+        .as_str()
+        .unwrap()
+        .contains("/v1/chunks/item-video%3Akeyframe%3A000014/frame"));
+
+    let audio = find_shot("item-audio");
+    assert_eq!(audio["modality"], "audio");
+    assert_eq!(audio["start_sec"], 4.0);
+    assert_eq!(audio["clip_url"], Value::Null);
+    assert!(audio["reason"]
+        .as_str()
+        .unwrap()
+        .contains("narration or interview"));
+
+    let image = find_shot("item-image");
+    assert_eq!(image["modality"], "image");
+    assert_eq!(
+        image["preview_url"],
+        "http://127.0.0.1:25011/v1/chunks/item-image%3Aimage%3A000000/frame"
+    );
+
+    assert!(usable_shots
+        .iter()
+        .all(|shot| shot["item_id"] != "item-doc"));
+    let evidence = body["evidence"].as_array().unwrap();
+    let document = evidence
+        .iter()
+        .find(|result| result["item"]["id"] == "item-doc")
+        .unwrap();
+    assert_eq!(document["evidence"]["page"], 5);
+    assert_eq!(document["evidence"]["section"], "Launch Notes");
+    assert_eq!(
+        body["usage"]["metered_events"][0],
+        json!({"capability": "local_material_insight", "quantity": 1, "credits": 0})
     );
 }
 
