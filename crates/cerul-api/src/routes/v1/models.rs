@@ -284,6 +284,10 @@ pub(crate) struct V1Evidence {
     pub(crate) kind: &'static str,
     pub(crate) clip: Option<V1Locator>,
     pub(crate) preview: Option<V1Locator>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) page: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) section: Option<String>,
     pub(crate) open_in_cerul: String,
 }
 

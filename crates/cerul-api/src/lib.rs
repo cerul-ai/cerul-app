@@ -3204,7 +3204,7 @@ fn queue_items_for_embedding_mode_rebuild(paths: &AppPaths) -> anyhow::Result<(u
             SELECT id, content_type, status
             FROM items
             WHERE status IN ('indexed', 'fetching', 'processing')
-              AND content_type IN ('video', 'audio', 'image')
+              AND content_type IN ('video', 'audio', 'image', 'document')
             ORDER BY id ASC
             "#,
         )?;
@@ -3769,6 +3769,7 @@ fn content_type_value(content_type: ContentType) -> &'static str {
         ContentType::Video => "video",
         ContentType::Audio => "audio",
         ContentType::Image => "image",
+        ContentType::Document => "document",
     }
 }
 
@@ -3777,6 +3778,7 @@ fn parse_content_type(value: &str) -> anyhow::Result<ContentType> {
         "video" => Ok(ContentType::Video),
         "audio" => Ok(ContentType::Audio),
         "image" => Ok(ContentType::Image),
+        "document" => Ok(ContentType::Document),
         other => Err(anyhow::anyhow!("unsupported content type: {other}")),
     }
 }
@@ -3786,6 +3788,7 @@ fn index_job_type(content_type: ContentType) -> &'static str {
         ContentType::Video => "index_video",
         ContentType::Audio => "index_audio",
         ContentType::Image => "index_image",
+        ContentType::Document => "index_document",
     }
 }
 
@@ -8106,6 +8109,50 @@ mod tests {
 
         assert_eq!(video_items, 2);
         assert_eq!(video_jobs, 2);
+    }
+
+    #[tokio::test]
+    async fn add_folder_document_source_discovers_documents_and_queues_document_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let documents = temp.path().join("documents");
+        std::fs::create_dir(&documents).unwrap();
+        std::fs::write(documents.join("brief.md"), b"# Brief").unwrap();
+        std::fs::write(documents.join("notes.txt"), b"notes").unwrap();
+        std::fs::write(documents.join("photo.jpg"), b"image").unwrap();
+
+        let summary = add_source_to_paths(
+            &paths,
+            AddSourceRequest {
+                source_type: "folder_document".to_string(),
+                config: json!({ "path": documents }),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.source.source_type, "folder_document");
+        assert_eq!(summary.items.len(), 2);
+        assert_eq!(summary.queued_jobs, 2);
+
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let document_items: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?1 AND content_type = 'document' AND status = 'discovered'",
+                [summary.source.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let document_jobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE job_type = 'index_document' AND status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(document_items, 2);
+        assert_eq!(document_jobs, 2);
     }
 
     #[tokio::test]

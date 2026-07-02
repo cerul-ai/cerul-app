@@ -1,0 +1,343 @@
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+use anyhow::Context;
+use quick_xml::{events::Event, Reader};
+use serde_json::json;
+use zip::ZipArchive;
+
+const DOCUMENT_CHUNK_BUDGET: usize = 3_200;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExtractedDocumentChunk {
+    pub(crate) text: String,
+    pub(crate) page: Option<u32>,
+    pub(crate) section: Option<String>,
+    pub(crate) metadata: serde_json::Value,
+}
+
+pub(crate) fn extract_document_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .context("document path has no file extension")?;
+
+    let chunks = match extension.as_str() {
+        "txt" | "md" | "markdown" => extract_plain_text_chunks(path, &extension)?,
+        "pdf" => extract_pdf_chunks(path)?,
+        "docx" => extract_docx_chunks(path)?,
+        "pptx" => extract_pptx_chunks(path)?,
+        other => anyhow::bail!("unsupported document extension: {other}"),
+    };
+
+    let chunks = chunks
+        .into_iter()
+        .filter(|chunk| !chunk.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !chunks.is_empty(),
+        "document produced no searchable text: {}",
+        path.display()
+    );
+    Ok(chunks)
+}
+
+fn extract_plain_text_chunks(
+    path: &Path,
+    extension: &str,
+) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read document text: {}", path.display()))?;
+    Ok(split_text_chunks(
+        &text,
+        Some(1),
+        None,
+        json!({ "format": extension }),
+    ))
+}
+
+fn extract_pdf_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let pages = pdf_extract::extract_text_by_pages(path)
+        .with_context(|| format!("failed to extract PDF text: {}", path.display()))?;
+    let mut chunks = Vec::new();
+    for (index, page_text) in pages.into_iter().enumerate() {
+        let page = u32::try_from(index + 1).ok();
+        chunks.extend(split_text_chunks(
+            &page_text,
+            page,
+            None,
+            json!({ "format": "pdf" }),
+        ));
+    }
+    Ok(chunks)
+}
+
+fn extract_docx_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let mut archive = open_zip(path)?;
+    let xml = read_zip_text(&mut archive, "word/document.xml")
+        .with_context(|| format!("failed to read docx document.xml: {}", path.display()))?;
+    let text = extract_xml_text(&xml)?;
+    Ok(split_text_chunks(
+        &text,
+        None,
+        None,
+        json!({ "format": "docx", "part": "word/document.xml" }),
+    ))
+}
+
+fn extract_pptx_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let mut archive = open_zip(path)?;
+    let mut slide_names = Vec::new();
+    for index in 0..archive.len() {
+        let file = archive.by_index(index)?;
+        let name = file.name().to_string();
+        if name.starts_with("ppt/slides/slide")
+            && name.ends_with(".xml")
+            && !name.contains("/_rels/")
+        {
+            slide_names.push(name);
+        }
+    }
+    slide_names.sort_by_key(|name| slide_number(name).unwrap_or(u32::MAX));
+
+    let mut chunks = Vec::new();
+    for name in slide_names {
+        let page = slide_number(&name);
+        let xml = read_zip_text(&mut archive, &name)?;
+        let text = extract_xml_text(&xml)?;
+        chunks.extend(split_text_chunks(
+            &text,
+            page,
+            None,
+            json!({ "format": "pptx", "part": name }),
+        ));
+    }
+    Ok(chunks)
+}
+
+fn open_zip(path: &Path) -> anyhow::Result<ZipArchive<File>> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    ZipArchive::new(file).with_context(|| format!("failed to read zip package {}", path.display()))
+}
+
+fn read_zip_text(archive: &mut ZipArchive<File>, name: &str) -> anyhow::Result<String> {
+    let mut file = archive
+        .by_name(name)
+        .with_context(|| format!("missing package part {name}"))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .with_context(|| format!("failed to read package part {name}"))?;
+    Ok(text)
+}
+
+fn extract_xml_text(xml: &str) -> anyhow::Result<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut text = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf)? {
+            Event::Text(event) => append_inline_text(&mut text, &event.unescape()?),
+            Event::CData(event) => append_inline_text(&mut text, &String::from_utf8_lossy(&event)),
+            Event::Empty(event) if is_break_element(event.name().as_ref()) => {
+                ensure_paragraph_break(&mut text)
+            }
+            Event::End(event) if is_block_element(event.name().as_ref()) => {
+                ensure_paragraph_break(&mut text)
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(normalize_text_blocks(&text))
+}
+
+fn append_inline_text(output: &mut String, text: &str) {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return;
+    }
+    if !output.is_empty() && !output.ends_with(char::is_whitespace) {
+        output.push(' ');
+    }
+    output.push_str(&text);
+}
+
+fn ensure_paragraph_break(output: &mut String) {
+    let trimmed_len = output.trim_end().len();
+    output.truncate(trimmed_len);
+    if !output.is_empty() && !output.ends_with("\n\n") {
+        output.push_str("\n\n");
+    }
+}
+
+fn is_block_element(name: &[u8]) -> bool {
+    matches!(local_name(name), b"p" | b"txBody")
+}
+
+fn is_break_element(name: &[u8]) -> bool {
+    matches!(local_name(name), b"br")
+}
+
+fn local_name(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+}
+
+fn split_text_chunks(
+    text: &str,
+    page: Option<u32>,
+    default_section: Option<String>,
+    metadata: serde_json::Value,
+) -> Vec<ExtractedDocumentChunk> {
+    let text = normalize_text_blocks(text);
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_section = default_section.or_else(|| first_section_title(&text));
+
+    for paragraph in text
+        .split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let paragraph_section = heading_title(paragraph);
+        let next_len = char_count(&current) + char_count(paragraph) + 2;
+        if !current.is_empty() && next_len > DOCUMENT_CHUNK_BUDGET {
+            chunks.push(document_chunk(
+                std::mem::take(&mut current),
+                page,
+                current_section.clone(),
+                metadata.clone(),
+            ));
+            current_section = paragraph_section
+                .clone()
+                .or_else(|| first_section_title(paragraph));
+        }
+        if let Some(section) = paragraph_section {
+            current_section = Some(section);
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(paragraph);
+    }
+
+    if !current.trim().is_empty() {
+        chunks.push(document_chunk(
+            current,
+            page,
+            current_section,
+            metadata.clone(),
+        ));
+    }
+    chunks
+}
+
+fn document_chunk(
+    text: String,
+    page: Option<u32>,
+    section: Option<String>,
+    mut metadata: serde_json::Value,
+) -> ExtractedDocumentChunk {
+    if !metadata.is_object() {
+        metadata = json!({});
+    }
+    ExtractedDocumentChunk {
+        text: text.trim().to_string(),
+        page,
+        section,
+        metadata,
+    }
+}
+
+fn normalize_text_blocks(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split("\n\n\n")
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+fn first_section_title(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find_map(heading_title)
+        .or_else(|| {
+            text.lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && line.chars().count() <= 120)
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn heading_title(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let heading = trimmed.strip_prefix('#')?.trim_start_matches('#').trim();
+    (!heading.is_empty() && heading.chars().count() <= 120).then(|| heading.to_string())
+}
+
+fn char_count(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn slide_number(name: &str) -> Option<u32> {
+    let file_name = PathBuf::from(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(ToOwned::to_owned)?;
+    file_name.strip_prefix("slide")?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_office_xml_text_with_paragraph_breaks() {
+        let xml = r#"
+            <w:document xmlns:w="w">
+              <w:body>
+                <w:p><w:r><w:t>Alpha &amp; beta</w:t></w:r></w:p>
+                <w:p><w:r><w:t>Launch notes</w:t></w:r></w:p>
+              </w:body>
+            </w:document>
+        "#;
+
+        let text = extract_xml_text(xml).unwrap();
+
+        assert!(text.contains("Alpha & beta"));
+        assert!(text.contains("Launch notes"));
+    }
+
+    #[test]
+    fn split_text_chunks_keeps_page_and_section() {
+        let chunks = split_text_chunks(
+            "# Roadmap\nShip document search",
+            Some(3),
+            None,
+            json!({ "format": "md" }),
+        );
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].page, Some(3));
+        assert_eq!(chunks[0].section.as_deref(), Some("Roadmap"));
+        assert_eq!(chunks[0].metadata["format"], "md");
+    }
+}

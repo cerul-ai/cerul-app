@@ -108,6 +108,18 @@ impl JobProcessor for PipelineJobProcessor {
                 .process_image_item(&job.item_id)
                 .await
                 .map(|_| ()),
+            "index_document" => self
+                .pipeline
+                .clone()
+                .with_usage_job_id(job.id.clone())
+                .with_progress(Arc::new(JobProgressReporter {
+                    paths: self.paths.clone(),
+                    job_id: job.id.clone(),
+                    state: Mutex::new(JobProgressState::default()),
+                }))
+                .process_document_item(&job.item_id)
+                .await
+                .map(|_| ()),
             other => Err(anyhow::anyhow!("unsupported job type: {other}")),
         };
 

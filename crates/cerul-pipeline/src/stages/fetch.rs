@@ -51,6 +51,17 @@ pub(crate) async fn fetch_image_media(
     source.fetch(&item.as_discovered_item()).await
 }
 
+pub(crate) async fn fetch_document_media(
+    paths: &AppPaths,
+    item: &cerul_storage::StoredItem,
+) -> anyhow::Result<PathBuf> {
+    let source = cerul_sources::build(
+        &item.source_type,
+        source_config_with_app_cache(paths, &item.source_type, item.source_config.clone()),
+    )?;
+    source.fetch(&item.as_discovered_item()).await
+}
+
 fn sync_raw_path_for_source(
     paths: &AppPaths,
     item: &cerul_storage::StoredItem,

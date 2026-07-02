@@ -310,6 +310,7 @@ async fn v1_search(
     let item_metadata = v1_search_item_metadata(&state.paths, &response.results)?;
     let existing_preview_chunk_ids =
         v1_existing_preview_chunk_ids(&state.paths, &response.results)?;
+    let evidence_metadata = v1_evidence_metadata_for_results(&state.paths, &response.results)?;
     let base_url = v1_base_url(&headers, &state.paths);
     let results = response
         .results
@@ -319,6 +320,7 @@ async fn v1_search(
                 result,
                 &item_metadata,
                 &existing_preview_chunk_ids,
+                &evidence_metadata,
                 &base_url,
             )
         })
@@ -383,6 +385,7 @@ async fn v1_ask(
     let item_metadata = v1_search_item_metadata(&state.paths, &filtered_results)?;
     let existing_preview_chunk_ids =
         v1_existing_preview_chunk_ids(&state.paths, &filtered_results)?;
+    let evidence_metadata = v1_evidence_metadata_for_results(&state.paths, &filtered_results)?;
     let base_url = v1_base_url(&headers, &state.paths);
     let citations = filtered_results
         .iter()
@@ -391,6 +394,7 @@ async fn v1_ask(
                 result,
                 &item_metadata,
                 &existing_preview_chunk_ids,
+                &evidence_metadata,
                 &base_url,
             )
         })
@@ -807,6 +811,7 @@ fn v1_item_chunk(chunk: &ChunkRecord, item: &V1ItemRow, base_url: &str) -> V1Ite
             item,
             chunk.start_sec,
             chunk.frame_path.as_deref(),
+            &chunk.metadata,
             base_url,
         ),
     }
@@ -817,6 +822,7 @@ fn v1_chunk_evidence(
     item: &V1ItemRow,
     start_sec: Option<f64>,
     frame_path: Option<&str>,
+    metadata: &Value,
     base_url: &str,
 ) -> V1Evidence {
     let clip = if item.source_file_exists
@@ -845,9 +851,12 @@ fn v1_chunk_evidence(
                 encode_path_segment(chunk_id)
             ),
         });
+    let page = evidence_page(metadata);
+    let section = evidence_section(metadata);
     let evidence_kind = match (clip.is_some(), preview.is_some()) {
         (true, _) => "video_clip",
         (false, true) => "frame",
+        (false, false) if item.content_type == "document" || page.is_some() => "document",
         (false, false) => "chunk",
     };
 
@@ -856,7 +865,9 @@ fn v1_chunk_evidence(
         kind: evidence_kind,
         clip,
         preview,
-        open_in_cerul: v1_open_in_cerul_link(&item.id, chunk_id, start_sec),
+        page,
+        section,
+        open_in_cerul: v1_open_in_cerul_link_with_page(&item.id, chunk_id, start_sec, page),
     }
 }
 
@@ -978,6 +989,7 @@ fn v1_search_result(
     result: &cerul_search::SearchResult,
     item_metadata: &HashMap<String, V1SearchItemMetadata>,
     existing_preview_chunk_ids: &HashSet<String>,
+    evidence_metadata: &HashMap<String, V1EvidenceMetadata>,
     base_url: &str,
 ) -> V1SearchResult {
     let metadata = item_metadata
@@ -1019,9 +1031,20 @@ fn v1_search_result(
                 ),
             })
     });
+    let evidence_metadata = evidence_metadata
+        .get(&result.playback_chunk_id)
+        .cloned()
+        .unwrap_or_default();
     let evidence_kind = match (clip.is_some(), preview.is_some()) {
         (true, _) => "video_clip",
         (false, true) => "frame",
+        (false, false)
+            if metadata.item.content_type == "document"
+                || result.chunk_type == "document"
+                || evidence_metadata.page.is_some() =>
+        {
+            "document"
+        }
         (false, false) => "chunk",
     };
 
@@ -1044,10 +1067,13 @@ fn v1_search_result(
             kind: evidence_kind,
             clip,
             preview,
-            open_in_cerul: v1_open_in_cerul_link(
+            page: evidence_metadata.page,
+            section: evidence_metadata.section,
+            open_in_cerul: v1_open_in_cerul_link_with_page(
                 &result.item_id,
                 &result.playback_chunk_id,
                 start_sec,
+                evidence_metadata.page,
             ),
         },
         score: V1Score {
@@ -1163,6 +1189,61 @@ fn v1_existing_preview_chunk_ids(
     Ok(existing)
 }
 
+#[derive(Debug, Clone, Default)]
+struct V1EvidenceMetadata {
+    page: Option<u32>,
+    section: Option<String>,
+}
+
+fn v1_evidence_metadata_for_results(
+    paths: &AppPaths,
+    results: &[cerul_search::SearchResult],
+) -> anyhow::Result<HashMap<String, V1EvidenceMetadata>> {
+    let mut chunk_ids = results
+        .iter()
+        .map(|result| result.playback_chunk_id.as_str())
+        .collect::<Vec<_>>();
+    chunk_ids.sort_unstable();
+    chunk_ids.dedup();
+    if chunk_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", chunk_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        r#"
+        SELECT id, metadata
+        FROM chunks
+        WHERE id IN ({placeholders})
+        "#
+    );
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |row| {
+        let id: String = row.get(0)?;
+        let metadata: Option<String> = row.get(1)?;
+        let metadata = metadata
+            .as_deref()
+            .map(parse_json)
+            .unwrap_or_else(|| json!({}));
+        Ok((
+            id,
+            V1EvidenceMetadata {
+                page: evidence_page(&metadata),
+                section: evidence_section(&metadata),
+            },
+        ))
+    })?;
+    let mut metadata = HashMap::with_capacity(chunk_ids.len());
+    for row in rows {
+        let (id, value) = row?;
+        metadata.insert(id, value);
+    }
+    Ok(metadata)
+}
+
 fn fallback_v1_search_item_metadata(result: &cerul_search::SearchResult) -> V1SearchItemMetadata {
     V1SearchItemMetadata {
         item: V1SearchItem {
@@ -1184,6 +1265,7 @@ fn v1_result_type(chunk_type: &str) -> &'static str {
     match chunk_type {
         "keyframe" | "image" | "ocr" => "visual",
         "understanding" => "summary",
+        "document" => "document",
         _ => "transcript",
     }
 }
@@ -1214,6 +1296,36 @@ fn v1_open_in_cerul_link(item_id: &str, chunk_id: &str, start_sec: Option<f64>) 
         link.push_str(&format_seconds_param(start_sec));
     }
     link
+}
+
+fn v1_open_in_cerul_link_with_page(
+    item_id: &str,
+    chunk_id: &str,
+    start_sec: Option<f64>,
+    page: Option<u32>,
+) -> String {
+    let mut link = v1_open_in_cerul_link(item_id, chunk_id, start_sec);
+    if let Some(page) = page {
+        link.push_str("&page=");
+        link.push_str(&page.to_string());
+    }
+    link
+}
+
+fn evidence_page(metadata: &Value) -> Option<u32> {
+    metadata
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn evidence_section(metadata: &Value) -> Option<String> {
+    metadata
+        .get("section")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn v1_open_item_in_cerul_link(item_id: &str) -> String {

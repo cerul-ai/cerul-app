@@ -9,15 +9,18 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use cerul_storage::{AppPaths, StorageImageChunk, StorageOcrChunk, StorageWriteSummary};
+use cerul_storage::{
+    AppPaths, StorageDocumentChunk, StorageImageChunk, StorageOcrChunk, StorageWriteSummary,
+};
 use serde_json::{json, Value};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     ffmpeg,
     stages::{
+        document::extract_document_chunks,
         extract::read_exif_metadata,
-        fetch::{fetch_audio_media, fetch_image_media, fetch_video_media},
+        fetch::{fetch_audio_media, fetch_document_media, fetch_image_media, fetch_video_media},
         ocr::read_ocr_frames_with_progress,
         retrieval::{
             rebuild_retrieval_embedding_plan, set_embedding_index_status,
@@ -149,6 +152,14 @@ pub struct ProcessImageSummary {
     pub image_chunks: usize,
     pub image_vectors: usize,
     pub exif_fields: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessDocumentSummary {
+    pub item_id: String,
+    pub document_path: PathBuf,
+    pub document_chunks: usize,
+    pub text_vectors: usize,
 }
 
 #[derive(Clone)]
@@ -925,12 +936,19 @@ impl VideoPipeline {
                         0,
                         0,
                     )?;
+                    let searchable_units =
+                        cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
+                    let (search_status, search_error) = if searchable_units > 0 {
+                        ("indexed", None)
+                    } else {
+                        ("failed", Some(message.as_str()))
+                    };
                     cerul_storage::set_item_search_index_status(
                         &self.paths,
                         item_id,
-                        "failed",
-                        Some(&message),
-                        0,
+                        search_status,
+                        search_error,
+                        searchable_units,
                         0,
                     )?;
                 }
@@ -952,6 +970,11 @@ impl VideoPipeline {
                     1.0,
                     if transcript_first_summary.is_some() {
                         "Transcript searchable; visual index unavailable"
+                    } else if cerul_storage::item_retrieval_unit_count(&self.paths, item_id)
+                        .unwrap_or(0)
+                        > 0
+                    {
+                        "Transcript searchable; embeddings unavailable"
                     } else {
                         "Transcript saved; search index unavailable"
                     },
@@ -1180,6 +1203,98 @@ impl VideoPipeline {
             item_id,
             image_path,
             exif_fields,
+            write_summary,
+        ))
+    }
+
+    pub async fn process_document_item(
+        &self,
+        item_id: &str,
+    ) -> anyhow::Result<ProcessDocumentSummary> {
+        self.report_progress(item_id, "fetching", 0.05, "Fetching source document");
+        let item = cerul_storage::get_item(&self.paths, item_id)?;
+        let document_path = fetch_document_media(&self.paths, &item).await?;
+
+        self.report_progress(
+            item_id,
+            "extracting_document",
+            0.22,
+            "Extracting document text",
+        );
+        let extracted_chunks = extract_document_chunks(&document_path)?;
+        let document_chunks = extracted_chunks
+            .into_iter()
+            .map(|chunk| {
+                let mut metadata = chunk.metadata;
+                if !metadata.is_object() {
+                    metadata = json!({});
+                }
+                metadata["source_path"] = json!(document_path.to_string_lossy().to_string());
+                StorageDocumentChunk::new(chunk.text, chunk.page, chunk.section, metadata)
+            })
+            .collect::<Vec<_>>();
+
+        self.report_progress(item_id, "writing_document", 0.58, "Saving document chunks");
+        let sqlite_summary =
+            cerul_storage::write_document_sqlite_chunks(&self.paths, item_id, &document_chunks)?;
+        set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+
+        let vector_summary = match self
+            .embed_and_write_retrieval_units(item_id, 0.66, 0.26, false, true)
+            .await
+        {
+            Ok(write_summary) => write_summary,
+            Err(error) => {
+                let message = error.to_string();
+                tracing::warn!(
+                    %error,
+                    item_id,
+                    "document unified retrieval index write failed; keeping document chunks searchable by FTS if units exist"
+                );
+                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                let searchable_units =
+                    cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
+                let (search_status, search_error) = if searchable_units > 0 {
+                    ("indexed", None)
+                } else {
+                    ("failed", Some(message.as_str()))
+                };
+                cerul_storage::set_item_search_index_status(
+                    &self.paths,
+                    item_id,
+                    search_status,
+                    search_error,
+                    searchable_units,
+                    0,
+                )?;
+                cerul_storage::mark_indexed(&self.paths, item_id)?;
+                return Ok(ProcessDocumentSummary::from_write_summary(
+                    item_id,
+                    document_path,
+                    sqlite_summary,
+                ));
+            }
+        };
+        let write_summary = StorageWriteSummary {
+            transcript_chunks: sqlite_summary.transcript_chunks,
+            keyframes: 0,
+            text_vectors: vector_summary.text_vectors,
+            image_vectors: 0,
+        };
+        set_embedding_index_status(
+            &self.paths,
+            item_id,
+            "indexed",
+            None,
+            write_summary.text_vectors,
+            write_summary.image_vectors,
+        )?;
+        cerul_storage::mark_indexed(&self.paths, item_id)?;
+        self.report_progress(item_id, "indexed", 1.0, "Document indexed");
+
+        Ok(ProcessDocumentSummary::from_write_summary(
+            item_id,
+            document_path,
             write_summary,
         ))
     }
@@ -1601,6 +1716,21 @@ impl ProcessImageSummary {
             image_chunks: write_summary.keyframes,
             image_vectors: write_summary.image_vectors,
             exif_fields,
+        }
+    }
+}
+
+impl ProcessDocumentSummary {
+    fn from_write_summary(
+        item_id: &str,
+        document_path: PathBuf,
+        summary: StorageWriteSummary,
+    ) -> Self {
+        Self {
+            item_id: item_id.to_string(),
+            document_path,
+            document_chunks: summary.transcript_chunks,
+            text_vectors: summary.text_vectors,
         }
     }
 }
@@ -2690,6 +2820,89 @@ mod tests {
             hits.first().map(|hit| hit.item_id.as_str()),
             Some("image-1")
         );
+    }
+
+    #[tokio::test]
+    async fn process_document_item_writes_chunks_and_retrieval_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let documents = temp.path().join("documents");
+        std::fs::create_dir(&documents).unwrap();
+        let document = documents.join("brief.md");
+        std::fs::write(
+            &document,
+            "# Roadmap\nDocument search should find the alpha launch brief.",
+        )
+        .unwrap();
+        insert_source(&paths, "document-source", "folder_document", &documents);
+        insert_item(
+            &paths,
+            "document-1",
+            "document-source",
+            "document",
+            "brief",
+            &document,
+        );
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        let summary = pipeline.process_document_item("document-1").await.unwrap();
+
+        assert_eq!(summary.document_chunks, 1);
+        assert_eq!(summary.text_vectors, 1);
+        assert_eq!(retrieval_unit_count_for_item(&paths, "document-1"), 1);
+        assert_eq!(unified_point_count(&paths).await, 1);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (status, search_status, chunk_type, text, metadata): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                r#"
+                SELECT i.status, i.search_index_status, c.chunk_type, c.text, c.metadata
+                FROM items i
+                JOIN chunks c ON c.item_id = i.id
+                WHERE i.id = 'document-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(status, "indexed");
+        assert_eq!(search_status, "indexed");
+        assert_eq!(chunk_type, "document");
+        assert!(text.contains("alpha launch brief"));
+        assert_eq!(metadata["page"], 1);
+        assert_eq!(metadata["section"], "Roadmap");
+        drop(conn);
+
+        let results = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "alpha launch brief".to_string(),
+                limit: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(results[0].chunk_type, "document");
+        assert_eq!(results[0].playback_chunk_id, "document-1:document:000000");
     }
 
     #[tokio::test]

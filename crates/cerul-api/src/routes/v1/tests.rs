@@ -408,6 +408,77 @@ fn seed_v1_agent_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
         .unwrap();
 }
 
+fn seed_v1_document_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
+    fs::write(raw_path, b"document fixture").unwrap();
+    let raw_path_string = raw_path.to_string_lossy().to_string();
+    let source_config = json!({
+        "path": raw_path.parent().unwrap_or_else(|| FsPath::new("."))
+    })
+    .to_string();
+    {
+        let conn = cerul_storage::sqlite::open(paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-doc', 'folder_document', ?1, 'active')",
+            [source_config.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (
+                id, source_id, content_type, external_id, title,
+                raw_path, indexed_at, status, metadata
+            )
+            VALUES (
+                'item-doc', 'source-doc', 'document', 'brief-doc', 'Launch Brief',
+                ?1, 10, 'indexed', '{}'
+            )
+            "#,
+            [raw_path_string.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, text, metadata)
+            VALUES (
+                'item-doc:document:000000',
+                'item-doc',
+                'document',
+                'The document budget section mentions alpha launch positioning.',
+                '{"page":2,"section":"Budget"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+    }
+    seed_indexing_schema_version(paths);
+    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+    let units = vec![cerul_storage::StorageRetrievalUnit {
+        id: "item-doc:unit:v2:000000".to_string(),
+        item_id: "item-doc".to_string(),
+        unit_index: 0,
+        unit_kind: "document".to_string(),
+        start_sec: None,
+        end_sec: None,
+        content_text: "Document: The document budget section mentions alpha launch positioning."
+            .to_string(),
+        transcript_text: Some(
+            "The document budget section mentions alpha launch positioning.".to_string(),
+        ),
+        ocr_text: None,
+        visual_text: None,
+        summary_text: Some("Budget".to_string()),
+        representative_chunk_id: Some("item-doc:document:000000".to_string()),
+        representative_frame_path: None,
+        embedding_profile_id: profile.id,
+        index_version: cerul_storage::SEARCH_INDEX_VERSION,
+        metadata: json!({ "page": 2, "section": "Budget" }),
+    }];
+    cerul_storage::replace_item_retrieval_units(paths, "item-doc", &units).unwrap();
+    cerul_storage::set_item_search_index_status(paths, "item-doc", "indexed", None, units.len(), 0)
+        .unwrap();
+}
+
 fn contract_shape(value: &Value) -> Value {
     match value {
         Value::Null => Value::Null,
@@ -1236,6 +1307,47 @@ async fn v1_search_returns_agent_friendly_results_with_evidence_urls() {
         body["usage"]["metered_events"][0],
         json!({"capability": "local_search", "quantity": 1, "credits": 0})
     );
+}
+
+#[tokio::test]
+async fn v1_search_returns_document_page_and_section_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    let raw_path = temp.path().join("launch-brief.md");
+    seed_v1_document_search_fixture(&paths, &raw_path);
+    let app = router_with_paths(paths);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/search")
+                .header(header::HOST, "127.0.0.1:25001")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "alpha launch", "max_results": 1}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+
+    assert_eq!(body["results"][0]["id"], "item-doc:document:000000");
+    assert_eq!(body["results"][0]["type"], "document");
+    assert_eq!(body["results"][0]["item"]["content_type"], "document");
+    assert_eq!(body["results"][0]["evidence"]["kind"], "document");
+    assert_eq!(body["results"][0]["evidence"]["page"], 2);
+    assert_eq!(body["results"][0]["evidence"]["section"], "Budget");
+    assert_eq!(
+        body["results"][0]["evidence"]["open_in_cerul"],
+        "cerul-app://item/item-doc?playbackChunkId=item-doc%3Adocument%3A000000&page=2"
+    );
+    assert!(body["results"][0]["text"]["snippet"]
+        .as_str()
+        .unwrap()
+        .contains("alpha launch"));
 }
 
 #[tokio::test]

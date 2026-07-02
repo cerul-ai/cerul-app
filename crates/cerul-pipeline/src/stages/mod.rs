@@ -1,3 +1,4 @@
+pub(crate) mod document;
 pub(crate) mod extract;
 pub(crate) mod fetch;
 pub(crate) mod ocr;

@@ -10,6 +10,7 @@ pub const SEARCH_INDEX_VERSION: i32 = 2;
 const WINDOW_SEC: f64 = 30.0;
 const WINDOW_STEP_SEC: f64 = 25.0;
 const TRANSCRIPT_BUDGET: usize = 3_200;
+const DOCUMENT_BUDGET: usize = 3_200;
 const OCR_BUDGET: usize = 1_200;
 const VISUAL_BUDGET: usize = 1_000;
 const SUMMARY_BUDGET: usize = 800;
@@ -223,6 +224,8 @@ fn build_item_retrieval_units_with_conn(
     let chunks = load_chunks(conn, item_id)?;
     let mut units = if item.content_type == "image" {
         build_image_units(&item, &chunks, embedding_profile_id)
+    } else if item.content_type == "document" {
+        build_document_units(&item, &chunks, embedding_profile_id)
     } else {
         build_timed_units(&item, &chunks, embedding_profile_id)
     };
@@ -458,6 +461,63 @@ fn build_timed_units(
     units
 }
 
+fn build_document_units(
+    item: &ItemInfo,
+    chunks: &[ChunkInfo],
+    embedding_profile_id: &str,
+) -> Vec<StorageRetrievalUnit> {
+    let source_label = source_label(item);
+    chunks
+        .iter()
+        .filter(|chunk| chunk.chunk_type == "document")
+        .filter_map(|chunk| {
+            let text = chunk.text.as_deref()?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            Some(chunk)
+        })
+        .enumerate()
+        .map(|(index, chunk)| {
+            let text = limit_text(
+                chunk.text.as_deref().unwrap_or_default().trim(),
+                DOCUMENT_BUDGET,
+            );
+            let page = document_page(&chunk.metadata);
+            let section = document_section(&chunk.metadata).or_else(|| section_from_text(&text));
+            let content_text = document_content_text(
+                item,
+                source_label.as_deref(),
+                page,
+                section.as_deref(),
+                &text,
+            );
+            StorageRetrievalUnit {
+                id: retrieval_unit_id(&item.id, index),
+                item_id: item.id.clone(),
+                unit_index: index as i64,
+                unit_kind: "document".to_string(),
+                start_sec: None,
+                end_sec: None,
+                content_text,
+                transcript_text: Some(text),
+                ocr_text: None,
+                visual_text: None,
+                summary_text: section.clone(),
+                representative_chunk_id: Some(chunk.id.clone()),
+                representative_frame_path: None,
+                embedding_profile_id: embedding_profile_id.to_string(),
+                index_version: SEARCH_INDEX_VERSION,
+                metadata: serde_json::json!({
+                    "window": "document",
+                    "page": page,
+                    "section": section,
+                }),
+            }
+        })
+        .collect()
+}
+
 fn build_image_units(
     item: &ItemInfo,
     chunks: &[ChunkInfo],
@@ -516,6 +576,65 @@ fn image_unit(
         index_version: SEARCH_INDEX_VERSION,
         metadata: serde_json::json!({ "window": "image" }),
     }
+}
+
+fn document_content_text(
+    item: &ItemInfo,
+    source_label: Option<&str>,
+    page: Option<u32>,
+    section: Option<&str>,
+    text: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(title) = item
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("Title: {}", limit_text(title, 300)));
+    }
+    if let Some(source) = source_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("Source: {}", limit_text(source, 300)));
+    }
+    if let Some(page) = page {
+        parts.push(format!("Page: {page}"));
+    }
+    if let Some(section) = section.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.push(format!("Section: {}", limit_text(section, 300)));
+    }
+    parts.push(format!("Document: {text}"));
+    parts.join("\n")
+}
+
+fn document_page(metadata: &Value) -> Option<u32> {
+    metadata
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn document_section(metadata: &Value) -> Option<String> {
+    metadata
+        .get("section")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn section_from_text(text: &str) -> Option<String> {
+    text.lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())
+        .map(limit_section_title)
+}
+
+fn limit_section_title(text: &str) -> String {
+    limit_text(text, 120)
 }
 
 fn windows_for_item(
