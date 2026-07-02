@@ -7,7 +7,6 @@ import {
   autoUpdater as nativeAutoUpdater,
   dialog,
   globalShortcut,
-  ipcMain,
   nativeImage,
   nativeTheme,
   net,
@@ -31,6 +30,12 @@ import {
   pathsMatch,
   type ResetTarget,
 } from "./local-data-reset";
+import {
+  registerIpcHandlers,
+  type OAuthProvider,
+  type RendererDiagnostic,
+  type UpdaterCheckOptions,
+} from "./ipc";
 import {
   appHost,
   appScheme,
@@ -112,7 +117,6 @@ let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
 let latestUpdaterState: UpdaterState = { phase: "idle" };
 let standardMenuAcceleratorsCache: Set<string> | null = null;
 
-type OAuthProvider = "google" | "github";
 type MainWindowCommand = {
   type: "new_source";
   triggeredByAccelerator: boolean;
@@ -191,10 +195,6 @@ type UpdaterProgress = {
   total?: number;
 };
 
-type UpdaterCheckOptions = {
-  installWhenDownloaded?: boolean;
-};
-
 type MacShipItStateBaseline = {
   path: string;
   startedAtMs: number;
@@ -221,20 +221,6 @@ type ApiExitInfo = {
   code: number | null;
   signal: string | null;
   elapsedMs: number;
-};
-
-type RendererDiagnostic = {
-  window?: string;
-  kind: string;
-  message?: string;
-  stack?: string;
-  source?: string;
-  line?: number;
-  column?: number;
-  componentStack?: string;
-  href?: string;
-  userAgent?: string;
-  details?: Record<string, unknown>;
 };
 
 type BundleProcessHolder = {
@@ -302,7 +288,25 @@ app
     session.defaultSession.setPermissionCheckHandler((_webContents, permission) =>
       allowedPermissions.has(permission),
     );
-    registerIpcHandlers();
+    registerIpcHandlers({
+      invokeCommand: handleCommand,
+      getAppVersion: () => app.getVersion(),
+      checkForUpdate: checkForGitHubReleaseUpdate,
+      runUpdateCheck: runDesktopUpdateCheck,
+      getUpdaterState: () => latestUpdaterState,
+      collectUpdaterDiagnostics,
+      startUpdateDownload: startDesktopUpdateDownload,
+      installUpdate: installDesktopUpdate,
+      loadStore,
+      markStoreDirty: (storePath) => {
+        dirtyStores.add(storePath);
+      },
+      saveStore,
+      getSecureToken,
+      setSecureToken,
+      startOAuthLogin,
+      writeRendererDiagnostic,
+    });
     await startRustCore();
     // Mirror the saved in-app theme onto the native appearance before any window
     // paints, so the overlay's vibrancy / menu-bar glass and the main window's
@@ -2021,108 +2025,6 @@ function targetTriple() {
 
 function executableName(name: string) {
   return process.platform === "win32" ? `${name}.exe` : name;
-}
-
-// Only frames belonging to the app shell (app:// in production, the vite
-// dev server in development) may call privileged IPC — secure-token-get
-// returns plaintext tokens and open-dialog/oauth-start act on the user's
-// behalf.
-function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent) {
-  const url = event.senderFrame?.url ?? "";
-  const trustedAppFrame = url.startsWith(`${appScheme}://`);
-  const trustedDevFrame =
-    !app.isPackaged &&
-    (url.startsWith("http://127.0.0.1:1420") || url.startsWith("http://localhost:1420"));
-  const trusted = trustedAppFrame || trustedDevFrame;
-  if (!trusted) {
-    throw new Error(`IPC call from untrusted sender: ${url || "<unknown>"}`);
-  }
-}
-
-function registerIpcHandlers() {
-  ipcMain.handle("cerul:invoke", async (event, command: string, args?: Record<string, unknown>) => {
-    assertTrustedIpcSender(event);
-    return handleCommand(command, args ?? {});
-  });
-  ipcMain.handle("cerul:open-dialog", async (event, options) => {
-    assertTrustedIpcSender(event);
-    const result = await dialog.showOpenDialog({
-      properties: [
-        options?.directory ? "openDirectory" : "openFile",
-        options?.multiple ? "multiSelections" : undefined,
-      ].filter(Boolean) as Electron.OpenDialogOptions["properties"],
-      filters: options?.filters,
-    });
-    if (result.canceled) return null;
-    return options?.multiple ? result.filePaths : result.filePaths[0] ?? null;
-  });
-  ipcMain.handle("cerul:app-version", async (event) => {
-    assertTrustedIpcSender(event);
-    return app.getVersion();
-  });
-  ipcMain.handle("cerul:check-update", async (event) => {
-    assertTrustedIpcSender(event);
-    return checkForGitHubReleaseUpdate();
-  });
-  ipcMain.handle("cerul:updater-check", async (event, options?: UpdaterCheckOptions) => {
-    assertTrustedIpcSender(event);
-    const reached = await runDesktopUpdateCheck(options);
-    if (!reached) {
-      // Reject so the renderer treats this as a transient failure (retry soon,
-      // don't advance the throttle) rather than a successful "no update" result.
-      throw new Error("update-check-failed");
-    }
-    return latestUpdaterState;
-  });
-  ipcMain.handle("cerul:updater-get-state", async (event) => {
-    assertTrustedIpcSender(event);
-    return latestUpdaterState;
-  });
-  ipcMain.handle("cerul:updater-diagnostics", async (event) => {
-    assertTrustedIpcSender(event);
-    return collectUpdaterDiagnostics();
-  });
-  ipcMain.handle("cerul:updater-download", async (event) => {
-    assertTrustedIpcSender(event);
-    await startDesktopUpdateDownload();
-    return latestUpdaterState;
-  });
-  ipcMain.handle("cerul:updater-install", async (event) => {
-    assertTrustedIpcSender(event);
-    await installDesktopUpdate();
-  });
-  ipcMain.handle("cerul:store-get", async (event, storePath: string, key: string) => {
-    assertTrustedIpcSender(event);
-    return loadStore(storePath)[key];
-  });
-  ipcMain.handle("cerul:store-set", async (event, storePath: string, key: string, value: unknown) => {
-    assertTrustedIpcSender(event);
-    loadStore(storePath)[key] = value;
-    dirtyStores.add(storePath);
-  });
-  ipcMain.handle("cerul:store-save", async (event, storePath: string) => {
-    assertTrustedIpcSender(event);
-    saveStore(storePath);
-  });
-  ipcMain.handle("cerul:secure-token-get", async (event, key: string) => {
-    assertTrustedIpcSender(event);
-    return getSecureToken(key);
-  });
-  ipcMain.handle("cerul:secure-token-set", async (event, key: string, value: string | null) => {
-    assertTrustedIpcSender(event);
-    setSecureToken(key, value);
-  });
-  ipcMain.handle("cerul:oauth-start", async (event, provider: OAuthProvider) => {
-    assertTrustedIpcSender(event);
-    await startOAuthLogin(provider);
-  });
-  ipcMain.handle("cerul:renderer-error", async (event, payload: RendererDiagnostic) => {
-    assertTrustedIpcSender(event);
-    writeRendererDiagnostic({
-      ...payload,
-      window: payload.window ?? "renderer",
-    });
-  });
 }
 
 async function checkForGitHubReleaseUpdate(): Promise<DesktopUpdateInfo | null> {
