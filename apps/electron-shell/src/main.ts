@@ -40,7 +40,11 @@ import {
   registerDeepLinkProtocols,
   registerPrivilegedAppScheme,
 } from "./protocol";
-import { secureDesktopWindow, secureRendererWebPreferences } from "./window-security";
+import {
+  createMainBrowserWindow,
+  createMenuBarBrowserWindow,
+  createOverlayBrowserWindow,
+} from "./windows";
 // Type-only: erased at runtime. The implementation is lazy-required in
 // getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
 // GitHub-release fallback instead of crashing the main process at load time.
@@ -566,141 +570,56 @@ function persistMainWindowBounds() {
 
 function createMainWindow() {
   const mainUrl = `${appScheme}://${appHost}/index.html`;
-  const saved = savedMainWindowBounds();
-  mainWindow = new BrowserWindow({
-    width: saved.width ?? 1440,
-    height: saved.height ?? 920,
-    x: saved.x,
-    y: saved.y,
-    minWidth: 1080,
-    minHeight: 720,
-    title: "Cerul",
-    ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 19, y: 13 } }
-      : {}),
-    icon: desktopAppIconPath(),
-    show: false,
-    webPreferences: secureRendererWebPreferences(preloadPath()),
+  mainWindow = createMainBrowserWindow({
+    url: mainUrl,
+    preloadPath: preloadPath(),
+    iconPath: desktopAppIconPath(),
+    savedBounds: savedMainWindowBounds(),
+    persistBounds: persistMainWindowBounds,
+    isQuitting: () => isQuitting,
+    shouldCloseToTray,
+    quitFromClose: quitFromMainWindowClose,
+    shouldShowAtLaunch: shouldShowMainWindowAtLaunch,
+    wireDiagnostics: (window, reloadUrl) => wireRendererDiagnostics(window, "main", reloadUrl),
+    onDidFinishLoad: () => {
+      console.log("cerul_electron_main_window_loaded");
+      mainWindowLoaded = true;
+      flushQueuedMainRoute();
+      flushQueuedMainCommands();
+      maybeRunRendererVideoSmoke();
+    },
+    onClosed: () => {
+      mainWindow = null;
+      mainWindowLoaded = false;
+    },
   });
-
-  secureDesktopWindow(mainWindow);
-  wireRendererDiagnostics(mainWindow, "main", mainUrl);
-  mainWindow.on("close", () => persistMainWindowBounds());
-  mainWindow.on("hide", () => persistMainWindowBounds());
-  mainWindow.on("close", (event) => {
-    if (isQuitting) {
-      return;
-    }
-    event.preventDefault();
-    void shouldCloseToTray().then((enabled) => {
-      if (enabled) {
-        mainWindow?.hide();
-        return;
-      }
-      quitFromMainWindowClose();
-    });
-  });
-  mainWindow.once("ready-to-show", () => {
-    if (shouldShowMainWindowAtLaunch()) {
-      mainWindow?.show();
-      mainWindow?.focus();
-    }
-  });
-  mainWindow.webContents.once("did-finish-load", () => {
-    console.log("cerul_electron_main_window_loaded");
-    mainWindowLoaded = true;
-    flushQueuedMainRoute();
-    flushQueuedMainCommands();
-    maybeRunRendererVideoSmoke();
-  });
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    mainWindowLoaded = false;
-  });
-  void mainWindow.loadURL(mainUrl);
 }
 
 function createOverlayWindow() {
-  const isMac = process.platform === "darwin";
-  overlayWindow = new BrowserWindow({
+  overlayWindow = createOverlayBrowserWindow({
+    url: `${appScheme}://${appHost}/overlay.html`,
     width: OVERLAY_WIDTH,
     height: overlayMeasuredHeight,
-    title: "",
-    icon: desktopAppIconPath(),
-    show: false,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    hasShadow: true,
-    roundedCorners: true,
-    // Real frosted glass on macOS: the OS compositor blurs whatever is behind
-    // the overlay window. (CSS backdrop-filter can't blur across OS windows, so
-    // a translucent panel alone just lets the page behind bleed through.)
-    vibrancy: isMac ? "under-window" : undefined,
-    visualEffectState: "active",
-    webPreferences: secureRendererWebPreferences(preloadPath()),
+    preloadPath: preloadPath(),
+    iconPath: desktopAppIconPath(),
+    onClosed: () => {
+      overlayWindow = null;
+    },
   });
-
-  secureDesktopWindow(overlayWindow);
-  // Dismiss like a normal spotlight: when the overlay loses focus — the user
-  // clicks the main window, another page, or any other app — hide it.
-  // (Selecting a result also blurs the overlay as the main window comes
-  // forward, which hides it too; that's the desired behaviour.)
-  overlayWindow.on("blur", () => {
-    overlayWindow?.hide();
-  });
-  overlayWindow.on("closed", () => {
-    overlayWindow = null;
-  });
-  overlayWindow.webContents.once("did-finish-load", () => {
-    console.log("cerul_electron_overlay_window_loaded");
-  });
-  overlayWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
-    console.error(`Cerul overlay window failed to load code=${code} url=${url}: ${description}`);
-  });
-  void overlayWindow.loadURL(`${appScheme}://${appHost}/overlay.html`);
 }
 
 function createMenuBarWindow() {
   if (menuBarWindow) {
     return menuBarWindow;
   }
-  const isMac = process.platform === "darwin";
-  menuBarWindow = new BrowserWindow({
-    width: 332,
-    height: 312,
-    title: "Cerul",
-    icon: desktopAppIconPath(),
-    show: false,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    movable: true,
-    hasShadow: true,
-    roundedCorners: true,
-    vibrancy: isMac ? "popover" : undefined,
-    visualEffectState: "active",
-    webPreferences: secureRendererWebPreferences(preloadPath()),
+  menuBarWindow = createMenuBarBrowserWindow({
+    url: `${appScheme}://${appHost}/menubar.html`,
+    preloadPath: preloadPath(),
+    iconPath: desktopAppIconPath(),
+    onClosed: () => {
+      menuBarWindow = null;
+    },
   });
-
-  secureDesktopWindow(menuBarWindow);
-  menuBarWindow.on("blur", () => {
-    menuBarWindow?.hide();
-  });
-  menuBarWindow.on("closed", () => {
-    menuBarWindow = null;
-  });
-  menuBarWindow.webContents.once("did-finish-load", () => {
-    console.log("cerul_electron_menubar_window_loaded");
-  });
-  menuBarWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
-    console.error(`Cerul menu bar window failed to load code=${code} url=${url}: ${description}`);
-  });
-  void menuBarWindow.loadURL(`${appScheme}://${appHost}/menubar.html`);
   return menuBarWindow;
 }
 
