@@ -37,13 +37,14 @@ const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 20;
 const MIN_WEB_VIDEO_AUTHOR_MAX = 1;
 const MAX_WEB_VIDEO_AUTHOR_MAX = 200;
 
-type FolderMediaKind = "video" | "audio" | "image";
+type FolderMediaKind = "video" | "audio" | "image" | "document";
 
-const folderMediaKinds: FolderMediaKind[] = ["video", "audio", "image"];
+const folderMediaKinds: FolderMediaKind[] = ["video", "audio", "image", "document"];
 const folderSourceTypes: Record<FolderMediaKind, string> = {
   video: "folder_video",
   audio: "folder_audio",
   image: "folder_image",
+  document: "folder_document",
 };
 
 const sourceTabs: {
