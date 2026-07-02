@@ -459,7 +459,10 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
             "/providers/:id/models",
             get(providers::discover_provider_models),
         )
-        .route("/settings", get(list_settings).patch(update_settings));
+        .route(
+            "/settings",
+            get(routes::settings::list_settings).patch(routes::settings::update_settings),
+        );
     Router::new()
         .nest("/internal", internal_routes)
         .nest("/v1", routes::v1::router())
@@ -1275,7 +1278,7 @@ async fn diagnostics_bundle(State(state): State<ApiState>) -> ApiResult<Json<Dia
         .unwrap_or_default()
         .as_secs();
     let runtime_status = models::model_runtime_status(&state.paths);
-    let configured_inference_mode = configured_inference_mode(&state.paths)?;
+    let configured_inference_mode = routes::settings::configured_inference_mode(&state.paths)?;
     let effective_inference_mode =
         effective_inference_mode_for_runtime(&configured_inference_mode, &runtime_status);
     let settings = diagnostics_settings_snapshot(
@@ -1332,7 +1335,7 @@ fn diagnostics_settings_snapshot(
         if let Some(value) = value {
             settings.insert(
                 (*key).to_string(),
-                normalize_setting_value(key, parse_json(&value)),
+                routes::settings::normalize_setting_value(key, parse_json(&value)),
             );
         }
     }
@@ -3564,150 +3567,6 @@ fn trim_for_answer(value: &str, max_chars: usize) -> String {
     out
 }
 
-async fn list_settings(State(state): State<ApiState>) -> ApiResult<Json<BTreeMap<String, Value>>> {
-    let conn = cerul_storage::sqlite::open(&state.paths)?;
-    remove_legacy_cloud_settings(&conn)?;
-    let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key ASC")?;
-    let rows = stmt.query_map([], |row| {
-        let key: String = row.get(0)?;
-        let value: String = row.get(1)?;
-        Ok((key, parse_json(&value)))
-    })?;
-
-    let all = rows.collect::<Result<BTreeMap<_, _>, _>>()?;
-    let remote_key_set = all
-        .get("remote_api_key")
-        .and_then(|value| value.as_str())
-        .map(|key| !key.trim().is_empty())
-        .unwrap_or(false);
-
-    let mut visible: BTreeMap<String, Value> = all
-        .into_iter()
-        .filter(|(key, _)| !is_hidden_setting(key))
-        .map(|(key, value)| {
-            let value = normalize_setting_value(&key, value);
-            (key, value)
-        })
-        .collect();
-    // The key itself is write-only; expose only whether one is configured.
-    visible.insert(
-        "remote_api_key_set".to_string(),
-        Value::Bool(remote_key_set),
-    );
-
-    Ok(Json(visible))
-}
-
-async fn update_settings(
-    State(state): State<ApiState>,
-    Json(settings): Json<BTreeMap<String, Value>>,
-) -> ApiResult<Json<BTreeMap<String, Value>>> {
-    let previous_inference_mode = configured_inference_mode(&state.paths)?;
-    let requested_inference_mode = requested_inference_mode(&settings);
-    let mut conn = cerul_storage::sqlite::open(&state.paths)?;
-    let tx = conn.transaction()?;
-    for (key, value) in &settings {
-        if is_legacy_cloud_setting(key) {
-            tx.execute("DELETE FROM settings WHERE key = ?1", [key])?;
-            continue;
-        }
-        if is_internal_setting(key) {
-            continue;
-        }
-        let value = validate_write_setting_value(key, normalize_setting_value(key, value.clone()))?;
-        tx.execute(
-            r#"
-            INSERT INTO settings (key, value, updated_at)
-            VALUES (?1, ?2, strftime('%s','now'))
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-            "#,
-            (key, value.to_string()),
-        )?;
-    }
-    tx.commit()?;
-
-    if let Some(inference_mode) = requested_inference_mode.as_deref() {
-        sync_inference_mode_side_effects(&state.paths, &previous_inference_mode, inference_mode)?;
-    }
-
-    Ok(Json(
-        settings
-            .into_iter()
-            .filter(|(key, _)| !is_hidden_setting(key))
-            .map(|(key, value)| {
-                let value = normalize_setting_value(&key, value);
-                (key, value)
-            })
-            .collect(),
-    ))
-}
-
-fn remove_legacy_cloud_settings(conn: &rusqlite::Connection) -> anyhow::Result<usize> {
-    let mut removed = 0;
-    for key in LEGACY_CLOUD_SETTING_KEYS {
-        removed += conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
-    }
-    Ok(removed)
-}
-
-fn is_legacy_cloud_setting(key: &str) -> bool {
-    LEGACY_CLOUD_SETTING_KEYS.contains(&key)
-}
-
-fn is_internal_setting(key: &str) -> bool {
-    INTERNAL_SETTING_KEYS.contains(&key)
-}
-
-fn is_secret_setting(key: &str) -> bool {
-    SECRET_SETTING_KEYS.contains(&key)
-}
-
-fn is_hidden_setting(key: &str) -> bool {
-    is_legacy_cloud_setting(key) || is_internal_setting(key) || is_secret_setting(key)
-}
-
-fn normalize_setting_value(key: &str, value: Value) -> Value {
-    if key == "inference_mode" {
-        return Value::String(
-            value
-                .as_str()
-                .map(normalize_inference_mode)
-                .unwrap_or_else(|| "remote".to_string()),
-        );
-    }
-    value
-}
-
-fn validate_write_setting_value(key: &str, value: Value) -> ApiResult<Value> {
-    if key == API_PORT_SETTING {
-        let port = match &value {
-            Value::Number(number) => number.as_u64().and_then(|value| u16::try_from(value).ok()),
-            Value::String(value) => parse_api_port(value),
-            _ => None,
-        }
-        .filter(|port| (1024..=65535).contains(port))
-        .ok_or_else(|| ApiError::bad_request("api_port must be an integer from 1024 to 65535"))?;
-        return Ok(Value::from(port));
-    }
-    Ok(value)
-}
-
-fn requested_inference_mode(settings: &BTreeMap<String, Value>) -> Option<String> {
-    settings
-        .get("inference_mode")
-        .and_then(Value::as_str)
-        .map(normalize_inference_mode)
-}
-
-fn configured_inference_mode(paths: &AppPaths) -> anyhow::Result<String> {
-    Ok(setting_string(paths, "inference_mode")?
-        .as_deref()
-        .map(normalize_inference_mode)
-        .unwrap_or_else(|| "auto".to_string()))
-}
-
 fn normalize_inference_mode(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => "auto".to_string(),
@@ -3794,7 +3653,7 @@ pub(crate) fn sync_deferred_embedding_rebuild_if_ready(
         return Ok(());
     }
 
-    let inference_mode = configured_inference_mode(paths)?;
+    let inference_mode = routes::settings::configured_inference_mode(paths)?;
     if inference_mode != "local" && inference_mode != "auto" {
         return Ok(());
     }
@@ -5230,28 +5089,11 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/settings", &["get", "patch"]),
 ];
 
-const LEGACY_CLOUD_SETTING_KEYS: &[&str] = &[
-    "cloud_api_key",
-    "cloud_connected",
-    "cloud_account_email",
-    "cloud_email",
-    "cloud_plan",
-    "cloud_quota_percent",
-];
 const DEFERRED_EMBEDDING_REBUILD_MODE_SETTING: &str = "embedding_profile_rebuild_deferred_mode";
 const INDEXING_SCHEMA_VERSION_SETTING: &str = "indexing_schema_version";
 const VECTOR_INDEX_BACKEND_SETTING: &str = "vector_index_backend";
 const ACTIVE_VECTOR_INDEX_BACKEND: &str = "zvec";
 const INDEXING_SCHEMA_VERSION: i32 = 5;
-const INTERNAL_SETTING_KEYS: &[&str] = &[
-    DEFERRED_EMBEDDING_REBUILD_MODE_SETTING,
-    INDEXING_SCHEMA_VERSION_SETTING,
-    VECTOR_INDEX_BACKEND_SETTING,
-    // Computed flag returned by list_settings; never persisted.
-    "remote_api_key_set",
-];
-/// Settings that clients may write but must never read back in plaintext.
-const SECRET_SETTING_KEYS: &[&str] = &["remote_api_key"];
 
 #[cfg(test)]
 mod tests {
