@@ -22,6 +22,9 @@ use crate::{
 
 mod models;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use models::*;
 
 pub(crate) const API_PATHS: &[(&str, &[&str])] = &[
