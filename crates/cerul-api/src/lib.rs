@@ -381,25 +381,7 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/entities", get(list_entities))
         .route("/entities/:id", get(get_entity))
         .route("/weekly-review", get(weekly_review))
-        .route("/items", get(list_items))
-        .route(
-            "/items/:id",
-            get(get_item).patch(update_item).delete(remove_item),
-        )
-        .route(
-            "/items/:id/playback",
-            get(get_item_playback_position).patch(update_item_playback_position),
-        )
-        .route("/items/:id/reindex", post(reindex_item))
-        .route("/items/:id/chunks", get(list_item_chunks))
-        .route(
-            "/items/:id/understanding",
-            get(video_understanding::get_item_understanding)
-                .post(video_understanding::analyze_item_understanding),
-        )
-        .route("/chunks/:id/frame", get(get_chunk_frame))
-        .route("/chunks/:id/video-segment", get(get_chunk_video_segment))
-        .route("/chunks/:id/video-clip", get(get_chunk_video_clip))
+        .merge(routes::library::router())
         .route("/jobs", get(list_jobs))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/usage/events", get(list_usage_events))
