@@ -479,6 +479,219 @@ fn seed_v1_document_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
         .unwrap();
 }
 
+fn seed_v1_mixed_modality_search_fixture(paths: &AppPaths, fixture_dir: &FsPath) {
+    let video_path = fixture_dir.join("mixed-video.mp4");
+    let audio_path = fixture_dir.join("mixed-audio.m4a");
+    let image_path = fixture_dir.join("mixed-image.png");
+    let image_frame_path = fixture_dir.join("mixed-image-frame.jpg");
+    let document_path = fixture_dir.join("mixed-brief.md");
+    let video_frame_path = fixture_dir.join("mixed-video-frame.jpg");
+    for path in [
+        &video_path,
+        &audio_path,
+        &image_path,
+        &image_frame_path,
+        &document_path,
+        &video_frame_path,
+    ] {
+        fs::write(path, b"fixture").unwrap();
+    }
+    let video_path = video_path.to_string_lossy().to_string();
+    let audio_path = audio_path.to_string_lossy().to_string();
+    let image_path = image_path.to_string_lossy().to_string();
+    let image_frame_path = image_frame_path.to_string_lossy().to_string();
+    let document_path = document_path.to_string_lossy().to_string();
+    let video_frame_path = video_frame_path.to_string_lossy().to_string();
+    {
+        let conn = cerul_storage::sqlite::open(paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO sources (id, type, config, status)
+            VALUES
+                ('source-video', 'folder_video', '{}', 'active'),
+                ('source-audio', 'folder_audio', '{}', 'active'),
+                ('source-image', 'folder_image', '{}', 'active'),
+                ('source-doc', 'folder_document', '{}', 'active')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (
+                id, source_id, content_type, external_id, title, duration_sec,
+                raw_path, indexed_at, status, metadata
+            )
+            VALUES
+                ('item-video', 'source-video', 'video', 'mixed-video', 'Mixed Video', 90.0, ?1, 10, 'indexed', '{}'),
+                ('item-audio', 'source-audio', 'audio', 'mixed-audio', 'Mixed Podcast', 30.0, ?2, 10, 'indexed', '{}'),
+                ('item-image', 'source-image', 'image', 'mixed-image', 'Mixed Image', NULL, ?3, 10, 'indexed', '{}'),
+                ('item-doc', 'source-doc', 'document', 'mixed-doc', 'Mixed Brief', NULL, ?4, 10, 'indexed', '{}')
+            "#,
+            (
+                video_path.as_str(),
+                audio_path.as_str(),
+                image_path.as_str(),
+                document_path.as_str(),
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES
+                ('item-video:transcript:000000', 'item-video', 'transcript', 14.0, 18.0, 'crossmodalalpha appears in the video second.', '{}'),
+                ('item-audio:audio:000000', 'item-audio', 'audio', 4.0, 8.0, 'crossmodalalpha appears in the podcast sentence.', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+            VALUES ('item-video:keyframe:000014', 'item-video', 'keyframe', 14.0, 14.0, ?1, '{}')
+            "#,
+            [video_frame_path.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+            VALUES ('item-image:image:000000', 'item-image', 'image', 0.0, 0.0, ?1, '{}')
+            "#,
+            [image_frame_path.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, frame_path, metadata)
+            VALUES ('item-image:ocr:000000', 'item-image', 'ocr', 0.0, 0.0, 'crossmodalalpha appears in image OCR text.', ?1, '{}')
+            "#,
+            [image_frame_path.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, text, metadata)
+            VALUES (
+                'item-doc:document:000000',
+                'item-doc',
+                'document',
+                'crossmodalalpha appears on a document page.',
+                '{"page":5,"section":"Launch Notes"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+    }
+    seed_indexing_schema_version(paths);
+    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+    let units_by_item = [
+        (
+            "item-video",
+            vec![cerul_storage::StorageRetrievalUnit {
+                id: "item-video:unit:v2:000000".to_string(),
+                item_id: "item-video".to_string(),
+                unit_index: 0,
+                unit_kind: "transcript".to_string(),
+                start_sec: Some(14.0),
+                end_sec: Some(18.0),
+                content_text: "Transcript: crossmodalalpha appears in the video second."
+                    .to_string(),
+                transcript_text: Some("crossmodalalpha appears in the video second.".to_string()),
+                ocr_text: None,
+                visual_text: None,
+                summary_text: None,
+                representative_chunk_id: Some("item-video:transcript:000000".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id.clone(),
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        ),
+        (
+            "item-audio",
+            vec![cerul_storage::StorageRetrievalUnit {
+                id: "item-audio:unit:v2:000000".to_string(),
+                item_id: "item-audio".to_string(),
+                unit_index: 0,
+                unit_kind: "audio".to_string(),
+                start_sec: Some(4.0),
+                end_sec: Some(8.0),
+                content_text: "Transcript: crossmodalalpha appears in the podcast sentence."
+                    .to_string(),
+                transcript_text: Some(
+                    "crossmodalalpha appears in the podcast sentence.".to_string(),
+                ),
+                ocr_text: None,
+                visual_text: None,
+                summary_text: None,
+                representative_chunk_id: Some("item-audio:audio:000000".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id.clone(),
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        ),
+        (
+            "item-image",
+            vec![cerul_storage::StorageRetrievalUnit {
+                id: "item-image:unit:v2:000000".to_string(),
+                item_id: "item-image".to_string(),
+                unit_index: 0,
+                unit_kind: "image".to_string(),
+                start_sec: Some(0.0),
+                end_sec: Some(0.0),
+                content_text: "On-screen text: crossmodalalpha appears in image OCR text."
+                    .to_string(),
+                transcript_text: None,
+                ocr_text: Some("crossmodalalpha appears in image OCR text.".to_string()),
+                visual_text: None,
+                summary_text: None,
+                representative_chunk_id: Some("item-image:ocr:000000".to_string()),
+                representative_frame_path: Some(image_frame_path.clone()),
+                embedding_profile_id: profile.id.clone(),
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: Default::default(),
+            }],
+        ),
+        (
+            "item-doc",
+            vec![cerul_storage::StorageRetrievalUnit {
+                id: "item-doc:unit:v2:000000".to_string(),
+                item_id: "item-doc".to_string(),
+                unit_index: 0,
+                unit_kind: "document".to_string(),
+                start_sec: None,
+                end_sec: None,
+                content_text: "Document: crossmodalalpha appears on a document page.".to_string(),
+                transcript_text: Some("crossmodalalpha appears on a document page.".to_string()),
+                ocr_text: None,
+                visual_text: None,
+                summary_text: Some("Launch Notes".to_string()),
+                representative_chunk_id: Some("item-doc:document:000000".to_string()),
+                representative_frame_path: None,
+                embedding_profile_id: profile.id.clone(),
+                index_version: cerul_storage::SEARCH_INDEX_VERSION,
+                metadata: json!({ "page": 5, "section": "Launch Notes" }),
+            }],
+        ),
+    ];
+    for (item_id, units) in units_by_item {
+        cerul_storage::replace_item_retrieval_units(paths, item_id, &units).unwrap();
+        cerul_storage::set_item_search_index_status(
+            paths,
+            item_id,
+            "indexed",
+            None,
+            units.len(),
+            0,
+        )
+        .unwrap();
+    }
+}
+
 fn contract_shape(value: &Value) -> Value {
     match value {
         Value::Null => Value::Null,
@@ -1348,6 +1561,88 @@ async fn v1_search_returns_document_page_and_section_evidence() {
         .as_str()
         .unwrap()
         .contains("alpha launch"));
+}
+
+#[tokio::test]
+async fn v1_search_mixed_modality_fixture_returns_all_evidence_types() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    seed_v1_mixed_modality_search_fixture(&paths, temp.path());
+    let app = router_with_paths(paths);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/search")
+                .header(header::HOST, "127.0.0.1:25001")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "crossmodalalpha", "max_results": 10}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 4, "expected one result for each modality");
+
+    let find = |item_id: &str| {
+        results
+            .iter()
+            .find(|result| result["item"]["id"] == item_id)
+            .unwrap_or_else(|| panic!("missing mixed modality result for {item_id}: {results:?}"))
+    };
+
+    let video = find("item-video");
+    assert_eq!(video["id"], "item-video:transcript:000000");
+    assert_eq!(video["type"], "transcript");
+    assert_eq!(video["item"]["content_type"], "video");
+    assert_eq!(video["time"]["start_sec"], 14.0);
+    assert_eq!(video["evidence"]["kind"], "video_clip");
+    assert_eq!(
+        video["evidence"]["preview"]["url"],
+        "http://127.0.0.1:25001/v1/chunks/item-video%3Akeyframe%3A000014/frame"
+    );
+
+    let audio = find("item-audio");
+    assert_eq!(audio["id"], "item-audio:audio:000000");
+    assert_eq!(audio["type"], "transcript");
+    assert_eq!(audio["item"]["content_type"], "audio");
+    assert_eq!(audio["time"]["timestamp"], "0:04");
+    assert_eq!(audio["evidence"]["kind"], "chunk");
+    assert!(audio["text"]["snippet"]
+        .as_str()
+        .unwrap()
+        .contains("podcast sentence"));
+
+    let image = find("item-image");
+    assert_eq!(image["id"], "item-image:ocr:000000");
+    assert_eq!(image["type"], "visual");
+    assert_eq!(image["item"]["content_type"], "image");
+    assert_eq!(image["evidence"]["kind"], "frame");
+    assert_eq!(
+        image["evidence"]["preview"]["url"],
+        "http://127.0.0.1:25001/v1/chunks/item-image%3Aimage%3A000000/frame"
+    );
+    assert!(image["text"]["snippet"]
+        .as_str()
+        .unwrap()
+        .contains("image OCR text"));
+
+    let document = find("item-doc");
+    assert_eq!(document["id"], "item-doc:document:000000");
+    assert_eq!(document["type"], "document");
+    assert_eq!(document["item"]["content_type"], "document");
+    assert_eq!(document["evidence"]["kind"], "document");
+    assert_eq!(document["evidence"]["page"], 5);
+    assert_eq!(document["evidence"]["section"], "Launch Notes");
+    assert_eq!(
+        document["evidence"]["open_in_cerul"],
+        "cerul-app://item/item-doc?playbackChunkId=item-doc%3Adocument%3A000000&page=5"
+    );
 }
 
 #[tokio::test]
