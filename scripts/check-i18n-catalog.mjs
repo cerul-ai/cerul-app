@@ -21,18 +21,92 @@ function extractCatalog(name) {
   }
 
   const body = source.slice(bodyStart, bodyEnd);
+  const bodyStartLine = source.slice(0, bodyStart).split("\n").length;
   const entries = new Map();
   const duplicates = [];
-  const entryPattern = /^\s*"([^"]+)":\s*"((?:\\.|[^"\\])*)",\s*$/gm;
-  let match;
-  while ((match = entryPattern.exec(body)) !== null) {
-    const [, key, rawValue] = match;
+  const unparsable = [];
+
+  for (const [index, line] of body.split("\n").entries()) {
+    const parsed = parseCatalogLine(line);
+    if (parsed === null) {
+      continue;
+    }
+    if (parsed === undefined) {
+      const lineNumber = bodyStartLine + index;
+      unparsable.push(`${name}: unparsed catalog line ${lineNumber}: ${line.trim()}`);
+      continue;
+    }
+    const { key, rawValue } = parsed;
     if (entries.has(key)) {
       duplicates.push(key);
     }
     entries.set(key, rawValue);
   }
-  return { entries, duplicates };
+  return { entries, duplicates, unparsable };
+}
+
+function parseCatalogLine(line) {
+  let index = skipWhitespace(line, 0);
+  if (index === line.length || line.startsWith("//", index)) {
+    return null;
+  }
+
+  const key = readQuotedString(line, index);
+  if (!key) {
+    return undefined;
+  }
+  index = skipWhitespace(line, key.end);
+  if (line[index] !== ":") {
+    return undefined;
+  }
+  index = skipWhitespace(line, index + 1);
+
+  const value = readQuotedString(line, index);
+  if (!value) {
+    return undefined;
+  }
+  index = skipWhitespace(line, value.end);
+  if (line[index] === ",") {
+    index = skipWhitespace(line, index + 1);
+  }
+  if (index !== line.length) {
+    return undefined;
+  }
+
+  return { key: key.value, rawValue: value.value };
+}
+
+function skipWhitespace(value, index) {
+  while (index < value.length && /\s/.test(value[index])) {
+    index += 1;
+  }
+  return index;
+}
+
+function readQuotedString(value, start) {
+  const quote = value[start];
+  if (quote !== '"' && quote !== "'") {
+    return undefined;
+  }
+
+  let raw = "";
+  for (let index = start + 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "\\") {
+      if (index + 1 >= value.length) {
+        return undefined;
+      }
+      raw += value.slice(index, index + 2);
+      index += 1;
+      continue;
+    }
+    if (character === quote) {
+      return { value: raw, end: index + 1 };
+    }
+    raw += character;
+  }
+
+  return undefined;
 }
 
 function varsFor(template) {
@@ -49,6 +123,7 @@ for (const [name, catalog] of Object.entries(catalogs)) {
   for (const key of catalog.duplicates) {
     problems.push(`${name}: duplicate key ${key}`);
   }
+  problems.push(...catalog.unparsable);
 }
 
 const zhKeys = new Set(catalogs.zh.entries.keys());
