@@ -1851,6 +1851,38 @@ async fn v1_material_insight_groups_evidence_and_usable_shots() {
 }
 
 #[tokio::test]
+async fn v1_material_insight_excludes_untimed_summary_from_usable_shots() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    let raw_path = temp.path().join("video.mp4");
+    seed_v1_untimed_summary_fixture(&paths, &raw_path);
+    let app = router_with_paths(paths);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/material-insight")
+                .header(header::HOST, "127.0.0.1:25012")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "untimed executive summary", "max_results": 5}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["summary"]["result_count"], 1);
+    assert_eq!(body["evidence"][0]["id"], "item-1:understanding:summary");
+    assert_eq!(body["evidence"][0]["time"]["start_sec"], Value::Null);
+    assert_eq!(body["evidence"][0]["evidence"]["clip"], Value::Null);
+    assert_eq!(body["evidence"][0]["evidence"]["preview"], Value::Null);
+    assert_eq!(body["usable_shots"], json!([]));
+}
+
+#[tokio::test]
 async fn v1_search_uses_q_alias_when_query_is_blank() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::from_data_dir(temp.path()).unwrap();

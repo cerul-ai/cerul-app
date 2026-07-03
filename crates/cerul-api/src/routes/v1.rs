@@ -1162,6 +1162,9 @@ fn v1_material_usable_shots(evidence: &[V1SearchResult]) -> Vec<V1MaterialUsable
             if modality == "document" {
                 return None;
             }
+            if !v1_material_result_has_usable_locator(result) {
+                return None;
+            }
             Some(V1MaterialUsableShot {
                 evidence_id: result.id.clone(),
                 item_id: result.item.id.clone(),
@@ -1184,6 +1187,16 @@ fn v1_material_usable_shots(evidence: &[V1SearchResult]) -> Vec<V1MaterialUsable
             })
         })
         .collect()
+}
+
+fn v1_material_result_has_usable_locator(result: &V1SearchResult) -> bool {
+    result
+        .time
+        .start_sec
+        .or(result.time.end_sec)
+        .is_some_and(|value| value.is_finite())
+        || result.evidence.clip.is_some()
+        || result.evidence.preview.is_some()
 }
 
 const V1_MATERIAL_MODALITY_ORDER: &[&str] = &["video", "audio", "image", "document", "other"];
