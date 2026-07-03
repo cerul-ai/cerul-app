@@ -5,7 +5,11 @@ use std::{
 };
 
 use anyhow::Context;
-use quick_xml::{events::Event, Reader};
+use quick_xml::{
+    escape::resolve_predefined_entity,
+    events::{BytesRef, Event},
+    Reader,
+};
 use serde_json::json;
 use zip::ZipArchive;
 
@@ -142,7 +146,10 @@ fn extract_xml_text(xml: &str) -> anyhow::Result<String> {
 
     loop {
         match reader.read_event_into(&mut buf)? {
-            Event::Text(event) => append_inline_text(&mut text, &event.unescape()?),
+            Event::Text(event) => append_inline_text(&mut text, &event.decode()?),
+            Event::GeneralRef(event) => {
+                append_inline_text(&mut text, &decode_xml_reference(&event)?)
+            }
             Event::CData(event) => append_inline_text(&mut text, &String::from_utf8_lossy(&event)),
             Event::Empty(event) if is_break_element(event.name().as_ref()) => {
                 ensure_paragraph_break(&mut text)
@@ -157,6 +164,16 @@ fn extract_xml_text(xml: &str) -> anyhow::Result<String> {
     }
 
     Ok(normalize_text_blocks(&text))
+}
+
+fn decode_xml_reference(reference: &BytesRef<'_>) -> anyhow::Result<String> {
+    if let Some(ch) = reference.resolve_char_ref()? {
+        return Ok(ch.to_string());
+    }
+    let name = reference.decode()?;
+    Ok(resolve_predefined_entity(&name)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("&{name};")))
 }
 
 fn append_inline_text(output: &mut String, text: &str) {
