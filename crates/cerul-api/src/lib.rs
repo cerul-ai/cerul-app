@@ -7516,6 +7516,17 @@ mod tests {
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         let raw_path = temp.path().join("video.mp4");
         seed_v1_agent_search_fixture(&paths, &raw_path);
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('inference_mode', '"remote"', strftime('%s','now'))
+                "#,
+                [],
+            )
+            .unwrap();
+        }
         let app = router_with_paths(paths);
 
         let openapi = app
