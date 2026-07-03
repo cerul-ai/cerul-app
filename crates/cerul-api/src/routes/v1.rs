@@ -32,6 +32,9 @@ pub(crate) const API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/openapi.json", &["get"]),
     ("/v1/agent/tools", &["get"]),
     ("/v1/agent/material-insight", &["post"]),
+    ("/v1/agent/storyboard", &["post"]),
+    ("/v1/agent/broll-search", &["post"]),
+    ("/v1/agent/timeline-export", &["post"]),
     ("/v1/search", &["post"]),
     ("/v1/ask", &["post"]),
     ("/v1/items", &["get"]),
@@ -48,6 +51,9 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/openapi.json", get(v1_openapi_json))
         .route("/agent/tools", get(v1_agent_tools))
         .route("/agent/material-insight", post(v1_material_insight))
+        .route("/agent/storyboard", post(v1_storyboard))
+        .route("/agent/broll-search", post(v1_broll_search))
+        .route("/agent/timeline-export", post(v1_timeline_export))
         .route("/search", post(v1_search))
         .route("/ask", post(v1_ask))
         .route("/items", get(v1_list_items))
@@ -122,6 +128,9 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
             "openapi",
             "agent_tools",
             "material_insight",
+            "storyboard",
+            "broll_search",
+            "timeline_export",
             "search",
             "ask",
             "items",
@@ -288,6 +297,69 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             safety: v1_read_only_agent_tool_safety(),
             evidence: v1_agent_tool_evidence(true, true),
         },
+        V1AgentToolContract {
+            name: "build_storyboard",
+            description: "Build an evidence-backed pre-edit storyboard and shot list from local indexed material.",
+            method: "POST",
+            path: "/v1/agent/storyboard",
+            stage: "c1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "title": {"type": "string"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "target": {"type": "string", "enum": ["local"]}
+                }
+            }),
+            output_contract: "V1StoryboardResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "search_broll",
+            description: "Find visual b-roll candidates from local evidence for a pre-edit plan.",
+            method: "POST",
+            path: "/v1/agent/broll-search",
+            stage: "c1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "target": {"type": "string", "enum": ["local"]}
+                }
+            }),
+            output_contract: "V1BrollSearchResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
+        V1AgentToolContract {
+            name: "export_edl",
+            description: "Export an OTIO JSON planning timeline for external editing tools; Cerul does not render or edit media.",
+            method: "POST",
+            path: "/v1/agent/timeline-export",
+            stage: "c1",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "title": {"type": "string"},
+                    "format": {"type": "string", "enum": ["otio_json"]},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "target": {"type": "string", "enum": ["local"]}
+                }
+            }),
+            output_contract: "V1TimelineExportResponse",
+            safety: v1_read_only_agent_tool_safety(),
+            evidence: v1_agent_tool_evidence(true),
+        },
     ]
 }
 
@@ -377,33 +449,9 @@ async fn v1_material_insight(
     let query = first_non_empty_text([req.query, req.q])
         .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
     validate_v1_local_target(req.target.as_deref())?;
-    let query_execution = v1_query_execution(&state.paths);
     let limit = req.max_results.or(req.limit).unwrap_or(12).clamp(1, 20);
-    let response = search_records(
-        &state.paths,
-        cerul_search::SearchRequest {
-            q: query.clone(),
-            limit,
-        },
-    )
-    .await?;
-    let raw_results = response.results.into_iter().take(limit).collect::<Vec<_>>();
-    let item_metadata = v1_search_item_metadata(&state.paths, &raw_results)?;
-    let existing_preview_chunk_ids = v1_existing_preview_chunk_ids(&state.paths, &raw_results)?;
-    let evidence_metadata = v1_evidence_metadata_for_results(&state.paths, &raw_results)?;
-    let base_url = v1_base_url(&headers, &state.paths);
-    let evidence = raw_results
-        .iter()
-        .map(|result| {
-            v1_search_result(
-                result,
-                &item_metadata,
-                &existing_preview_chunk_ids,
-                &evidence_metadata,
-                &base_url,
-            )
-        })
-        .collect::<Vec<_>>();
+    let (query_execution, evidence) =
+        v1_collect_material_evidence(&state.paths, &headers, &query, limit).await?;
 
     Ok(Json(V1MaterialInsightResponse {
         request_id: new_id("req"),
@@ -418,6 +466,139 @@ async fn v1_material_insight(
             credits_used: 0,
         },
     }))
+}
+
+async fn v1_storyboard(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1PreEditRequest>,
+) -> ApiResult<Json<V1StoryboardResponse>> {
+    let query = first_non_empty_text([req.query, req.q])
+        .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let title = v1_pre_edit_title(req.title.as_deref(), &query);
+    let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 20);
+    let (query_execution, evidence) =
+        v1_collect_material_evidence(&state.paths, &headers, &query, limit).await?;
+    let plan = v1_pre_edit_plan(&query, &title, &evidence);
+
+    Ok(Json(V1StoryboardResponse {
+        request_id: new_id("req"),
+        execution: query_execution.execution(),
+        storyboard: plan.storyboard,
+        shot_list: plan.shot_list,
+        broll_gaps: plan.broll_gaps,
+        evidence,
+        usage: V1Usage {
+            billable: false,
+            metered_events: query_execution.storyboard_events(),
+            credits_used: 0,
+        },
+    }))
+}
+
+async fn v1_broll_search(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1PreEditRequest>,
+) -> ApiResult<Json<V1BrollSearchResponse>> {
+    let query = first_non_empty_text([req.query, req.q])
+        .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 20);
+    let (query_execution, evidence) =
+        v1_collect_material_evidence(&state.paths, &headers, &query, limit).await?;
+    let candidates = v1_broll_candidates(&evidence);
+
+    Ok(Json(V1BrollSearchResponse {
+        request_id: new_id("req"),
+        execution: query_execution.execution(),
+        query,
+        candidates,
+        evidence,
+        usage: V1Usage {
+            billable: false,
+            metered_events: query_execution.broll_search_events(),
+            credits_used: 0,
+        },
+    }))
+}
+
+async fn v1_timeline_export(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<V1PreEditRequest>,
+) -> ApiResult<Json<V1TimelineExportResponse>> {
+    let query = first_non_empty_text([req.query, req.q])
+        .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    validate_v1_local_target(req.target.as_deref())?;
+    let format = req
+        .format
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("otio_json")
+        .to_ascii_lowercase();
+    if format != "otio_json" {
+        return Err(ApiError::bad_request(
+            "only otio_json timeline export is currently supported",
+        ));
+    }
+    let title = v1_pre_edit_title(req.title.as_deref(), &query);
+    let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 20);
+    let (query_execution, evidence) =
+        v1_collect_material_evidence(&state.paths, &headers, &query, limit).await?;
+    let plan = v1_pre_edit_plan(&query, &title, &evidence);
+    let timeline_export = v1_otio_timeline_export(&plan.storyboard.title, &plan.shot_list);
+
+    Ok(Json(V1TimelineExportResponse {
+        request_id: new_id("req"),
+        execution: query_execution.execution(),
+        timeline_export,
+        storyboard: plan.storyboard,
+        shot_list: plan.shot_list,
+        evidence,
+        usage: V1Usage {
+            billable: false,
+            metered_events: query_execution.timeline_export_events(),
+            credits_used: 0,
+        },
+    }))
+}
+
+async fn v1_collect_material_evidence(
+    paths: &AppPaths,
+    headers: &HeaderMap,
+    query: &str,
+    limit: usize,
+) -> ApiResult<(V1QueryExecution, Vec<V1SearchResult>)> {
+    let query_execution = v1_query_execution(paths);
+    let response = search_records(
+        paths,
+        cerul_search::SearchRequest {
+            q: query.to_string(),
+            limit,
+        },
+    )
+    .await?;
+    let raw_results = response.results.into_iter().take(limit).collect::<Vec<_>>();
+    let item_metadata = v1_search_item_metadata(paths, &raw_results)?;
+    let existing_preview_chunk_ids = v1_existing_preview_chunk_ids(paths, &raw_results)?;
+    let evidence_metadata = v1_evidence_metadata_for_results(paths, &raw_results)?;
+    let base_url = v1_base_url(headers, paths);
+    let evidence = raw_results
+        .iter()
+        .map(|result| {
+            v1_search_result(
+                result,
+                &item_metadata,
+                &existing_preview_chunk_ids,
+                &evidence_metadata,
+                &base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok((query_execution, evidence))
 }
 
 async fn v1_ask(
@@ -1229,6 +1410,302 @@ fn v1_material_usable_shot_reason(modality: &str) -> &'static str {
         "audio" => "Timed audio evidence that can anchor narration or interview beats.",
         "image" => "Visual evidence with a frame preview or OCR-backed match.",
         _ => "Indexed local evidence related to the requested material.",
+    }
+}
+
+struct V1PreEditPlan {
+    storyboard: V1Storyboard,
+    shot_list: Vec<V1ShotListEntry>,
+    broll_gaps: Vec<V1BrollGap>,
+}
+
+fn v1_pre_edit_plan(query: &str, title: &str, evidence: &[V1SearchResult]) -> V1PreEditPlan {
+    let beats = evidence
+        .iter()
+        .enumerate()
+        .map(|(index, result)| v1_storyboard_beat(index, result))
+        .collect::<Vec<_>>();
+    let shot_list = evidence
+        .iter()
+        .enumerate()
+        .map(|(index, result)| v1_shot_list_entry(index, result))
+        .collect::<Vec<_>>();
+    let broll_candidate_ids = evidence
+        .iter()
+        .filter(|result| v1_is_broll_candidate(result))
+        .map(|result| result.id.clone())
+        .collect::<Vec<_>>();
+    let broll_gaps = shot_list
+        .iter()
+        .filter_map(|shot| v1_broll_gap(query, shot, &broll_candidate_ids))
+        .collect::<Vec<_>>();
+
+    V1PreEditPlan {
+        storyboard: V1Storyboard {
+            title: title.to_string(),
+            intent: format!("Pre-edit plan for local material matching \"{query}\"."),
+            boundary:
+                "Planning export only; Cerul does not render media or provide a timeline editor.",
+            beats,
+        },
+        shot_list,
+        broll_gaps,
+    }
+}
+
+fn v1_storyboard_beat(index: usize, result: &V1SearchResult) -> V1StoryboardBeat {
+    let beat_id = v1_beat_id(index);
+    let modality = v1_material_modality(result);
+    V1StoryboardBeat {
+        id: beat_id,
+        title: format!(
+            "{}: {}",
+            v1_pretty_modality(modality),
+            trim_for_answer(&result.item.title, 72)
+        ),
+        summary: trim_for_answer(&result.text.snippet, 180),
+        evidence_ids: vec![result.id.clone()],
+        open_in_cerul: result.evidence.open_in_cerul.clone(),
+    }
+}
+
+fn v1_shot_list_entry(index: usize, result: &V1SearchResult) -> V1ShotListEntry {
+    let modality = v1_material_modality(result);
+    V1ShotListEntry {
+        id: format!("shot-{:02}", index + 1),
+        beat_id: v1_beat_id(index),
+        evidence_id: result.id.clone(),
+        item_id: result.item.id.clone(),
+        item_title: result.item.title.clone(),
+        modality: modality.to_string(),
+        role: v1_shot_role(modality),
+        start_sec: result.time.start_sec,
+        end_sec: result.time.end_sec,
+        note: trim_for_answer(&result.text.snippet, 180),
+        open_in_cerul: result.evidence.open_in_cerul.clone(),
+        clip_url: result
+            .evidence
+            .clip
+            .as_ref()
+            .map(|locator| locator.url.clone()),
+        preview_url: result
+            .evidence
+            .preview
+            .as_ref()
+            .map(|locator| locator.url.clone()),
+    }
+}
+
+fn v1_broll_gap(
+    query: &str,
+    shot: &V1ShotListEntry,
+    broll_candidate_ids: &[String],
+) -> Option<V1BrollGap> {
+    if !matches!(shot.modality.as_str(), "audio" | "document") {
+        return None;
+    }
+    let candidate_evidence_ids = broll_candidate_ids
+        .iter()
+        .filter(|evidence_id| *evidence_id != &shot.evidence_id)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    let reason = if shot.modality == "audio" {
+        "Audio-led beat needs visual coverage before editing."
+    } else {
+        "Document/reference beat needs visual material before editing."
+    };
+
+    Some(V1BrollGap {
+        id: format!("broll-gap-{}", shot.id),
+        beat_id: shot.beat_id.clone(),
+        reason: reason.to_string(),
+        search_query: format!("{query} b-roll {}", shot.item_title),
+        candidate_evidence_ids,
+    })
+}
+
+fn v1_broll_candidates(evidence: &[V1SearchResult]) -> Vec<V1BrollCandidate> {
+    evidence
+        .iter()
+        .filter(|result| v1_is_broll_candidate(result))
+        .map(|result| {
+            let modality = v1_material_modality(result);
+            V1BrollCandidate {
+                evidence_id: result.id.clone(),
+                item_id: result.item.id.clone(),
+                item_title: result.item.title.clone(),
+                modality: modality.to_string(),
+                start_sec: result.time.start_sec,
+                end_sec: result.time.end_sec,
+                reason: v1_material_usable_shot_reason(modality).to_string(),
+                open_in_cerul: result.evidence.open_in_cerul.clone(),
+                clip_url: result
+                    .evidence
+                    .clip
+                    .as_ref()
+                    .map(|locator| locator.url.clone()),
+                preview_url: result
+                    .evidence
+                    .preview
+                    .as_ref()
+                    .map(|locator| locator.url.clone()),
+            }
+        })
+        .collect()
+}
+
+fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1TimelineExport {
+    let mut accumulated_sec = 0.0;
+    let clips = shot_list
+        .iter()
+        .map(|shot| {
+            let duration_sec = v1_shot_duration_sec(shot);
+            let clip = json!({
+                "OTIO_SCHEMA": "Clip.2",
+                "name": format!("{} - {}", shot.id, shot.item_title),
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": v1_otio_rational_time(shot.start_sec.unwrap_or(0.0)),
+                    "duration": v1_otio_rational_time(duration_sec)
+                },
+                "media_reference": {
+                    "OTIO_SCHEMA": "ExternalReference.1",
+                    "target_url": shot.open_in_cerul,
+                    "available_range": {
+                        "OTIO_SCHEMA": "TimeRange.1",
+                        "start_time": v1_otio_rational_time(0.0),
+                        "duration": v1_otio_rational_time(duration_sec)
+                    },
+                    "metadata": {
+                        "cerul": {
+                            "evidence_id": shot.evidence_id,
+                            "item_id": shot.item_id,
+                            "modality": shot.modality,
+                            "clip_url": shot.clip_url,
+                            "preview_url": shot.preview_url
+                        }
+                    }
+                },
+                "metadata": {
+                    "cerul": {
+                        "beat_id": shot.beat_id,
+                        "role": shot.role,
+                        "note": shot.note,
+                        "open_in_cerul": shot.open_in_cerul,
+                        "timeline_offset_sec": accumulated_sec
+                    }
+                }
+            });
+            accumulated_sec += duration_sec;
+            clip
+        })
+        .collect::<Vec<_>>();
+    let timeline = json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": title,
+        "metadata": {
+            "cerul": {
+                "export_kind": "pre_edit_planning",
+                "format": "otio_json",
+                "shot_count": shot_list.len(),
+                "compatibility_note": "Planning export only; Cerul does not render media or provide a timeline editor."
+            }
+        },
+        "tracks": {
+            "OTIO_SCHEMA": "Stack.1",
+            "name": "Cerul pre-edit stack",
+            "children": [{
+                "OTIO_SCHEMA": "Track.1",
+                "name": "Storyboard",
+                "kind": "Video",
+                "children": clips
+            }]
+        }
+    });
+
+    V1TimelineExport {
+        format: "otio_json",
+        filename: v1_timeline_filename(title),
+        mime_type: "application/vnd.opentimelineio+json",
+        content: serde_json::to_string_pretty(&timeline).unwrap_or_else(|_| "{}".to_string()),
+        compatibility_note:
+            "OTIO JSON planning timeline only; Cerul does not render media or provide a timeline editor.",
+    }
+}
+
+fn v1_pre_edit_title(title: Option<&str>, query: &str) -> String {
+    title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("Cerul pre-edit plan: {}", trim_for_answer(query, 80)))
+}
+
+fn v1_beat_id(index: usize) -> String {
+    format!("beat-{:02}", index + 1)
+}
+
+fn v1_is_broll_candidate(result: &V1SearchResult) -> bool {
+    matches!(v1_material_modality(result), "video" | "image")
+}
+
+fn v1_shot_role(modality: &str) -> &'static str {
+    match modality {
+        "video" => "primary",
+        "audio" => "audio_anchor",
+        "image" => "broll",
+        "document" => "reference",
+        _ => "context",
+    }
+}
+
+fn v1_pretty_modality(modality: &str) -> &'static str {
+    match modality {
+        "video" => "Video",
+        "audio" => "Audio",
+        "image" => "Image",
+        "document" => "Document",
+        _ => "Evidence",
+    }
+}
+
+fn v1_shot_duration_sec(shot: &V1ShotListEntry) -> f64 {
+    let duration = shot
+        .end_sec
+        .zip(shot.start_sec)
+        .map(|(end_sec, start_sec)| end_sec - start_sec)
+        .filter(|duration| duration.is_finite() && *duration > 0.25)
+        .unwrap_or(4.0);
+    duration.clamp(1.0, 12.0)
+}
+
+fn v1_otio_rational_time(seconds: f64) -> Value {
+    let millis = (seconds.max(0.0) * 1000.0).round() as i64;
+    json!({
+        "OTIO_SCHEMA": "RationalTime.1",
+        "value": millis,
+        "rate": 1000
+    })
+}
+
+fn v1_timeline_filename(title: &str) -> String {
+    let mut slug = String::new();
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, ' ' | '-' | '_') && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "cerul-pre-edit-plan.otio".to_string()
+    } else {
+        format!("{slug}.otio")
     }
 }
 

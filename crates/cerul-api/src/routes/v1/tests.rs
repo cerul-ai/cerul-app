@@ -110,6 +110,9 @@ async fn router_serves_v1_status_and_openapi() {
             "openapi",
             "agent_tools",
             "material_insight",
+            "storyboard",
+            "broll_search",
+            "timeline_export",
             "search",
             "ask",
             "items",
@@ -134,6 +137,9 @@ async fn router_serves_v1_status_and_openapi() {
     assert!(paths.contains_key("/v1/openapi.json"));
     assert!(paths.contains_key("/v1/agent/tools"));
     assert!(paths.contains_key("/v1/agent/material-insight"));
+    assert!(paths.contains_key("/v1/agent/storyboard"));
+    assert!(paths.contains_key("/v1/agent/broll-search"));
+    assert!(paths.contains_key("/v1/agent/timeline-export"));
     assert!(paths.contains_key("/v1/search"));
     assert!(paths.contains_key("/v1/ask"));
     assert!(paths.contains_key("/v1/items"));
@@ -758,6 +764,9 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             "/v1/openapi.json": {"get": {"responses": {"200": {"description": "OK"}}}},
             "/v1/agent/tools": {"get": {"responses": {"200": {"description": "OK"}}}},
             "/v1/agent/material-insight": {"post": {"responses": {"200": {"description": "OK"}}}},
+            "/v1/agent/storyboard": {"post": {"responses": {"200": {"description": "OK"}}}},
+            "/v1/agent/broll-search": {"post": {"responses": {"200": {"description": "OK"}}}},
+            "/v1/agent/timeline-export": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/search": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/ask": {"post": {"responses": {"200": {"description": "OK"}}}},
             "/v1/items": {"get": {"responses": {"200": {"description": "OK"}}}},
@@ -805,7 +814,7 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             },
             "indexing": {"paused": "boolean", "active_jobs": "number", "queued_jobs": "number"},
             "account": {"signed_in": "boolean", "plan": null, "credits_remaining": null},
-            "capabilities": ["string", "string", "string", "string", "string", "string", "string", "string"]
+            "capabilities": ["string", "string", "string", "string", "string", "string", "string", "string", "string", "string", "string"]
         }),
     );
 
@@ -1036,6 +1045,105 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
                     "returns_evidence_locators": "boolean",
                     "opens_in_cerul": "boolean"
                 }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "max_results": {
+                            "maximum": "number",
+                            "minimum": "number",
+                            "type": "string"
+                        },
+                        "query": {"minLength": "number", "type": "string"},
+                        "target": {"enum": ["string"], "type": "string"},
+                        "title": {"type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "max_results": {
+                            "maximum": "number",
+                            "minimum": "number",
+                            "type": "string"
+                        },
+                        "query": {"minLength": "number", "type": "string"},
+                        "target": {"enum": ["string"], "type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
+            }, {
+                "name": "string",
+                "description": "string",
+                "method": "string",
+                "path": "string",
+                "stage": "string",
+                "input_schema": {
+                    "additionalProperties": "boolean",
+                    "properties": {
+                        "format": {"enum": ["string"], "type": "string"},
+                        "max_results": {
+                            "maximum": "number",
+                            "minimum": "number",
+                            "type": "string"
+                        },
+                        "query": {"minLength": "number", "type": "string"},
+                        "target": {"enum": ["string"], "type": "string"},
+                        "title": {"type": "string"}
+                    },
+                    "required": ["string"],
+                    "type": "string"
+                },
+                "output_contract": "string",
+                "safety": {
+                    "read_only": "boolean",
+                    "billable": "boolean",
+                    "requires_confirmation": "boolean",
+                    "arbitrary_shell": "boolean",
+                    "arbitrary_file_write": "boolean"
+                },
+                "evidence": {
+                    "returns_evidence_locators": "boolean",
+                    "opens_in_cerul": "boolean"
+                }
             }]
         }),
     );
@@ -1059,7 +1167,10 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             "get_frame",
             "get_segment",
             "ask",
-            "material_insight"
+            "material_insight",
+            "build_storyboard",
+            "search_broll",
+            "export_edl"
         ]
     );
     let tools = agent_tools["tools"].as_array().unwrap();
@@ -1880,6 +1991,182 @@ async fn v1_material_insight_excludes_untimed_summary_from_usable_shots() {
     assert_eq!(body["evidence"][0]["evidence"]["clip"], Value::Null);
     assert_eq!(body["evidence"][0]["evidence"]["preview"], Value::Null);
     assert_eq!(body["usable_shots"], json!([]));
+}
+
+#[tokio::test]
+async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    seed_v1_mixed_modality_search_fixture(&paths, temp.path());
+    let app = router_with_paths(paths);
+
+    let storyboard = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/storyboard")
+                .header(header::HOST, "127.0.0.1:25012")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "query": "crossmodalalpha",
+                        "title": "Crossmodal Alpha Rough Cut",
+                        "max_results": 10
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(storyboard.status(), StatusCode::OK);
+    let storyboard = response_json(storyboard).await;
+    assert_eq!(
+        storyboard["storyboard"]["title"],
+        "Crossmodal Alpha Rough Cut"
+    );
+    assert!(storyboard["storyboard"]["boundary"]
+        .as_str()
+        .unwrap()
+        .contains("does not render"));
+    assert_eq!(
+        storyboard["storyboard"]["beats"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(storyboard["shot_list"].as_array().unwrap().len(), 4);
+    assert!(storyboard["shot_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|shot| {
+            shot["evidence_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+                && shot["open_in_cerul"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("cerul-app://item/"))
+        }));
+    assert!(storyboard["broll_gaps"].as_array().unwrap().len() >= 2);
+    assert!(storyboard["broll_gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|gap| {
+            gap["candidate_evidence_ids"]
+                .as_array()
+                .is_some_and(|ids| !ids.is_empty())
+        }));
+    assert_eq!(
+        storyboard["usage"]["metered_events"][0],
+        json!({"capability": "local_storyboard", "quantity": 1, "credits": 0})
+    );
+
+    let broll = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/broll-search")
+                .header(header::HOST, "127.0.0.1:25012")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "crossmodalalpha", "max_results": 10}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(broll.status(), StatusCode::OK);
+    let broll = response_json(broll).await;
+    let candidates = broll["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates
+        .iter()
+        .any(|candidate| candidate["modality"] == "video"));
+    assert!(candidates
+        .iter()
+        .any(|candidate| candidate["modality"] == "image"));
+    assert!(candidates
+        .iter()
+        .all(|candidate| candidate["modality"] != "audio" && candidate["modality"] != "document"));
+    assert_eq!(
+        broll["usage"]["metered_events"][0],
+        json!({"capability": "local_broll_search", "quantity": 1, "credits": 0})
+    );
+
+    let timeline = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/timeline-export")
+                .header(header::HOST, "127.0.0.1:25012")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "query": "crossmodalalpha",
+                        "title": "Crossmodal Alpha Rough Cut",
+                        "format": "otio_json",
+                        "max_results": 10
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(timeline.status(), StatusCode::OK);
+    let timeline = response_json(timeline).await;
+    assert_eq!(timeline["timeline_export"]["format"], "otio_json");
+    assert_eq!(
+        timeline["timeline_export"]["filename"],
+        "crossmodal-alpha-rough-cut.otio"
+    );
+    assert!(timeline["timeline_export"]["compatibility_note"]
+        .as_str()
+        .unwrap()
+        .contains("does not render"));
+    let otio: Value =
+        serde_json::from_str(timeline["timeline_export"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(otio["OTIO_SCHEMA"], "Timeline.1");
+    assert_eq!(
+        otio["metadata"]["cerul"]["export_kind"],
+        "pre_edit_planning"
+    );
+    let clips = otio["tracks"]["children"][0]["children"]
+        .as_array()
+        .unwrap();
+    assert_eq!(clips.len(), 4);
+    assert!(clips.iter().all(|clip| {
+        clip["media_reference"]["target_url"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("cerul-app://item/"))
+    }));
+    assert_eq!(
+        timeline["usage"]["metered_events"][1],
+        json!({"capability": "local_timeline_export", "quantity": 1, "credits": 0})
+    );
+
+    let unsupported = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/agent/timeline-export")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"query": "crossmodalalpha", "format": "fcpxml"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
+    let unsupported = response_json(unsupported).await;
+    assert!(unsupported["error"]
+        .as_str()
+        .unwrap()
+        .contains("only otio_json"));
 }
 
 #[tokio::test]

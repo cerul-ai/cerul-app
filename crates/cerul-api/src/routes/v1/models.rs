@@ -146,6 +146,17 @@ pub(crate) struct V1MaterialInsightRequest {
     pub(crate) target: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct V1PreEditRequest {
+    pub(crate) query: Option<String>,
+    pub(crate) q: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) format: Option<String>,
+    pub(crate) max_results: Option<usize>,
+    pub(crate) limit: Option<usize>,
+    pub(crate) target: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct V1SearchResponse {
     pub(crate) request_id: String,
@@ -205,6 +216,104 @@ pub(crate) struct V1MaterialUsableShot {
     pub(crate) open_in_cerul: String,
     pub(crate) clip_url: Option<String>,
     pub(crate) preview_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1StoryboardResponse {
+    pub(crate) request_id: String,
+    pub(crate) execution: V1Execution,
+    pub(crate) storyboard: V1Storyboard,
+    pub(crate) shot_list: Vec<V1ShotListEntry>,
+    pub(crate) broll_gaps: Vec<V1BrollGap>,
+    pub(crate) evidence: Vec<V1SearchResult>,
+    pub(crate) usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1BrollSearchResponse {
+    pub(crate) request_id: String,
+    pub(crate) execution: V1Execution,
+    pub(crate) query: String,
+    pub(crate) candidates: Vec<V1BrollCandidate>,
+    pub(crate) evidence: Vec<V1SearchResult>,
+    pub(crate) usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1TimelineExportResponse {
+    pub(crate) request_id: String,
+    pub(crate) execution: V1Execution,
+    pub(crate) timeline_export: V1TimelineExport,
+    pub(crate) storyboard: V1Storyboard,
+    pub(crate) shot_list: Vec<V1ShotListEntry>,
+    pub(crate) evidence: Vec<V1SearchResult>,
+    pub(crate) usage: V1Usage,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1Storyboard {
+    pub(crate) title: String,
+    pub(crate) intent: String,
+    pub(crate) boundary: &'static str,
+    pub(crate) beats: Vec<V1StoryboardBeat>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1StoryboardBeat {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) evidence_ids: Vec<String>,
+    pub(crate) open_in_cerul: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1ShotListEntry {
+    pub(crate) id: String,
+    pub(crate) beat_id: String,
+    pub(crate) evidence_id: String,
+    pub(crate) item_id: String,
+    pub(crate) item_title: String,
+    pub(crate) modality: String,
+    pub(crate) role: &'static str,
+    pub(crate) start_sec: Option<f64>,
+    pub(crate) end_sec: Option<f64>,
+    pub(crate) note: String,
+    pub(crate) open_in_cerul: String,
+    pub(crate) clip_url: Option<String>,
+    pub(crate) preview_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1BrollGap {
+    pub(crate) id: String,
+    pub(crate) beat_id: String,
+    pub(crate) reason: String,
+    pub(crate) search_query: String,
+    pub(crate) candidate_evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1BrollCandidate {
+    pub(crate) evidence_id: String,
+    pub(crate) item_id: String,
+    pub(crate) item_title: String,
+    pub(crate) modality: String,
+    pub(crate) start_sec: Option<f64>,
+    pub(crate) end_sec: Option<f64>,
+    pub(crate) reason: String,
+    pub(crate) open_in_cerul: String,
+    pub(crate) clip_url: Option<String>,
+    pub(crate) preview_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct V1TimelineExport {
+    pub(crate) format: &'static str,
+    pub(crate) filename: String,
+    pub(crate) mime_type: &'static str,
+    pub(crate) content: String,
+    pub(crate) compatibility_note: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -435,6 +544,61 @@ impl V1QueryExecution {
             quantity: 1,
             credits: 0,
         }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+
+    pub(crate) fn storyboard_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_storyboard",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+
+    pub(crate) fn broll_search_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![V1MeteredEvent {
+            capability: "local_broll_search",
+            quantity: 1,
+            credits: 0,
+        }];
+        if self == Self::RemoteEmbedding {
+            events.push(V1MeteredEvent {
+                capability: "remote_embedding_query",
+                quantity: 1,
+                credits: 0,
+            });
+        }
+        events
+    }
+
+    pub(crate) fn timeline_export_events(self) -> Vec<V1MeteredEvent> {
+        let mut events = vec![
+            V1MeteredEvent {
+                capability: "local_storyboard",
+                quantity: 1,
+                credits: 0,
+            },
+            V1MeteredEvent {
+                capability: "local_timeline_export",
+                quantity: 1,
+                credits: 0,
+            },
+        ];
         if self == Self::RemoteEmbedding {
             events.push(V1MeteredEvent {
                 capability: "remote_embedding_query",
