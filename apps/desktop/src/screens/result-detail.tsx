@@ -76,7 +76,7 @@ function syncVideoToTimestamp(
     if (cancelled) {
       return;
     }
-    const maxTime = Number.isFinite(video.duration)
+    const maxTime = Number.isFinite(video.duration) && video.duration > 0
       ? Math.max(video.duration - 0.1, 0)
       : targetSeconds;
     video.currentTime = Math.min(targetSeconds, maxTime);
