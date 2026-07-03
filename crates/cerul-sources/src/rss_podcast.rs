@@ -1,7 +1,11 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use cerul_models::{ContentType, DiscoveredItem};
-use feed_rs::{model::Entry, parser};
+use quick_xml::{
+    escape::resolve_predefined_entity,
+    events::{BytesRef, BytesStart, Event},
+    Reader, XmlVersion,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -28,6 +32,42 @@ pub struct RssPodcastPreview {
     pub title: String,
     pub image_url: Option<String>,
     pub episode_count: usize,
+}
+
+#[derive(Debug, Default)]
+struct ParsedFeed {
+    title: Option<String>,
+    image_url: Option<String>,
+    entries: Vec<ParsedEntry>,
+}
+
+#[derive(Debug, Default)]
+struct ParsedEntry {
+    id: Option<String>,
+    title: Option<String>,
+    enclosure_url: Option<String>,
+    first_link: Option<String>,
+    published: Option<String>,
+    updated: Option<String>,
+}
+
+impl ParsedEntry {
+    fn effective_enclosure_url(&self) -> Option<String> {
+        self.enclosure_url
+            .clone()
+            .or_else(|| self.first_link.clone())
+    }
+
+    fn metadata(&self) -> serde_json::Value {
+        json!({
+            "id": self.id,
+            "title": self.title,
+            "enclosure_url": self.enclosure_url,
+            "link": self.first_link,
+            "published": self.published,
+            "updated": self.updated,
+        })
+    }
 }
 
 impl RssPodcast {
@@ -67,24 +107,19 @@ impl RssPodcast {
 
 pub async fn preview_feed(feed_url: &str) -> anyhow::Result<RssPodcastPreview> {
     let body = read_url_or_file(feed_url).await?;
-    let feed = parser::parse(&body[..]).context("failed to parse RSS/Atom feed")?;
+    let feed = parse_feed(&body).context("failed to parse RSS/Atom feed")?;
     let title = feed
         .title
-        .as_ref()
-        .map(|title| title.content.trim())
+        .as_deref()
+        .map(str::trim)
         .filter(|title| !title.is_empty())
         .unwrap_or("Podcast feed")
         .to_string();
-    let image_url = feed
-        .logo
-        .as_ref()
-        .or(feed.icon.as_ref())
-        .map(|image| image.uri.clone());
 
     Ok(RssPodcastPreview {
         feed_url: feed_url.to_string(),
         title,
-        image_url,
+        image_url: feed.image_url,
         episode_count: feed.entries.len(),
     })
 }
@@ -101,33 +136,30 @@ impl SourcePlugin for RssPodcast {
 
     async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
         let body = read_url_or_file(&self.feed_url).await?;
-        let feed = parser::parse(&body[..]).context("failed to parse RSS/Atom feed")?;
+        let feed = parse_feed(&body).context("failed to parse RSS/Atom feed")?;
         let mut items = Vec::new();
 
         for entry in feed.entries.into_iter().take(self.max_episodes) {
-            let enclosure_url = enclosure_url_for(&entry);
-            let external_id = if entry.id.is_empty() {
+            let enclosure_url = entry.effective_enclosure_url();
+            let external_id = if let Some(id) = entry.id.as_deref().filter(|id| !id.is_empty()) {
+                id.to_string()
+            } else {
                 enclosure_url
                     .as_ref()
                     .map(|url| blake3::hash(url.as_bytes()).to_hex()[..16].to_string())
                     .context("feed entry has no id or enclosure URL")?
-            } else {
-                entry.id.clone()
             };
-            let title = entry.title.as_ref().map(|title| title.content.clone());
-            let entry_metadata =
-                serde_json::to_value(&entry).context("failed to serialize feed entry metadata")?;
 
             items.push(DiscoveredItem {
                 external_id,
-                title,
+                title: entry.title.clone(),
                 duration_sec: None,
                 metadata: json!({
                     "feed_url": self.feed_url,
                     "enclosure_url": enclosure_url,
-                    "published": entry.published.map(|date| date.to_rfc3339()),
-                    "updated": entry.updated.map(|date| date.to_rfc3339()),
-                    "entry": entry_metadata,
+                    "published": entry.published,
+                    "updated": entry.updated,
+                    "entry": entry.metadata(),
                 }),
             });
         }
@@ -236,28 +268,178 @@ fn file_url_path(location: &str) -> Option<&str> {
     location.strip_prefix("file://")
 }
 
-fn enclosure_url_for(entry: &Entry) -> Option<String> {
-    entry
-        .links
-        .iter()
-        .find(|link| link.rel.as_deref() == Some("enclosure"))
-        .map(|link| link.href.clone())
-        .or_else(|| {
-            entry
-                .content
-                .as_ref()
-                .and_then(|content| content.src.as_ref())
-                .map(|link| link.href.clone())
-        })
-        .or_else(|| {
-            entry.media.iter().find_map(|media| {
-                media
-                    .content
-                    .iter()
-                    .find_map(|content| content.url.as_ref().map(ToString::to_string))
-            })
-        })
-        .or_else(|| entry.links.first().map(|link| link.href.clone()))
+fn parse_feed(body: &[u8]) -> anyhow::Result<ParsedFeed> {
+    let xml = String::from_utf8_lossy(body);
+    let mut reader = Reader::from_str(&xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut path = Vec::<String>::new();
+    let mut feed = ParsedFeed::default();
+    let mut current_entry: Option<ParsedEntry> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf)? {
+            Event::Start(event) => {
+                let tag = local_name(event.name().as_ref());
+                if is_entry_element(&tag) {
+                    current_entry = Some(ParsedEntry::default());
+                }
+                if let Some(entry) = current_entry.as_mut() {
+                    collect_entry_attributes(entry, &tag, &event)?;
+                }
+                path.push(tag);
+            }
+            Event::Empty(event) => {
+                let tag = local_name(event.name().as_ref());
+                if let Some(entry) = current_entry.as_mut() {
+                    collect_entry_attributes(entry, &tag, &event)?;
+                }
+            }
+            Event::Text(event) => {
+                let text = normalize_text(&event.decode()?);
+                if !text.is_empty() {
+                    collect_text(&mut feed, current_entry.as_mut(), &path, &text);
+                }
+            }
+            Event::GeneralRef(event) => {
+                let text = normalize_text(&decode_xml_reference(&event)?);
+                if !text.is_empty() {
+                    collect_text(&mut feed, current_entry.as_mut(), &path, &text);
+                }
+            }
+            Event::CData(event) => {
+                let text = normalize_text(&String::from_utf8_lossy(&event));
+                if !text.is_empty() {
+                    collect_text(&mut feed, current_entry.as_mut(), &path, &text);
+                }
+            }
+            Event::End(event) => {
+                let tag = local_name(event.name().as_ref());
+                if is_entry_element(&tag) {
+                    if let Some(entry) = current_entry.take() {
+                        feed.entries.push(entry);
+                    }
+                }
+                path.pop();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(feed)
+}
+
+fn decode_xml_reference(reference: &BytesRef<'_>) -> anyhow::Result<String> {
+    if let Some(ch) = reference.resolve_char_ref()? {
+        return Ok(ch.to_string());
+    }
+    let name = reference.decode()?;
+    Ok(resolve_predefined_entity(&name)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("&{name};")))
+}
+
+fn collect_entry_attributes(
+    entry: &mut ParsedEntry,
+    tag: &str,
+    event: &BytesStart<'_>,
+) -> anyhow::Result<()> {
+    match tag {
+        "enclosure" => {
+            if entry.enclosure_url.is_none() {
+                entry.enclosure_url = attr_value(event, "url")?;
+            }
+        }
+        "link" => {
+            let href = attr_value(event, "href")?;
+            let rel = attr_value(event, "rel")?;
+            if rel.as_deref() == Some("enclosure") && entry.enclosure_url.is_none() {
+                entry.enclosure_url = href.clone();
+            }
+            if entry.first_link.is_none() {
+                entry.first_link = href;
+            }
+        }
+        "content" => {
+            if entry.enclosure_url.is_none() {
+                entry.enclosure_url = attr_value(event, "url")?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn collect_text(
+    feed: &mut ParsedFeed,
+    current_entry: Option<&mut ParsedEntry>,
+    path: &[String],
+    text: &str,
+) {
+    let Some(tag) = path.last().map(String::as_str) else {
+        return;
+    };
+    if let Some(entry) = current_entry {
+        match tag {
+            "guid" | "id" => set_if_empty(&mut entry.id, text),
+            "title" => set_if_empty(&mut entry.title, text),
+            "pubdate" | "published" => set_if_empty(&mut entry.published, text),
+            "updated" => set_if_empty(&mut entry.updated, text),
+            "link" => set_if_empty(&mut entry.first_link, text),
+            _ => {}
+        }
+        return;
+    }
+
+    match tag {
+        "title" => set_if_empty(&mut feed.title, text),
+        "logo" | "icon" => set_if_empty(&mut feed.image_url, text),
+        "url" if path.iter().any(|part| part == "image") => set_if_empty(&mut feed.image_url, text),
+        _ => {}
+    }
+}
+
+fn attr_value(event: &BytesStart<'_>, key: &str) -> anyhow::Result<Option<String>> {
+    for attr in event.attributes().with_checks(false) {
+        let attr = attr?;
+        if local_name(attr.key.as_ref()) == key {
+            return Ok(Some(
+                attr.normalized_value(XmlVersion::Implicit1_0)?.to_string(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+fn set_if_empty(target: &mut Option<String>, value: &str) {
+    if target
+        .as_deref()
+        .is_some_and(|existing| !existing.is_empty())
+    {
+        return;
+    }
+    let value = value.trim();
+    if !value.is_empty() {
+        *target = Some(value.to_string());
+    }
+}
+
+fn normalize_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_entry_element(tag: &str) -> bool {
+    matches!(tag, "item" | "entry")
+}
+
+fn local_name(name: &[u8]) -> String {
+    let name = std::str::from_utf8(name).unwrap_or_default();
+    name.rsplit_once(':')
+        .map(|(_, local)| local)
+        .unwrap_or(name)
+        .to_ascii_lowercase()
 }
 
 fn extension_from_url(url: &str) -> Option<&str> {
