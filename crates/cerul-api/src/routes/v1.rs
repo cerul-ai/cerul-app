@@ -1561,17 +1561,18 @@ fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1Time
         .iter()
         .map(|shot| {
             let duration_sec = v1_shot_duration_sec(shot);
+            let media_target_url = v1_shot_media_target_url(shot);
             let clip = json!({
                 "OTIO_SCHEMA": "Clip.2",
                 "name": format!("{} - {}", shot.id, shot.item_title),
                 "source_range": {
                     "OTIO_SCHEMA": "TimeRange.1",
-                    "start_time": v1_otio_rational_time(shot.start_sec.unwrap_or(0.0)),
+                    "start_time": v1_otio_rational_time(0.0),
                     "duration": v1_otio_rational_time(duration_sec)
                 },
                 "media_reference": {
                     "OTIO_SCHEMA": "ExternalReference.1",
-                    "target_url": shot.open_in_cerul,
+                    "target_url": media_target_url,
                     "available_range": {
                         "OTIO_SCHEMA": "TimeRange.1",
                         "start_time": v1_otio_rational_time(0.0),
@@ -1582,6 +1583,7 @@ fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1Time
                             "evidence_id": shot.evidence_id,
                             "item_id": shot.item_id,
                             "modality": shot.modality,
+                            "open_in_cerul": shot.open_in_cerul,
                             "clip_url": shot.clip_url,
                             "preview_url": shot.preview_url
                         }
@@ -1648,6 +1650,14 @@ fn v1_beat_id(index: usize) -> String {
 
 fn v1_is_broll_candidate(result: &V1SearchResult) -> bool {
     matches!(v1_material_modality(result), "video" | "image")
+        && (result.evidence.clip.is_some() || result.evidence.preview.is_some())
+}
+
+fn v1_shot_media_target_url(shot: &V1ShotListEntry) -> &str {
+    shot.clip_url
+        .as_deref()
+        .or(shot.preview_url.as_deref())
+        .unwrap_or(&shot.open_in_cerul)
 }
 
 fn v1_shot_role(modality: &str) -> &'static str {

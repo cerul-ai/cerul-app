@@ -2090,6 +2090,14 @@ async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
     assert!(candidates
         .iter()
         .all(|candidate| candidate["modality"] != "audio" && candidate["modality"] != "document"));
+    assert!(candidates.iter().all(|candidate| {
+        candidate["clip_url"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+            || candidate["preview_url"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+    }));
     assert_eq!(
         broll["usage"]["metered_events"][0],
         json!({"capability": "local_broll_search", "quantity": 1, "credits": 0})
@@ -2139,10 +2147,48 @@ async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
         .unwrap();
     assert_eq!(clips.len(), 4);
     assert!(clips.iter().all(|clip| {
-        clip["media_reference"]["target_url"]
+        let source_range = &clip["source_range"];
+        let available_range = &clip["media_reference"]["available_range"];
+        source_range["start_time"]["value"] == 0
+            && available_range["start_time"]["value"] == 0
+            && available_range["duration"]["value"]
+                .as_i64()
+                .zip(source_range["duration"]["value"].as_i64())
+                .is_some_and(|(available, duration)| available >= duration)
+    }));
+    assert!(clips.iter().all(|clip| {
+        clip["metadata"]["cerul"]["open_in_cerul"]
             .as_str()
             .is_some_and(|value| value.starts_with("cerul-app://item/"))
+            && clip["media_reference"]["metadata"]["cerul"]["open_in_cerul"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("cerul-app://item/"))
     }));
+    let playable_targets = clips
+        .iter()
+        .filter(|clip| {
+            clip["media_reference"]["metadata"]["cerul"]["clip_url"].is_string()
+                || clip["media_reference"]["metadata"]["cerul"]["preview_url"].is_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(playable_targets.iter().all(|clip| {
+        let target_url = clip["media_reference"]["target_url"].as_str().unwrap();
+        let metadata = &clip["media_reference"]["metadata"]["cerul"];
+        metadata["clip_url"]
+            .as_str()
+            .or_else(|| metadata["preview_url"].as_str())
+            .is_some_and(|url| target_url == url)
+    }));
+    assert!(playable_targets
+        .iter()
+        .any(|clip| clip["media_reference"]["target_url"]
+            .as_str()
+            .is_some_and(|value| value.contains("/video-clip"))));
+    assert!(playable_targets
+        .iter()
+        .any(|clip| clip["media_reference"]["target_url"]
+            .as_str()
+            .is_some_and(|value| value.contains("/frame"))));
     assert_eq!(
         timeline["usage"]["metered_events"][1],
         json!({"capability": "local_timeline_export", "quantity": 1, "credits": 0})
