@@ -70,7 +70,7 @@ async fn v1_openapi_json() -> Json<Value> {
 async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResponse>> {
     let indexing = jobs::indexing_diagnostics(&state.paths)?;
     let search = search_health_diagnostics(&state.paths).await?;
-    let text_ready = search.fts_row_count > 0 || search.retrieval_unit_fts_row_count > 0;
+    let text_ready = search.retrieval_unit_fts_row_count > 0;
     let vector_ready =
         search.vector_index_error.is_none() && search.vector_index_point_count.unwrap_or(0) > 0;
     let retrieval_mode = match (text_ready, vector_ready) {

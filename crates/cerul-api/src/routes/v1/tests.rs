@@ -135,6 +135,66 @@ async fn router_serves_v1_status_and_openapi() {
     assert!(!paths.contains_key("/health"));
 }
 
+#[tokio::test]
+async fn v1_status_ignores_legacy_chunks_fts_readiness() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    {
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (
+                id, source_id, content_type, external_id, title, status, indexed_at, metadata
+            )
+            VALUES ('item-legacy', 'source-1', 'video', 'video-legacy', 'Legacy Indexed', 'indexed', 10, '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES (
+                'item-legacy:transcript:000000',
+                'item-legacy',
+                'transcript',
+                1.0,
+                2.0,
+                'legacy chunks fts text should not mark v1 status ready',
+                '{}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+    }
+    seed_indexing_schema_version(&paths);
+
+    let app = router_with_paths(paths);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status_json = response_json(response).await;
+    assert_eq!(status_json["search"]["ready"], false);
+    assert_eq!(status_json["search"]["retrieval_mode"], "empty");
+    assert_eq!(status_json["search"]["text_ready"], false);
+    assert_eq!(status_json["search"]["vector_ready"], false);
+    assert_eq!(status_json["library"]["chunk_count"], 1);
+}
+
 fn seed_v1_agent_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
     fs::write(raw_path, b"not a real video").unwrap();
     let raw_path_string = raw_path.to_string_lossy().to_string();
