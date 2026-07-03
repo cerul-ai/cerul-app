@@ -196,12 +196,12 @@ export function mapChunkRecords(records: api.ChunkRecord[], t?: TFunction): Tran
     if (!record.text) {
       return [];
     }
+    const isDocument = isDocumentChunkType(record.chunk_type);
     return [
       {
         id: record.id,
-        time: isDocumentChunkType(record.chunk_type)
-          ? documentChunkLabel(record, t)
-          : formatTimestamp(record.start_sec),
+        time: isDocument ? record.id : formatTimestamp(record.start_sec),
+        ...(isDocument ? { displayTime: documentChunkLabel(record, t) } : {}),
         text: record.text,
         startSec: record.start_sec,
         endSec: record.end_sec,
@@ -217,6 +217,11 @@ export function selectPlaybackChunkId(
 ) {
   if (preferredChunkId && records.some((record) => record.id === preferredChunkId)) {
     return preferredChunkId;
+  }
+
+  const exactChunkId = records.find((record) => record.id === timestamp);
+  if (exactChunkId) {
+    return exactChunkId.id;
   }
 
   const exact = records.find((record) => formatTimestamp(record.start_sec) === timestamp);

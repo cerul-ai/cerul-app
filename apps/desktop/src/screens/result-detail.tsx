@@ -43,6 +43,7 @@ import {
   itemDetailIssue,
 } from "../lib/items";
 import {
+  documentChunkLabel,
   isDocumentChunkType,
   mapChunkRecords,
   selectPlaybackChunkId,
@@ -214,7 +215,9 @@ function transcriptToSrt(lines: TranscriptLine[]): string {
 }
 
 function transcriptToMarkdown(title: string, lines: TranscriptLine[]): string {
-  const body = lines.map((line) => `**[${line.time}]** ${line.text}`).join("\n\n");
+  const body = lines
+    .map((line) => `**[${line.displayTime ?? line.time}]** ${line.text}`)
+    .join("\n\n");
   return `# ${title}\n\n${body}\n`;
 }
 
@@ -421,7 +424,7 @@ function TranscriptReadingView({
 }: {
   title: string;
   lines: TranscriptLine[];
-  onSeek?: (timestamp: string) => void;
+  onSeek?: (timestamp: string, line?: TranscriptLine) => void;
 }) {
   return (
     <article className="transcript-reading">
@@ -431,10 +434,10 @@ function TranscriptReadingView({
           <button
             type="button"
             className="reading-ts mono"
-            onClick={() => onSeek?.(line.time)}
-            aria-label={line.time}
+            onClick={() => onSeek?.(line.time, line)}
+            aria-label={line.displayTime ?? line.time}
           >
-            {line.time}
+            {line.displayTime ?? line.time}
           </button>
           <span>{line.text}</span>
         </p>
@@ -724,6 +727,7 @@ export function ResultDetail({
   item,
   startChunkId,
   startTimestamp,
+  matchedSnippet,
   moreMatches,
   actionsEnabled,
   onLibrary,
@@ -735,6 +739,7 @@ export function ResultDetail({
   item: Item;
   startChunkId: string | null;
   startTimestamp: string;
+  matchedSnippet?: string | null;
   moreMatches?: ResultMatch[];
   actionsEnabled: boolean;
   onLibrary: () => void;
@@ -798,10 +803,22 @@ export function ResultDetail({
     item.contentType === "document"
       ? documentChunks.find((record) => record.id === mediaState.chunkId) ?? documentChunks[0] ?? null
       : null;
+  const selectedDocumentChunkId = selectedDocumentChunk?.id ?? mediaState.chunkId;
+  const selectedDocumentSnippet =
+    item.contentType === "document"
+      ? selectedDocumentChunkId === startChunkId
+        ? matchedSnippet
+        : moreMatches?.find((match) => match.playbackChunkId === selectedDocumentChunkId)?.snippet ??
+          matchedSnippet
+      : null;
+  const detailTimestamp =
+    item.contentType === "document" && selectedDocumentChunk
+      ? documentChunkLabel(selectedDocumentChunk, t)
+      : currentTimestamp;
   const timestampLink = timestampDeepLink(
     item.id,
-    currentTimestamp,
-    mediaState.chunkId,
+    detailTimestamp,
+    item.contentType === "document" ? selectedDocumentChunk?.id ?? mediaState.chunkId : mediaState.chunkId,
     "result-detail",
   );
   const transcriptPartial = item.status === "indexing";
@@ -820,9 +837,23 @@ export function ResultDetail({
   }
 
   const otherMatches = (moreMatches ?? [])
-    .map((match) => match.timestamp)
-    .filter((timestamp) => timestamp !== startTimestamp)
-    .slice(0, 3);
+    .filter((match) =>
+      item.contentType === "document"
+        ? match.playbackChunkId !== startChunkId
+        : match.timestamp !== startTimestamp,
+    )
+    .slice(0, 3)
+    .map((match) => {
+      const documentChunk =
+        item.contentType === "document"
+          ? documentChunks.find((record) => record.id === match.playbackChunkId)
+          : null;
+      return {
+        key: match.playbackChunkId,
+        label: documentChunk ? documentChunkLabel(documentChunk, t) : match.timestamp,
+        seekTarget: item.contentType === "document" ? match.playbackChunkId : match.timestamp,
+      };
+    });
   const playerMarkers: PlayerMarker[] = useMemo(
     () =>
       transcriptLines
@@ -830,7 +861,7 @@ export function ResultDetail({
           seconds: parseTimestampSeconds(line.time),
           label: line.time,
           text: line.text,
-          match: line.time === startTimestamp,
+          match: line.time === startTimestamp || line.id === startTimestamp,
         }))
         .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0),
     [transcriptLines, startTimestamp],
@@ -1015,11 +1046,13 @@ export function ResultDetail({
 
   async function copyTimestampLink() {
     try {
-      const quote = transcriptLines.find((line) => line.time === currentTimestamp)?.text;
+      const line = transcriptLines.find(
+        (candidate) => candidate.id === currentTimestamp || candidate.time === currentTimestamp,
+      );
       const citation = buildMomentCitation({
         title: item.title,
-        timestamp: currentTimestamp,
-        quote,
+        timestamp: line?.displayTime ?? detailTimestamp,
+        quote: line?.text,
         link: item.originalUrl ?? timestampLink,
       });
       await writeClipboardText(citation);
@@ -1029,11 +1062,17 @@ export function ResultDetail({
     }
   }
 
-  function seekTo(timestamp: string) {
+  function seekTo(timestamp: string, line?: TranscriptLine) {
+    if (item.contentType === "document") {
+      const chunkId = line?.id ?? timestamp;
+      setCurrentTimestamp(chunkId);
+      setMediaState((current) => ({ ...current, chunkId }));
+      return;
+    }
     setCurrentTimestamp(timestamp);
     setIsPlaying(true);
     const targetSeconds = parseTimestampSeconds(timestamp);
-    const exactLine = transcriptLines.find((line) => line.time === timestamp);
+    const exactLine = transcriptLines.find((line) => line.time === timestamp || line.id === timestamp);
     const nearestLine =
       exactLine ??
       transcriptLines
@@ -1262,6 +1301,7 @@ export function ResultDetail({
                 item={item}
                 chunk={selectedDocumentChunk}
                 chunkCount={documentChunks.length}
+                matchedSnippet={selectedDocumentSnippet}
                 onOpenOriginal={() => void openOriginalSource()}
               />
             ) : (
@@ -1302,14 +1342,14 @@ export function ResultDetail({
                     <span className="faint" style={{ fontSize: 12 }}>
                       {t("detail.otherMatches")}
                     </span>
-                    {otherMatches.map((timestamp) => (
+                    {otherMatches.map((match) => (
                       <button
-                        key={timestamp}
+                        key={match.key}
                         type="button"
-                        className={timestamp === currentTimestamp ? "chip accent" : "chip neutral"}
-                        onClick={() => seekTo(timestamp)}
+                        className={match.seekTarget === currentTimestamp ? "chip accent" : "chip neutral"}
+                        onClick={() => seekTo(match.seekTarget)}
                       >
-                        {timestamp}
+                        {match.label}
                       </button>
                     ))}
                   </div>

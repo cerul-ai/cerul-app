@@ -98,6 +98,7 @@ export type ResultTimeFilter = "all" | "first10" | "tenToThirty" | "thirtyPlus";
 export type TranscriptLine = {
   id: string;
   time: string;
+  displayTime?: string;
   text: string;
   active?: boolean;
   /** Exact chunk bounds (seconds) when known — drives the clip-export trim

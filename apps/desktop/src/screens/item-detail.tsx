@@ -220,7 +220,9 @@ function transcriptToSrt(lines: TranscriptLine[]): string {
 }
 
 function transcriptToMarkdown(title: string, lines: TranscriptLine[]): string {
-  const body = lines.map((line) => `**[${line.time}]** ${line.text}`).join("\n\n");
+  const body = lines
+    .map((line) => `**[${line.displayTime ?? line.time}]** ${line.text}`)
+    .join("\n\n");
   return `# ${title}\n\n${body}\n`;
 }
 
@@ -433,7 +435,7 @@ function TranscriptReadingView({
 }: {
   title: string;
   lines: TranscriptLine[];
-  onSeek?: (timestamp: string) => void;
+  onSeek?: (timestamp: string, line?: TranscriptLine) => void;
 }) {
   return (
     <article className="transcript-reading">
@@ -443,10 +445,10 @@ function TranscriptReadingView({
           <button
             type="button"
             className="reading-ts mono"
-            onClick={() => onSeek?.(line.time)}
-            aria-label={line.time}
+            onClick={() => onSeek?.(line.time, line)}
+            aria-label={line.displayTime ?? line.time}
           >
-            {line.time}
+            {line.displayTime ?? line.time}
           </button>
           <span>{line.text}</span>
         </p>
@@ -886,6 +888,7 @@ export function ItemDetail({
   const selectedDocumentChunk =
     item.contentType === "document"
       ? documentChunks.find((record) => record.id === startChunkId) ??
+        documentChunks.find((record) => record.id === currentTimestamp) ??
         documentChunks.find((record) => documentChunkLabel(record, t) === currentTimestamp) ??
         documentChunks[0] ??
         null
@@ -896,7 +899,13 @@ export function ItemDetail({
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting" ||
     itemAction.status === "locating";
-  const timestampLink = timestampDeepLink(item.id, currentTimestamp, playableChunkId, "item-detail");
+  const detailTimestamp =
+    item.contentType === "document" && selectedDocumentChunk
+      ? documentChunkLabel(selectedDocumentChunk, t)
+      : currentTimestamp;
+  const detailChunkId =
+    item.contentType === "document" ? selectedDocumentChunk?.id ?? startChunkId : playableChunkId;
+  const timestampLink = timestampDeepLink(item.id, detailTimestamp, detailChunkId, "item-detail");
   const handlePlayerTimeUpdate = useCallback((seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0) {
       return;
@@ -1136,11 +1145,13 @@ export function ItemDetail({
 
   async function copyCitation() {
     try {
-      const quote = transcriptLines.find((line) => line.time === currentTimestamp)?.text;
+      const line = transcriptLines.find(
+        (candidate) => candidate.id === currentTimestamp || candidate.time === currentTimestamp,
+      );
       const citation = buildMomentCitation({
         title: item.title,
-        timestamp: currentTimestamp,
-        quote,
+        timestamp: line?.displayTime ?? detailTimestamp,
+        quote: line?.text,
         link: item.originalUrl ?? timestampLink,
       });
       await writeClipboardText(citation);
@@ -1157,7 +1168,11 @@ export function ItemDetail({
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
   // full source video with Range support, so the loaded src is the whole file.
   // This drives the transcript rows, chapters, and key moments.
-  function seekTo(timestamp: string) {
+  function seekTo(timestamp: string, line?: TranscriptLine) {
+    if (item.contentType === "document") {
+      setCurrentTimestamp(line?.id ?? timestamp);
+      return;
+    }
     const targetSeconds = parseTimestampSeconds(timestamp);
     if (!Number.isFinite(targetSeconds)) {
       return;

@@ -11,15 +11,17 @@ export function DocumentEvidencePanel({
   item,
   chunk,
   chunkCount,
+  matchedSnippet,
   onOpenOriginal,
 }: {
   item: Item;
   chunk: api.ChunkRecord | null;
   chunkCount: number;
+  matchedSnippet?: string | null;
   onOpenOriginal: () => void;
 }) {
   const t = useT();
-  const snippet = chunk?.text?.trim() ?? "";
+  const snippet = matchedSnippet?.trim() || chunk?.text?.trim() || "";
 
   return (
     <section className="document-evidence-panel" aria-label={t("detail.document.label")}>

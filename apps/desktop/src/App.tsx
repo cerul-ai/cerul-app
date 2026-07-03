@@ -643,6 +643,11 @@ function AppWorkspace() {
     (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
   );
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
+  const selectedResult = visibleResults.find(
+    (result) =>
+      (selectedPlaybackChunkId && result.playbackChunkId === selectedPlaybackChunkId) ||
+      (result.itemId === selectedItemId && result.timestamp === selectedTimestamp),
+  );
   const activeJobCount = visibleJobs.filter(isActiveJob).length;
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
   const syncingSourceCount = syncingSources.length;
@@ -1767,13 +1772,8 @@ function AppWorkspace() {
           <ResultDetail
             item={currentItem}
             startChunkId={selectedPlaybackChunkId}
-            moreMatches={
-              visibleResults.find(
-                (result) =>
-                  (selectedPlaybackChunkId && result.playbackChunkId === selectedPlaybackChunkId) ||
-                  (result.itemId === selectedItemId && result.timestamp === selectedTimestamp),
-              )?.moreMatches
-            }
+            matchedSnippet={selectedResult?.snippet}
+            moreMatches={selectedResult?.moreMatches}
             startTimestamp={selectedTimestamp ?? "00:00"}
             actionsEnabled={apiStatus === "online"}
             onLibrary={() => navigate("results")}

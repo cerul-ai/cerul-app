@@ -163,12 +163,14 @@ describe("results helpers", () => {
     expect(mapChunkRecords(chunks, t)).toEqual([
       {
         id: "doc-1",
-        time: "p. 2 · Roadmap",
+        time: "doc-1",
+        displayTime: "p. 2 · Roadmap",
         text: "The roadmap section mentions rollout risk.",
         startSec: null,
         endSec: null,
       },
     ]);
+    expect(selectPlaybackChunkId(chunks, "doc-1")).toBe("doc-1");
   });
 
   it("filters results by modality, time, and confidence", () => {
