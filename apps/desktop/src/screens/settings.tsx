@@ -288,7 +288,7 @@ function storageUnavailableCopy(message: string, t: TFunction) {
   }
   return {
     title: t("settings.storage.unavailable.genericTitle"),
-    body: message,
+    body: t("settings.storage.unavailable.genericBody"),
   };
 }
 

@@ -11,21 +11,21 @@ rg -qF 'const settingsDefaultSection: SettingsSection = "General"' apps/desktop/
 rg -qF 'if (section === "Search" || section === "Summon search" || section === "唤起搜索")' apps/desktop/src/App.tsx
 ! rg -qF "function SearchSettings" apps/desktop/src/App.tsx
 rg -qF '"Library",' apps/desktop/src/App.tsx
-rg -qF "function LibrarySettings" apps/desktop/src/App.tsx
+rg -qF "function LibrarySettings" apps/desktop/src/screens/settings.tsx
 rg -qF "settings.section.library" apps/desktop/src/lib/i18n-catalog.ts
-rg -qF "settings-shell-brand-minimal" apps/desktop/src/App.tsx
+rg -qF "settings-shell-brand-minimal" apps/desktop/src/screens/settings.tsx
 ! rg -qF '<span>{t("settings.shell.subtitle")}</span>' apps/desktop/src/App.tsx
 rg -qF '"settings.shell.title": "Cerul"' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF 'className="settings-core-status"' apps/desktop/src/App.tsx
+rg -qF 'className="settings-core-status"' apps/desktop/src/screens/settings.tsx
 rg -qF "settings.coreStatus.ready" apps/desktop/src/lib/i18n-catalog.ts
 rg -qF ".settings-core-status" apps/desktop/src/styles/settings-redesign.css
-rg -qF "function SettingsQuietNotice" apps/desktop/src/App.tsx
+rg -qF "function SettingsQuietNotice" apps/desktop/src/components/settings-quiet-notice.tsx
 rg -qF "settings.models.providers.unavailable.title" apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "settings.storage.unavailable.desktopTitle" apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "settings.usage.unavailable.title" apps/desktop/src/lib/i18n-catalog.ts
 rg -qF ".settings-quiet-notice" apps/desktop/src/styles/settings-redesign.css
-! rg -qF 'message={loadError}' apps/desktop/src/App.tsx
-! rg -qF 'InlineNotice tone="error" message={error}' apps/desktop/src/App.tsx
+! rg -qF 'message={loadError}' apps/desktop/src
+! rg -qF 'InlineNotice tone="error" message={error}' apps/desktop/src
 rg -qF "openMainRoute(\"settings?section=General\")" apps/electron-shell/src/main.ts
 rg -qF "settings?section=General" apps/electron-shell/src/main.ts
 rg -qF "requestConfirm={requestConfirm}" apps/desktop/src/App.tsx
@@ -43,13 +43,13 @@ rg -qF "start_at_login: result.installed" apps/desktop/src
 rg -qF "Start at login is not available on this platform." apps/desktop/src
 rg -qF "Global hotkey" apps/desktop/src
 rg -qF "global_hotkey" apps/desktop/src
-rg -qF "function ShortcutsSettings" apps/desktop/src/App.tsx
+rg -qF "function ShortcutsSettings" apps/desktop/src/screens/settings.tsx
 rg -qF "settings.section.shortcuts" apps/desktop/src
 rg -qF "hotkey_new_source" apps/desktop/src apps/electron-shell/src/main.ts
 rg -qF "hotkey_open_settings" apps/desktop/src apps/electron-shell/src/main.ts
 rg -qF "hotkey_close_window" apps/desktop/src apps/electron-shell/src/main.ts
-rg -qF "async function saveShortcut" apps/desktop/src/App.tsx
-rg -qF "setGlobalHotkey(accelerator)" apps/desktop/src/App.tsx
+rg -qF "async function saveShortcut" apps/desktop/src/screens/settings.tsx
+rg -qF "setGlobalHotkey(accelerator)" apps/desktop/src/screens/settings.tsx
 rg -qF "sync_application_menu" apps/desktop/src apps/electron-shell/src/main.ts
 rg -qF "subscribeDesktopMenuCommand" apps/desktop/src
 rg -qF "onMenuCommand" apps/desktop/src apps/electron-shell/src/preload.ts
@@ -90,8 +90,8 @@ rg -qF "linuxAutostartPath()" apps/electron-shell/src/main.ts
 rg -qF "case \"storage_locations\"" apps/electron-shell/src/main.ts
 rg -qF "disabled={controlsDisabled}" apps/desktop/src
 rg -qF "disabled={disabled}" apps/desktop/src
-rg -qF "saveChipClass" apps/desktop/src/App.tsx
-rg -qF 'role="status" aria-live="polite"' apps/desktop/src/App.tsx
+rg -qF "saveChipClass" apps/desktop/src/screens/settings.tsx
+rg -qF 'role="status" aria-live="polite"' apps/desktop/src/screens/settings.tsx
 rg -qF ".chip.success" apps/desktop/src/styles/ui.css
 rg -qF ".chip.danger" apps/desktop/src/styles/ui.css
 rg -qF ".settings-inline-action" apps/desktop/src/styles/extensions.css
