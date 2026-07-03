@@ -14,6 +14,7 @@ use serde_json::json;
 use zip::ZipArchive;
 
 const DOCUMENT_CHUNK_BUDGET: usize = 3_200;
+const MAX_PLAIN_TEXT_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExtractedDocumentChunk {
@@ -54,6 +55,14 @@ fn extract_plain_text_chunks(
     path: &Path,
     extension: &str,
 ) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to read document metadata: {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.len() <= MAX_PLAIN_TEXT_DOCUMENT_BYTES,
+        "plain text document exceeds {} byte limit: {}",
+        MAX_PLAIN_TEXT_DOCUMENT_BYTES,
+        path.display()
+    );
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read document text: {}", path.display()))?;
     Ok(split_text_chunks(
@@ -457,5 +466,19 @@ mod tests {
         assert!(chunks
             .iter()
             .all(|chunk| chunk.section.as_deref() == Some("Roadmap")));
+    }
+
+    #[test]
+    fn extract_plain_text_chunks_rejects_oversized_files_before_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_PLAIN_TEXT_DOCUMENT_BYTES + 1).unwrap();
+
+        let error = extract_plain_text_chunks(&path, "txt")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("plain text document exceeds"));
     }
 }

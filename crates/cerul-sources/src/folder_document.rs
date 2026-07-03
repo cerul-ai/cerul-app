@@ -11,6 +11,22 @@ use crate::SourcePlugin;
 
 static CONTENT_TYPES: [ContentType; 1] = [ContentType::Document];
 const EXTENSIONS: &[&str] = &["pdf", "docx", "pptx", "md", "markdown", "txt"];
+const IGNORED_DIR_NAMES: &[&str] = &[
+    ".cache",
+    ".git",
+    ".hg",
+    ".next",
+    ".svn",
+    ".trash",
+    "__macosx",
+    "build",
+    "cache",
+    "caches",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+];
 
 #[derive(Debug, Clone)]
 pub struct FolderDocument {
@@ -50,7 +66,12 @@ impl SourcePlugin for FolderDocument {
     async fn discover(&self) -> anyhow::Result<Vec<DiscoveredItem>> {
         let mut items = Vec::new();
 
-        for entry in walkdir::WalkDir::new(&self.path) {
+        for entry in walkdir::WalkDir::new(&self.path)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry.depth() == 0 || should_visit_entry(entry.path(), entry.file_type().is_dir())
+            })
+        {
             let entry = entry?;
             if !entry.file_type().is_file() {
                 continue;
@@ -120,6 +141,17 @@ impl SourcePlugin for FolderDocument {
     }
 }
 
+fn should_visit_entry(path: &Path, is_dir: bool) -> bool {
+    if !is_dir {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    let lower = name.to_ascii_lowercase();
+    !IGNORED_DIR_NAMES.contains(&lower.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +179,26 @@ mod tests {
         assert!(items
             .iter()
             .all(|item| item.metadata["raw_path"].as_str().is_some()));
+    }
+
+    #[tokio::test]
+    async fn skips_common_vendor_and_cache_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let modules = temp.path().join("node_modules");
+        let keep = temp.path().join("docs");
+        for dir in [&target, &modules, &keep] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(target.join("build-log.txt"), b"ignore").unwrap();
+        std::fs::write(modules.join("readme.md"), b"ignore").unwrap();
+        std::fs::write(keep.join("brief.md"), b"keep").unwrap();
+
+        let source = FolderDocument::new(json!({ "path": temp.path() })).unwrap();
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("brief"));
     }
 
     #[tokio::test]
