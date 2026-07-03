@@ -127,14 +127,12 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
     }))
 }
 
-async fn v1_agent_tools() -> Json<V1AgentToolsResponse> {
+async fn v1_agent_tools(State(state): State<ApiState>) -> Json<V1AgentToolsResponse> {
+    let query_execution = v1_query_execution(&state.paths);
+
     Json(V1AgentToolsResponse {
         request_id: new_id("req"),
-        execution: V1Execution {
-            target: "local",
-            account_id: None,
-            privacy: "local_only",
-        },
+        execution: query_execution.execution(),
         runtime: V1AgentRuntime {
             tool_host: "cerul_core_v1",
             renderer_access: "ui_only",
@@ -229,9 +227,9 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
         },
         V1AgentToolContract {
             name: "get_segment",
-            description: "Fetch a local playable video segment for a chunk evidence id.",
+            description: "Fetch a local bounded video clip for a chunk evidence id.",
             method: "GET",
-            path: "/v1/chunks/{id}/video-segment",
+            path: "/v1/chunks/{id}/video-clip?before_sec=3&after_sec=5",
             stage: "a1",
             input_schema: json!({
                 "type": "object",

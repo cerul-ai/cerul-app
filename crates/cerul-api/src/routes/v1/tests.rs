@@ -723,6 +723,10 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
     assert_eq!(agent_tools["runtime"]["arbitrary_shell"], false);
     assert_eq!(agent_tools["runtime"]["arbitrary_file_write"], false);
     assert_eq!(
+        agent_tools["execution"]["privacy"],
+        "local_library_remote_query"
+    );
+    assert_eq!(
         agent_tools["tools"]
             .as_array()
             .unwrap()
@@ -737,6 +741,16 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             "get_segment",
             "ask"
         ]
+    );
+    let get_segment_tool = agent_tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "get_segment")
+        .unwrap();
+    assert_eq!(
+        get_segment_tool["path"],
+        "/v1/chunks/{id}/video-clip?before_sec=3&after_sec=5"
     );
     assert!(agent_tools["tools"].as_array().unwrap().iter().all(|tool| {
         tool["safety"]["read_only"] == true
