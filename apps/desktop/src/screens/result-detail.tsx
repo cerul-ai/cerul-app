@@ -51,10 +51,10 @@ import type { Item, RequestConfirm, ResultMatch, TranscriptLine } from "../lib/t
 const transcript: TranscriptLine[] = [];
 
 function hasOpenModalSurface() {
+  // Every transient surface must be reachable from this selector, otherwise
+  // page-level Escape handlers fire underneath it (e.g. detail "back").
   return Boolean(
-    document.querySelector(
-      ".dialog-backdrop, .jobs-backdrop, .add-source-backdrop, .account-dialog-backdrop",
-    ),
+    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
   );
 }
 
@@ -81,7 +81,11 @@ function syncVideoToTimestamp(
       : targetSeconds;
     video.currentTime = Math.min(targetSeconds, maxTime);
     if (options.shouldPlay) {
-      void video.play().catch(() => options.onPlayBlocked?.());
+      void video.play().catch(() => {
+        if (!cancelled) {
+          options.onPlayBlocked?.();
+        }
+      });
     }
   };
 
@@ -168,12 +172,12 @@ function usePlaybackPositionPersistence({
     video.addEventListener("ended", clearSavedPosition);
     window.addEventListener("pagehide", persistForced);
     return () => {
+      persistForced();
       disposed = true;
       video.removeEventListener("timeupdate", persistThrottled);
       video.removeEventListener("pause", persistForced);
       video.removeEventListener("ended", clearSavedPosition);
       window.removeEventListener("pagehide", persistForced);
-      persist(true);
     };
   }, [enabled, itemId, videoElement, videoRef]);
 }
