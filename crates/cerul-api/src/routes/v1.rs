@@ -316,7 +316,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1StoryboardResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
         V1AgentToolContract {
             name: "search_broll",
@@ -336,7 +336,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1BrollSearchResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
         V1AgentToolContract {
             name: "export_edl",
@@ -358,7 +358,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1TimelineExportResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
     ]
 }
