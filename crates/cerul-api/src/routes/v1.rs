@@ -958,17 +958,32 @@ fn v1_extractive_answer(
     } else {
         let mut sentences = Vec::new();
         for citation in citations.iter().take(3) {
-            let timestamp = citation.time.timestamp.as_deref().unwrap_or("0:00");
             if answer_in_english {
-                sentences.push(format!(
-                    "Around {} in \"{}\", the index says: {}",
-                    timestamp, citation.item.title, citation.text.snippet
-                ));
+                if let Some(location) = v1_document_answer_location(citation, true) {
+                    sentences.push(format!(
+                        "{} in \"{}\", the document says: {}",
+                        location, citation.item.title, citation.text.snippet
+                    ));
+                } else {
+                    let timestamp = citation.time.timestamp.as_deref().unwrap_or("0:00");
+                    sentences.push(format!(
+                        "Around {} in \"{}\", the index says: {}",
+                        timestamp, citation.item.title, citation.text.snippet
+                    ));
+                }
             } else {
-                sentences.push(format!(
-                    "在《{}》{} 附近，索引里提到：{}",
-                    citation.item.title, timestamp, citation.text.snippet
-                ));
+                if let Some(location) = v1_document_answer_location(citation, false) {
+                    sentences.push(format!(
+                        "在《{}》{}，文档里提到：{}",
+                        citation.item.title, location, citation.text.snippet
+                    ));
+                } else {
+                    let timestamp = citation.time.timestamp.as_deref().unwrap_or("0:00");
+                    sentences.push(format!(
+                        "在《{}》{} 附近，索引里提到：{}",
+                        citation.item.title, timestamp, citation.text.snippet
+                    ));
+                }
             }
         }
         if answer_in_english {
@@ -982,6 +997,33 @@ fn v1_extractive_answer(
                 sentences.join(" ")
             )
         }
+    }
+}
+
+fn v1_document_answer_location(citation: &V1SearchResult, english: bool) -> Option<String> {
+    let is_document = citation.item.content_type == "document"
+        || citation.result_type == "document"
+        || citation.evidence.kind == "document"
+        || citation.evidence.page.is_some()
+        || citation.evidence.section.is_some();
+    if !is_document {
+        return None;
+    }
+    let section = citation
+        .evidence
+        .section
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (citation.evidence.page, section, english) {
+        (Some(page), Some(section), true) => Some(format!("On page {page}, section \"{section}\"")),
+        (Some(page), None, true) => Some(format!("On page {page}")),
+        (None, Some(section), true) => Some(format!("In section \"{section}\"")),
+        (None, None, true) => Some("In the indexed document".to_string()),
+        (Some(page), Some(section), false) => Some(format!("第 {page} 页「{section}」部分")),
+        (Some(page), None, false) => Some(format!("第 {page} 页")),
+        (None, Some(section), false) => Some(format!("「{section}」部分")),
+        (None, None, false) => Some("文档索引中".to_string()),
     }
 }
 

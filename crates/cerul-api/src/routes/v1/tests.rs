@@ -1605,6 +1605,43 @@ async fn v1_ask_returns_extractive_answer_with_evidence_citations() {
 }
 
 #[tokio::test]
+async fn v1_ask_uses_document_page_and_section_in_answer() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    let raw_path = temp.path().join("brief.md");
+    seed_v1_document_search_fixture(&paths, &raw_path);
+    let app = router_with_paths(paths);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/ask")
+                .header(header::HOST, "127.0.0.1:25002")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "question": "budget section alpha launch",
+                        "max_results": 1,
+                        "locale": "en-US"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let answer = body["answer"].as_str().unwrap();
+    assert!(answer.contains("On page 2, section \"Budget\""));
+    assert!(answer.contains("the document says"));
+    assert!(!answer.contains("Around 0:00"));
+    assert_eq!(body["citations"][0]["evidence"]["kind"], "document");
+}
+
+#[tokio::test]
 async fn v1_ask_defaults_to_english_without_locale() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::from_data_dir(temp.path()).unwrap();

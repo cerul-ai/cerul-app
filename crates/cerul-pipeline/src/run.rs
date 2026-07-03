@@ -1251,6 +1251,15 @@ impl VideoPipeline {
                     item_id,
                     "document unified retrieval index write failed; keeping document chunks searchable by FTS if units exist"
                 );
+                if let Err(delete_error) =
+                    cerul_storage::vectors::delete_item_embeddings(&self.paths, item_id).await
+                {
+                    tracing::warn!(
+                        error = %delete_error,
+                        item_id,
+                        "failed to delete stale document vectors after retrieval index write failure"
+                    );
+                }
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
                 let searchable_units =
                     cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
@@ -2903,6 +2912,76 @@ mod tests {
         .unwrap();
         assert_eq!(results[0].chunk_type, "document");
         assert_eq!(results[0].playback_chunk_id, "document-1:document:000000");
+    }
+
+    #[tokio::test]
+    async fn process_document_item_deletes_stale_vectors_when_vector_write_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let documents = temp.path().join("documents");
+        std::fs::create_dir(&documents).unwrap();
+        let document = documents.join("brief.md");
+        std::fs::write(
+            &document,
+            "# Roadmap\nDocument search should preserve FTS fallback.",
+        )
+        .unwrap();
+        insert_source(&paths, "document-source", "folder_document", &documents);
+        insert_item(
+            &paths,
+            "document-1",
+            "document-source",
+            "document",
+            "brief",
+            &document,
+        );
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        pipeline.process_document_item("document-1").await.unwrap();
+        assert_eq!(unified_point_count(&paths).await, 1);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FailingTextEmbedder),
+        );
+        let summary = pipeline.process_document_item("document-1").await.unwrap();
+
+        assert_eq!(summary.document_chunks, 1);
+        assert_eq!(summary.text_vectors, 0);
+        assert_eq!(unified_point_count(&paths).await, 0);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (status, metadata, search_index_status, search_index_vector_count): (
+            String,
+            String,
+            String,
+            i64,
+        ) = conn
+            .query_row(
+                r#"
+                SELECT status, metadata, search_index_status, search_index_vector_count
+                FROM items
+                WHERE id = 'document-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+
+        assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert_eq!(search_index_vector_count, 0);
+        assert_eq!(metadata["embedding_index_status"], "failed");
+        assert!(metadata["embedding_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("quota exceeded"));
     }
 
     #[tokio::test]

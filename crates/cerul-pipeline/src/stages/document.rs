@@ -140,7 +140,7 @@ fn read_zip_text(archive: &mut ZipArchive<File>, name: &str) -> anyhow::Result<S
 
 fn extract_xml_text(xml: &str) -> anyhow::Result<String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut text = String::new();
 
@@ -177,14 +177,19 @@ fn decode_xml_reference(reference: &BytesRef<'_>) -> anyhow::Result<String> {
 }
 
 fn append_inline_text(output: &mut String, text: &str) {
+    let has_leading_space = text.chars().next().is_some_and(char::is_whitespace);
+    let has_trailing_space = text.chars().last().is_some_and(char::is_whitespace);
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return;
     }
-    if !output.is_empty() && !output.ends_with(char::is_whitespace) {
+    if has_leading_space && !output.is_empty() && !output.ends_with(char::is_whitespace) {
         output.push(' ');
     }
     output.push_str(&text);
+    if has_trailing_space {
+        output.push(' ');
+    }
 }
 
 fn ensure_paragraph_break(output: &mut String) {
@@ -228,25 +233,33 @@ fn split_text_chunks(
         .filter(|line| !line.is_empty())
     {
         let paragraph_section = heading_title(paragraph);
-        let next_len = char_count(&current) + char_count(paragraph) + 2;
-        if !current.is_empty() && next_len > DOCUMENT_CHUNK_BUDGET {
-            chunks.push(document_chunk(
-                std::mem::take(&mut current),
-                page,
-                current_section.clone(),
-                metadata.clone(),
-            ));
-            current_section = paragraph_section
-                .clone()
-                .or_else(|| first_section_title(paragraph));
+        let paragraph_segments = split_paragraph_segments(paragraph, DOCUMENT_CHUNK_BUDGET);
+        for (segment_index, segment) in paragraph_segments.into_iter().enumerate() {
+            let next_len = char_count(&current) + char_count(&segment) + 2;
+            if !current.is_empty() && next_len > DOCUMENT_CHUNK_BUDGET {
+                chunks.push(document_chunk(
+                    std::mem::take(&mut current),
+                    page,
+                    current_section.clone(),
+                    metadata.clone(),
+                ));
+                if let Some(section) = paragraph_section
+                    .clone()
+                    .or_else(|| first_section_title(&segment))
+                {
+                    current_section = Some(section);
+                }
+            }
+            if segment_index == 0 {
+                if let Some(section) = paragraph_section.clone() {
+                    current_section = Some(section);
+                }
+            }
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(&segment);
         }
-        if let Some(section) = paragraph_section {
-            current_section = Some(section);
-        }
-        if !current.is_empty() {
-            current.push('\n');
-        }
-        current.push_str(paragraph);
     }
 
     if !current.trim().is_empty() {
@@ -258,6 +271,53 @@ fn split_text_chunks(
         ));
     }
     chunks
+}
+
+fn split_paragraph_segments(paragraph: &str, budget: usize) -> Vec<String> {
+    if char_count(paragraph) <= budget {
+        return vec![paragraph.to_string()];
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for word in paragraph.split_whitespace() {
+        let word_len = char_count(word);
+        if word_len > budget {
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+            segments.extend(split_long_word(word, budget));
+            continue;
+        }
+
+        let separator = usize::from(!current.is_empty());
+        if !current.is_empty() && char_count(&current) + separator + word_len > budget {
+            segments.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+fn split_long_word(word: &str, budget: usize) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for ch in word.chars() {
+        if char_count(&current) >= budget {
+            segments.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
 }
 
 fn document_chunk(
@@ -344,6 +404,26 @@ mod tests {
     }
 
     #[test]
+    fn extracts_office_xml_text_without_synthetic_run_spaces() {
+        let xml = r#"
+            <w:document xmlns:w="w">
+              <w:body>
+                <w:p>
+                  <w:r><w:t>Pro</w:t></w:r>
+                  <w:r><w:t>duct</w:t></w:r>
+                  <w:r><w:t xml:space="preserve"> launch</w:t></w:r>
+                </w:p>
+              </w:body>
+            </w:document>
+        "#;
+
+        let text = extract_xml_text(xml).unwrap();
+
+        assert!(text.contains("Product launch"));
+        assert!(!text.contains("Pro duct"));
+    }
+
+    #[test]
     fn split_text_chunks_keeps_page_and_section() {
         let chunks = split_text_chunks(
             "# Roadmap\nShip document search",
@@ -356,5 +436,26 @@ mod tests {
         assert_eq!(chunks[0].page, Some(3));
         assert_eq!(chunks[0].section.as_deref(), Some("Roadmap"));
         assert_eq!(chunks[0].metadata["format"], "md");
+    }
+
+    #[test]
+    fn split_text_chunks_splits_overlong_paragraphs() {
+        let paragraph = std::iter::repeat_n("launchword", 500)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let chunks = split_text_chunks(
+            &format!("# Roadmap\n{paragraph}"),
+            Some(1),
+            None,
+            json!({ "format": "md" }),
+        );
+
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| char_count(&chunk.text) <= DOCUMENT_CHUNK_BUDGET));
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.section.as_deref() == Some("Roadmap")));
     }
 }
