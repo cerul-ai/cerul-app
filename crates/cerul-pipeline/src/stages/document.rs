@@ -244,6 +244,19 @@ fn split_text_chunks(
         let paragraph_section = heading_title(paragraph);
         let paragraph_segments = split_paragraph_segments(paragraph, DOCUMENT_CHUNK_BUDGET);
         for (segment_index, segment) in paragraph_segments.into_iter().enumerate() {
+            if segment_index == 0 {
+                if let Some(section) = paragraph_section.clone() {
+                    if !current.is_empty() {
+                        chunks.push(document_chunk(
+                            std::mem::take(&mut current),
+                            page,
+                            current_section.clone(),
+                            metadata.clone(),
+                        ));
+                    }
+                    current_section = Some(section);
+                }
+            }
             let next_len = char_count(&current) + char_count(&segment) + 2;
             if !current.is_empty() && next_len > DOCUMENT_CHUNK_BUDGET {
                 chunks.push(document_chunk(
@@ -256,11 +269,6 @@ fn split_text_chunks(
                     .clone()
                     .or_else(|| first_section_title(&segment))
                 {
-                    current_section = Some(section);
-                }
-            }
-            if segment_index == 0 {
-                if let Some(section) = paragraph_section.clone() {
                     current_section = Some(section);
                 }
             }
@@ -445,6 +453,23 @@ mod tests {
         assert_eq!(chunks[0].page, Some(3));
         assert_eq!(chunks[0].section.as_deref(), Some("Roadmap"));
         assert_eq!(chunks[0].metadata["format"], "md");
+    }
+
+    #[test]
+    fn split_text_chunks_flushes_before_new_heading() {
+        let chunks = split_text_chunks(
+            "# Section A\nalpha evidence\n# Section B\nbeta evidence",
+            Some(1),
+            None,
+            json!({ "format": "md" }),
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].section.as_deref(), Some("Section A"));
+        assert!(chunks[0].text.contains("alpha evidence"));
+        assert!(!chunks[0].text.contains("Section B"));
+        assert_eq!(chunks[1].section.as_deref(), Some("Section B"));
+        assert!(chunks[1].text.contains("beta evidence"));
     }
 
     #[test]

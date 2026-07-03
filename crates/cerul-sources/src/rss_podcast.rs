@@ -295,8 +295,10 @@ fn parse_feed(body: &[u8]) -> anyhow::Result<ParsedFeed> {
                     collect_feed_attributes(&mut feed, &tag, &event)?;
                 }
                 path.push(tag);
-                current_text = text_target_for_path(current_entry.is_some(), &path)
-                    .map(|(target, element)| TextAccumulator::new(target, element));
+                if current_text.is_none() {
+                    current_text = text_target_for_path(current_entry.is_some(), &path)
+                        .map(|(target, element)| TextAccumulator::new(target, element));
+                }
             }
             Event::Empty(event) => {
                 let tag = local_name(event.name().as_ref());
@@ -754,6 +756,38 @@ mod tests {
             items[0].metadata["entry"]["updated"],
             "2026-07-03T00:00:00Z"
         );
+    }
+
+    #[tokio::test]
+    async fn preserves_nested_atom_text_markup() {
+        let temp = tempfile::tempdir().unwrap();
+        let audio = temp.path().join("episode.mp3");
+        std::fs::write(&audio, b"audio").unwrap();
+        let feed = temp.path().join("atom.xml");
+        std::fs::write(
+            &feed,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title type="xhtml"><div>Cerul <span>Nested</span></div></title>
+  <entry>
+    <id>episode-nested</id>
+    <title type="xhtml"><div>R&amp;D <span>Nested</span></div></title>
+    <updated>2026-07-03T00:00:00Z</updated>
+    <content type="audio/mpeg" src="file://{}" />
+  </entry>
+</feed>"#,
+                audio.display()
+            ),
+        )
+        .unwrap();
+
+        let preview = preview_feed(&feed.to_string_lossy()).await.unwrap();
+        let source = RssPodcast::new(json!({ "url": feed })).unwrap();
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(preview.title, "Cerul Nested");
+        assert_eq!(items[0].title.as_deref(), Some("R&D Nested"));
     }
 
     #[tokio::test]

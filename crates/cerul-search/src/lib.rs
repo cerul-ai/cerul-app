@@ -182,8 +182,11 @@ pub async fn search_fts_only_with_diagnostics(
 ) -> anyhow::Result<SearchResponse> {
     let limit = req.limit.clamp(1, 50);
     let hits = sqlite_text_search(paths, &req.q, retrieval_limit(limit)).await?;
-    let fts_hits_count = hits.len();
-    let results = hydrate(paths, &hits, &req.q)?;
+    let mut fts_hits_count = hits.len();
+    let mut results = hydrate(paths, &hits, &req.q)?;
+    let legacy_results = legacy_rebuild_chunk_search(paths, &req.q, retrieval_limit(limit))?;
+    fts_hits_count += legacy_results.len();
+    results.extend(legacy_results);
     let results = finalize_results(results, limit);
     Ok(SearchResponse {
         results,
@@ -264,7 +267,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
             profile,
         ),
     )?;
-    let fts_hits_count = lexical_hits.len();
+    let mut fts_hits_count = lexical_hits.len();
     let vector_hits_count = vector_hits.len();
     let vector_index_point_count =
         cerul_storage::vectors::collection_point_count_for_profile(paths, &collection, profile)
@@ -290,7 +293,10 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     )
     .await?;
 
-    let results = hydrate(paths, &top_hits, &req.q)?;
+    let mut results = hydrate(paths, &top_hits, &req.q)?;
+    let legacy_results = legacy_rebuild_chunk_search(paths, &req.q, retrieval_limit)?;
+    fts_hits_count += legacy_results.len();
+    results.extend(legacy_results);
     let results = finalize_results(results, limit);
     let retrieval_mode =
         retrieval_mode(vector_hits_count, fts_hits_count, vector_index_point_count);
@@ -490,6 +496,89 @@ async fn sqlite_literal_search(
     )?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn legacy_rebuild_chunk_search(
+    paths: &AppPaths,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let Some(match_query) = fts_match_query(query) else {
+        return Ok(Vec::new());
+    };
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let sql = r#"
+        SELECT
+            c.id,
+            c.item_id,
+            c.chunk_type,
+            c.start_sec,
+            c.end_sec,
+            c.text,
+            c.frame_path,
+            i.title,
+            bm25(chunks_fts) AS rank_score
+        FROM chunks_fts
+        JOIN chunks c ON c.rowid = chunks_fts.rowid
+        JOIN items i ON i.id = c.item_id
+        WHERE chunks_fts MATCH ?1
+          AND i.status = 'indexed'
+          AND (
+            i.search_index_version IS NULL
+            OR i.search_index_version != ?2
+            OR i.search_index_status IS NULL
+            OR i.search_index_status != 'indexed'
+          )
+        ORDER BY rank_score
+        LIMIT ?3
+        "#;
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(
+        (
+            &match_query,
+            cerul_storage::SEARCH_INDEX_VERSION,
+            limit as i64,
+        ),
+        |row| {
+            let playback_chunk_id: String = row.get(0)?;
+            let item_id: String = row.get(1)?;
+            let chunk_type: String = row.get(2)?;
+            let start_sec: Option<f64> = row.get(3)?;
+            let end_sec: Option<f64> = row.get(4)?;
+            let text: Option<String> = row.get(5)?;
+            let frame_path: Option<String> = row.get(6)?;
+            let item_title: Option<String> = row.get(7)?;
+            let rank_score: f64 = row.get(8)?;
+            let snippet = text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(320).collect())
+                .unwrap_or_else(|| fallback_snippet(&chunk_type, start_sec));
+            let nearest_frame_chunk_id = frame_path.as_ref().map(|_| playback_chunk_id.clone());
+
+            Ok(SearchResult {
+                playback_chunk_id,
+                item_id,
+                chunk_type,
+                start_sec,
+                end_sec,
+                snippet,
+                frame_path,
+                match_score: 0.0,
+                score: (-rank_score) as f32,
+                similarity_score: None,
+                exact_match: false,
+                source_mask: SOURCE_TEXT,
+                item_title,
+                nearest_frame_chunk_id,
+            })
+        },
+    )?;
+
+    let mut results = rows.collect::<Result<Vec<_>, _>>()?;
+    attach_nearest_frame_chunk_ids(&conn, &mut results)?;
+    Ok(results)
 }
 
 async fn vector_index_search(
@@ -1260,6 +1349,9 @@ fn is_near_duplicate(left: &SearchResult, right: &SearchResult) -> bool {
     if left.playback_chunk_id == right.playback_chunk_id {
         return true;
     }
+    if left.chunk_type == "document" && right.chunk_type == "document" {
+        return false;
+    }
     match (left.start_sec, right.start_sec) {
         (Some(left_start), Some(right_start)) => (left_start - right_start).abs() < 30.0,
         _ => left.chunk_type == right.chunk_type,
@@ -1373,6 +1465,24 @@ mod tests {
         assert_eq!(deduped.len(), 3);
         assert_ne!(deduped[0].source_mask & SOURCE_TEXT_VECTOR, 0);
         assert_eq!(deduped[0].similarity_score, Some(0.72));
+    }
+
+    #[test]
+    fn dedupe_results_keeps_distinct_document_passages() {
+        let results = vec![
+            result("doc-page-1", "item-1", "document", None, 0.04),
+            result("doc-page-2", "item-1", "document", None, 0.03),
+        ];
+
+        let deduped = dedupe_results(results, 10);
+
+        assert_eq!(
+            deduped
+                .iter()
+                .map(|hit| hit.playback_chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["doc-page-1", "doc-page-2"]
+        );
     }
 
     #[test]
@@ -1999,7 +2109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fts_search_ignores_legacy_chunks_without_retrieval_units() {
+    async fn fts_search_ignores_legacy_chunks_for_current_items_without_retrieval_units() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
@@ -2016,6 +2126,8 @@ mod tests {
             &[],
         )
         .unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 0, 0)
+            .unwrap();
 
         let response = search_fts_only_with_diagnostics(
             &paths,
@@ -2035,7 +2147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fts_search_uses_only_rebuilt_retrieval_units_during_partial_rebuild() {
+    async fn fts_search_keeps_legacy_chunks_during_partial_rebuild() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
@@ -2084,7 +2196,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(item_ids.contains(&"item-1"));
-        assert!(!item_ids.contains(&"item-2"));
+        assert!(item_ids.contains(&"item-2"));
         assert_eq!(response.diagnostics.fallback_reason, None);
     }
 
