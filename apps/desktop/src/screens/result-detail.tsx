@@ -1321,7 +1321,8 @@ export function ResultDetail({
               <TranscriptList
                 lines={transcriptLines}
                 videoRef={videoRef}
-                videoReady={Boolean(playbackUrl)}
+                audioRef={audioPlaybackUrl ? audioRef : undefined}
+                videoReady={Boolean(playbackUrl || audioPlaybackUrl)}
                 activeTime={currentTimestamp}
                 matchTime={startTimestamp}
                 onSeek={seekTo}

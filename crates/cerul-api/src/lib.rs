@@ -4316,6 +4316,7 @@ fn video_content_type(path: &str) -> &'static str {
         Some("m4a") => "audio/mp4",
         Some("wav") => "audio/wav",
         Some("flac") => "audio/flac",
+        Some("ogg") => "audio/ogg",
         Some("aac") => "audio/aac",
         _ => "application/octet-stream",
     }
@@ -7966,6 +7967,7 @@ mod tests {
         assert_eq!(video_content_type("episode.m4a"), "audio/mp4");
         assert_eq!(video_content_type("recording.wav"), "audio/wav");
         assert_eq!(video_content_type("archive.flac"), "audio/flac");
+        assert_eq!(video_content_type("sample.ogg"), "audio/ogg");
         assert_eq!(video_content_type("clip.aac"), "audio/aac");
     }
 

@@ -10,6 +10,7 @@ import type { TranscriptLine } from "../lib/types";
 export function TranscriptList({
   lines,
   videoRef,
+  audioRef,
   videoReady = false,
   activeTime,
   matchTime,
@@ -18,6 +19,7 @@ export function TranscriptList({
 }: {
   lines: TranscriptLine[];
   videoRef?: RefObject<HTMLVideoElement | null>;
+  audioRef?: RefObject<HTMLAudioElement | null>;
   videoReady?: boolean;
   activeTime?: string;
   matchTime?: string;
@@ -35,13 +37,13 @@ export function TranscriptList({
     [lines],
   );
   useEffect(() => {
-    const video = videoRef?.current;
-    if (!video) {
+    const media = audioRef?.current ?? videoRef?.current;
+    if (!media) {
       setActiveId(null);
       return;
     }
     const recompute = () => {
-      const seconds = video.currentTime;
+      const seconds = media.currentTime;
       let id: string | null = null;
       let best = -1;
       for (const entry of lineStarts) {
@@ -53,13 +55,13 @@ export function TranscriptList({
       setActiveId((prev) => (prev === id ? prev : id));
     };
     recompute();
-    video.addEventListener("timeupdate", recompute);
-    video.addEventListener("seeking", recompute);
+    media.addEventListener("timeupdate", recompute);
+    media.addEventListener("seeking", recompute);
     return () => {
-      video.removeEventListener("timeupdate", recompute);
-      video.removeEventListener("seeking", recompute);
+      media.removeEventListener("timeupdate", recompute);
+      media.removeEventListener("seeking", recompute);
     };
-  }, [videoRef, videoReady, lineStarts]);
+  }, [audioRef, videoRef, videoReady, lineStarts]);
 
   return (
     <div className="seg-line transcript">
