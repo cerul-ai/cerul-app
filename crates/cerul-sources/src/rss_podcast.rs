@@ -269,52 +269,71 @@ fn file_url_path(location: &str) -> Option<&str> {
 }
 
 fn parse_feed(body: &[u8]) -> anyhow::Result<ParsedFeed> {
-    let xml = String::from_utf8_lossy(body);
-    let mut reader = Reader::from_str(&xml);
-    reader.config_mut().trim_text(true);
+    let xml = decode_supported_xml(body)?;
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut path = Vec::<String>::new();
     let mut feed = ParsedFeed::default();
     let mut current_entry: Option<ParsedEntry> = None;
+    let mut current_text: Option<TextAccumulator> = None;
+    let mut saw_feed_root = false;
 
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(event) => {
                 let tag = local_name(event.name().as_ref());
+                if path.is_empty() && is_feed_root(&tag) {
+                    saw_feed_root = true;
+                }
                 if is_entry_element(&tag) {
                     current_entry = Some(ParsedEntry::default());
                 }
                 if let Some(entry) = current_entry.as_mut() {
                     collect_entry_attributes(entry, &tag, &event)?;
+                } else {
+                    collect_feed_attributes(&mut feed, &tag, &event)?;
                 }
                 path.push(tag);
+                current_text = text_target_for_path(current_entry.is_some(), &path)
+                    .map(|(target, element)| TextAccumulator::new(target, element));
             }
             Event::Empty(event) => {
                 let tag = local_name(event.name().as_ref());
+                if path.is_empty() && is_feed_root(&tag) {
+                    saw_feed_root = true;
+                }
                 if let Some(entry) = current_entry.as_mut() {
                     collect_entry_attributes(entry, &tag, &event)?;
+                } else {
+                    collect_feed_attributes(&mut feed, &tag, &event)?;
                 }
             }
             Event::Text(event) => {
-                let text = normalize_text(&event.decode()?);
-                if !text.is_empty() {
-                    collect_text(&mut feed, current_entry.as_mut(), &path, &text);
+                if let Some(accumulator) = current_text.as_mut() {
+                    accumulator.push(&event.decode()?);
                 }
             }
             Event::GeneralRef(event) => {
-                let text = normalize_text(&decode_xml_reference(&event)?);
-                if !text.is_empty() {
-                    collect_text(&mut feed, current_entry.as_mut(), &path, &text);
+                if let Some(accumulator) = current_text.as_mut() {
+                    accumulator.push(&decode_xml_reference(&event)?);
                 }
             }
             Event::CData(event) => {
-                let text = normalize_text(&String::from_utf8_lossy(&event));
-                if !text.is_empty() {
-                    collect_text(&mut feed, current_entry.as_mut(), &path, &text);
+                if let Some(accumulator) = current_text.as_mut() {
+                    accumulator.push(&String::from_utf8_lossy(&event));
                 }
             }
             Event::End(event) => {
                 let tag = local_name(event.name().as_ref());
+                if current_text
+                    .as_ref()
+                    .is_some_and(|accumulator| accumulator.ends_at(&tag, &path))
+                {
+                    if let Some(accumulator) = current_text.take() {
+                        accumulator.apply(&mut feed, current_entry.as_mut());
+                    }
+                }
                 if is_entry_element(&tag) {
                     if let Some(entry) = current_entry.take() {
                         feed.entries.push(entry);
@@ -328,7 +347,39 @@ fn parse_feed(body: &[u8]) -> anyhow::Result<ParsedFeed> {
         buf.clear();
     }
 
+    anyhow::ensure!(saw_feed_root, "XML document is not an RSS or Atom feed");
     Ok(feed)
+}
+
+fn decode_supported_xml(body: &[u8]) -> anyhow::Result<&str> {
+    if let Some(encoding) = declared_xml_encoding(body) {
+        let normalized = encoding.to_ascii_lowercase().replace('_', "-");
+        anyhow::ensure!(
+            matches!(normalized.as_str(), "utf-8" | "utf8" | "us-ascii" | "ascii"),
+            "unsupported XML encoding: {encoding}"
+        );
+    }
+    std::str::from_utf8(body).context("feed XML is not valid UTF-8")
+}
+
+fn declared_xml_encoding(body: &[u8]) -> Option<String> {
+    let prefix = String::from_utf8_lossy(body.get(..body.len().min(512))?);
+    let declaration_end = prefix.find("?>")?;
+    let declaration = prefix[..declaration_end].trim_start();
+    if !declaration.starts_with("<?xml") {
+        return None;
+    }
+    let encoding_index = declaration.to_ascii_lowercase().find("encoding")?;
+    let after_encoding = &declaration[encoding_index + "encoding".len()..];
+    let (_, value) = after_encoding.split_once('=')?;
+    let value = value.trim_start();
+    let quote = value.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let value = &value[quote.len_utf8()..];
+    let end = value.find(quote)?;
+    Some(value[..end].to_string())
 }
 
 fn decode_xml_reference(reference: &BytesRef<'_>) -> anyhow::Result<String> {
@@ -364,7 +415,7 @@ fn collect_entry_attributes(
         }
         "content" => {
             if entry.enclosure_url.is_none() {
-                entry.enclosure_url = attr_value(event, "url")?;
+                entry.enclosure_url = attr_value(event, "url")?.or(attr_value(event, "src")?);
             }
         }
         _ => {}
@@ -372,33 +423,90 @@ fn collect_entry_attributes(
     Ok(())
 }
 
-fn collect_text(
+fn collect_feed_attributes(
     feed: &mut ParsedFeed,
-    current_entry: Option<&mut ParsedEntry>,
-    path: &[String],
-    text: &str,
-) {
-    let Some(tag) = path.last().map(String::as_str) else {
-        return;
-    };
-    if let Some(entry) = current_entry {
-        match tag {
-            "guid" | "id" => set_if_empty(&mut entry.id, text),
-            "title" => set_if_empty(&mut entry.title, text),
-            "pubdate" | "published" => set_if_empty(&mut entry.published, text),
-            "updated" => set_if_empty(&mut entry.updated, text),
-            "link" => set_if_empty(&mut entry.first_link, text),
-            _ => {}
+    tag: &str,
+    event: &BytesStart<'_>,
+) -> anyhow::Result<()> {
+    if tag == "image" && feed.image_url.is_none() {
+        feed.image_url = attr_value(event, "href")?.or(attr_value(event, "url")?);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TextAccumulator {
+    target: TextTarget,
+    element: String,
+    value: String,
+}
+
+impl TextAccumulator {
+    fn new(target: TextTarget, element: String) -> Self {
+        Self {
+            target,
+            element,
+            value: String::new(),
         }
-        return;
     }
 
-    match tag {
-        "title" => set_if_empty(&mut feed.title, text),
-        "logo" | "icon" => set_if_empty(&mut feed.image_url, text),
-        "url" if path.iter().any(|part| part == "image") => set_if_empty(&mut feed.image_url, text),
-        _ => {}
+    fn push(&mut self, text: &str) {
+        self.value.push_str(text);
     }
+
+    fn ends_at(&self, tag: &str, path: &[String]) -> bool {
+        path.last().is_some_and(|current| current == tag) && self.element == tag
+    }
+
+    fn apply(self, feed: &mut ParsedFeed, current_entry: Option<&mut ParsedEntry>) {
+        let text = normalize_text(&self.value);
+        if text.is_empty() {
+            return;
+        }
+        match (self.target, current_entry) {
+            (TextTarget::EntryId, Some(entry)) => set_if_empty(&mut entry.id, &text),
+            (TextTarget::EntryTitle, Some(entry)) => set_if_empty(&mut entry.title, &text),
+            (TextTarget::EntryPublished, Some(entry)) => set_if_empty(&mut entry.published, &text),
+            (TextTarget::EntryUpdated, Some(entry)) => set_if_empty(&mut entry.updated, &text),
+            (TextTarget::EntryLink, Some(entry)) => set_if_empty(&mut entry.first_link, &text),
+            (TextTarget::FeedTitle, _) => set_if_empty(&mut feed.title, &text),
+            (TextTarget::FeedImageUrl, _) => set_if_empty(&mut feed.image_url, &text),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TextTarget {
+    EntryId,
+    EntryTitle,
+    EntryPublished,
+    EntryUpdated,
+    EntryLink,
+    FeedTitle,
+    FeedImageUrl,
+}
+
+fn text_target_for_path(in_entry: bool, path: &[String]) -> Option<(TextTarget, String)> {
+    let tag = path.last()?.as_str();
+    let target = if in_entry {
+        match tag {
+            "guid" | "id" => TextTarget::EntryId,
+            "title" => TextTarget::EntryTitle,
+            "pubdate" | "published" => TextTarget::EntryPublished,
+            "updated" => TextTarget::EntryUpdated,
+            "link" => TextTarget::EntryLink,
+            _ => return None,
+        }
+    } else {
+        match tag {
+            "title" => TextTarget::FeedTitle,
+            "logo" | "icon" => TextTarget::FeedImageUrl,
+            "url" if path.iter().any(|part| part == "image") => TextTarget::FeedImageUrl,
+            _ => return None,
+        }
+    };
+    Some((target, tag.to_string()))
 }
 
 fn attr_value(event: &BytesStart<'_>, key: &str) -> anyhow::Result<Option<String>> {
@@ -432,6 +540,10 @@ fn normalize_text(value: &str) -> String {
 
 fn is_entry_element(tag: &str) -> bool {
     matches!(tag, "item" | "entry")
+}
+
+fn is_feed_root(tag: &str) -> bool {
+    matches!(tag, "rss" | "feed")
 }
 
 fn local_name(name: &[u8]) -> String {
@@ -602,6 +714,90 @@ mod tests {
             Some("https://example.com/art.jpg")
         );
         assert_eq!(preview.episode_count, 2);
+    }
+
+    #[tokio::test]
+    async fn discovers_atom_content_src_and_accumulates_split_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let audio = temp.path().join("episode.mp3");
+        std::fs::write(&audio, b"audio").unwrap();
+        let feed = temp.path().join("atom.xml");
+        std::fs::write(
+            &feed,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Cerul &amp; Friends</title>
+  <entry>
+    <id>episode-&amp;42</id>
+    <title>R&amp;D &amp; AI</title>
+    <updated>2026-07-03T00:00:00Z</updated>
+    <content type="audio/mpeg" src="file://{}" />
+  </entry>
+</feed>"#,
+                audio.display()
+            ),
+        )
+        .unwrap();
+
+        let source = RssPodcast::new(json!({ "url": feed })).unwrap();
+        let items = source.discover().await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "episode-&42");
+        assert_eq!(items[0].title.as_deref(), Some("R&D & AI"));
+        assert!(items[0].metadata["enclosure_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("file://"));
+        assert_eq!(
+            items[0].metadata["entry"]["updated"],
+            "2026-07-03T00:00:00Z"
+        );
+    }
+
+    #[tokio::test]
+    async fn previews_itunes_image_href() {
+        let temp = tempfile::tempdir().unwrap();
+        let feed = temp.path().join("feed.xml");
+        std::fs::write(
+            &feed,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Cerul Podcast</title>
+    <itunes:image href="https://example.com/itunes.jpg" />
+  </channel>
+</rss>"#,
+        )
+        .unwrap();
+
+        let preview = preview_feed(&feed.to_string_lossy()).await.unwrap();
+
+        assert_eq!(
+            preview.image_url.as_deref(),
+            Some("https://example.com/itunes.jpg")
+        );
+    }
+
+    #[test]
+    fn parse_feed_rejects_non_feed_xml() {
+        let error = parse_feed(br#"<?xml version="1.0"?><html><title>Nope</title></html>"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not an RSS or Atom feed"));
+    }
+
+    #[test]
+    fn parse_feed_rejects_unsupported_declared_encoding() {
+        let error = parse_feed(
+            br#"<?xml version="1.0" encoding="ISO-8859-1"?><rss version="2.0"><channel /></rss>"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unsupported XML encoding"));
     }
 
     #[tokio::test]
