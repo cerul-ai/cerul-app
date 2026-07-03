@@ -926,6 +926,24 @@ pub fn retrieval_unit_count(paths: &AppPaths) -> anyhow::Result<usize> {
     )
 }
 
+pub fn searchable_retrieval_unit_fts_row_count(paths: &AppPaths) -> anyhow::Result<usize> {
+    let conn = sqlite::open(paths)?;
+    count_query(
+        &conn,
+        r#"
+        SELECT COUNT(*)
+        FROM retrieval_units_fts
+        JOIN retrieval_units u ON u.rowid = retrieval_units_fts.rowid
+        JOIN items i ON i.id = u.item_id
+        WHERE i.status IN ('indexed', 'processing')
+          AND i.search_index_status IN ('indexed', 'pending')
+          AND i.search_index_version = u.index_version
+          AND u.index_version = ?1
+        "#,
+        SEARCH_INDEX_VERSION,
+    )
+}
+
 pub fn item_retrieval_unit_count(paths: &AppPaths, item_id: &str) -> anyhow::Result<usize> {
     let conn = sqlite::open(paths)?;
     conn.query_row(

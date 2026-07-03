@@ -195,6 +195,124 @@ async fn v1_status_ignores_legacy_chunks_fts_readiness() {
     assert_eq!(status_json["library"]["chunk_count"], 1);
 }
 
+#[tokio::test]
+async fn v1_status_counts_pending_rebuilt_retrieval_units_as_text_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    seed_status_retrieval_unit(
+        &paths,
+        "item-pending",
+        "pending rebuilt status phrase",
+        "pending",
+    );
+    seed_indexing_schema_version(&paths);
+
+    let app = router_with_paths(paths);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status_json = response_json(response).await;
+
+    assert_eq!(status_json["search"]["ready"], true);
+    assert_eq!(status_json["search"]["retrieval_mode"], "text");
+    assert_eq!(status_json["search"]["text_ready"], true);
+}
+
+#[tokio::test]
+async fn v1_status_ignores_failed_retrieval_units_fts_readiness() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+    seed_status_retrieval_unit(
+        &paths,
+        "item-failed",
+        "failed raw fts status phrase",
+        "failed",
+    );
+    seed_indexing_schema_version(&paths);
+
+    let app = router_with_paths(paths);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/v1/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status_json = response_json(response).await;
+
+    assert_eq!(status_json["search"]["ready"], false);
+    assert_eq!(status_json["search"]["retrieval_mode"], "empty");
+    assert_eq!(status_json["search"]["text_ready"], false);
+}
+
+fn seed_status_retrieval_unit(
+    paths: &AppPaths,
+    item_id: &str,
+    text: &str,
+    search_index_status: &str,
+) {
+    {
+        let conn = cerul_storage::sqlite::open(paths).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO sources (id, type, config, status) VALUES ('source-1', 'local', '{}', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO items (id, source_id, content_type, external_id, title, status, indexed_at, metadata)
+            VALUES (?1, 'source-1', 'video', ?2, ?3, 'indexed', 10, '{}')
+            "#,
+            (item_id, item_id, item_id),
+        )
+        .unwrap();
+    }
+    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths).unwrap();
+    let units = vec![cerul_storage::StorageRetrievalUnit {
+        id: format!(
+            "{item_id}:unit:v{}:000000",
+            cerul_storage::SEARCH_INDEX_VERSION
+        ),
+        item_id: item_id.to_string(),
+        unit_index: 0,
+        unit_kind: "transcript".to_string(),
+        start_sec: Some(1.0),
+        end_sec: Some(2.0),
+        content_text: text.to_string(),
+        transcript_text: Some(text.to_string()),
+        ocr_text: None,
+        visual_text: None,
+        summary_text: None,
+        representative_chunk_id: None,
+        representative_frame_path: None,
+        embedding_profile_id: profile.id,
+        index_version: cerul_storage::SEARCH_INDEX_VERSION,
+        metadata: Default::default(),
+    }];
+    cerul_storage::replace_item_retrieval_units(paths, item_id, &units).unwrap();
+    cerul_storage::set_item_search_index_status(
+        paths,
+        item_id,
+        search_index_status,
+        None,
+        units.len(),
+        0,
+    )
+    .unwrap();
+}
+
 fn seed_v1_agent_search_fixture(paths: &AppPaths, raw_path: &FsPath) {
     fs::write(raw_path, b"not a real video").unwrap();
     let raw_path_string = raw_path.to_string_lossy().to_string();

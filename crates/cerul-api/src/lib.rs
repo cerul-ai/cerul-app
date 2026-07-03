@@ -1055,7 +1055,7 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         ),
     )?;
     let retrieval_unit_fts_row_count =
-        count_query(&conn, "SELECT COUNT(*) FROM retrieval_units_fts")?;
+        cerul_storage::searchable_retrieval_unit_fts_row_count(paths)?;
     let unified_indexed_item_count = count_query(
         &conn,
         &format!(

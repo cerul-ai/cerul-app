@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cerul_storage::AppPaths;
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +78,15 @@ const SOURCE_TEXT_VECTOR: u8 = 1 << 1;
 const SOURCE_EXACT: u8 = 1 << 2;
 const PER_ITEM_CAP: usize = 3;
 const LEXICAL_ONLY_SCORE_CEILING: f32 = 0.76;
+
+fn searchable_unit_predicate(index_version_placeholder: &str) -> String {
+    format!(
+        "i.status IN ('indexed', 'processing') \
+         AND i.search_index_status IN ('indexed', 'pending') \
+         AND i.search_index_version = u.index_version \
+         AND u.index_version = {index_version_placeholder}"
+    )
+}
 const VECTOR_ONLY_CONFIDENT_SIMILARITY: f32 = 0.52;
 const VECTOR_ONLY_LOW_CONFIDENCE_CEILING: f32 = 0.32;
 
@@ -397,21 +406,20 @@ async fn sqlite_fts_search(
         return Ok(Vec::new());
     };
     let conn = cerul_storage::sqlite::open(paths)?;
-    let mut stmt = conn.prepare(
+    let searchable_predicate = searchable_unit_predicate("?2");
+    let sql = format!(
         r#"
         SELECT u.id, bm25(retrieval_units_fts) AS rank_score
         FROM retrieval_units_fts
         JOIN retrieval_units u ON u.rowid = retrieval_units_fts.rowid
         JOIN items i ON i.id = u.item_id
         WHERE retrieval_units_fts MATCH ?1
-          AND i.status IN ('indexed', 'processing')
-          AND i.search_index_status = 'indexed'
-          AND i.search_index_version = u.index_version
-          AND u.index_version = ?2
+          AND {searchable_predicate}
         ORDER BY rank_score
         LIMIT ?3
         "#,
-    )?;
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
         (
             &match_query,
@@ -444,16 +452,14 @@ async fn sqlite_literal_search(
     };
     let strong_exact = strong_exact_intent(query);
     let conn = cerul_storage::sqlite::open(paths)?;
-    let mut stmt = conn.prepare(
+    let searchable_predicate = searchable_unit_predicate("?2");
+    let sql = format!(
         r#"
         SELECT u.id
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
         WHERE u.content_text IS NOT NULL
-          AND i.status IN ('indexed', 'processing')
-          AND i.search_index_status = 'indexed'
-          AND i.search_index_version = u.index_version
-          AND u.index_version = ?2
+          AND {searchable_predicate}
           AND u.content_text LIKE ?1 ESCAPE '\'
         ORDER BY
           CASE u.unit_kind
@@ -467,7 +473,8 @@ async fn sqlite_literal_search(
           u.id
         LIMIT ?3
         "#,
-    )?;
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
         (&pattern, cerul_storage::SEARCH_INDEX_VERSION, limit as i64),
         |row| {
@@ -873,6 +880,8 @@ fn load_units_for_hits(
     let placeholders = std::iter::repeat_n("?", unit_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
+    let version_placeholder = format!("?{}", unit_ids.len() + 1);
+    let searchable_predicate = searchable_unit_predicate(&version_placeholder);
     let sql = format!(
         r#"
         SELECT
@@ -892,13 +901,17 @@ fn load_units_for_hits(
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
         WHERE u.id IN ({placeholders})
-          AND i.status IN ('indexed', 'processing')
-          AND i.search_index_status = 'indexed'
-          AND i.search_index_version = u.index_version
+          AND {searchable_predicate}
         "#,
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(unit_ids.iter()), |row| {
+    let mut params = unit_ids
+        .iter()
+        .map(|id| id as &dyn ToSql)
+        .collect::<Vec<_>>();
+    let search_index_version = cerul_storage::SEARCH_INDEX_VERSION;
+    params.push(&search_index_version);
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
         Ok(HydratedUnit {
             id: row.get(0)?,
             item_id: row.get(1)?,
@@ -2131,7 +2144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_text_search_hides_unindexed_retrieval_units() {
+    async fn sqlite_text_search_includes_pending_rebuilt_retrieval_units() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
@@ -2142,7 +2155,7 @@ mod tests {
             0,
             Some(2.0),
             Some(8.0),
-            "stale pending phrase",
+            "pending rebuilt phrase",
             None,
             &profile,
         );
@@ -2150,7 +2163,7 @@ mod tests {
         cerul_storage::set_item_search_index_status(&paths, "item-1", "pending", None, 1, 1)
             .unwrap();
 
-        let hits = sqlite_text_search(&paths, "stale pending phrase", 5)
+        let hits = sqlite_text_search(&paths, "pending rebuilt phrase", 5)
             .await
             .unwrap();
         let hydrated = hydrate(
@@ -2162,7 +2175,53 @@ mod tests {
                 exact_match: false,
                 source_mask: SOURCE_TEXT_VECTOR,
             }],
-            "stale",
+            "pending",
+        )
+        .unwrap();
+
+        assert_eq!(
+            hits.first().map(|hit| hit.chunk_id.as_str()),
+            Some("item-1:unit:v2:000000")
+        );
+        assert_eq!(
+            hydrated.first().map(|hit| hit.playback_chunk_id.as_str()),
+            Some("item-1:unit:v2:000000")
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_text_search_hides_failed_retrieval_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(2.0),
+            Some(8.0),
+            "failed index phrase",
+            None,
+            &profile,
+        );
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "failed", None, 1, 1)
+            .unwrap();
+
+        let hits = sqlite_text_search(&paths, "failed index phrase", 5)
+            .await
+            .unwrap();
+        let hydrated = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 1.0,
+                similarity_score: Some(1.0),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            }],
+            "failed",
         )
         .unwrap();
 
