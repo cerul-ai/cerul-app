@@ -71,7 +71,7 @@ rg -qF "Anonymous usage counters, off by default" apps/desktop/src
 rg -qF "Open logs folder" apps/desktop/src
 rg -qF "Check for updates" apps/desktop/src
 rg -qF 'phase: "installing"' apps/electron-shell/src/main.ts
-rg -qF "installDesktopUpdate();" apps/electron-shell/src/main.ts
+rg -qF "installDesktopUpdate(" apps/electron-shell/src/main.ts
 rg -qF "isQuitting = true;" apps/electron-shell/src/main.ts
 rg -qF "updater.quitAndInstall(false, true)" apps/electron-shell/src/main.ts
 rg -qF "shell.updateInstalling" apps/desktop/src
