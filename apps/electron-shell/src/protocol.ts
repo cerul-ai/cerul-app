@@ -9,7 +9,7 @@ export const deepLinkSchemes = ["cerul", "cerul-app"];
 
 export type AppProtocolOptions = {
   desktopDistDir: string;
-  apiBaseUrl: string;
+  apiBaseUrl: () => string;
   cloudAccountOrigin: string;
 };
 
@@ -107,14 +107,15 @@ function withAppSecurityHeaders(
 }
 
 function contentSecurityPolicy(options: AppProtocolOptions) {
+  const apiBaseUrl = options.apiBaseUrl();
   return [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self' data:",
-    `img-src 'self' ${appScheme}: ${options.apiBaseUrl} data: blob:`,
-    `media-src 'self' ${options.apiBaseUrl} blob:`,
-    `connect-src 'self' ${options.apiBaseUrl} ${options.cloudAccountOrigin}`,
+    `img-src 'self' ${appScheme}: ${apiBaseUrl} data: blob:`,
+    `media-src 'self' ${apiBaseUrl} blob:`,
+    `connect-src 'self' ${apiBaseUrl} ${options.cloudAccountOrigin}`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'none'",

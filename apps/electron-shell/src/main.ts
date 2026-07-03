@@ -277,7 +277,7 @@ app
     setDockIcon();
     registerAppProtocol({
       desktopDistDir: desktopDistDir(),
-      apiBaseUrl,
+      apiBaseUrl: () => apiBaseUrl,
       cloudAccountOrigin,
     });
     // The app:// renderer is content-hashed, but a stale index.html cached in
