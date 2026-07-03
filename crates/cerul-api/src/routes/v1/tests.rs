@@ -742,9 +742,12 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
             "ask"
         ]
     );
-    let get_segment_tool = agent_tools["tools"]
-        .as_array()
-        .unwrap()
+    let tools = agent_tools["tools"].as_array().unwrap();
+    let get_frame_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "get_frame")
+        .unwrap();
+    let get_segment_tool = tools
         .iter()
         .find(|tool| tool["name"] == "get_segment")
         .unwrap();
@@ -752,13 +755,24 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
         get_segment_tool["path"],
         "/v1/chunks/{id}/video-clip?before_sec=3&after_sec=5"
     );
-    assert!(agent_tools["tools"].as_array().unwrap().iter().all(|tool| {
-        tool["safety"]["read_only"] == true
-            && tool["safety"]["billable"] == false
-            && tool["safety"]["requires_confirmation"] == false
-            && tool["safety"]["arbitrary_shell"] == false
-            && tool["safety"]["arbitrary_file_write"] == false
-    }));
+    assert_eq!(
+        get_frame_tool["evidence"]["returns_evidence_locators"],
+        false
+    );
+    assert_eq!(get_frame_tool["evidence"]["opens_in_cerul"], false);
+    assert_eq!(
+        get_segment_tool["evidence"]["returns_evidence_locators"],
+        false
+    );
+    assert_eq!(get_segment_tool["evidence"]["opens_in_cerul"], false);
+    for tool in tools {
+        let expected_read_only = tool["name"] != "get_segment";
+        assert_eq!(tool["safety"]["read_only"], expected_read_only);
+        assert_eq!(tool["safety"]["billable"], false);
+        assert_eq!(tool["safety"]["requires_confirmation"], false);
+        assert_eq!(tool["safety"]["arbitrary_shell"], false);
+        assert_eq!(tool["safety"]["arbitrary_file_write"], false);
+    }
 
     let search = app
         .clone()

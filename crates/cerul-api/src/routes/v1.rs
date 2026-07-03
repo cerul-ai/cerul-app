@@ -128,7 +128,7 @@ async fn v1_status(State(state): State<ApiState>) -> ApiResult<Json<V1StatusResp
 }
 
 async fn v1_agent_tools(State(state): State<ApiState>) -> Json<V1AgentToolsResponse> {
-    let query_execution = v1_query_execution(&state.paths);
+    let query_execution = v1_read_only_query_execution(&state.paths);
 
     Json(V1AgentToolsResponse {
         request_id: new_id("req"),
@@ -164,7 +164,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1SearchResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
         V1AgentToolContract {
             name: "get_item",
@@ -182,7 +182,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1ItemResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
         V1AgentToolContract {
             name: "get_chunks",
@@ -205,7 +205,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1ItemChunksResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
         V1AgentToolContract {
             name: "get_frame",
@@ -223,7 +223,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "binary image response",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(false, false),
         },
         V1AgentToolContract {
             name: "get_segment",
@@ -240,8 +240,8 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
                 }
             }),
             output_contract: "binary video response",
-            safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            safety: v1_agent_tool_safety(false),
+            evidence: v1_agent_tool_evidence(false, false),
         },
         V1AgentToolContract {
             name: "ask",
@@ -263,14 +263,18 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
             }),
             output_contract: "V1AskResponse",
             safety: v1_read_only_agent_tool_safety(),
-            evidence: v1_agent_tool_evidence(true),
+            evidence: v1_agent_tool_evidence(true, true),
         },
     ]
 }
 
 fn v1_read_only_agent_tool_safety() -> V1AgentToolSafety {
+    v1_agent_tool_safety(true)
+}
+
+fn v1_agent_tool_safety(read_only: bool) -> V1AgentToolSafety {
     V1AgentToolSafety {
-        read_only: true,
+        read_only,
         billable: false,
         requires_confirmation: false,
         arbitrary_shell: false,
@@ -278,10 +282,13 @@ fn v1_read_only_agent_tool_safety() -> V1AgentToolSafety {
     }
 }
 
-fn v1_agent_tool_evidence(returns_evidence_locators: bool) -> V1AgentToolEvidence {
+fn v1_agent_tool_evidence(
+    returns_evidence_locators: bool,
+    opens_in_cerul: bool,
+) -> V1AgentToolEvidence {
     V1AgentToolEvidence {
         returns_evidence_locators,
-        opens_in_cerul: true,
+        opens_in_cerul,
     }
 }
 
@@ -648,6 +655,13 @@ fn v1_query_execution(paths: &AppPaths) -> V1QueryExecution {
             tracing::debug!(%error, "could not resolve v1 query execution mode; assuming local-only fallback");
             V1QueryExecution::LocalOnly
         }
+    }
+}
+
+fn v1_read_only_query_execution(paths: &AppPaths) -> V1QueryExecution {
+    match api_models::read_only_effective_query_inference_mode(paths).as_str() {
+        "remote" => V1QueryExecution::RemoteEmbedding,
+        _ => V1QueryExecution::LocalOnly,
     }
 }
 

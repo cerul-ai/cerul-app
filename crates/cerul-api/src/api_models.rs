@@ -206,6 +206,19 @@ pub(crate) fn effective_query_inference_mode(paths: &AppPaths) -> anyhow::Result
     query_inference_mode(paths, &runtime)
 }
 
+pub(crate) fn read_only_effective_query_inference_mode(paths: &AppPaths) -> String {
+    let runtime = crate::models::model_runtime_status(paths);
+    read_only_query_inference_mode(paths, &runtime)
+}
+
+fn read_only_query_inference_mode(
+    paths: &AppPaths,
+    runtime: &crate::models::ModelRuntimeStatus,
+) -> String {
+    let selected = selected_inference_mode(paths);
+    crate::effective_inference_mode_for_runtime(&selected, runtime)
+}
+
 fn query_inference_mode(
     paths: &AppPaths,
     runtime: &crate::models::ModelRuntimeStatus,
@@ -1372,6 +1385,26 @@ mod tests {
         assert_eq!(
             crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
             Some("auto".to_string())
+        );
+    }
+
+    #[test]
+    fn read_only_query_mode_does_not_consume_deferred_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        set_setting(&paths, "inference_mode", serde_json::json!("local"));
+        set_setting(
+            &paths,
+            "embedding_profile_rebuild_deferred_mode",
+            serde_json::json!("local"),
+        );
+
+        let mode = read_only_query_inference_mode(&paths, &local_runtime_status(true));
+
+        assert_eq!(mode, "local");
+        assert_eq!(
+            crate::setting_string(&paths, "embedding_profile_rebuild_deferred_mode").unwrap(),
+            Some("local".to_string())
         );
     }
 
