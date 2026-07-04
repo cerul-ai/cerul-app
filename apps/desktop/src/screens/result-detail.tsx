@@ -47,6 +47,7 @@ import {
   isDocumentChunkType,
   mapChunkRecords,
   selectPlaybackChunkId,
+  transcriptLineStartSec,
 } from "../lib/results";
 import { canOpenOriginalSource, sourceFileDialogFilter, timestampDeepLink } from "../lib/detail";
 import { openDialog, invokeHostCommand } from "../lib/desktopHost";
@@ -365,11 +366,10 @@ function useItemMoments(item: Item, enabled: boolean) {
       if (existing) {
         await api.deleteMoment(existing.id);
       } else {
-        const startSec = parseTimestampSeconds(line.time);
         await api.createMoment({
           item_id: item.id,
           chunk_id: line.id,
-          start_sec: Number.isFinite(startSec) ? startSec : null,
+          start_sec: transcriptLineStartSec(line),
           title: item.title,
           quote: line.text,
         });

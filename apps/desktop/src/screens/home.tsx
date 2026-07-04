@@ -308,10 +308,12 @@ export function HomeScreen({
     Boolean(fallbackIsUseful && lastOpened && (!serverContinueItem || lastOpened.at > serverUpdatedAtMs));
   const continueItem = preferFallbackContinue ? fallbackContinueItem : serverContinueItem;
   const continueTimestamp =
-    continueItem?.playbackPosition?.timestamp ??
-    (continueItem && lastOpened && continueItem.id === lastOpened.itemId
+    preferFallbackContinue && continueItem && lastOpened && continueItem.id === lastOpened.itemId
       ? lastOpened.timestamp
-      : null);
+      : continueItem?.playbackPosition?.timestamp ??
+        (continueItem && lastOpened && continueItem.id === lastOpened.itemId
+          ? lastOpened.timestamp
+          : null);
 
   const statusLabel = (() => {
     if (onlyPausedQueuedJobs) {

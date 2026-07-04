@@ -11,6 +11,7 @@ import {
   resultMatchesTimeFilter,
   resultModality,
   selectPlaybackChunkId,
+  transcriptLineStartSec,
 } from "./results";
 import type { Item, Result } from "./types";
 import type { TFunction } from "./i18n";
@@ -141,6 +142,7 @@ describe("results helpers", () => {
     expect(mapChunkRecords(chunks)).toEqual([
       { id: "line-1", time: "0:12", text: "line", startSec: 12, endSec: 13 },
     ]);
+    expect(transcriptLineStartSec(mapChunkRecords(chunks)[0])).toBe(12);
     expect(selectPlaybackChunkId(chunks, "0:12")).toBe("line-1");
     expect(selectPlaybackChunkId(chunks, "0:26")).toBe("line-2");
     expect(selectPlaybackChunkId(chunks, "0:26", "audio-1")).toBe("audio-1");
@@ -170,6 +172,7 @@ describe("results helpers", () => {
         endSec: null,
       },
     ]);
+    expect(transcriptLineStartSec(mapChunkRecords(chunks, t)[0])).toBeNull();
     expect(selectPlaybackChunkId(chunks, "doc-1")).toBe("doc-1");
   });
 

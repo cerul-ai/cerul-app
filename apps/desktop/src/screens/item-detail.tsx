@@ -51,6 +51,7 @@ import {
   isDocumentChunkType,
   mapChunkRecords,
   selectPlaybackChunkId,
+  transcriptLineStartSec,
 } from "../lib/results";
 import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
 import { itemModalityLabel } from "../components/cards";
@@ -376,11 +377,10 @@ function useItemMoments(item: Item, enabled: boolean) {
       if (existing) {
         await api.deleteMoment(existing.id);
       } else {
-        const startSec = parseTimestampSeconds(line.time);
         await api.createMoment({
           item_id: item.id,
           chunk_id: line.id,
-          start_sec: Number.isFinite(startSec) ? startSec : null,
+          start_sec: transcriptLineStartSec(line),
           title: item.title,
           quote: line.text,
         });

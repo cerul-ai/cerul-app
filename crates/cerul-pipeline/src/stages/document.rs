@@ -17,6 +17,7 @@ use zip::ZipArchive;
 
 const DOCUMENT_CHUNK_BUDGET: usize = 3_200;
 const MAX_PLAIN_TEXT_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_PDF_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_OFFICE_XML_PART_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +78,14 @@ fn extract_plain_text_chunks(
 }
 
 fn extract_pdf_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to read document metadata: {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.len() <= MAX_PDF_DOCUMENT_BYTES,
+        "PDF document exceeds {} byte limit: {}",
+        MAX_PDF_DOCUMENT_BYTES,
+        path.display()
+    );
     let pages = catch_unwind(AssertUnwindSafe(|| {
         pdf_extract::extract_text_by_pages(path)
     }))
@@ -554,6 +563,18 @@ mod tests {
             error_chain.contains("office XML part word/document.xml exceeds"),
             "unexpected error: {error_chain}"
         );
+    }
+
+    #[test]
+    fn extract_pdf_chunks_rejects_oversized_files_before_extraction() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.pdf");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_PDF_DOCUMENT_BYTES + 1).unwrap();
+
+        let error = extract_pdf_chunks(&path).unwrap_err().to_string();
+
+        assert!(error.contains("PDF document exceeds"));
     }
 
     #[test]

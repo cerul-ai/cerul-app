@@ -12,6 +12,7 @@ import type {
 } from "./types";
 
 const RESULT_GROUP_WINDOW_SEC = 12;
+const TIMESTAMP_PATTERN = /^\d+(?::\d{1,2}){1,2}$/;
 
 export function mapResultMatch(
   record: api.SearchResultRecord,
@@ -208,6 +209,17 @@ export function mapChunkRecords(records: api.ChunkRecord[], t?: TFunction): Tran
       },
     ];
   });
+}
+
+export function transcriptLineStartSec(line: TranscriptLine): number | null {
+  if (typeof line.startSec === "number" && Number.isFinite(line.startSec)) {
+    return line.startSec;
+  }
+  if (!TIMESTAMP_PATTERN.test(line.time.trim())) {
+    return null;
+  }
+  const seconds = parseTimestampSeconds(line.time);
+  return Number.isFinite(seconds) ? seconds : null;
 }
 
 export function selectPlaybackChunkId(
