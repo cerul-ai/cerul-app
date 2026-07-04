@@ -306,6 +306,9 @@ export function backendFallbackSnippet(chunkType: string, startSec: number | nul
   if (chunkType === "understanding") {
     return ts ? `Video understanding at ${ts}` : "Video understanding match";
   }
+  if (chunkType === "document") {
+    return "Document match";
+  }
   return ts ? `Search match at ${ts}` : "Search match";
 }
 

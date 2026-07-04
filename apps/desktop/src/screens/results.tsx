@@ -13,6 +13,8 @@ export function ResultsScreen({
   query,
   setQuery,
   onSubmit,
+  rankingPreference,
+  onRankingPreferenceChange,
   onBack,
   onOpen,
   results,
@@ -26,6 +28,8 @@ export function ResultsScreen({
   query: string;
   setQuery: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  rankingPreference: api.SearchRankingPreference;
+  onRankingPreferenceChange: (value: api.SearchRankingPreference) => void;
   onBack: () => void;
   onOpen: (result: Result) => void;
   results: Result[];
@@ -42,7 +46,7 @@ export function ResultsScreen({
   const [modalityFilter, setModalityFilter] = useState<ResultModalityFilter>("all");
   const [sortMode, setSortMode] = useState<"relevance" | "recent">("relevance");
   const filtersActive =
-    modalityFilter !== "all" || sortMode !== "relevance";
+    modalityFilter !== "all" || sortMode !== "relevance" || rankingPreference !== "smart";
   const filteredResults = results.filter((result) => {
     const matchesModality = modalityFilter === "all" || resultModality(result) === modalityFilter;
     return matchesModality;
@@ -70,7 +74,7 @@ export function ResultsScreen({
   useEffect(() => {
     setSelectedIndex(0);
     setExpandedResultIds(new Set());
-  }, [query, results.length, modalityFilter, sortMode]);
+  }, [query, results.length, modalityFilter, sortMode, rankingPreference]);
 
   function focusResult(index: number) {
     window.requestAnimationFrame(() => {
@@ -81,6 +85,7 @@ export function ResultsScreen({
   function clearResultFilters() {
     setModalityFilter("all");
     setSortMode("relevance");
+    onRankingPreferenceChange("smart");
   }
 
   function handleResultsKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -202,6 +207,24 @@ export function ResultsScreen({
                 {t("results.sort.recent")}
               </button>
             </div>
+          </div>
+          <div className="row gap-2">
+            <span className="muted" style={{ fontSize: 12.5 }}>{t("results.preference.label")}</span>
+            <select
+              className="select"
+              value={rankingPreference}
+              onChange={(event) =>
+                onRankingPreferenceChange(event.currentTarget.value as api.SearchRankingPreference)
+              }
+              aria-label={t("results.preference.aria")}
+              style={{ height: 32, width: 132 }}
+            >
+              <option value="smart">{t("results.preference.smart")}</option>
+              <option value="video">{t("results.preference.video")}</option>
+              <option value="image">{t("results.preference.image")}</option>
+              <option value="document">{t("results.preference.document")}</option>
+              <option value="audio">{t("results.preference.audio")}</option>
+            </select>
           </div>
         </div>
 

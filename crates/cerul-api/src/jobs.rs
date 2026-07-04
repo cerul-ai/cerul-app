@@ -2347,6 +2347,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "restart resilience phrase".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
             fake_vector(7),
         )

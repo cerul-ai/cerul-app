@@ -586,6 +586,8 @@ function AppWorkspace() {
     initialRoute.timestamp,
   );
   const [query, setQuery] = useState("");
+  const [searchRankingPreference, setSearchRankingPreference] =
+    useState<api.SearchRankingPreference>("smart");
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [showAddSource, setShowAddSource] = useState(false);
   const [showJobsSheet, setShowJobsSheet] = useState(false);
@@ -623,7 +625,11 @@ function AppWorkspace() {
   const [searchDiagnostics, setSearchDiagnostics] = useState<api.SearchDiagnostics | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const lastSearchRef = useRef<{ query: string; retryWhenIdle: boolean } | null>(null);
+  const lastSearchRef = useRef<{
+    query: string;
+    retryWhenIdle: boolean;
+    rankingPreference: api.SearchRankingPreference;
+  } | null>(null);
   // Monotonic token: every runSearch bumps it, stale responses are dropped.
   const searchSeqRef = useRef(0);
 
@@ -1122,10 +1128,16 @@ function AppWorkspace() {
       setApiStatus("online");
       const pendingRetry = lastSearchRef.current;
       if (pendingRetry?.retryWhenIdle && !hasSyncingSources && !jobRecords.some(isActiveJob)) {
-        lastSearchRef.current = { query: pendingRetry.query, retryWhenIdle: false };
+        lastSearchRef.current = {
+          query: pendingRetry.query,
+          retryWhenIdle: false,
+          rankingPreference: pendingRetry.rankingPreference,
+        };
         const seqAtSchedule = searchSeqRef.current;
         api
-          .search(pendingRetry.query, 20)
+          .search(pendingRetry.query, 20, {
+            rankingPreference: pendingRetry.rankingPreference,
+          })
           .then((response) => {
             // A newer user-initiated search supersedes this idle retry.
             if (seqAtSchedule !== searchSeqRef.current) return;
@@ -1134,6 +1146,7 @@ function AppWorkspace() {
             lastSearchRef.current = {
               query: pendingRetry.query,
               retryWhenIdle: false,
+              rankingPreference: pendingRetry.rankingPreference,
             };
           })
           .catch(() => undefined);
@@ -1373,14 +1386,30 @@ function AppWorkspace() {
     void runSearch(value);
   }
 
-  async function runSearch(value: string) {
+  function handleSearchRankingPreferenceChange(next: api.SearchRankingPreference) {
+    setSearchRankingPreference(next);
+    if (query.trim()) {
+      void runSearch(query, next);
+    }
+  }
+
+  async function runSearch(
+    value: string,
+    rankingPreference: api.SearchRankingPreference = searchRankingPreference,
+  ) {
     const trimmed = value.trim();
     if (!trimmed) {
       setSearchDiagnostics(null);
+      lastSearchRef.current = null;
       return;
     }
 
     rememberRecentSearch(trimmed);
+    lastSearchRef.current = {
+      query: trimmed,
+      retryWhenIdle: false,
+      rankingPreference,
+    };
     const seq = ++searchSeqRef.current;
     const isCurrent = () => seq === searchSeqRef.current;
     setIsSearching(true);
@@ -1394,7 +1423,7 @@ function AppWorkspace() {
       const searchData = latestData ?? data;
       const itemsForResults = searchData.items;
       let retryWhenIndexSettles = searchIndexIsSettling(searchData);
-      let response = await api.search(trimmed, 20);
+      let response = await api.search(trimmed, 20, { rankingPreference });
       if (!isCurrent()) return;
       setLiveResults(mapSearchResults(response.results, itemsForResults, t));
       setSearchDiagnostics(response.diagnostics);
@@ -1403,7 +1432,7 @@ function AppWorkspace() {
         if (!isCurrent()) return;
         const refreshed = await refreshCoreData();
         retryWhenIndexSettles = refreshed ? searchIndexIsSettling(refreshed) : retryWhenIndexSettles;
-        response = await api.search(trimmed, 20);
+        response = await api.search(trimmed, 20, { rankingPreference });
         if (!isCurrent()) return;
         setLiveResults(mapSearchResults(response.results, refreshed?.items ?? itemsForResults, t));
         setSearchDiagnostics(response.diagnostics);
@@ -1411,6 +1440,7 @@ function AppWorkspace() {
       lastSearchRef.current = {
         query: trimmed,
         retryWhenIdle: retryWhenIndexSettles,
+        rankingPreference,
       };
     } catch (error) {
       // A failed search is a search-level problem; flipping the whole app
@@ -1741,6 +1771,8 @@ function AppWorkspace() {
             query={query}
             setQuery={setQuery}
             onSubmit={submitSearch}
+            rankingPreference={searchRankingPreference}
+            onRankingPreferenceChange={handleSearchRankingPreferenceChange}
             onBack={() => navigate("home")}
             onOpen={(result) =>
               navigate("result-detail", {

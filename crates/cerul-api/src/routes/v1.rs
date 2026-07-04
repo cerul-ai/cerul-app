@@ -394,12 +394,17 @@ async fn v1_search(
 ) -> ApiResult<Json<V1SearchResponse>> {
     let query = first_non_empty_text([req.query, req.q])
         .ok_or_else(|| ApiError::bad_request("query cannot be empty"))?;
+    let ranking_preference = req.ranking_preference.unwrap_or_default();
     validate_v1_local_target(req.target.as_deref())?;
     let query_execution = v1_query_execution(&state.paths);
     let limit = req.max_results.or(req.limit).unwrap_or(10).clamp(1, 50);
     let response = search_records(
         &state.paths,
-        cerul_search::SearchRequest { q: query, limit },
+        cerul_search::SearchRequest {
+            q: query,
+            limit,
+            ranking_preference,
+        },
     )
     .await?;
     let item_metadata = v1_search_item_metadata(&state.paths, &response.results)?;
@@ -578,6 +583,7 @@ async fn v1_collect_material_evidence(
         cerul_search::SearchRequest {
             q: query.to_string(),
             limit,
+            ranking_preference: cerul_search::SearchRankingPreference::Smart,
         },
     )
     .await?;
@@ -628,6 +634,7 @@ async fn v1_ask(
         cerul_search::SearchRequest {
             q: question.clone(),
             limit,
+            ranking_preference: cerul_search::SearchRankingPreference::Smart,
         },
     )
     .await?;

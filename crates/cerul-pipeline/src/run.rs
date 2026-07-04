@@ -2593,6 +2593,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "red square introduction".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
         )
         .await
@@ -2683,6 +2684,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "red square introduction".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
         )
         .await
@@ -2830,6 +2832,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "photo".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
         )
         .await
@@ -2915,6 +2918,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "alpha launch brief".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
         )
         .await
@@ -3130,6 +3134,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "photo".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
         )
         .await
@@ -3245,6 +3250,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "red square introduction".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
         )
         .await
@@ -3282,6 +3288,7 @@ mod tests {
             cerul_search::SearchRequest {
                 q: "blue square ending".to_string(),
                 limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },
             fake_vector(2),
         )

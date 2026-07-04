@@ -122,6 +122,8 @@ pub(crate) struct V1SearchRequest {
     pub(crate) q: Option<String>,
     pub(crate) max_results: Option<usize>,
     pub(crate) limit: Option<usize>,
+    #[serde(default, alias = "rankingPreference")]
+    pub(crate) ranking_preference: Option<cerul_search::SearchRankingPreference>,
     pub(crate) target: Option<String>,
 }
 

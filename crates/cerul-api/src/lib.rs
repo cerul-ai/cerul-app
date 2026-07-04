@@ -1434,6 +1434,7 @@ async fn ask_library(
         cerul_search::SearchRequest {
             q: query.to_string(),
             limit,
+            ranking_preference: cerul_search::SearchRankingPreference::Smart,
         },
     )
     .await?;
