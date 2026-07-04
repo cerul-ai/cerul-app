@@ -5,6 +5,7 @@ all-features = false
 db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is pulled in transitively by Candle/tokenizers/rav1e; no safe upgrade is available yet." },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is pulled in transitively by pdf-extract/lopdf for document text extraction; no safe upgrade is available yet." },
 ]
 
 [licenses]

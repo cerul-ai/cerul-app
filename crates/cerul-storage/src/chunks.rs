@@ -27,6 +27,14 @@ pub struct StorageOcrChunk {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StorageDocumentChunk {
+    pub text: String,
+    pub page: Option<u32>,
+    pub section: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
 impl StorageImageChunk {
     pub fn keyframe(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -67,6 +75,22 @@ impl StorageOcrChunk {
             path: path.into(),
             text: text.into(),
             metadata: serde_json::Value::Object(Default::default()),
+        }
+    }
+}
+
+impl StorageDocumentChunk {
+    pub fn new(
+        text: impl Into<String>,
+        page: Option<u32>,
+        section: Option<String>,
+        metadata: serde_json::Value,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            page,
+            section,
+            metadata,
         }
     }
 }
@@ -274,6 +298,56 @@ pub fn write_media_sqlite_chunks_with_ocr_and_lines(
     Ok(StorageWriteSummary {
         transcript_chunks: transcript_chunks.len() + ocr_chunks.len(),
         keyframes: image_chunks.len(),
+        text_vectors: 0,
+        image_vectors: 0,
+    })
+}
+
+pub fn write_document_sqlite_chunks(
+    paths: &AppPaths,
+    item_id: &str,
+    document_chunks: &[StorageDocumentChunk],
+) -> anyhow::Result<StorageWriteSummary> {
+    let mut conn = sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+
+    tx.execute(
+        "DELETE FROM chunks WHERE item_id = ?1 AND chunk_type != 'understanding'",
+        [item_id],
+    )?;
+
+    {
+        let mut stmt = tx.prepare(
+            r#"
+            INSERT INTO chunks (
+                id,
+                item_id,
+                chunk_type,
+                start_sec,
+                end_sec,
+                text,
+                frame_path,
+                metadata
+            )
+            VALUES (?1, ?2, 'document', NULL, NULL, ?3, NULL, ?4)
+            "#,
+        )?;
+
+        for (index, chunk) in document_chunks.iter().enumerate() {
+            let metadata = document_metadata_with_index(chunk, index).to_string();
+            stmt.execute((
+                document_chunk_id(item_id, index),
+                item_id,
+                chunk.text.as_str(),
+                metadata,
+            ))?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(StorageWriteSummary {
+        transcript_chunks: document_chunks.len(),
+        keyframes: 0,
         text_vectors: 0,
         image_vectors: 0,
     })
@@ -711,6 +785,10 @@ fn ocr_chunk_id(item_id: &str, index: usize) -> String {
     format!("{item_id}:ocr:{index:06}")
 }
 
+fn document_chunk_id(item_id: &str, index: usize) -> String {
+    format!("{item_id}:document:{index:06}")
+}
+
 fn metadata_with_index(metadata: &serde_json::Value, index: usize) -> serde_json::Value {
     let mut metadata = metadata.clone();
 
@@ -719,6 +797,22 @@ fn metadata_with_index(metadata: &serde_json::Value, index: usize) -> serde_json
     }
     metadata["index"] = serde_json::json!(index);
 
+    metadata
+}
+
+fn document_metadata_with_index(chunk: &StorageDocumentChunk, index: usize) -> serde_json::Value {
+    let mut metadata = metadata_with_index(&chunk.metadata, index);
+    if let Some(page) = chunk.page {
+        metadata["page"] = serde_json::json!(page);
+    }
+    if let Some(section) = chunk
+        .section
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        metadata["section"] = serde_json::json!(section);
+    }
     metadata
 }
 

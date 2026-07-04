@@ -108,6 +108,18 @@ impl JobProcessor for PipelineJobProcessor {
                 .process_image_item(&job.item_id)
                 .await
                 .map(|_| ()),
+            "index_document" => self
+                .pipeline
+                .clone()
+                .with_usage_job_id(job.id.clone())
+                .with_progress(Arc::new(JobProgressReporter {
+                    paths: self.paths.clone(),
+                    job_id: job.id.clone(),
+                    state: Mutex::new(JobProgressState::default()),
+                }))
+                .process_document_item(&job.item_id)
+                .await
+                .map(|_| ()),
             other => Err(anyhow::anyhow!("unsupported job type: {other}")),
         };
 
@@ -278,13 +290,15 @@ impl JobWorker {
 
         if is_job_cancelled(&self.paths, &job.id)? {
             if let Ok(item) = cerul_storage::get_item(&self.paths, &job.item_id) {
-                if job.was_indexed {
+                if job.was_indexed && item.status != "deleting" {
                     tracing::info!(
                         job_id = %job.id,
                         item_id = %job.item_id,
                         "skipped artifact cleanup for cancelled indexed-item rebuild"
                     );
-                } else if let Err(error) = crate::cleanup_item_artifacts(&self.paths, &item).await {
+                } else if let Err(error) =
+                    crate::routes::library::cleanup_item_artifacts(&self.paths, &item).await
+                {
                     tracing::warn!(
                         %error,
                         job_id = %job.id,
@@ -650,7 +664,9 @@ pub async fn cleanup_deleting_items(paths: &AppPaths) -> anyhow::Result<usize> {
     for item_id in &item_ids {
         match cerul_storage::get_item(paths, item_id) {
             Ok(item) => {
-                if let Err(error) = crate::cleanup_item_artifacts(paths, &item).await {
+                if let Err(error) =
+                    crate::routes::library::cleanup_item_artifacts(paths, &item).await
+                {
                     tracing::warn!(
                         %error,
                         item_id = %item.id,
@@ -1360,6 +1376,11 @@ mod tests {
         calls: Mutex<Vec<String>>,
     }
 
+    struct CancelDeleteDuringProcessor {
+        paths: AppPaths,
+        calls: Mutex<Vec<String>>,
+    }
+
     #[async_trait]
     impl JobProcessor for FakeProcessor {
         async fn process(&self, job: &ClaimedJob) -> anyhow::Result<()> {
@@ -1388,6 +1409,26 @@ mod tests {
             conn.execute(
                 "UPDATE jobs SET status = 'cancelled' WHERE id = ?1",
                 [job.id.as_str()],
+            )?;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl JobProcessor for CancelDeleteDuringProcessor {
+        async fn process(&self, job: &ClaimedJob) -> anyhow::Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", job.job_type, job.item_id));
+            let conn = sqlite::open(&self.paths)?;
+            conn.execute(
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?1",
+                [job.id.as_str()],
+            )?;
+            conn.execute(
+                "UPDATE items SET status = 'deleting' WHERE id = ?1",
+                [job.item_id.as_str()],
             )?;
             Ok(())
         }
@@ -1538,6 +1579,57 @@ mod tests {
                     .join(format!("{key}.wav"))
                     .exists(),
                 "running indexed rebuild cancellation should not clear existing cache"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_cleans_indexed_item_when_running_delete_is_cancelled() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-1",
+            "item-1",
+            "index_video",
+            "queued",
+            "indexed",
+        );
+        let legacy_key = cerul_pipeline::run::cache_key_for_discovery_id("item-1");
+        let scoped_key = cerul_pipeline::run::cache_key_for_item("item-1", "item-1");
+        for key in [&legacy_key, &scoped_key] {
+            let audio_cache = paths
+                .cache
+                .join("pipeline")
+                .join("audio")
+                .join(format!("{key}.wav"));
+            std::fs::create_dir_all(audio_cache.parent().unwrap()).unwrap();
+            std::fs::write(audio_cache, b"cached audio").unwrap();
+        }
+        let processor = Arc::new(CancelDeleteDuringProcessor {
+            paths: paths.clone(),
+            calls: Mutex::new(Vec::new()),
+        });
+        let worker = JobWorker::new(paths.clone(), processor.clone());
+
+        let outcome = worker.run_next_queued_job().await.unwrap().unwrap();
+
+        assert_eq!(outcome.status, "cancelled");
+        assert_eq!(
+            processor.calls.lock().unwrap().as_slice(),
+            ["index_video:item-1"]
+        );
+        assert_eq!(item_count(&paths, "item-1"), 0);
+        assert_eq!(job_count_for_item(&paths, "item-1"), 0);
+        for key in [&legacy_key, &scoped_key] {
+            assert!(
+                !paths
+                    .cache
+                    .join("pipeline")
+                    .join("audio")
+                    .join(format!("{key}.wav"))
+                    .exists(),
+                "running delete cancellation should clear cache"
             );
         }
     }

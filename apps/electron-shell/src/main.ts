@@ -7,11 +7,8 @@ import {
   autoUpdater as nativeAutoUpdater,
   dialog,
   globalShortcut,
-  ipcMain,
   nativeImage,
   nativeTheme,
-  net,
-  protocol,
   safeStorage,
   screen,
   session,
@@ -24,7 +21,6 @@ import fs from "node:fs";
 import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   assertTargetsPreservePath,
   factoryResetTargets,
@@ -33,6 +29,29 @@ import {
   pathsMatch,
   type ResetTarget,
 } from "./local-data-reset";
+import {
+  registerIpcHandlers,
+  type OAuthProvider,
+  type RendererDiagnostic,
+} from "./ipc";
+import {
+  appHost,
+  appScheme,
+  firstDeepLinkArg,
+  isDeepLinkScheme,
+  registerAppProtocol,
+  registerDeepLinkProtocols,
+  registerPrivilegedAppScheme,
+} from "./protocol";
+import {
+  createMainBrowserWindow,
+  createMenuBarBrowserWindow,
+  createOverlayBrowserWindow,
+} from "./windows";
+import {
+  createUpdaterController,
+  type UpdaterCheckOptions,
+} from "./updater";
 // Type-only: erased at runtime. The implementation is lazy-required in
 // getAutoUpdater() so a missing/mis-packaged electron-updater degrades to the
 // GitHub-release fallback instead of crashing the main process at load time.
@@ -50,15 +69,11 @@ if (explicitApiPort) {
   delete process.env.CERUL_API_PORT;
 }
 process.env.CERUL_RENDERER_API_BASE_URL = apiBaseUrl;
-const appScheme = "app";
-const appHost = "cerul";
-const deepLinkSchemes = ["cerul", "cerul-app"];
 const defaultHotkey = "Alt+Space";
 const defaultNewSourceHotkey = "CommandOrControl+N";
 const defaultOpenSettingsHotkey = "CommandOrControl+,";
 const defaultCloseWindowHotkey = "CommandOrControl+W";
 const cloudAccountOrigin = "https://accounts.cerul.ai";
-const defaultUpdateRepository = "cerul-ai/cerul-app";
 const macBundleIdentifier = "ai.cerul.desktop";
 const packagedCoreBinaryName = "cerul-core";
 const devCoreBinaryName = "cerul-api";
@@ -90,20 +105,24 @@ const dirtyStores = new Set<string>();
 const secureTokenStorePath = "secure-tokens.json";
 let oauthCallbackServer: Server | null = null;
 let oauthCallbackPort: number | null = null;
-let autoUpdaterInstance: AppUpdater | null = null;
-let autoUpdaterWired = false;
-let updateInstallRequested = false;
-let updaterCheckInstallRequested = false;
 let updateInstallFallbackTimer: NodeJS.Timeout | null = null;
 let updateInstallForceExitTimer: NodeJS.Timeout | null = null;
 let updateInstallFallbackRunId = 0;
 let macUpdatePreparationRunId = 0;
 let updateInstallWhenPrepared = false;
 let preparedMacUpdateHandoff: MacUpdateInstallHandoff | null = null;
-let latestUpdaterState: UpdaterState = { phase: "idle" };
 let standardMenuAcceleratorsCache: Set<string> | null = null;
 
-type OAuthProvider = "google" | "github";
+const updaterController = createUpdaterController({
+  clearPreparedUpdate: clearPreparedMacUpdateHandoff,
+  getMainWindow: () => mainWindow,
+  markInstallWhenPrepared: () => {
+    updateInstallWhenPrepared = true;
+  },
+  prepareDownloadedUpdateForRestart,
+  installUpdate: installDesktopUpdate,
+});
+
 type MainWindowCommand = {
   type: "new_source";
   triggeredByAccelerator: boolean;
@@ -113,77 +132,6 @@ type ApplicationMenuShortcuts = {
   newSource?: string;
   openSettings?: string;
   closeWindow?: string;
-};
-
-type GitHubRelease = {
-  tag_name?: string;
-  name?: string | null;
-  html_url?: string;
-  body?: string | null;
-  draft?: boolean;
-  prerelease?: boolean;
-  published_at?: string | null;
-};
-
-type DesktopReleaseNotes = {
-  publishedAt?: string;
-  sections: Array<{
-    title?: string;
-    items: string[];
-  }>;
-};
-
-type DesktopUpdateInfo = {
-  version: string;
-  url: string;
-  name?: string;
-  prerelease: boolean;
-  publishedAt?: string;
-  releaseNotes?: DesktopReleaseNotes;
-};
-
-// Drives the rail "Update" pill. `available` always works (GitHub-release
-// detection, signing-independent); later phases only occur once releases ship
-// signed + a latest-mac.yml that electron-updater can apply.
-type UpdaterState =
-  | { phase: "idle" }
-  | {
-      phase: "available";
-      version: string;
-      releaseUrl: string;
-      canAutoInstall: boolean;
-      releaseNotes?: DesktopReleaseNotes;
-    }
-  | {
-      phase: "downloading";
-      version: string;
-      percent: number;
-      bytesPerSecond?: number;
-      etaSeconds?: number;
-      transferredBytes?: number;
-      totalBytes?: number;
-      releaseNotes?: DesktopReleaseNotes;
-    }
-  | { phase: "preparing"; version: string; releaseNotes?: DesktopReleaseNotes }
-  | { phase: "installing"; version: string; releaseNotes?: DesktopReleaseNotes }
-  | { phase: "downloaded"; version: string; releaseNotes?: DesktopReleaseNotes }
-  | {
-      phase: "error";
-      version?: string;
-      message: string;
-      releaseUrl: string;
-      releaseNotes?: DesktopReleaseNotes;
-    };
-
-type UpdaterProgress = {
-  percent?: number;
-  bytesPerSecond?: number;
-  transferred?: number;
-  total?: number;
-};
-
-type UpdaterCheckOptions = {
-  installWhenDownloaded?: boolean;
 };
 
 type MacShipItStateBaseline = {
@@ -214,20 +162,6 @@ type ApiExitInfo = {
   elapsedMs: number;
 };
 
-type RendererDiagnostic = {
-  window?: string;
-  kind: string;
-  message?: string;
-  stack?: string;
-  source?: string;
-  line?: number;
-  column?: number;
-  componentStack?: string;
-  href?: string;
-  userAgent?: string;
-  details?: Record<string, unknown>;
-};
-
 type BundleProcessHolder = {
   pid: number;
   command: string;
@@ -235,18 +169,7 @@ type BundleProcessHolder = {
   knownBundleSidecar?: boolean;
 };
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: appScheme,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      stream: true,
-    },
-  },
-]);
+registerPrivilegedAppScheme();
 
 if (!loginItemCliCommand) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -280,7 +203,11 @@ app
       return;
     }
     setDockIcon();
-    registerAppProtocol();
+    registerAppProtocol({
+      desktopDistDir: desktopDistDir(),
+      apiBaseUrl: () => apiBaseUrl,
+      cloudAccountOrigin,
+    });
     // The app:// renderer is content-hashed, but a stale index.html cached in
     // the userData partition would keep pointing at old asset hashes across
     // restarts (a rebuild then appears to "not take effect"). Clear the HTTP
@@ -300,8 +227,28 @@ app
     session.defaultSession.setPermissionCheckHandler((_webContents, permission) =>
       allowedPermissions.has(permission),
     );
-    registerIpcHandlers();
+    registerIpcHandlers({
+      invokeCommand: handleCommand,
+      getAppVersion: () => app.getVersion(),
+      checkForUpdate: updaterController.checkForUpdate,
+      runUpdateCheck: updaterController.runCheck,
+      getUpdaterState: updaterController.getState,
+      collectUpdaterDiagnostics,
+      startUpdateDownload: updaterController.startDownload,
+      installUpdate: installDesktopUpdate,
+      loadStore,
+      markStoreDirty: (storePath) => {
+        dirtyStores.add(storePath);
+      },
+      saveStore,
+      getSecureToken,
+      setSecureToken,
+      startOAuthLogin,
+      writeRendererDiagnostic,
+    });
     await startRustCore();
+    // Future Agent runtime wiring belongs here, in the main-process/core
+    // boundary, so privileged work does not move into the renderer.
     // Mirror the saved in-app theme onto the native appearance before any window
     // paints, so the overlay's vibrancy / menu-bar glass and the main window's
     // native chrome don't show the macOS system appearance on the first frame.
@@ -412,60 +359,6 @@ function trayIconPath() {
   return desktopBrandResourcePath(
     process.platform === "darwin" ? "brand/cerul-menubarTemplate.png" : "brand/icon-192.png",
   );
-}
-
-function registerAppProtocol() {
-  protocol.handle(appScheme, async (request) => {
-    const url = new URL(request.url);
-    if (url.hostname !== appHost) {
-      return new Response("unknown app host", { status: 404 });
-    }
-
-    const dist = path.resolve(desktopDistDir());
-    const pathname = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
-    const filePath = path.resolve(dist, pathname.replace(/^\/+/, ""));
-    if (!isPathInsideDirectory(filePath, dist)) {
-      return new Response("invalid app path", { status: 403 });
-    }
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-      return new Response("not found", { status: 404 });
-    }
-
-    const response = await net.fetch(pathToFileURL(filePath).toString());
-    return withAppSecurityHeaders(response, filePath);
-  });
-}
-
-function withAppSecurityHeaders(response: Response, filePath: string) {
-  if (!filePath.endsWith(".html")) {
-    return response;
-  }
-  const headers = new Headers(response.headers);
-  headers.set("Content-Security-Policy", contentSecurityPolicy());
-  // Never cache index.html so it always references the current (content-hashed)
-  // assets after a rebuild; the hashed assets themselves remain cacheable.
-  headers.set("Cache-Control", "no-store");
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function contentSecurityPolicy() {
-  return [
-    "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
-    "font-src 'self' data:",
-    `img-src 'self' app: ${apiBaseUrl} data: blob:`,
-    `media-src 'self' ${apiBaseUrl} blob:`,
-    `connect-src 'self' ${apiBaseUrl} ${cloudAccountOrigin}`,
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'none'",
-    "frame-ancestors 'none'",
-  ].join("; ");
 }
 
 function rendererDiagnosticsLogPath() {
@@ -622,175 +515,57 @@ function persistMainWindowBounds() {
 
 function createMainWindow() {
   const mainUrl = `${appScheme}://${appHost}/index.html`;
-  const saved = savedMainWindowBounds();
-  mainWindow = new BrowserWindow({
-    width: saved.width ?? 1440,
-    height: saved.height ?? 920,
-    x: saved.x,
-    y: saved.y,
-    minWidth: 1080,
-    minHeight: 720,
-    title: "Cerul",
-    ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 19, y: 13 } }
-      : {}),
-    icon: desktopAppIconPath(),
-    show: false,
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
+  mainWindow = createMainBrowserWindow({
+    url: mainUrl,
+    preloadPath: preloadPath(),
+    iconPath: desktopAppIconPath(),
+    savedBounds: savedMainWindowBounds(),
+    persistBounds: persistMainWindowBounds,
+    isQuitting: () => isQuitting,
+    shouldCloseToTray,
+    quitFromClose: quitFromMainWindowClose,
+    shouldShowAtLaunch: shouldShowMainWindowAtLaunch,
+    wireDiagnostics: (window, reloadUrl) => wireRendererDiagnostics(window, "main", reloadUrl),
+    onDidFinishLoad: () => {
+      console.log("cerul_electron_main_window_loaded");
+      mainWindowLoaded = true;
+      flushQueuedMainRoute();
+      flushQueuedMainCommands();
+      maybeRunRendererVideoSmoke();
+    },
+    onClosed: () => {
+      mainWindow = null;
+      mainWindowLoaded = false;
     },
   });
-
-  secureDesktopWindow(mainWindow);
-  wireRendererDiagnostics(mainWindow, "main", mainUrl);
-  mainWindow.on("close", () => persistMainWindowBounds());
-  mainWindow.on("hide", () => persistMainWindowBounds());
-  mainWindow.on("close", (event) => {
-    if (isQuitting) {
-      return;
-    }
-    event.preventDefault();
-    void shouldCloseToTray().then((enabled) => {
-      if (enabled) {
-        mainWindow?.hide();
-        return;
-      }
-      quitFromMainWindowClose();
-    });
-  });
-  mainWindow.once("ready-to-show", () => {
-    if (shouldShowMainWindowAtLaunch()) {
-      mainWindow?.show();
-      mainWindow?.focus();
-    }
-  });
-  mainWindow.webContents.once("did-finish-load", () => {
-    console.log("cerul_electron_main_window_loaded");
-    mainWindowLoaded = true;
-    flushQueuedMainRoute();
-    flushQueuedMainCommands();
-    maybeRunRendererVideoSmoke();
-  });
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    mainWindowLoaded = false;
-  });
-  void mainWindow.loadURL(mainUrl);
 }
 
 function createOverlayWindow() {
-  const isMac = process.platform === "darwin";
-  overlayWindow = new BrowserWindow({
+  overlayWindow = createOverlayBrowserWindow({
+    url: `${appScheme}://${appHost}/overlay.html`,
     width: OVERLAY_WIDTH,
     height: overlayMeasuredHeight,
-    title: "",
-    icon: desktopAppIconPath(),
-    show: false,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    hasShadow: true,
-    roundedCorners: true,
-    // Real frosted glass on macOS: the OS compositor blurs whatever is behind
-    // the overlay window. (CSS backdrop-filter can't blur across OS windows, so
-    // a translucent panel alone just lets the page behind bleed through.)
-    vibrancy: isMac ? "under-window" : undefined,
-    visualEffectState: "active",
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
+    preloadPath: preloadPath(),
+    iconPath: desktopAppIconPath(),
+    onClosed: () => {
+      overlayWindow = null;
     },
   });
-
-  secureDesktopWindow(overlayWindow);
-  // Dismiss like a normal spotlight: when the overlay loses focus — the user
-  // clicks the main window, another page, or any other app — hide it.
-  // (Selecting a result also blurs the overlay as the main window comes
-  // forward, which hides it too; that's the desired behaviour.)
-  overlayWindow.on("blur", () => {
-    overlayWindow?.hide();
-  });
-  overlayWindow.on("closed", () => {
-    overlayWindow = null;
-  });
-  overlayWindow.webContents.once("did-finish-load", () => {
-    console.log("cerul_electron_overlay_window_loaded");
-  });
-  overlayWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
-    console.error(`Cerul overlay window failed to load code=${code} url=${url}: ${description}`);
-  });
-  void overlayWindow.loadURL(`${appScheme}://${appHost}/overlay.html`);
 }
 
 function createMenuBarWindow() {
   if (menuBarWindow) {
     return menuBarWindow;
   }
-  const isMac = process.platform === "darwin";
-  menuBarWindow = new BrowserWindow({
-    width: 332,
-    height: 312,
-    title: "Cerul",
-    icon: desktopAppIconPath(),
-    show: false,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    movable: true,
-    hasShadow: true,
-    roundedCorners: true,
-    vibrancy: isMac ? "popover" : undefined,
-    visualEffectState: "active",
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
+  menuBarWindow = createMenuBarBrowserWindow({
+    url: `${appScheme}://${appHost}/menubar.html`,
+    preloadPath: preloadPath(),
+    iconPath: desktopAppIconPath(),
+    onClosed: () => {
+      menuBarWindow = null;
     },
   });
-
-  secureDesktopWindow(menuBarWindow);
-  menuBarWindow.on("blur", () => {
-    menuBarWindow?.hide();
-  });
-  menuBarWindow.on("closed", () => {
-    menuBarWindow = null;
-  });
-  menuBarWindow.webContents.once("did-finish-load", () => {
-    console.log("cerul_electron_menubar_window_loaded");
-  });
-  menuBarWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
-    console.error(`Cerul menu bar window failed to load code=${code} url=${url}: ${description}`);
-  });
-  void menuBarWindow.loadURL(`${appScheme}://${appHost}/menubar.html`);
   return menuBarWindow;
-}
-
-function secureDesktopWindow(window: BrowserWindow) {
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
-    return { action: "deny" };
-  });
-  window.webContents.on("will-navigate", (event, url) => {
-    if (isAppUrl(url)) {
-      return;
-    }
-    event.preventDefault();
-    if (isExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
-  });
 }
 
 function setupTray() {
@@ -1056,7 +831,7 @@ function routeDeepLink(url?: string) {
     return;
   }
   const scheme = parsed.protocol.replace(/:$/, "");
-  if (!deepLinkSchemes.includes(scheme)) {
+  if (!isDeepLinkScheme(scheme)) {
     return;
   }
   if (parsed.hostname === "item") {
@@ -2193,265 +1968,6 @@ function executableName(name: string) {
   return process.platform === "win32" ? `${name}.exe` : name;
 }
 
-function registerDeepLinkProtocols() {
-  for (const scheme of deepLinkSchemes) {
-    if (app.isPackaged) {
-      app.setAsDefaultProtocolClient(scheme);
-    } else {
-      app.setAsDefaultProtocolClient(scheme, process.execPath, [process.argv[1]].filter(Boolean));
-    }
-  }
-}
-
-function firstDeepLinkArg(argv: string[]) {
-  return argv.find((arg) => deepLinkSchemes.some((scheme) => arg.startsWith(`${scheme}://`)));
-}
-
-function isAppUrl(rawUrl: string) {
-  try {
-    const url = new URL(rawUrl);
-    return url.protocol === `${appScheme}:` && url.hostname === appHost;
-  } catch {
-    return false;
-  }
-}
-
-function isExternalUrl(rawUrl: string) {
-  try {
-    const protocol = new URL(rawUrl).protocol;
-    return protocol === "http:" || protocol === "https:" || protocol === "mailto:";
-  } catch {
-    return false;
-  }
-}
-
-function isPathInsideDirectory(filePath: string, directory: string) {
-  const relative = path.relative(directory, filePath);
-  return relative === "" || (relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-// Only frames belonging to the app shell (app:// in production, the vite
-// dev server in development) may call privileged IPC — secure-token-get
-// returns plaintext tokens and open-dialog/oauth-start act on the user's
-// behalf.
-function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent) {
-  const url = event.senderFrame?.url ?? "";
-  const trustedAppFrame = url.startsWith(`${appScheme}://`);
-  const trustedDevFrame =
-    !app.isPackaged &&
-    (url.startsWith("http://127.0.0.1:1420") || url.startsWith("http://localhost:1420"));
-  const trusted = trustedAppFrame || trustedDevFrame;
-  if (!trusted) {
-    throw new Error(`IPC call from untrusted sender: ${url || "<unknown>"}`);
-  }
-}
-
-function registerIpcHandlers() {
-  ipcMain.handle("cerul:invoke", async (event, command: string, args?: Record<string, unknown>) => {
-    assertTrustedIpcSender(event);
-    return handleCommand(command, args ?? {});
-  });
-  ipcMain.handle("cerul:open-dialog", async (event, options) => {
-    assertTrustedIpcSender(event);
-    const result = await dialog.showOpenDialog({
-      properties: [
-        options?.directory ? "openDirectory" : "openFile",
-        options?.multiple ? "multiSelections" : undefined,
-      ].filter(Boolean) as Electron.OpenDialogOptions["properties"],
-      filters: options?.filters,
-    });
-    if (result.canceled) return null;
-    return options?.multiple ? result.filePaths : result.filePaths[0] ?? null;
-  });
-  ipcMain.handle("cerul:app-version", async (event) => {
-    assertTrustedIpcSender(event);
-    return app.getVersion();
-  });
-  ipcMain.handle("cerul:check-update", async (event) => {
-    assertTrustedIpcSender(event);
-    return checkForGitHubReleaseUpdate();
-  });
-  ipcMain.handle("cerul:updater-check", async (event, options?: UpdaterCheckOptions) => {
-    assertTrustedIpcSender(event);
-    const reached = await runDesktopUpdateCheck(options);
-    if (!reached) {
-      // Reject so the renderer treats this as a transient failure (retry soon,
-      // don't advance the throttle) rather than a successful "no update" result.
-      throw new Error("update-check-failed");
-    }
-    return latestUpdaterState;
-  });
-  ipcMain.handle("cerul:updater-get-state", async (event) => {
-    assertTrustedIpcSender(event);
-    return latestUpdaterState;
-  });
-  ipcMain.handle("cerul:updater-diagnostics", async (event) => {
-    assertTrustedIpcSender(event);
-    return collectUpdaterDiagnostics();
-  });
-  ipcMain.handle("cerul:updater-download", async (event) => {
-    assertTrustedIpcSender(event);
-    await startDesktopUpdateDownload();
-    return latestUpdaterState;
-  });
-  ipcMain.handle("cerul:updater-install", async (event) => {
-    assertTrustedIpcSender(event);
-    await installDesktopUpdate();
-  });
-  ipcMain.handle("cerul:store-get", async (event, storePath: string, key: string) => {
-    assertTrustedIpcSender(event);
-    return loadStore(storePath)[key];
-  });
-  ipcMain.handle("cerul:store-set", async (event, storePath: string, key: string, value: unknown) => {
-    assertTrustedIpcSender(event);
-    loadStore(storePath)[key] = value;
-    dirtyStores.add(storePath);
-  });
-  ipcMain.handle("cerul:store-save", async (event, storePath: string) => {
-    assertTrustedIpcSender(event);
-    saveStore(storePath);
-  });
-  ipcMain.handle("cerul:secure-token-get", async (event, key: string) => {
-    assertTrustedIpcSender(event);
-    return getSecureToken(key);
-  });
-  ipcMain.handle("cerul:secure-token-set", async (event, key: string, value: string | null) => {
-    assertTrustedIpcSender(event);
-    setSecureToken(key, value);
-  });
-  ipcMain.handle("cerul:oauth-start", async (event, provider: OAuthProvider) => {
-    assertTrustedIpcSender(event);
-    await startOAuthLogin(provider);
-  });
-  ipcMain.handle("cerul:renderer-error", async (event, payload: RendererDiagnostic) => {
-    assertTrustedIpcSender(event);
-    writeRendererDiagnostic({
-      ...payload,
-      window: payload.window ?? "renderer",
-    });
-  });
-}
-
-async function checkForGitHubReleaseUpdate(): Promise<DesktopUpdateInfo | null> {
-  const repository = process.env.CERUL_UPDATE_REPOSITORY ?? defaultUpdateRepository;
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-    throw new Error(`Invalid update repository: ${repository}`);
-  }
-
-  const currentVersion = normalizeVersion(app.getVersion());
-  const updateChannel = process.env.CERUL_UPDATE_CHANNEL ?? "";
-  const allowPrerelease = updateChannel === "alpha" || isPrereleaseVersion(currentVersion);
-  const response = await net.fetch(`https://api.github.com/repos/${repository}/releases?per_page=20`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": `Cerul/${currentVersion}`,
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`GitHub release check failed with HTTP ${response.status}`);
-  }
-
-  const releases = (await response.json()) as GitHubRelease[];
-  let bestUpdate: DesktopUpdateInfo | null = null;
-  for (const release of releases) {
-    if (release.draft) {
-      continue;
-    }
-    if (release.prerelease && !allowPrerelease) {
-      continue;
-    }
-    const version = releaseVersionFromTag(release.tag_name);
-    if (!version || !release.html_url || compareVersions(version, currentVersion) <= 0) {
-      continue;
-    }
-    if (!bestUpdate || compareVersions(version, bestUpdate.version) > 0) {
-      bestUpdate = {
-        version,
-        url: release.html_url,
-        name: release.name ?? undefined,
-        prerelease: Boolean(release.prerelease),
-        publishedAt: release.published_at ?? undefined,
-        releaseNotes: releaseNotesFromMarkdown(release.body, release.published_at),
-      };
-    }
-  }
-  return bestUpdate;
-}
-
-function releaseNotesFromMarkdown(
-  markdown: string | null | undefined,
-  publishedAt: string | null | undefined,
-): DesktopReleaseNotes | undefined {
-  const sections = releaseNoteSections(markdown ?? "");
-  if (sections.length === 0) {
-    return undefined;
-  }
-  return {
-    publishedAt: publishedAt ?? undefined,
-    sections,
-  };
-}
-
-function releaseNoteSections(markdown: string): DesktopReleaseNotes["sections"] {
-  const mainBody = markdown.split(/\n---\n/, 1)[0] ?? "";
-  const sections: DesktopReleaseNotes["sections"] = [];
-  let current: { title?: string; items: string[] } = { items: [] };
-
-  function pushCurrent() {
-    if (current.items.length > 0) {
-      sections.push({
-        title: current.title,
-        items: current.items.slice(0, 8),
-      });
-    }
-  }
-
-  for (const rawLine of mainBody.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("<!--")) {
-      continue;
-    }
-    const heading = line.match(/^#{1,6}\s+(.+)$/);
-    if (heading) {
-      pushCurrent();
-      current = { title: cleanReleaseNoteText(heading[1]), items: [] };
-      continue;
-    }
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    if (bullet) {
-      const item = cleanReleaseNoteText(bullet[1]);
-      if (item) {
-        current.items.push(item);
-      }
-      continue;
-    }
-    if (sections.length === 0 && current.items.length === 0) {
-      const item = cleanReleaseNoteText(line);
-      if (item && !/^download:/i.test(item) && !/^github:/i.test(item)) {
-        current.items.push(item);
-      }
-    }
-  }
-  pushCurrent();
-  return sections.slice(0, 4);
-}
-
-function cleanReleaseNoteText(value: string) {
-  return value
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/[*_`~]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function updateRepository() {
-  return process.env.CERUL_UPDATE_REPOSITORY ?? defaultUpdateRepository;
-}
-
-function releasesPageUrl() {
-  return `https://github.com/${updateRepository()}/releases`;
-}
-
 function updaterInstallCleanupLogPath() {
   return path.join(app.getPath("userData"), "updater-install-cleanup.log");
 }
@@ -2579,14 +2095,14 @@ function clearPreparedMacUpdateHandoff(version?: string) {
 }
 
 function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater, installWhenReady = false) {
-  const releaseNotes = currentUpdateReleaseNotes();
+  const releaseNotes = updaterController.currentReleaseNotes();
   updateInstallWhenPrepared = installWhenReady;
   if (process.platform !== "darwin") {
     if (installWhenReady) {
-      setUpdaterState({ phase: "installing", version, releaseNotes });
+      updaterController.setState({ phase: "installing", version, releaseNotes });
       setTimeout(() => void installDesktopUpdate(version), 500);
     } else {
-      setUpdaterState({ phase: "downloaded", version, releaseNotes });
+      updaterController.setState({ phase: "downloaded", version, releaseNotes });
     }
     return;
   }
@@ -2601,7 +2117,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
     rescueCancelPath: null,
   };
   preparedMacUpdateHandoff = macHandoff;
-  setUpdaterState({ phase: "preparing", version, releaseNotes });
+  updaterController.setState({ phase: "preparing", version, releaseNotes });
   appendUpdaterShipItRescueLog(
     `preparing_mac_update_for_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
   );
@@ -2617,7 +2133,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
     }
     cancelMacUpdateInstallHandoff(macHandoff);
     clearPreparedMacUpdateHandoff(version);
-    setUpdaterError(error, version);
+    updaterController.setError(error, version);
   };
   const onError = (error: unknown) => {
     fail(error);
@@ -2643,7 +2159,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
       appendUpdaterShipItRescueLog(
         `mac_update_ready_to_restart version=${version} ${describeMacShipItState(macHandoff.stateBaseline)}`,
       );
-      setUpdaterState({ phase: "downloaded", version, releaseNotes });
+      updaterController.setState({ phase: "downloaded", version, releaseNotes });
       if (shouldInstallWhenReady) {
         setTimeout(() => void installDesktopUpdate(version), 500);
       }
@@ -2660,7 +2176,7 @@ function prepareDownloadedUpdateForRestart(version: string, updater: AppUpdater,
   }
 
   setTimeout(() => {
-    if (runId !== macUpdatePreparationRunId || latestUpdaterState.phase !== "preparing") {
+    if (runId !== macUpdatePreparationRunId || updaterController.getState().phase !== "preparing") {
       return;
     }
     fail(new Error("macOS updater did not finish preparing the update before timeout"));
@@ -2761,7 +2277,7 @@ function collectUpdaterDiagnostics() {
     `resourcesPath=${process.resourcesPath}`,
     `userData=${userData}`,
     `cache=${appCache}`,
-    `latestUpdaterState=${JSON.stringify(latestUpdaterState)}`,
+    `latestUpdaterState=${JSON.stringify(updaterController.getState())}`,
     "",
     "== app-update.yml ==",
     readTextIfExists(appUpdateYml) ?? "[[missing]]",
@@ -2793,323 +2309,13 @@ function collectUpdaterDiagnostics() {
   return lines.join("\n");
 }
 
-function positiveFiniteNumber(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) && number > 0 ? number : undefined;
-}
-
-function updateDownloadState(
-  version: string,
-  progress: UpdaterProgress = {},
-  releaseNotes = currentUpdateReleaseNotes(),
-): UpdaterState {
-  const rawPercent = Number.isFinite(progress.percent) ? Number(progress.percent) : 0;
-  const percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
-  const bytesPerSecond = positiveFiniteNumber(progress.bytesPerSecond);
-  const transferredBytes = positiveFiniteNumber(progress.transferred);
-  const totalBytes = positiveFiniteNumber(progress.total);
-  const remainingBytes =
-    totalBytes !== undefined && transferredBytes !== undefined
-      ? Math.max(0, totalBytes - transferredBytes)
-      : undefined;
-  const etaSeconds =
-    bytesPerSecond !== undefined && remainingBytes !== undefined
-      ? Math.ceil(remainingBytes / bytesPerSecond)
-      : undefined;
-  return {
-    phase: "downloading",
-    version,
-    percent,
-    bytesPerSecond,
-    etaSeconds,
-    transferredBytes,
-    totalBytes,
-    releaseNotes,
-  };
-}
-
-function setUpdaterState(next: UpdaterState) {
-  latestUpdaterState = next;
-  // The renderer also pulls the current state on mount (cerul:updater-get-state)
-  // in case it subscribes after the first check emits.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("cerul:updater-event", next);
-  }
-}
-
-function currentUpdateReleaseNotes(): DesktopReleaseNotes | undefined {
-  return "releaseNotes" in latestUpdaterState ? latestUpdaterState.releaseNotes : undefined;
-}
-
-function setUpdaterError(error: unknown, version?: string) {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error("desktop updater error", error);
-  setUpdaterState({
-    phase: "error",
-    version,
-    message,
-    releaseUrl: releasesPageUrl(),
-    releaseNotes: currentUpdateReleaseNotes(),
-  });
-}
-
-type AvailableUpdaterState = Extract<UpdaterState, { phase: "available" }>;
-
-function newerReleasePageUpdateForVersion(version: string): AvailableUpdaterState | null {
-  if (
-    latestUpdaterState.phase !== "available" ||
-    latestUpdaterState.canAutoInstall ||
-    compareVersions(latestUpdaterState.version, version) <= 0
-  ) {
-    return null;
-  }
-  return latestUpdaterState;
-}
-
-function keepNewerReleasePageUpdate(version: string, source: string) {
-  const newerUpdate = newerReleasePageUpdateForVersion(version);
-  if (!newerUpdate) {
-    return false;
-  }
-  updaterCheckInstallRequested = false;
-  updateInstallRequested = false;
-  console.warn(
-    `electron-updater ${source} ignored stale update metadata version=${version}; newer GitHub release=${newerUpdate.version}`,
-  );
-  setUpdaterState(newerUpdate);
-  return true;
-}
-
-function startAutoUpdaterDownload(updater: AppUpdater, version: string) {
-  void updater.downloadUpdate().catch((error) => {
-    console.error("electron-updater auto download failed; release-page fallback active", error);
-    updaterCheckInstallRequested = false;
-    updateInstallRequested = false;
-    clearPreparedMacUpdateHandoff(version);
-    setUpdaterState({
-      phase: "error",
-      version,
-      message: error instanceof Error ? error.message : String(error),
-      releaseUrl: releasesPageUrl(),
-      releaseNotes: currentUpdateReleaseNotes(),
-    });
-  });
-}
-
-function getAutoUpdater(): AppUpdater | null {
-  if (autoUpdaterInstance) {
-    return autoUpdaterInstance;
-  }
-  try {
-    const mod = require("electron-updater") as typeof import("electron-updater");
-    autoUpdaterInstance = mod.autoUpdater;
-    return autoUpdaterInstance;
-  } catch (error) {
-    console.error("electron-updater unavailable; using release-page fallback", error);
-    return null;
-  }
-}
-
-function wireAutoUpdater(updater: AppUpdater) {
-  if (autoUpdaterWired) {
-    return;
-  }
-  autoUpdaterWired = true;
-  // Keep downloads behind our own version arbitration so stale generic-provider
-  // metadata cannot replace a newer GitHub release-page update with an older
-  // auto-installable build.
-  updater.autoDownload = false;
-  // On macOS, electron-updater emits its own update-downloaded event before
-  // native Squirrel has necessarily finished its handoff. Keep the Squirrel
-  // fetch/install tied to explicit quitAndInstall so a fallback app.quit cannot
-  // strand a staged update.
-  updater.autoInstallOnAppQuit = process.platform !== "darwin";
-  updater.on("update-available", (info) => {
-    const version = normalizeVersion(info.version);
-    if (keepNewerReleasePageUpdate(version, "update-available")) {
-      return;
-    }
-    clearPreparedMacUpdateHandoff();
-    if (updaterCheckInstallRequested) {
-      updateInstallRequested = true;
-      updaterCheckInstallRequested = false;
-    }
-    setUpdaterState(updateDownloadState(version));
-    startAutoUpdaterDownload(updater, version);
-  });
-  updater.on("update-not-available", () => {
-    updaterCheckInstallRequested = false;
-    updateInstallRequested = false;
-    clearPreparedMacUpdateHandoff();
-  });
-  updater.on("download-progress", (progress) => {
-    const version =
-      latestUpdaterState.phase === "available" || latestUpdaterState.phase === "downloading"
-        ? latestUpdaterState.version
-        : normalizeVersion(app.getVersion());
-    setUpdaterState(updateDownloadState(version, progress));
-  });
-  updater.on("update-downloaded", (info) => {
-    const version = normalizeVersion(info.version);
-    if (keepNewerReleasePageUpdate(version, "update-downloaded")) {
-      return;
-    }
-    const installWhenReady = updateInstallRequested || updaterCheckInstallRequested;
-    updateInstallRequested = false;
-    updaterCheckInstallRequested = false;
-    prepareDownloadedUpdateForRestart(version, updater, installWhenReady);
-  });
-  updater.on("error", (error) => {
-    // No latest-mac.yml, a signature mismatch on ad-hoc builds, or a network
-    // failure. Degrade to the GitHub-release fallback so the pill still lets the
-    // user grab the new version from the download page.
-    console.error("electron-updater error", error);
-    const fallbackUrl =
-      latestUpdaterState.phase === "available" ? latestUpdaterState.releaseUrl : releasesPageUrl();
-    updaterCheckInstallRequested = false;
-    if (updateInstallRequested) {
-      updateInstallRequested = false;
-    }
-    clearPreparedMacUpdateHandoff();
-    setUpdaterState({
-      phase: "error",
-      version:
-        latestUpdaterState.phase === "available" ||
-        latestUpdaterState.phase === "downloading" ||
-        latestUpdaterState.phase === "preparing" ||
-        latestUpdaterState.phase === "installing" ||
-        latestUpdaterState.phase === "downloaded"
-          ? latestUpdaterState.version
-          : undefined,
-      message: error instanceof Error ? error.message : String(error),
-      releaseUrl: fallbackUrl,
-      releaseNotes: currentUpdateReleaseNotes(),
-    });
-  });
-}
-
-// Signing-independent detection (GitHub releases API) that works on today's
-// ad-hoc builds. Drives the "available" pill; never clobbers an in-flight
-// download/installed state.
-// Returns false when the release probe could not reach a conclusion (network or
-// server error). Callers use this to avoid reporting a false "up to date" and to
-// retry soon instead of advancing the check throttle.
-async function refreshManualUpdateState(): Promise<boolean> {
-  let info: DesktopUpdateInfo | null = null;
-  try {
-    info = await checkForGitHubReleaseUpdate();
-  } catch (error) {
-    console.error("github update check failed", error);
-    return false;
-  }
-  if (info) {
-    if (latestUpdaterState.phase === "idle" || latestUpdaterState.phase === "available") {
-      setUpdaterState({
-        phase: "available",
-        version: info.version,
-        releaseUrl: info.url,
-        canAutoInstall: false,
-        releaseNotes: info.releaseNotes,
-      });
-    }
-  } else if (latestUpdaterState.phase === "available") {
-    setUpdaterState({ phase: "idle" });
-  }
-  return true;
-}
-
-// Resolves true when the check reached a definitive answer (update found or
-// confirmed up to date), false when it failed to reach the update server. The
-// IPC handler rejects on false so the renderer's automatic-check retry path and
-// the About page surface the failure instead of a misleading "up to date".
-async function runDesktopUpdateCheck(options: UpdaterCheckOptions = {}): Promise<boolean> {
-  const installWhenDownloaded = options.installWhenDownloaded === true;
-
-  // Dev demo hook: CERUL_FAKE_UPDATE=<version> renders the pill without a real
-  // release so the flow is reviewable before signed releases exist.
-  const fake = process.env.CERUL_FAKE_UPDATE;
-  if (fake && !app.isPackaged) {
-    setUpdaterState({
-      phase: "available",
-      version: normalizeVersion(fake),
-      releaseUrl: releasesPageUrl(),
-      canAutoInstall: false,
-      releaseNotes: {
-        publishedAt: new Date().toISOString(),
-        sections: [
-          {
-            title: "Improved",
-            items: [
-              "Show release notes from the update button before opening the download page.",
-              "Keep update status visible while the app checks, downloads, and prepares a restart.",
-              "Use GitHub release notes generated by the existing release workflow.",
-            ],
-          },
-          {
-            title: "Fixed",
-            items: ["Avoid showing an empty update card when release notes are missing."],
-          },
-        ],
-      },
-    });
-    return true;
-  }
-
-  if (
-    latestUpdaterState.phase === "downloading" ||
-    latestUpdaterState.phase === "preparing" ||
-    latestUpdaterState.phase === "downloaded" ||
-    latestUpdaterState.phase === "installing"
-  ) {
-    if (installWhenDownloaded) {
-      if (latestUpdaterState.phase === "downloading") {
-        updateInstallRequested = true;
-      } else if (latestUpdaterState.phase === "preparing") {
-        updateInstallWhenPrepared = true;
-      } else if (latestUpdaterState.phase === "downloaded") {
-        await installDesktopUpdate(latestUpdaterState.version);
-      }
-    }
-    return true;
-  }
-
-  const githubOk = await refreshManualUpdateState();
-
-  // Opportunistic in-place updater — dormant until releases ship signed +
-  // notarized with a latest-mac.yml that Squirrel.Mac can apply. When that
-  // lands, these events upgrade the pill from "open download page" to a
-  // one-click download followed by an automatic restart-to-install.
-  if (!app.isPackaged) {
-    return githubOk;
-  }
-  const updater = getAutoUpdater();
-  if (!updater) {
-    return githubOk;
-  }
-  try {
-    wireAutoUpdater(updater);
-    if (installWhenDownloaded) {
-      updaterCheckInstallRequested = true;
-    }
-    await updater.checkForUpdates();
-    return true;
-  } catch (error) {
-    if (installWhenDownloaded) {
-      updaterCheckInstallRequested = false;
-      updateInstallRequested = false;
-    }
-    console.error("electron-updater check failed; release-page fallback active", error);
-    return githubOk;
-  }
-}
-
 // Manual "Check for Updates…" entry points (tray + native app menu). Mirrors the
 // Settings → About button but surfaces feedback natively: an up-to-date result
 // shows a dialog (otherwise a silent check looks broken), while a found update
 // brings the window forward so the rail "Update" pill is visible.
 async function handleManualUpdateCheck() {
-  const reached = await runDesktopUpdateCheck();
-  if (latestUpdaterState.phase !== "idle") {
+  const reached = await updaterController.runCheck();
+  if (updaterController.getState().phase !== "idle") {
     focusMainWindow();
     return;
   }
@@ -3384,38 +2590,6 @@ function windowMenuTemplate(isMac: boolean): MenuItemConstructorOptions {
   };
 }
 
-async function startDesktopUpdateDownload() {
-  if (latestUpdaterState.phase !== "available") {
-    return;
-  }
-  const { releaseNotes, releaseUrl, canAutoInstall, version } = latestUpdaterState;
-  // Without a working in-place updater, "update" means open the download page.
-  if (!canAutoInstall) {
-    await shell.openExternal(releaseUrl);
-    return;
-  }
-  const updater = getAutoUpdater();
-  if (!updater) {
-    await shell.openExternal(releaseUrl);
-    return;
-  }
-  updateInstallRequested = true;
-  try {
-    setUpdaterState(updateDownloadState(version, {}, releaseNotes));
-    await updater.downloadUpdate();
-  } catch (error) {
-    console.error("electron-updater download failed; opening release page", error);
-    updateInstallRequested = false;
-    setUpdaterState({
-      phase: "error",
-      version,
-      message: error instanceof Error ? error.message : String(error),
-      releaseUrl,
-      releaseNotes,
-    });
-  }
-}
-
 function clearUpdateInstallFallbackTimers() {
   updateInstallFallbackRunId += 1;
   if (updateInstallFallbackTimer) {
@@ -3438,10 +2612,9 @@ async function abortDesktopUpdateInstallHandoff(
     cancelMacUpdateInstallHandoff(macHandoff);
   }
   clearPreparedMacUpdateHandoff(version);
-  updateInstallRequested = false;
-  updaterCheckInstallRequested = false;
+  updaterController.clearInstallRequests();
   isQuitting = false;
-  setUpdaterError(error, version);
+  updaterController.setError(error, version);
   try {
     await startRustCore();
   } catch (restartError) {
@@ -3506,7 +2679,8 @@ async function scheduleMacUpdateInstallExitFallback(
   if (!isFreshMacShipItState(stateBaseline)) {
     const message = "macOS updater did not stage a fresh ShipItState.plist before fallback quit";
     appendUpdaterShipItRescueLog(`${message} ${describeMacShipItState(stateBaseline)}`);
-    const version = latestUpdaterState.phase === "installing" ? latestUpdaterState.version : undefined;
+    const updaterState = updaterController.getState();
+    const version = updaterState.phase === "installing" ? updaterState.version : undefined;
     await abortDesktopUpdateInstallHandoff(new Error(message), version, macHandoff);
     return;
   }
@@ -3669,24 +2843,25 @@ async function prepareDesktopUpdateInstall(version: string) {
 }
 
 async function installDesktopUpdate(version?: string) {
-  const updater = getAutoUpdater();
+  const updater = updaterController.getAutoUpdater();
   if (!updater) {
-    setUpdaterError(new Error("electron-updater is unavailable"), version);
+    updaterController.setError(new Error("electron-updater is unavailable"), version);
     return;
   }
   let installingVersion = version;
   if (!installingVersion) {
+    const updaterState = updaterController.getState();
     installingVersion =
-      latestUpdaterState.phase === "preparing" ||
-      latestUpdaterState.phase === "downloaded" ||
-      latestUpdaterState.phase === "installing"
-        ? latestUpdaterState.version
+      updaterState.phase === "preparing" ||
+      updaterState.phase === "downloaded" ||
+      updaterState.phase === "installing"
+        ? updaterState.version
         : app.getVersion();
   }
-  setUpdaterState({
+  updaterController.setState({
     phase: "installing",
     version: installingVersion,
-    releaseNotes: currentUpdateReleaseNotes(),
+    releaseNotes: updaterController.currentReleaseNotes(),
   });
   let macHandoff: MacUpdateInstallHandoff | undefined;
   try {
@@ -3722,87 +2897,6 @@ async function installDesktopUpdate(version?: string) {
   } catch (error) {
     await abortDesktopUpdateInstallHandoff(error, installingVersion, macHandoff);
   }
-}
-
-function releaseVersionFromTag(tag: string | undefined) {
-  if (!tag) {
-    return null;
-  }
-  const version = normalizeVersion(tag);
-  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)
-    ? version
-    : null;
-}
-
-function normalizeVersion(version: string) {
-  return version.trim().replace(/^v/i, "");
-}
-
-function isPrereleaseVersion(version: string) {
-  return normalizeVersion(version).split("+", 1)[0].includes("-");
-}
-
-function compareVersions(left: string, right: string) {
-  const a = parseVersion(left);
-  const b = parseVersion(right);
-  for (let index = 0; index < 3; index += 1) {
-    if (a.core[index] !== b.core[index]) {
-      return a.core[index] > b.core[index] ? 1 : -1;
-    }
-  }
-  return comparePrerelease(a.prerelease, b.prerelease);
-}
-
-function parseVersion(version: string) {
-  const withoutBuild = normalizeVersion(version).split("+", 1)[0];
-  const prereleaseStart = withoutBuild.indexOf("-");
-  const coreVersion = prereleaseStart === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseStart);
-  const prerelease = prereleaseStart === -1 ? "" : withoutBuild.slice(prereleaseStart + 1);
-  const core = coreVersion.split(".").map((part) => Number.parseInt(part, 10));
-  return {
-    core: [core[0] ?? 0, core[1] ?? 0, core[2] ?? 0],
-    prerelease: prerelease ? prerelease.split(".") : [],
-  };
-}
-
-function comparePrerelease(left: string[], right: string[]) {
-  if (left.length === 0 && right.length === 0) {
-    return 0;
-  }
-  if (left.length === 0) {
-    return 1;
-  }
-  if (right.length === 0) {
-    return -1;
-  }
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const a = left[index];
-    const b = right[index];
-    if (a === undefined) {
-      return -1;
-    }
-    if (b === undefined) {
-      return 1;
-    }
-    const numericA = /^\d+$/.test(a);
-    const numericB = /^\d+$/.test(b);
-    if (numericA && numericB) {
-      const numberA = Number.parseInt(a, 10);
-      const numberB = Number.parseInt(b, 10);
-      if (numberA !== numberB) {
-        return numberA > numberB ? 1 : -1;
-      }
-      continue;
-    }
-    if (numericA !== numericB) {
-      return numericA ? -1 : 1;
-    }
-    if (a !== b) {
-      return a > b ? 1 : -1;
-    }
-  }
-  return 0;
 }
 
 async function handleCommand(command: string, args: Record<string, unknown>) {

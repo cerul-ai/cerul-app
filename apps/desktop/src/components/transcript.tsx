@@ -10,6 +10,7 @@ import type { TranscriptLine } from "../lib/types";
 export function TranscriptList({
   lines,
   videoRef,
+  audioRef,
   videoReady = false,
   activeTime,
   matchTime,
@@ -18,10 +19,11 @@ export function TranscriptList({
 }: {
   lines: TranscriptLine[];
   videoRef?: RefObject<HTMLVideoElement | null>;
+  audioRef?: RefObject<HTMLAudioElement | null>;
   videoReady?: boolean;
   activeTime?: string;
   matchTime?: string;
-  onSeek?: (timestamp: string) => void;
+  onSeek?: (timestamp: string, line?: TranscriptLine) => void;
   renderAction?: (line: TranscriptLine) => ReactNode;
 }) {
   // Follow the playhead: the active line is the last one whose start is at or
@@ -35,13 +37,13 @@ export function TranscriptList({
     [lines],
   );
   useEffect(() => {
-    const video = videoRef?.current;
-    if (!video) {
+    const media = audioRef?.current ?? videoRef?.current;
+    if (!media) {
       setActiveId(null);
       return;
     }
     const recompute = () => {
-      const seconds = video.currentTime;
+      const seconds = media.currentTime;
       let id: string | null = null;
       let best = -1;
       for (const entry of lineStarts) {
@@ -53,13 +55,13 @@ export function TranscriptList({
       setActiveId((prev) => (prev === id ? prev : id));
     };
     recompute();
-    video.addEventListener("timeupdate", recompute);
-    video.addEventListener("seeking", recompute);
+    media.addEventListener("timeupdate", recompute);
+    media.addEventListener("seeking", recompute);
     return () => {
-      video.removeEventListener("timeupdate", recompute);
-      video.removeEventListener("seeking", recompute);
+      media.removeEventListener("timeupdate", recompute);
+      media.removeEventListener("seeking", recompute);
     };
-  }, [videoRef, videoReady, lineStarts]);
+  }, [audioRef, videoRef, videoReady, lineStarts]);
 
   return (
     <div className="seg-line transcript">
@@ -69,8 +71,8 @@ export function TranscriptList({
           line={line}
           // Prefer the live playhead; fall back to activeTime (e.g. before the
           // video is ready, or in fixtures with no real playback).
-          isActive={activeId ? line.id === activeId : line.time === activeTime}
-          isMatch={line.time === matchTime}
+          isActive={activeId ? line.id === activeId : line.time === activeTime || line.id === activeTime}
+          isMatch={line.time === matchTime || line.id === matchTime}
           onSeek={onSeek}
           renderAction={renderAction}
         />
@@ -91,19 +93,20 @@ const TranscriptRow = memo(function TranscriptRow({
   line: TranscriptLine;
   isActive: boolean;
   isMatch: boolean;
-  onSeek?: (timestamp: string) => void;
+  onSeek?: (timestamp: string, line?: TranscriptLine) => void;
   renderAction?: (line: TranscriptLine) => ReactNode;
 }) {
+  const displayTime = line.displayTime ?? line.time;
   return (
     <div
       className={["seg-btn", isActive ? "selected hot" : "", isMatch ? "accent matched" : ""]
         .filter(Boolean)
         .join(" ")}
     >
-      <button type="button" className="seg-btn-main" onClick={() => onSeek?.(line.time)}>
+      <button type="button" className="seg-btn-main" onClick={() => onSeek?.(line.time, line)}>
         <span className="ts mono">
           {isMatch ? <CircleDot size={12} /> : null}
-          {line.time}
+          {displayTime}
         </span>
         <p className="seg-text">{line.text}</p>
       </button>

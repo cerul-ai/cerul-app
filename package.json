@@ -4,6 +4,10 @@
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22",
+    "pnpm": "9.15.9"
+  },
   "scripts": {
     "dev": "./run.sh",
     "dev:electron": "pnpm --filter @cerul/electron-shell dev",

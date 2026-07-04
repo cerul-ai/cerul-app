@@ -4,6 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 pub mod file_video;
 pub mod folder_audio;
+pub mod folder_document;
 pub mod folder_image;
 pub mod folder_video;
 pub mod rss_podcast;
@@ -26,6 +27,7 @@ pub const REGISTERED_PLUGIN_TYPES: &[&str] = &[
     "folder_video",
     "folder_audio",
     "folder_image",
+    "folder_document",
     "file_video",
     "youtube",
     "web_video",
@@ -63,6 +65,7 @@ pub fn build(
         "folder_video" => Ok(Box::new(folder_video::FolderVideo::new(config)?)),
         "folder_audio" => Ok(Box::new(folder_audio::FolderAudio::new(config)?)),
         "folder_image" => Ok(Box::new(folder_image::FolderImage::new(config)?)),
+        "folder_document" => Ok(Box::new(folder_document::FolderDocument::new(config)?)),
         "file_video" => Ok(Box::new(file_video::FileVideo::new(config)?)),
         "youtube" => Ok(Box::new(youtube::YouTube::new(config)?)),
         "web_video" => Ok(Box::new(web_video::WebVideo::new(config)?)),
@@ -109,6 +112,12 @@ mod tests {
                 json!({ "path": temp.path() }),
                 "folder_image",
                 &[ContentType::Image][..],
+            ),
+            (
+                "folder_document",
+                json!({ "path": temp.path() }),
+                "folder_document",
+                &[ContentType::Document][..],
             ),
             (
                 "youtube",

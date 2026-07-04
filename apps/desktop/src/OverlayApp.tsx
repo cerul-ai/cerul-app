@@ -9,7 +9,15 @@ import { resolveThemePreference, settingString } from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
 import { loadPersistedUiState, persistFirstRunActive } from "./lib/uiStore";
 import { isBackendFallbackSnippet } from "./lib/results";
-import { BrandMark } from "./components/brand";
+import {
+  OverlayHint,
+  OverlayLoading,
+  OverlayMark,
+  OverlayThumbGlyph,
+  OverlayWatermark,
+  highlightOverlay,
+} from "./components/overlay-leaf";
+import { readOverlayRecentSearches } from "./lib/overlay-recent-searches";
 
 type OverlayResult = {
   itemId: string;
@@ -27,28 +35,10 @@ type OverlayResult = {
 type SearchState = "idle" | "loading" | "ready" | "error";
 type OverlayMode = "search" | "ask";
 
-const recentSearchesStorageKey = "cerul.recentSearches.v1";
 const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 50;
 const searchDebounceMs = 100;
 const overlayRetainQueryMs = 30_000;
 const defaultHotkeyLabel = "Alt Space";
-
-function readRecentSearches() {
-  try {
-    const raw = window.localStorage.getItem(recentSearchesStorageKey);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        .slice(0, 5)
-      : [];
-  } catch {
-    return [];
-  }
-}
 
 // F3 · A pasted link (rather than a search phrase) turns the read-only overlay
 // into a quick "index this" inbox. Whitespace ⇒ it's a query, not a URL.
@@ -74,7 +64,7 @@ export function OverlayApp() {
   const [error, setError] = useState<string | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
   const [hotkeyLabel, setHotkeyLabel] = useState(defaultHotkeyLabel);
-  const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => readOverlayRecentSearches());
   const [urlQueue, setUrlQueue] = useState<{
     status: "idle" | "queuing" | "done" | "error";
     message?: string;
@@ -186,7 +176,7 @@ export function OverlayApp() {
   }, []);
 
   function refreshRecentSearches() {
-    setRecentSearches(readRecentSearches());
+    setRecentSearches(readOverlayRecentSearches());
   }
 
   useEffect(() => {
@@ -262,8 +252,8 @@ export function OverlayApp() {
     const timer = window.setTimeout(() => {
       setAskState("loading");
       setAskError(null);
-      api
-        .askLibrary(trimmedQuery, 5, lang)
+      const askLibrary = api.isAgentExperienceEnabled() ? api.askAgentLibrary : api.askLibrary;
+      askLibrary(trimmedQuery, 5, lang)
         .then((answer) => {
           if (cancelled) {
             return;
@@ -513,6 +503,20 @@ export function OverlayApp() {
               {askOverlayState === "results" && askAnswer ? (
                 <div className="overlay-answer">
                   <p>{askAnswer.answer}</p>
+                  {askAnswer.usage ? (
+                    <div className="overlay-answer-usage">
+                      <span>
+                        {askAnswer.usage.privacy === "local_only"
+                          ? t("overlay.ask.usage.local")
+                          : t("overlay.ask.usage.remote")}
+                      </span>
+                      <span>
+                        {t("overlay.ask.usage.credits", {
+                          credits: askAnswer.usage.credits_used,
+                        })}
+                      </span>
+                    </div>
+                  ) : null}
                   {askAnswer.citations.length > 0 ? (
                     <div className="overlay-answer-cites">
                       {askAnswer.citations.map((citation) => (
@@ -674,7 +678,7 @@ export function OverlayApp() {
             <div className="overlay-empty">
               <strong>{t("overlay.empty.noMatchesTitle")}</strong>
               <span>{t("overlay.empty.noMatchesBody")}</span>
-              <BrandMark className="overlay-watermark" />
+              <OverlayWatermark />
             </div>
           ) : null}
           </>
@@ -685,65 +689,10 @@ export function OverlayApp() {
   );
 }
 
-function OverlayMark() {
-  return <BrandMark className="overlay-mark" />;
-}
-
-function OverlayHint({
-  state,
-  hotkeyLabel,
-}: {
-  state: "empty" | "loading" | "error" | "results" | "noresult";
-  hotkeyLabel: string;
-}) {
-  if (state === "results" || state === "loading") {
-    return (
-      <span className="overlay-hint">
-        <kbd>↑↓</kbd>
-        <kbd>↵</kbd>
-      </span>
-    );
-  }
-  if (state === "noresult" || state === "error") {
-    return (
-      <span className="overlay-hint">
-        <kbd>esc</kbd>
-      </span>
-    );
-  }
-  return (
-    <span className="overlay-hint">
-      <kbd>{hotkeyLabel}</kbd>
-    </span>
-  );
-}
-
-function OverlayThumbGlyph({ contentType, chunkType }: { contentType: string; chunkType: string }) {
-  if (contentType === "audio") {
-    return (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-        <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4Z" />
-        <path d="M15.5 9a3.5 3.5 0 0 1 0 6" />
-      </svg>
-    );
-  }
-  if (contentType === "image" || isVisualChunk(chunkType)) {
-    return (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-        <rect x="4" y="5" width="16" height="14" rx="2" />
-        <path d="m7 16 4-4 3 3 2-2 3 3" />
-        <circle cx="9" cy="9" r="1" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M7 4.5v15l13-7.5z" />
-    </svg>
-  );
-}
-
 function overlayModality(contentType: string, chunkType: string, sourceType: string | null, t: TFunction) {
+  if (contentType === "document" || chunkType === "document") {
+    return { key: "document" as const, label: t("overlay.modality.document") };
+  }
   if (contentType === "image" || isVisualChunk(chunkType)) {
     return { key: "visual" as const, label: t("overlay.modality.visual") };
   }
@@ -755,29 +704,6 @@ function overlayModality(contentType: string, chunkType: string, sourceType: str
 
 function isVisualChunk(chunkType: string) {
   return chunkType === "keyframe" || chunkType === "image" || chunkType === "ocr" || chunkType === "understanding";
-}
-
-function OverlayLoading() {
-  return (
-    <div className="overlay-skeleton">
-      {[0, 1, 2].map((index) => (
-        <div key={index} className="overlay-skeleton__row">
-          <span className="overlay-skeleton__bar" style={{ width: 66, height: 40 }} />
-          <span style={{ flex: 1 }}>
-            <span
-              className="overlay-skeleton__bar"
-              style={{ display: "block", width: "58%", height: 12 }}
-            />
-            <span
-              className="overlay-skeleton__bar"
-              style={{ display: "block", width: "82%", height: 10, marginTop: 7 }}
-            />
-          </span>
-          <span className="overlay-skeleton__bar" style={{ width: 34, height: 12 }} />
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function mapOverlayResult(
@@ -809,7 +735,10 @@ function mapOverlayResult(
       record.item_title ?? item?.title ?? item?.raw_path ?? item?.external_id ?? record.item_id,
     ),
     source: overlaySourceLabel(item, sources, t),
-    timestamp: formatTimestamp(record.start_sec),
+    timestamp:
+      item?.content_type === "document" || record.chunk_type === "document"
+        ? t("result.timestamp.document")
+        : formatTimestamp(record.start_sec),
     snippet: overlaySnippet(record, t),
     contentType: item?.content_type ?? "video",
     chunkType: record.chunk_type,
@@ -951,21 +880,4 @@ function formatTimestamp(seconds: number | null) {
   const minutes = Math.floor(total / 60);
   const remaining = `${total % 60}`.padStart(2, "0");
   return `${minutes}:${remaining}`;
-}
-
-function highlightOverlay(text: string, phrase: string) {
-  const needle = phrase.trim();
-  const index = needle ? text.toLowerCase().indexOf(needle.toLowerCase()) : -1;
-
-  if (index === -1) {
-    return text;
-  }
-
-  return (
-    <>
-      {text.slice(0, index)}
-      <mark>{text.slice(index, index + needle.length)}</mark>
-      {text.slice(index + needle.length)}
-    </>
-  );
 }
