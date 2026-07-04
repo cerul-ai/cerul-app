@@ -15,16 +15,16 @@ rg -qF "function overlaySourceName" apps/desktop/src/OverlayApp.tsx
 rg -qF "source.type === \"web_video\" ? t(\"overlay.source.webVideo\") : t(\"overlay.source.youtube\")" apps/desktop/src/OverlayApp.tsx
 rg -qF "compactUrlLabel(url, label)" apps/desktop/src/OverlayApp.tsx
 rg -qF "compactUrlLabel(feedUrl, t(\"overlay.source.podcast\"))" apps/desktop/src/OverlayApp.tsx
-rg -qF "function OverlayThumbGlyph" apps/desktop/src/OverlayApp.tsx
-rg -qF "function OverlayHint" apps/desktop/src/OverlayApp.tsx
+rg -qF "function OverlayThumbGlyph" apps/desktop/src/components/overlay-leaf.tsx
+rg -qF "function OverlayHint" apps/desktop/src/components/overlay-leaf.tsx
 rg -qF "chunkType: record.chunk_type" apps/desktop/src/OverlayApp.tsx
 rg -qF "sourceType: source?.type ?? null" apps/desktop/src/OverlayApp.tsx
-rg -qF "function isVisualChunk" apps/desktop/src/OverlayApp.tsx
-rg -qF "chunkType === \"understanding\"" apps/desktop/src/OverlayApp.tsx
+rg -qF "function isVisualChunk" apps/desktop/src/components/overlay-leaf.tsx
+rg -qF "chunkType === \"understanding\"" apps/desktop/src/components/overlay-leaf.tsx
 rg -qF "contentType: item?.content_type ?? \"video\"" apps/desktop/src/OverlayApp.tsx
 rg -qF "sourceType === \"rss_podcast\"" apps/desktop/src/OverlayApp.tsx
 rg -qF "searchState === \"ready\"" apps/desktop/src/OverlayApp.tsx
-rg -qF "<kbd>{hotkeyLabel}</kbd>" apps/desktop/src/OverlayApp.tsx
+rg -qF "<kbd>{hotkeyLabel}</kbd>" apps/desktop/src/components/overlay-leaf.tsx
 rg -qF "overlay-panel-body" apps/desktop/src/OverlayApp.tsx
 rg -qF "overlay.searchPlaceholder" apps/desktop/src/OverlayApp.tsx
 rg -qF "const overlayRetainQueryMs = 30_000" apps/desktop/src/OverlayApp.tsx

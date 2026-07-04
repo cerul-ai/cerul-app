@@ -13,12 +13,12 @@ rg -qF "const [selectedItemIds, setSelectedItemIds]" apps/desktop/src
 rg -qF "async function runBatchAction" apps/desktop/src
 rg -qF "const activeJobCount = visibleJobs.filter(isActiveJob).length" apps/desktop/src
 rg -qF ": [];" apps/desktop/src/App.tsx
-rg -qF "<IndexingStrip" apps/desktop/src/App.tsx
-rg -qF "jobs={jobs}" apps/desktop/src/App.tsx
-rg -qF "items={items}" apps/desktop/src/App.tsx
-rg -qF "stepStarts={stepStarts}" apps/desktop/src/App.tsx
-rg -qF "paused={indexingPaused}" apps/desktop/src/App.tsx
-rg -qF "onOpen={onOpenJobs}" apps/desktop/src/App.tsx
+rg -qF "<IndexingStrip" apps/desktop/src/screens/library.tsx
+rg -qF "jobs={jobs}" apps/desktop/src/screens/library.tsx
+rg -qF "items={items}" apps/desktop/src/screens/library.tsx
+rg -qF "stepStarts={stepStarts}" apps/desktop/src/screens/library.tsx
+rg -qF "paused={indexingPaused}" apps/desktop/src/screens/library.tsx
+rg -qF "onOpen={onOpenJobs}" apps/desktop/src/screens/library.tsx
 rg -qF "active.reduce(" apps/desktop/src/components/indexing-strip.tsx
 rg -qF "/ active.length" apps/desktop/src/components/indexing-strip.tsx
 rg -qF 'rep.job_type !== "index_audio"' apps/desktop/src/components/indexing-strip.tsx
@@ -53,11 +53,11 @@ rg -qF "export function chunkFrameUrl" apps/desktop/src/lib/api.ts
 rg -qF "export async function listJobs" apps/desktop/src/lib/api.ts
 rg -qF "export async function deleteItem" apps/desktop/src/lib/api.ts
 rg -qF "export async function reindexItem" apps/desktop/src/lib/api.ts
-rg -qF '"/items/:id"' crates/cerul-api/src/lib.rs
-rg -qF "get(get_item).patch(update_item).delete(remove_item)" crates/cerul-api/src/lib.rs
-rg -qF '.route("/items/:id/reindex", post(reindex_item))' crates/cerul-api/src/lib.rs
-rg -qF "async fn remove_item" crates/cerul-api/src/lib.rs
-rg -qF "async fn reindex_item" crates/cerul-api/src/lib.rs
+rg -qF '"/items/:id"' crates/cerul-api/src/routes/library.rs
+rg -qF "get(get_item).patch(update_item).delete(remove_item)" crates/cerul-api/src/routes/library.rs
+rg -qF '.route("/items/:id/reindex", post(reindex_item))' crates/cerul-api/src/routes/library.rs
+rg -qF "async fn remove_item" crates/cerul-api/src/routes/library.rs
+rg -qF "async fn reindex_item" crates/cerul-api/src/routes/library.rs
 rg -qF "item_delete_and_reindex_update_storage" crates/cerul-api/src/lib.rs
 rg -qF "list_items_includes_first_frame_thumbnail_chunk" crates/cerul-api/src/lib.rs
 rg -qF ".library-filter-row .select" apps/desktop/src/styles/extensions.css
