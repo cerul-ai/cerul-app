@@ -3189,23 +3189,39 @@ function AdvancedSettings({
             label={t("settings.advanced.remoteKey.label")}
             description={remoteApiKeySet ? t("settings.advanced.remoteKey.setHint") : undefined}
             control={
-              <input
-                className="input settings-input"
-                type="password"
-                value={remoteKeyDraft}
-                disabled={disabled}
-                placeholder={
-                  remoteApiKeySet
-                    ? t("settings.advanced.remoteKey.placeholderSet")
-                    : t("settings.advanced.remoteKey.placeholder")
-                }
-                onChange={(event) => setRemoteKeyDraft(event.currentTarget.value)}
-                onBlur={() => {
-                  if (remoteKeyDraft.trim().length === 0) return;
-                  void onSettingsChange({ remote_api_key: remoteKeyDraft });
-                  setRemoteKeyDraft("");
-                }}
-              />
+              <div className="settings-stack-control">
+                <input
+                  className="input settings-input"
+                  type="password"
+                  value={remoteKeyDraft}
+                  disabled={disabled}
+                  placeholder={
+                    remoteApiKeySet
+                      ? t("settings.advanced.remoteKey.placeholderSet")
+                      : t("settings.advanced.remoteKey.placeholder")
+                  }
+                  onChange={(event) => setRemoteKeyDraft(event.currentTarget.value)}
+                  onBlur={() => {
+                    if (remoteKeyDraft.trim().length === 0) return;
+                    void onSettingsChange({ remote_api_key: remoteKeyDraft });
+                    setRemoteKeyDraft("");
+                  }}
+                />
+                {remoteApiKeySet ? (
+                  <button
+                    className="btn btn-secondary sm"
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      setRemoteKeyDraft("");
+                      void onSettingsChange({ remote_api_key: "" });
+                    }}
+                  >
+                    <Trash2 size={15} />
+                    <span>{t("settings.advanced.remoteKey.clear")}</span>
+                  </button>
+                ) : null}
+              </div>
             }
           />
         ) : null}

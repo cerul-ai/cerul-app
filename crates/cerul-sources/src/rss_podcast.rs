@@ -8,6 +8,7 @@ use quick_xml::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -270,7 +271,7 @@ fn file_url_path(location: &str) -> Option<&str> {
 
 fn parse_feed(body: &[u8]) -> anyhow::Result<ParsedFeed> {
     let xml = decode_supported_xml(body)?;
-    let mut reader = Reader::from_str(xml);
+    let mut reader = Reader::from_str(xml.as_ref());
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut path = Vec::<String>::new();
@@ -353,15 +354,26 @@ fn parse_feed(body: &[u8]) -> anyhow::Result<ParsedFeed> {
     Ok(feed)
 }
 
-fn decode_supported_xml(body: &[u8]) -> anyhow::Result<&str> {
+fn decode_supported_xml(body: &[u8]) -> anyhow::Result<Cow<'_, str>> {
     if let Some(encoding) = declared_xml_encoding(body) {
         let normalized = encoding.to_ascii_lowercase().replace('_', "-");
+        if matches!(normalized.as_str(), "utf-8" | "utf8" | "us-ascii" | "ascii") {
+            return std::str::from_utf8(body)
+                .map(Cow::Borrowed)
+                .context("feed XML is not valid UTF-8");
+        }
+        let decoder = encoding_rs::Encoding::for_label(encoding.as_bytes())
+            .ok_or_else(|| anyhow::anyhow!("unsupported XML encoding: {encoding}"))?;
+        let (decoded, _, had_errors) = decoder.decode(body);
         anyhow::ensure!(
-            matches!(normalized.as_str(), "utf-8" | "utf8" | "us-ascii" | "ascii"),
-            "unsupported XML encoding: {encoding}"
+            !had_errors,
+            "feed XML could not be decoded as declared encoding: {encoding}"
         );
+        return Ok(decoded);
     }
-    std::str::from_utf8(body).context("feed XML is not valid UTF-8")
+    std::str::from_utf8(body)
+        .map(Cow::Borrowed)
+        .context("feed XML is not valid UTF-8")
 }
 
 fn declared_xml_encoding(body: &[u8]) -> Option<String> {
@@ -545,7 +557,7 @@ fn is_entry_element(tag: &str) -> bool {
 }
 
 fn is_feed_root(tag: &str) -> bool {
-    matches!(tag, "rss" | "feed")
+    matches!(tag, "rss" | "feed" | "rdf")
 }
 
 fn local_name(name: &[u8]) -> String {
@@ -907,6 +919,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_iso_8859_1_declared_rss_snapshot() {
+        let feed = parse_feed(
+            b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>
+<rss version=\"2.0\">
+  <channel>
+    <title>Caf\xe9 Podcast</title>
+    <item>
+      <title>\xc9pisode One</title>
+      <enclosure url=\"https://example.com/audio.mp3\" />
+    </item>
+  </channel>
+</rss>",
+        )
+        .unwrap();
+
+        assert_eq!(feed.title.as_deref(), Some("Café Podcast"));
+        assert_eq!(feed.entries[0].title.as_deref(), Some("Épisode One"));
+    }
+
+    #[test]
+    fn parses_rss_1_rdf_feed_root() {
+        let feed = parse_feed(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns="http://purl.org/rss/1.0/">
+  <channel rdf:about="https://example.com/feed">
+    <title>RDF Podcast</title>
+  </channel>
+  <item rdf:about="https://example.com/episodes/1">
+    <title>Episode One</title>
+    <link>https://example.com/episodes/1</link>
+  </item>
+</rdf:RDF>"#,
+        )
+        .unwrap();
+
+        assert_eq!(feed.title.as_deref(), Some("RDF Podcast"));
+        assert_eq!(feed.entries.len(), 1);
+        assert_eq!(feed.entries[0].title.as_deref(), Some("Episode One"));
+        assert_eq!(
+            feed.entries[0].effective_enclosure_url().as_deref(),
+            Some("https://example.com/episodes/1")
+        );
+    }
+
+    #[test]
     fn parse_feed_rejects_non_feed_xml() {
         let error = parse_feed(br#"<?xml version="1.0"?><html><title>Nope</title></html>"#)
             .unwrap_err()
@@ -916,9 +975,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_feed_rejects_unsupported_declared_encoding() {
+    fn parse_feed_rejects_unknown_declared_encoding() {
         let error = parse_feed(
-            br#"<?xml version="1.0" encoding="ISO-8859-1"?><rss version="2.0"><channel /></rss>"#,
+            br#"<?xml version="1.0" encoding="x-cerul-unknown"?><rss version="2.0"><channel /></rss>"#,
         )
         .unwrap_err()
         .to_string();

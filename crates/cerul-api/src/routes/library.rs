@@ -383,7 +383,19 @@ async fn remove_item(
         "#,
         [id.as_str()],
     )?;
-    let removed = tx.execute("DELETE FROM items WHERE id = ?1", [id.as_str()])?;
+    let removed = if has_running_jobs {
+        tx.execute(
+            r#"
+            UPDATE items
+            SET status = 'deleting',
+                error = NULL
+            WHERE id = ?1
+            "#,
+            [id.as_str()],
+        )?
+    } else {
+        tx.execute("DELETE FROM items WHERE id = ?1", [id.as_str()])?
+    };
     if removed != 1 {
         return Err(ApiError::not_found(format!("item not found: {id}")));
     }

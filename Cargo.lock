@@ -677,6 +677,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "cerul-models",
+ "encoding_rs",
  "notify",
  "quick-xml",
  "reqwest",

@@ -79,10 +79,15 @@ const SOURCE_EXACT: u8 = 1 << 2;
 const PER_ITEM_CAP: usize = 3;
 const LEXICAL_ONLY_SCORE_CEILING: f32 = 0.76;
 
-fn searchable_unit_predicate(index_version_placeholder: &str) -> String {
+fn searchable_unit_predicate(index_version_placeholder: &str, include_pending: bool) -> String {
+    let status_predicate = if include_pending {
+        "i.search_index_status IN ('indexed', 'pending')"
+    } else {
+        "i.search_index_status = 'indexed'"
+    };
     format!(
         "i.status IN ('indexed', 'processing') \
-         AND i.search_index_status IN ('indexed', 'pending') \
+         AND {status_predicate} \
          AND i.search_index_version = u.index_version \
          AND u.index_version = {index_version_placeholder}"
     )
@@ -412,7 +417,7 @@ async fn sqlite_fts_search(
         return Ok(Vec::new());
     };
     let conn = cerul_storage::sqlite::open(paths)?;
-    let searchable_predicate = searchable_unit_predicate("?2");
+    let searchable_predicate = searchable_unit_predicate("?2", true);
     let sql = format!(
         r#"
         SELECT u.id, bm25(retrieval_units_fts) AS rank_score
@@ -458,7 +463,7 @@ async fn sqlite_literal_search(
     };
     let strong_exact = strong_exact_intent(query);
     let conn = cerul_storage::sqlite::open(paths)?;
-    let searchable_predicate = searchable_unit_predicate("?2");
+    let searchable_predicate = searchable_unit_predicate("?2", true);
     let sql = format!(
         r#"
         SELECT u.id
@@ -499,6 +504,32 @@ async fn sqlite_literal_search(
 }
 
 fn legacy_rebuild_chunk_search(
+    paths: &AppPaths,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let mut results = legacy_rebuild_chunk_fts_search(paths, query, limit)?;
+    for literal in legacy_rebuild_chunk_literal_search(paths, query, limit)? {
+        if let Some(existing) = results
+            .iter_mut()
+            .find(|result| result.playback_chunk_id == literal.playback_chunk_id)
+        {
+            existing.source_mask |= literal.source_mask;
+            existing.exact_match |= literal.exact_match;
+            if literal.score > existing.score {
+                existing.score = literal.score;
+            }
+        } else {
+            results.push(literal);
+        }
+        if results.len() >= limit {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+fn legacy_rebuild_chunk_fts_search(
     paths: &AppPaths,
     query: &str,
     limit: usize,
@@ -570,6 +601,84 @@ fn legacy_rebuild_chunk_search(
                 similarity_score: None,
                 exact_match: false,
                 source_mask: SOURCE_TEXT,
+                item_title,
+                nearest_frame_chunk_id,
+            })
+        },
+    )?;
+
+    let mut results = rows.collect::<Result<Vec<_>, _>>()?;
+    attach_nearest_frame_chunk_ids(&conn, &mut results)?;
+    Ok(results)
+}
+
+fn legacy_rebuild_chunk_literal_search(
+    paths: &AppPaths,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let Some(pattern) = sqlite_like_pattern(query) else {
+        return Ok(Vec::new());
+    };
+    let strong_exact = strong_exact_intent(query);
+    let conn = cerul_storage::sqlite::open(paths)?;
+    let sql = r#"
+        SELECT
+            c.id,
+            c.item_id,
+            c.chunk_type,
+            c.start_sec,
+            c.end_sec,
+            c.text,
+            c.frame_path,
+            i.title
+        FROM chunks c
+        JOIN items i ON i.id = c.item_id
+        WHERE c.text IS NOT NULL
+          AND c.text LIKE ?1 ESCAPE '\'
+          AND i.status = 'indexed'
+          AND (
+            i.search_index_version IS NULL
+            OR i.search_index_version != ?2
+            OR i.search_index_status IS NULL
+            OR i.search_index_status != 'indexed'
+          )
+        ORDER BY COALESCE(c.start_sec, 9223372036854775807), c.id
+        LIMIT ?3
+        "#;
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(
+        (&pattern, cerul_storage::SEARCH_INDEX_VERSION, limit as i64),
+        |row| {
+            let playback_chunk_id: String = row.get(0)?;
+            let item_id: String = row.get(1)?;
+            let chunk_type: String = row.get(2)?;
+            let start_sec: Option<f64> = row.get(3)?;
+            let end_sec: Option<f64> = row.get(4)?;
+            let text: Option<String> = row.get(5)?;
+            let frame_path: Option<String> = row.get(6)?;
+            let item_title: Option<String> = row.get(7)?;
+            let snippet = text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(320).collect())
+                .unwrap_or_else(|| fallback_snippet(&chunk_type, start_sec));
+            let nearest_frame_chunk_id = frame_path.as_ref().map(|_| playback_chunk_id.clone());
+
+            Ok(SearchResult {
+                playback_chunk_id,
+                item_id,
+                chunk_type,
+                start_sec,
+                end_sec,
+                snippet,
+                frame_path,
+                match_score: 0.0,
+                score: 0.01,
+                similarity_score: None,
+                exact_match: strong_exact,
+                source_mask: SOURCE_TEXT | if strong_exact { SOURCE_EXACT } else { 0 },
                 item_title,
                 nearest_frame_chunk_id,
             })
@@ -970,7 +1079,7 @@ fn load_units_for_hits(
         .collect::<Vec<_>>()
         .join(", ");
     let version_placeholder = format!("?{}", unit_ids.len() + 1);
-    let searchable_predicate = searchable_unit_predicate(&version_placeholder);
+    let searchable_predicate = searchable_unit_predicate(&version_placeholder, false);
     let sql = format!(
         r#"
         SELECT
@@ -2201,6 +2310,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_rebuild_chunk_search_uses_literal_chinese_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 7.0,
+                end: 12.0,
+                text: "所有光源只能出现在地下室".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        assert!(legacy_rebuild_chunk_fts_search(&paths, "地下室", 5)
+            .unwrap()
+            .is_empty());
+
+        let results = legacy_rebuild_chunk_search(&paths, "地下室", 5).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].playback_chunk_id, "item-1:transcript:000000");
+        assert!(results[0].snippet.contains("地下室"));
+    }
+
+    #[tokio::test]
     async fn sqlite_text_search_does_not_filter_by_active_embedding_profile() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
@@ -2256,7 +2395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_text_search_includes_pending_rebuilt_retrieval_units() {
+    async fn sqlite_text_search_includes_pending_units_without_vector_hydration() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
@@ -2295,10 +2434,7 @@ mod tests {
             hits.first().map(|hit| hit.chunk_id.as_str()),
             Some("item-1:unit:v2:000000")
         );
-        assert_eq!(
-            hydrated.first().map(|hit| hit.playback_chunk_id.as_str()),
-            Some("item-1:unit:v2:000000")
-        );
+        assert!(hydrated.is_empty());
     }
 
     #[tokio::test]

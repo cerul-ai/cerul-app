@@ -809,7 +809,8 @@ export function ResultDetail({
       ? selectedDocumentChunkId === startChunkId
         ? matchedSnippet
         : moreMatches?.find((match) => match.playbackChunkId === selectedDocumentChunkId)?.snippet ??
-          matchedSnippet
+          selectedDocumentChunk?.text ??
+          null
       : null;
   const detailTimestamp =
     item.contentType === "document" && selectedDocumentChunk

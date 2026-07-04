@@ -17,6 +17,7 @@ use zip::ZipArchive;
 
 const DOCUMENT_CHUNK_BUDGET: usize = 3_200;
 const MAX_PLAIN_TEXT_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_OFFICE_XML_PART_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExtractedDocumentChunk {
@@ -160,6 +161,11 @@ fn read_zip_text(archive: &mut ZipArchive<File>, name: &str) -> anyhow::Result<S
     let mut file = archive
         .by_name(name)
         .with_context(|| format!("missing package part {name}"))?;
+    anyhow::ensure!(
+        file.size() <= MAX_OFFICE_XML_PART_BYTES,
+        "office XML part {name} exceeds {} byte limit",
+        MAX_OFFICE_XML_PART_BYTES
+    );
     let mut text = String::new();
     file.read_to_string(&mut text)
         .with_context(|| format!("failed to read package part {name}"))?;
@@ -524,6 +530,30 @@ mod tests {
             .to_string();
 
         assert!(error.contains("plain text document exceeds"));
+    }
+
+    #[test]
+    fn extract_docx_rejects_oversized_xml_part_before_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.docx");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let mut oversized = std::io::repeat(b'a').take(MAX_OFFICE_XML_PART_BYTES + 1);
+        std::io::copy(&mut oversized, &mut zip).unwrap();
+        zip.finish().unwrap();
+
+        let error = extract_docx_chunks(&path).unwrap_err();
+        let error_chain = format!("{error:#}");
+
+        assert!(
+            error_chain.contains("office XML part word/document.xml exceeds"),
+            "unexpected error: {error_chain}"
+        );
     }
 
     #[test]

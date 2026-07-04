@@ -936,6 +936,15 @@ impl VideoPipeline {
                         0,
                         0,
                     )?;
+                    if let Err(delete_error) =
+                        cerul_storage::vectors::delete_item_embeddings(&self.paths, item_id).await
+                    {
+                        tracing::warn!(
+                            error = %delete_error,
+                            item_id,
+                            "failed to delete stale video vectors after retrieval index write failure"
+                        );
+                    }
                     let searchable_units =
                         cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
                     let (search_status, search_error) = if searchable_units > 0 {
@@ -3008,16 +3017,37 @@ mod tests {
         assert_eq!(summary.image_vectors, 0);
 
         let conn = sqlite::open(&paths).unwrap();
-        let (status, metadata): (String, String) = conn
+        let (status, metadata, search_index_status, search_index_unit_count, search_index_vector_count): (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+        ) = conn
             .query_row(
-                "SELECT status, metadata FROM items WHERE id = 'item-1'",
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
 
         assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert_eq!(search_index_unit_count, 1);
+        assert_eq!(search_index_vector_count, 0);
         assert_eq!(metadata["embedding_index_status"], "failed");
         assert_eq!(metadata["visual_index_status"], "display_only");
         assert!(metadata["embedding_index_error"]
