@@ -706,7 +706,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "zvec",
+ "zvec-safe",
 ]
 
 [[package]]
@@ -5465,8 +5465,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "zvec"
+name = "zvec-safe"
 version = "0.1.0"
+source = "git+https://github.com/cerul-ai/zvec-safe?rev=829e63df60e5ee0509ac60f5e94308bc06e523d3#829e63df60e5ee0509ac60f5e94308bc06e523d3"
 dependencies = [
  "bindgen 0.70.1",
  "sha2",

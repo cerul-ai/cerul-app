@@ -16,7 +16,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid = { version = "1", features = ["v5"] }
-zvec = { version = "0.1", features = ["bundled"] }
+zvec = { package = "zvec-safe", git = "https://github.com/cerul-ai/zvec-safe", rev = "829e63df60e5ee0509ac60f5e94308bc06e523d3", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
