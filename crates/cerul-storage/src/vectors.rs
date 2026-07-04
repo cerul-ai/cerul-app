@@ -1355,6 +1355,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zvec_collection_survives_cached_handle_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let record = test_record("chunk-1", "chunk-1", "item-1", [1.0, 0.0, 0.0]);
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&record),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+
+        shutdown_vector_index();
+
+        assert_eq!(
+            collection_point_count(&paths, &collection).await.unwrap(),
+            1
+        );
+        let hits =
+            search_collection_for_profile(&paths, &collection, &[1.0, 0.0, 0.0], 1, &profile)
+                .await
+                .unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.chunk_id.as_str()),
+            Some("chunk-1")
+        );
+        shutdown_vector_index();
+    }
+
+    #[tokio::test]
     async fn stale_unified_delete_preserves_keep_records() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();

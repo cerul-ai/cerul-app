@@ -438,6 +438,8 @@ export type SearchHealthDiagnostics = {
   embedding_profile_id: string | null;
   vector_index_collection: string | null;
   vector_index_point_count: number | null;
+  vector_index_expected_point_count: number;
+  vector_index_drift_item_count: number;
   vector_index_text_collection: string | null;
   vector_index_image_collection: string | null;
   vector_index_text_points: number | null;

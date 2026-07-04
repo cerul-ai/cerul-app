@@ -547,6 +547,7 @@ function createOverlayWindow() {
     height: overlayMeasuredHeight,
     preloadPath: preloadPath(),
     iconPath: desktopAppIconPath(),
+    shouldHideOnBlur: shouldHideOverlayOnBlur,
     onClosed: () => {
       overlayWindow = null;
     },
@@ -743,8 +744,24 @@ function normalizeAccelerator(label: string) {
 }
 
 function showOverlay() {
+  if (overlayWindow?.isDestroyed()) {
+    overlayWindow = null;
+  }
   if (!overlayWindow) {
     createOverlayWindow();
+  }
+  if (!overlayWindow) {
+    return;
+  }
+  suppressOverlayBlur();
+  if (overlayWindow.isVisible()) {
+    if (!overlayWindow.isFocused()) {
+      if (process.platform === "darwin") {
+        app.focus({ steal: true });
+      }
+      overlayWindow.focus();
+    }
+    return;
   }
   // Re-mirror the theme on each summon so a mid-session theme switch is reflected
   // in the native vibrancy. Fire-and-forget keeps the spotlight summon instant;
@@ -755,21 +772,67 @@ function showOverlay() {
   // Open compact and top-anchored; the renderer measures the panel and grows the
   // window to fit it via "resize_overlay", so there's no transparent dead-zone
   // below the panel showing the app underneath.
-  overlayWindow?.setBounds({
+  overlayWindow.setBounds({
     x: Math.round(display.x + display.width / 2 - OVERLAY_WIDTH / 2),
     y: Math.round(display.y + display.height * 0.16),
     width: OVERLAY_WIDTH,
     height: overlayMeasuredHeight,
   });
-  overlayWindow?.show();
-  overlayWindow?.focus();
+  overlayWindow.show();
+  if (process.platform === "darwin") {
+    app.focus({ steal: true });
+  }
+  overlayWindow.focus();
 }
 
 const OVERLAY_WIDTH = 560; // window hugs the panel; OS shadow provides the float
 const OVERLAY_MIN_HEIGHT = 120;
 const OVERLAY_INITIAL_HEIGHT = 200;
 const OVERLAY_MAX_HEIGHT = 640;
+const OVERLAY_BLUR_GRACE_MS = 250;
 let overlayMeasuredHeight = OVERLAY_INITIAL_HEIGHT;
+let overlayBlurSuppressedUntilMs = 0;
+let overlayDeferredBlurTimer: NodeJS.Timeout | null = null;
+
+function suppressOverlayBlur(durationMs = OVERLAY_BLUR_GRACE_MS) {
+  clearDeferredOverlayBlur();
+  overlayBlurSuppressedUntilMs = Math.max(overlayBlurSuppressedUntilMs, Date.now() + durationMs);
+}
+
+function shouldHideOverlayOnBlur() {
+  const remainingMs = overlayBlurSuppressedUntilMs - Date.now();
+  if (remainingMs <= 0) {
+    return true;
+  }
+  scheduleDeferredOverlayBlur(remainingMs + 20);
+  return false;
+}
+
+function scheduleDeferredOverlayBlur(delayMs: number) {
+  if (overlayDeferredBlurTimer) {
+    return;
+  }
+  overlayDeferredBlurTimer = setTimeout(() => {
+    overlayDeferredBlurTimer = null;
+    if (
+      overlayWindow &&
+      !overlayWindow.isDestroyed() &&
+      overlayWindow.isVisible() &&
+      !overlayWindow.isFocused() &&
+      Date.now() >= overlayBlurSuppressedUntilMs
+    ) {
+      overlayWindow.hide();
+    }
+  }, delayMs);
+}
+
+function clearDeferredOverlayBlur() {
+  if (!overlayDeferredBlurTimer) {
+    return;
+  }
+  clearTimeout(overlayDeferredBlurTimer);
+  overlayDeferredBlurTimer = null;
+}
 
 function resizeOverlay(requestedHeight: number) {
   if (!overlayWindow || !Number.isFinite(requestedHeight)) {
@@ -782,6 +845,9 @@ function resizeOverlay(requestedHeight: number) {
     return;
   }
   // Keep the top edge anchored — grow downward.
+  if (overlayWindow.isVisible()) {
+    suppressOverlayBlur();
+  }
   overlayWindow.setBounds({ x: bounds.x, y: bounds.y, width: OVERLAY_WIDTH, height });
 }
 

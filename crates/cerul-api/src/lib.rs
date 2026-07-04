@@ -968,6 +968,8 @@ struct SearchHealthDiagnostics {
     embedding_profile_id: Option<String>,
     vector_index_collection: Option<String>,
     vector_index_point_count: Option<usize>,
+    vector_index_expected_point_count: usize,
+    vector_index_drift_item_count: usize,
     vector_index_text_collection: Option<String>,
     vector_index_image_collection: Option<String>,
     vector_index_text_points: Option<usize>,
@@ -1082,6 +1084,29 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         "#
         ),
     )?;
+    let vector_index_expected_point_count = count_query(
+        &conn,
+        &format!(
+            r#"
+        SELECT COALESCE(SUM(search_index_vector_count), 0)
+        FROM items
+        WHERE search_index_version = {search_index_version}
+          AND search_index_status = 'indexed'
+        "#
+        ),
+    )?;
+    let vector_indexed_item_count = count_query(
+        &conn,
+        &format!(
+            r#"
+        SELECT COUNT(*)
+        FROM items
+        WHERE search_index_version = {search_index_version}
+          AND search_index_status = 'indexed'
+          AND COALESCE(search_index_vector_count, 0) > 0
+        "#
+        ),
+    )?;
     let orphan_job_count = count_query(
         &conn,
         "SELECT COUNT(*) FROM jobs AS j LEFT JOIN items AS i ON i.id = j.item_id WHERE i.id IS NULL",
@@ -1108,6 +1133,8 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         embedding_profile_id: None,
         vector_index_collection: None,
         vector_index_point_count: None,
+        vector_index_expected_point_count,
+        vector_index_drift_item_count: 0,
         vector_index_text_collection: None,
         vector_index_image_collection: None,
         vector_index_text_points: None,
@@ -1144,6 +1171,20 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
             diagnostics.vector_index_text_points = Some(count);
             diagnostics.embedded_text_chunk_count = Some(count);
             diagnostics.text_embedding_gap_count = Some(retrieval_unit_count.saturating_sub(count));
+            if vector_index_expected_point_count > count {
+                diagnostics.vector_index_drift_item_count = vector_indexed_item_count;
+                diagnostics.items_needing_rebuild = diagnostics
+                    .items_needing_rebuild
+                    .saturating_add(vector_indexed_item_count);
+                diagnostics.vector_index_error = Some(
+                    if count == 0 {
+                        "vector_index_empty_but_db_declares_vectors"
+                    } else {
+                        "vector_index_point_count_mismatch"
+                    }
+                    .to_string(),
+                );
+            }
         }
         Err(error) => {
             tracing::warn!(%error, collection, "failed to count vector index unified points for search diagnostics");
@@ -5766,6 +5807,45 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some(ACTIVE_VECTOR_INDEX_BACKEND)
+        );
+    }
+
+    #[tokio::test]
+    async fn search_diagnostics_reports_vector_index_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-1', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title, indexed_at, status, metadata,
+                    search_index_version, search_index_status, search_index_unit_count, search_index_vector_count
+                )
+                VALUES (
+                    'item-1', 'source-1', 'video', 'video.mp4', 'Video', 100, 'indexed', '{}',
+                    ?1, 'indexed', 2, 4
+                )
+                "#,
+                [cerul_storage::SEARCH_INDEX_VERSION],
+            )
+            .unwrap();
+        }
+
+        let diagnostics = search_health_diagnostics(&paths).await.unwrap();
+
+        assert_eq!(diagnostics.vector_index_point_count, Some(0));
+        assert_eq!(diagnostics.vector_index_expected_point_count, 4);
+        assert_eq!(diagnostics.vector_index_drift_item_count, 1);
+        assert_eq!(diagnostics.items_needing_rebuild, 1);
+        assert_eq!(
+            diagnostics.vector_index_error.as_deref(),
+            Some("vector_index_empty_but_db_declares_vectors")
         );
     }
 
