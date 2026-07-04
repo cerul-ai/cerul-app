@@ -126,6 +126,10 @@ describe("results helpers", () => {
   it("handles fallback snippets and confidence buckets", () => {
     expect(backendFallbackSnippet("keyframe", 40)).toBe("Visual frame at 0:40");
     expect(isBackendFallbackSnippet("Visual frame at 0:40", "keyframe", 40)).toBe(true);
+    expect(backendFallbackSnippet("document", null)).toBe("Document match");
+    expect(isBackendFallbackSnippet("Document match", "document", null)).toBe(true);
+    expect(isBackendFallbackSnippet("Search match", "document", null)).toBe(true);
+    expect(isBackendFallbackSnippet("Search match at 0:12", "document", 12)).toBe(true);
     expect(resultConfidence(0.9, 1)).toBe("high");
     expect(resultConfidence(0.5, 1)).toBe("medium");
     expect(resultConfidence(0.2, 1)).toBe("low");

@@ -1107,7 +1107,7 @@ fn modality_boost(result: &SearchResult, ranking_preference: SearchRankingPrefer
             0.0
         };
     }
-    let modality = result_modality(result);
+    let modality = explicit_result_modality(result, ranking_preference);
     if modality == SearchResultModality::from_preference(ranking_preference) {
         EXPLICIT_MODALITY_BOOST
     } else {
@@ -1139,6 +1139,18 @@ fn result_modality(result: &SearchResult) -> SearchResultModality {
         return modality;
     }
     item_modality(result).unwrap_or(SearchResultModality::Video)
+}
+
+fn explicit_result_modality(
+    result: &SearchResult,
+    ranking_preference: SearchRankingPreference,
+) -> SearchResultModality {
+    if ranking_preference == SearchRankingPreference::Video
+        && item_modality(result) == Some(SearchResultModality::Video)
+    {
+        return SearchResultModality::Video;
+    }
+    result_modality(result)
 }
 
 fn smart_result_modality(result: &SearchResult) -> SearchResultModality {
@@ -2060,6 +2072,22 @@ mod tests {
         );
 
         let scored = finalize_results(vec![visual, transcript], 10, SearchRankingPreference::Audio);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-transcript");
+    }
+
+    #[test]
+    fn explicit_video_ranking_treats_video_transcripts_as_video() {
+        let image = vector_result("chunk-image", "item-image", "image", "image", 0.58);
+        let transcript = vector_result(
+            "chunk-transcript",
+            "item-video",
+            "transcript",
+            "video",
+            0.53,
+        );
+
+        let scored = finalize_results(vec![image, transcript], 10, SearchRankingPreference::Video);
 
         assert_eq!(scored[0].playback_chunk_id, "chunk-transcript");
     }
