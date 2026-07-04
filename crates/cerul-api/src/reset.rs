@@ -54,6 +54,7 @@ fn reset_local_library_database(paths: &AppPaths) -> anyhow::Result<LibraryReset
     }
 
     tx.commit()?;
+    cerul_storage::vectors::clear_vector_collections(paths)?;
     let compaction_error = compact_library_database(&conn).err().map(|error| {
         let message = error.to_string();
         tracing::warn!(%message, "failed to compact SQLite database after local library reset");

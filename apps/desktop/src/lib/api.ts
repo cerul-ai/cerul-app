@@ -710,11 +710,14 @@ export async function askAgentLibrary(q: string, limit = 6, locale?: string) {
 }
 
 function v1SearchResultToAskCitation(result: V1SearchResult): AskCitation {
+  const timestamp =
+    result.time.timestamp ??
+    (result.item.content_type === "document" ? "Document" : "00:00");
   return {
     playback_chunk_id: result.id,
     item_id: result.item.id,
     title: result.item.title,
-    timestamp: result.time.timestamp ?? "00:00",
+    timestamp,
     start_sec: result.time.start_sec,
     snippet: result.text.snippet || result.text.quote,
   };

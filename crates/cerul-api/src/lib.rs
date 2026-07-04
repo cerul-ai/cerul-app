@@ -7397,6 +7397,40 @@ mod tests {
             .unwrap();
         }
 
+        let profile = cerul_storage::vectors::list_embedding_profiles(&paths)
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.id == "profile-1")
+            .unwrap();
+        let collection = cerul_storage::vectors::unified_collection_name(
+            &paths,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        );
+        let vector = cerul_storage::vectors::VectorRecord::new_for_dimensions_with_point_key(
+            "unit-1".to_string(),
+            "unit-1".to_string(),
+            "item-1".to_string(),
+            vec![1.0, 0.0, 0.0, 0.0],
+            profile.output_dimension,
+        )
+        .unwrap();
+        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            &[vector],
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cerul_storage::vectors::collection_point_count(&paths, &collection)
+                .await
+                .unwrap(),
+            1
+        );
+
         let app = router_with_paths(paths.clone());
         let response = app
             .oneshot(
@@ -7445,8 +7479,21 @@ mod tests {
             assert_eq!(count(table), 0, "{table} should be empty after reset");
         }
         assert_eq!(count("providers"), 2);
-        assert_eq!(count("embedding_profiles"), 1);
+        let preserved_profile_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM embedding_profiles WHERE id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_profile_count, 1);
         assert_eq!(count("inference_usage_events"), 1);
+        assert_eq!(
+            cerul_storage::vectors::collection_point_count(&paths, &collection)
+                .await
+                .unwrap(),
+            0
+        );
         let media_dir = cerul_storage::read_string_setting(&paths, "media_dir")
             .unwrap()
             .unwrap();
