@@ -1,6 +1,8 @@
 use std::{
+    any::Any,
     fs::File,
     io::Read,
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
 };
 
@@ -74,8 +76,17 @@ fn extract_plain_text_chunks(
 }
 
 fn extract_pdf_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
-    let pages = pdf_extract::extract_text_by_pages(path)
-        .with_context(|| format!("failed to extract PDF text: {}", path.display()))?;
+    let pages = catch_unwind(AssertUnwindSafe(|| {
+        pdf_extract::extract_text_by_pages(path)
+    }))
+    .map_err(|panic| {
+        anyhow::anyhow!(
+            "PDF text extraction panicked for {}: {}",
+            path.display(),
+            panic_payload_message(panic.as_ref())
+        )
+    })?
+    .with_context(|| format!("failed to extract PDF text: {}", path.display()))?;
     let mut chunks = Vec::new();
     for (index, page_text) in pages.into_iter().enumerate() {
         let page = u32::try_from(index + 1).ok();
@@ -87,6 +98,14 @@ fn extract_pdf_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>
         ));
     }
     Ok(chunks)
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string())
 }
 
 fn extract_docx_chunks(path: &Path) -> anyhow::Result<Vec<ExtractedDocumentChunk>> {
@@ -505,5 +524,20 @@ mod tests {
             .to_string();
 
         assert!(error.contains("plain text document exceeds"));
+    }
+
+    #[test]
+    fn extract_pdf_chunks_reports_malformed_pdf_as_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("broken.pdf");
+        std::fs::write(&path, b"not a pdf").unwrap();
+
+        let error = extract_pdf_chunks(&path).unwrap_err().to_string();
+
+        assert!(
+            error.contains("failed to extract PDF text")
+                || error.contains("PDF text extraction panicked"),
+            "unexpected PDF extraction error: {error}"
+        );
     }
 }

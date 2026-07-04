@@ -815,6 +815,98 @@ mod tests {
     }
 
     #[test]
+    fn parses_realistic_itunes_rss_snapshot() {
+        let feed = parse_feed(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title><![CDATA[Acquired]]></title>
+    <link>https://www.acquired.fm/</link>
+    <itunes:image href="https://cdn.example.com/acquired/artwork.jpg" />
+    <item>
+      <guid isPermaLink="false">acquired-episode-001</guid>
+      <title><![CDATA[The Company Story & Strategy]]></title>
+      <pubDate>Tue, 02 Jul 2024 10:00:00 GMT</pubDate>
+      <content:encoded><![CDATA[Long-form notes with <strong>HTML</strong> markup.]]></content:encoded>
+      <enclosure url="https://cdn.example.com/acquired/001.mp3?download=1&amp;source=rss"
+                 type="audio/mpeg"
+                 length="123456789" />
+    </item>
+    <item>
+      <guid isPermaLink="false">acquired-episode-002</guid>
+      <title>Follow-up &amp; Listener Notes</title>
+      <link>https://www.acquired.fm/episodes/follow-up</link>
+    </item>
+  </channel>
+</rss>"#,
+        )
+        .unwrap();
+
+        assert_eq!(feed.title.as_deref(), Some("Acquired"));
+        assert_eq!(
+            feed.image_url.as_deref(),
+            Some("https://cdn.example.com/acquired/artwork.jpg")
+        );
+        assert_eq!(feed.entries.len(), 2);
+        assert_eq!(feed.entries[0].id.as_deref(), Some("acquired-episode-001"));
+        assert_eq!(
+            feed.entries[0].title.as_deref(),
+            Some("The Company Story & Strategy")
+        );
+        assert!(feed.entries[0]
+            .effective_enclosure_url()
+            .unwrap()
+            .starts_with("https://cdn.example.com/acquired/001.mp3"));
+        assert_eq!(
+            feed.entries[1].effective_enclosure_url().as_deref(),
+            Some("https://www.acquired.fm/episodes/follow-up")
+        );
+    }
+
+    #[test]
+    fn parses_realistic_atom_podcast_snapshot_preferring_enclosure_link() {
+        let feed = parse_feed(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title type="text">Latent Space Podcast</title>
+  <icon>https://example.com/latent/icon.png</icon>
+  <entry>
+    <id>tag:example.com,2026:latent-42</id>
+    <title type="html"><![CDATA[Agents, Search & Local Data]]></title>
+    <published>2026-07-01T12:00:00Z</published>
+    <updated>2026-07-02T12:00:00Z</updated>
+    <link rel="alternate" href="https://example.com/latent/42" />
+    <link rel="enclosure"
+          type="audio/mpeg"
+          length="987654321"
+          href="https://media.example.com/latent/42.mp3" />
+  </entry>
+</feed>"#,
+        )
+        .unwrap();
+
+        assert_eq!(feed.title.as_deref(), Some("Latent Space Podcast"));
+        assert_eq!(
+            feed.image_url.as_deref(),
+            Some("https://example.com/latent/icon.png")
+        );
+        assert_eq!(feed.entries.len(), 1);
+        let entry = &feed.entries[0];
+        assert_eq!(
+            entry.first_link.as_deref(),
+            Some("https://example.com/latent/42")
+        );
+        assert_eq!(
+            entry.effective_enclosure_url().as_deref(),
+            Some("https://media.example.com/latent/42.mp3")
+        );
+        assert_eq!(entry.published.as_deref(), Some("2026-07-01T12:00:00Z"));
+        assert_eq!(entry.updated.as_deref(), Some("2026-07-02T12:00:00Z"));
+    }
+
+    #[test]
     fn parse_feed_rejects_non_feed_xml() {
         let error = parse_feed(br#"<?xml version="1.0"?><html><title>Nope</title></html>"#)
             .unwrap_err()

@@ -2032,9 +2032,9 @@ async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
         .contains("does not render"));
     assert_eq!(
         storyboard["storyboard"]["beats"].as_array().unwrap().len(),
-        4
+        3
     );
-    assert_eq!(storyboard["shot_list"].as_array().unwrap().len(), 4);
+    assert_eq!(storyboard["shot_list"].as_array().unwrap().len(), 3);
     assert!(storyboard["shot_list"]
         .as_array()
         .unwrap()
@@ -2047,7 +2047,21 @@ async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
                     .as_str()
                     .is_some_and(|value| value.starts_with("cerul-app://item/"))
         }));
-    assert!(storyboard["broll_gaps"].as_array().unwrap().len() >= 2);
+    assert!(storyboard["shot_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|shot| shot["modality"] != "document"));
+    assert!(storyboard["storyboard"]["beats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|beat| !beat["evidence_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "item-doc:document:000000")));
+    assert_eq!(storyboard["broll_gaps"].as_array().unwrap().len(), 1);
     assert!(storyboard["broll_gaps"]
         .as_array()
         .unwrap()
@@ -2142,20 +2156,22 @@ async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
         otio["metadata"]["cerul"]["export_kind"],
         "pre_edit_planning"
     );
-    let clips = otio["tracks"]["children"][0]["children"]
+    assert_eq!(otio["tracks"]["children"].as_array().unwrap().len(), 2);
+    assert_eq!(otio["tracks"]["children"][0]["kind"], "Video");
+    assert_eq!(otio["tracks"]["children"][1]["kind"], "Audio");
+    let video_clips = otio["tracks"]["children"][0]["children"]
         .as_array()
         .unwrap();
-    assert_eq!(clips.len(), 4);
-    assert!(clips.iter().all(|clip| {
-        let source_range = &clip["source_range"];
-        let available_range = &clip["media_reference"]["available_range"];
-        source_range["start_time"]["value"] == 0
-            && available_range["start_time"]["value"] == 0
-            && available_range["duration"]["value"]
-                .as_i64()
-                .zip(source_range["duration"]["value"].as_i64())
-                .is_some_and(|(available, duration)| available >= duration)
-    }));
+    let audio_clips = otio["tracks"]["children"][1]["children"]
+        .as_array()
+        .unwrap();
+    assert_eq!(video_clips.len(), 2);
+    assert_eq!(audio_clips.len(), 1);
+    let clips = video_clips
+        .iter()
+        .chain(audio_clips.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(clips.len(), 3);
     assert!(clips.iter().all(|clip| {
         clip["metadata"]["cerul"]["open_in_cerul"]
             .as_str()
@@ -2164,31 +2180,53 @@ async fn v1_pre_edit_storyboard_broll_and_timeline_export_link_evidence() {
                 .as_str()
                 .is_some_and(|value| value.starts_with("cerul-app://item/"))
     }));
-    let playable_targets = clips
-        .iter()
-        .filter(|clip| {
-            clip["media_reference"]["metadata"]["cerul"]["clip_url"].is_string()
-                || clip["media_reference"]["metadata"]["cerul"]["preview_url"].is_string()
-        })
-        .collect::<Vec<_>>();
-    assert!(playable_targets.iter().all(|clip| {
-        let target_url = clip["media_reference"]["target_url"].as_str().unwrap();
-        let metadata = &clip["media_reference"]["metadata"]["cerul"];
-        metadata["clip_url"]
+    assert!(clips.iter().all(|clip| {
+        clip["media_reference"]["target_url"]
             .as_str()
-            .or_else(|| metadata["preview_url"].as_str())
-            .is_some_and(|url| target_url == url)
+            .is_some_and(|value| value.starts_with("file://"))
     }));
-    assert!(playable_targets
+    assert!(clips.iter().all(|clip| {
+        let source_range = &clip["source_range"];
+        let available_range = &clip["media_reference"]["available_range"];
+        available_range["start_time"]["value"] == 0
+            && available_range["duration"]["value"]
+                .as_i64()
+                .zip(source_range["duration"]["value"].as_i64())
+                .is_some_and(|(available, duration)| available >= duration)
+    }));
+    let video_clip = clips
         .iter()
-        .any(|clip| clip["media_reference"]["target_url"]
-            .as_str()
-            .is_some_and(|value| value.contains("/video-clip"))));
-    assert!(playable_targets
+        .find(|clip| clip["media_reference"]["metadata"]["cerul"]["item_id"] == "item-video")
+        .unwrap();
+    assert_eq!(video_clip["source_range"]["start_time"]["value"], 14_000);
+    assert_eq!(video_clip["source_range"]["duration"]["value"], 4_000);
+    assert!(video_clip["media_reference"]["target_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/mixed-video.mp4"));
+    let audio_clip = clips
         .iter()
-        .any(|clip| clip["media_reference"]["target_url"]
-            .as_str()
-            .is_some_and(|value| value.contains("/frame"))));
+        .find(|clip| clip["media_reference"]["metadata"]["cerul"]["item_id"] == "item-audio")
+        .unwrap();
+    assert_eq!(audio_clip["source_range"]["start_time"]["value"], 4_000);
+    assert_eq!(audio_clip["source_range"]["duration"]["value"], 4_000);
+    assert!(audio_clip["media_reference"]["target_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/mixed-audio.m4a"));
+    let image_clip = clips
+        .iter()
+        .find(|clip| clip["media_reference"]["metadata"]["cerul"]["item_id"] == "item-image")
+        .unwrap();
+    assert_eq!(image_clip["source_range"]["start_time"]["value"], 0);
+    assert_eq!(image_clip["source_range"]["duration"]["value"], 4_000);
+    assert!(image_clip["media_reference"]["target_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/mixed-image.png"));
+    assert!(clips
+        .iter()
+        .all(|clip| clip["media_reference"]["metadata"]["cerul"]["item_id"] != "item-doc"));
     assert_eq!(
         timeline["usage"]["metered_events"][1],
         json!({"capability": "local_timeline_export", "quantity": 1, "credits": 0})

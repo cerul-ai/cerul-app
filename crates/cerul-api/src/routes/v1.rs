@@ -279,7 +279,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
         },
         V1AgentToolContract {
             name: "material_insight",
-            description: "Summarize local indexed material into evidence-backed topics and usable-shot candidates.",
+            description: "Heuristically group local indexed material into evidence-backed topics and usable-shot candidates.",
             method: "POST",
             path: "/v1/agent/material-insight",
             stage: "a2",
@@ -299,7 +299,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
         },
         V1AgentToolContract {
             name: "build_storyboard",
-            description: "Build an evidence-backed pre-edit storyboard and shot list from local indexed material.",
+            description: "Build a heuristic evidence-backed pre-edit storyboard and shot list from local indexed material.",
             method: "POST",
             path: "/v1/agent/storyboard",
             stage: "c1",
@@ -320,7 +320,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
         },
         V1AgentToolContract {
             name: "search_broll",
-            description: "Find visual b-roll candidates from local evidence for a pre-edit plan.",
+            description: "Heuristically find visual b-roll candidates from local evidence for a pre-edit plan.",
             method: "POST",
             path: "/v1/agent/broll-search",
             stage: "c1",
@@ -340,7 +340,7 @@ fn v1_agent_tool_contracts() -> Vec<V1AgentToolContract> {
         },
         V1AgentToolContract {
             name: "export_edl",
-            description: "Export an OTIO JSON planning timeline for external editing tools; Cerul does not render or edit media.",
+            description: "Export a heuristic OTIO JSON planning timeline for external editing tools; Cerul does not render or edit media.",
             method: "POST",
             path: "/v1/agent/timeline-export",
             stage: "c1",
@@ -1420,12 +1420,16 @@ struct V1PreEditPlan {
 }
 
 fn v1_pre_edit_plan(query: &str, title: &str, evidence: &[V1SearchResult]) -> V1PreEditPlan {
-    let beats = evidence
+    let shot_evidence = evidence
+        .iter()
+        .filter(|result| v1_is_pre_edit_shot_candidate(result))
+        .collect::<Vec<_>>();
+    let beats = shot_evidence
         .iter()
         .enumerate()
         .map(|(index, result)| v1_storyboard_beat(index, result))
         .collect::<Vec<_>>();
-    let shot_list = evidence
+    let shot_list = shot_evidence
         .iter()
         .enumerate()
         .map(|(index, result)| v1_shot_list_entry(index, result))
@@ -1444,8 +1448,7 @@ fn v1_pre_edit_plan(query: &str, title: &str, evidence: &[V1SearchResult]) -> V1
         storyboard: V1Storyboard {
             title: title.to_string(),
             intent: format!("Pre-edit plan for local material matching \"{query}\"."),
-            boundary:
-                "Planning export only; Cerul does not render media or provide a timeline editor.",
+            boundary: "Heuristic pre-edit planning only; Cerul does not render media, provide a timeline editor, or run LLM/VLM reasoning for this endpoint.",
             beats,
         },
         shot_list,
@@ -1493,6 +1496,8 @@ fn v1_shot_list_entry(index: usize, result: &V1SearchResult) -> V1ShotListEntry 
             .preview
             .as_ref()
             .map(|locator| locator.url.clone()),
+        media_target_url: result.source_file_url.clone(),
+        item_duration_sec: result.item.duration_sec,
     }
 }
 
@@ -1556,18 +1561,63 @@ fn v1_broll_candidates(evidence: &[V1SearchResult]) -> Vec<V1BrollCandidate> {
 }
 
 fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1TimelineExport {
-    let mut accumulated_sec = 0.0;
-    let clips = shot_list
+    let video_shots = shot_list
         .iter()
-        .map(|shot| {
-            let duration_sec = v1_shot_duration_sec(shot);
-            let media_target_url = v1_shot_media_target_url(shot);
+        .filter(|shot| matches!(shot.modality.as_str(), "video" | "image"))
+        .collect::<Vec<_>>();
+    let audio_shots = shot_list
+        .iter()
+        .filter(|shot| shot.modality == "audio")
+        .collect::<Vec<_>>();
+    let mut tracks = Vec::new();
+    if !video_shots.is_empty() {
+        tracks.push(v1_otio_track("Video", "Visual storyboard", &video_shots));
+    }
+    if !audio_shots.is_empty() {
+        tracks.push(v1_otio_track("Audio", "Audio anchors", &audio_shots));
+    }
+    let timeline = json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": title,
+        "metadata": {
+            "cerul": {
+                "export_kind": "pre_edit_planning",
+                "format": "otio_json",
+                "shot_count": shot_list.len(),
+                "compatibility_note": "Heuristic planning export only; Cerul does not render media or provide a timeline editor, and timeline clips reference local source files when available."
+            }
+        },
+        "tracks": {
+            "OTIO_SCHEMA": "Stack.1",
+            "name": "Cerul pre-edit stack",
+            "children": tracks
+        }
+    });
+
+    V1TimelineExport {
+        format: "otio_json",
+        filename: v1_timeline_filename(title),
+        mime_type: "application/vnd.opentimelineio+json",
+        content: serde_json::to_string_pretty(&timeline).unwrap_or_else(|_| "{}".to_string()),
+        compatibility_note:
+            "OTIO JSON planning timeline only; Cerul does not render media or provide a timeline editor, and clips reference local source files when available.",
+    }
+}
+
+fn v1_otio_track(kind: &'static str, name: &'static str, shots: &[&V1ShotListEntry]) -> Value {
+    let mut accumulated_sec = 0.0;
+    let clips = shots
+        .iter()
+        .filter_map(|shot| {
+            let media_target_url = shot.media_target_url.as_deref()?;
+            let (source_start_sec, duration_sec, available_duration_sec) =
+                v1_shot_source_range_sec(shot)?;
             let clip = json!({
                 "OTIO_SCHEMA": "Clip.2",
                 "name": format!("{} - {}", shot.id, shot.item_title),
                 "source_range": {
                     "OTIO_SCHEMA": "TimeRange.1",
-                    "start_time": v1_otio_rational_time(0.0),
+                    "start_time": v1_otio_rational_time(source_start_sec),
                     "duration": v1_otio_rational_time(duration_sec)
                 },
                 "media_reference": {
@@ -1576,7 +1626,7 @@ fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1Time
                     "available_range": {
                         "OTIO_SCHEMA": "TimeRange.1",
                         "start_time": v1_otio_rational_time(0.0),
-                        "duration": v1_otio_rational_time(duration_sec)
+                        "duration": v1_otio_rational_time(available_duration_sec)
                     },
                     "metadata": {
                         "cerul": {
@@ -1585,7 +1635,8 @@ fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1Time
                             "modality": shot.modality,
                             "open_in_cerul": shot.open_in_cerul,
                             "clip_url": shot.clip_url,
-                            "preview_url": shot.preview_url
+                            "preview_url": shot.preview_url,
+                            "source_file_url": media_target_url
                         }
                     }
                 },
@@ -1600,40 +1651,15 @@ fn v1_otio_timeline_export(title: &str, shot_list: &[V1ShotListEntry]) -> V1Time
                 }
             });
             accumulated_sec += duration_sec;
-            clip
+            Some(clip)
         })
         .collect::<Vec<_>>();
-    let timeline = json!({
-        "OTIO_SCHEMA": "Timeline.1",
-        "name": title,
-        "metadata": {
-            "cerul": {
-                "export_kind": "pre_edit_planning",
-                "format": "otio_json",
-                "shot_count": shot_list.len(),
-                "compatibility_note": "Planning export only; Cerul does not render media or provide a timeline editor."
-            }
-        },
-        "tracks": {
-            "OTIO_SCHEMA": "Stack.1",
-            "name": "Cerul pre-edit stack",
-            "children": [{
-                "OTIO_SCHEMA": "Track.1",
-                "name": "Storyboard",
-                "kind": "Video",
-                "children": clips
-            }]
-        }
-    });
-
-    V1TimelineExport {
-        format: "otio_json",
-        filename: v1_timeline_filename(title),
-        mime_type: "application/vnd.opentimelineio+json",
-        content: serde_json::to_string_pretty(&timeline).unwrap_or_else(|_| "{}".to_string()),
-        compatibility_note:
-            "OTIO JSON planning timeline only; Cerul does not render media or provide a timeline editor.",
-    }
+    json!({
+        "OTIO_SCHEMA": "Track.1",
+        "name": name,
+        "kind": kind,
+        "children": clips
+    })
 }
 
 fn v1_pre_edit_title(title: Option<&str>, query: &str) -> String {
@@ -1653,11 +1679,17 @@ fn v1_is_broll_candidate(result: &V1SearchResult) -> bool {
         && (result.evidence.clip.is_some() || result.evidence.preview.is_some())
 }
 
-fn v1_shot_media_target_url(shot: &V1ShotListEntry) -> &str {
-    shot.clip_url
-        .as_deref()
-        .or(shot.preview_url.as_deref())
-        .unwrap_or(&shot.open_in_cerul)
+fn v1_is_pre_edit_shot_candidate(result: &V1SearchResult) -> bool {
+    if result.source_file_url.is_none() {
+        return false;
+    }
+    match v1_material_modality(result) {
+        "video" | "audio" => {
+            v1_timed_source_range(result.time.start_sec, result.time.end_sec).is_some()
+        }
+        "image" => true,
+        _ => false,
+    }
 }
 
 fn v1_shot_role(modality: &str) -> &'static str {
@@ -1680,14 +1712,28 @@ fn v1_pretty_modality(modality: &str) -> &'static str {
     }
 }
 
-fn v1_shot_duration_sec(shot: &V1ShotListEntry) -> f64 {
-    let duration = shot
-        .end_sec
-        .zip(shot.start_sec)
-        .map(|(end_sec, start_sec)| end_sec - start_sec)
-        .filter(|duration| duration.is_finite() && *duration > 0.25)
-        .unwrap_or(4.0);
-    duration.clamp(1.0, 12.0)
+fn v1_shot_source_range_sec(shot: &V1ShotListEntry) -> Option<(f64, f64, f64)> {
+    if matches!(shot.modality.as_str(), "video" | "audio") {
+        let (start_sec, duration_sec) = v1_timed_source_range(shot.start_sec, shot.end_sec)?;
+        let available_duration_sec = shot
+            .item_duration_sec
+            .filter(|duration| duration.is_finite() && *duration >= start_sec + duration_sec)
+            .unwrap_or(start_sec + duration_sec);
+        return Some((start_sec, duration_sec, available_duration_sec));
+    }
+
+    if shot.modality == "image" {
+        return Some((0.0, 4.0, 4.0));
+    }
+
+    None
+}
+
+fn v1_timed_source_range(start_sec: Option<f64>, end_sec: Option<f64>) -> Option<(f64, f64)> {
+    let start_sec = start_sec.filter(|value| value.is_finite() && *value >= 0.0)?;
+    let end_sec = end_sec.filter(|value| value.is_finite() && *value > start_sec)?;
+    let duration_sec = end_sec - start_sec;
+    (duration_sec > 0.25).then_some((start_sec, duration_sec))
 }
 
 fn v1_otio_rational_time(seconds: f64) -> Value {
@@ -1815,6 +1861,7 @@ fn v1_search_result(
             exact_match: result.exact_match,
             similarity: result.similarity_score,
         },
+        source_file_url: metadata.source_file_url,
     }
 }
 
@@ -1852,7 +1899,8 @@ fn v1_search_item_metadata(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "Untitled media".to_string());
         let raw_path: Option<String> = row.get(5)?;
-        let source_file_exists = raw_path.as_deref().is_some_and(local_source_file_exists);
+        let source_file_url = raw_path.as_deref().and_then(v1_source_file_url);
+        let source_file_exists = source_file_url.is_some();
         Ok((
             id.clone(),
             V1SearchItemMetadata {
@@ -1864,6 +1912,7 @@ fn v1_search_item_metadata(
                     duration_sec: row.get(4)?,
                 },
                 source_file_exists,
+                source_file_url,
             },
         ))
     })?;
@@ -1992,7 +2041,38 @@ fn fallback_v1_search_item_metadata(result: &cerul_search::SearchResult) -> V1Se
             duration_sec: None,
         },
         source_file_exists: false,
+        source_file_url: None,
     }
+}
+
+fn v1_source_file_url(raw_path: &str) -> Option<String> {
+    let raw_path = raw_path.trim();
+    if raw_path.is_empty() {
+        return None;
+    }
+    let path = FsPath::new(raw_path);
+    if !path.is_file() {
+        return None;
+    }
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let path = path.to_string_lossy().replace('\\', "/");
+    let encoded_path = v1_file_url_encode_path(&path);
+    if encoded_path.starts_with('/') {
+        Some(format!("file://{encoded_path}"))
+    } else {
+        Some(format!("file:///{encoded_path}"))
+    }
+}
+
+fn v1_file_url_encode_path(path: &str) -> String {
+    path.bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
 }
 
 fn v1_result_type(chunk_type: &str) -> &'static str {

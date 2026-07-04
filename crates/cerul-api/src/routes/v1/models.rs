@@ -282,6 +282,10 @@ pub(crate) struct V1ShotListEntry {
     pub(crate) open_in_cerul: String,
     pub(crate) clip_url: Option<String>,
     pub(crate) preview_url: Option<String>,
+    #[serde(skip)]
+    pub(crate) media_target_url: Option<String>,
+    #[serde(skip)]
+    pub(crate) item_duration_sec: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -407,6 +411,8 @@ pub(crate) struct V1SearchResult {
     pub(crate) text: V1SearchText,
     pub(crate) evidence: V1Evidence,
     pub(crate) score: V1Score,
+    #[serde(skip)]
+    pub(crate) source_file_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -422,6 +428,7 @@ pub(crate) struct V1SearchItem {
 pub(crate) struct V1SearchItemMetadata {
     pub(crate) item: V1SearchItem,
     pub(crate) source_file_exists: bool,
+    pub(crate) source_file_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
