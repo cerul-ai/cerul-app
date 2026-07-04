@@ -17,6 +17,21 @@ This document is the source of truth for moving Cerul's local and remote agent-f
 - Root-level routes are not retained as compatibility aliases. Removing them is intentional.
 - Binary evidence routes may live under `/v1` when they are returned by `/v1/search`, `/v1/ask`, or `/v1/items/:id/chunks`.
 
+## Current Implementation Boundary
+
+- Current `/v1/agent/*` routes are deterministic local tool contracts built on the shared search/evidence layer. They do not call an LLM, VLM, planner, or autonomous reasoning loop.
+- `material-insight`, `storyboard`, `broll-search`, and `timeline-export` are heuristic evidence packaging endpoints. Product copy should describe them as local evidence and pre-edit planning helpers until a real inference/orchestration layer ships.
+- `/v1/agent/timeline-export` exports a planning OTIO JSON file that references local source files when they are available. It does not render media, edit timelines, or manufacture media references from preview frames or Cerul deep links.
+
+## Post-Rollup Tracking Items
+
+Open a tracking issue after the rollup merges so these remaining debt items are not hidden by the merge:
+
+- `crates/cerul-api/src/lib.rs` still needs further route/module extraction.
+- `apps/electron-shell/src/main.ts` still needs further process/window/update separation.
+- `crates/cerul-pipeline/src/run.rs` still needs the older video/audio/image flows migrated into focused stages.
+- `apps/desktop/src/pages/settings.tsx` still needs decomposition now that it is one of the largest frontend files.
+
 ## Target Public `/v1` Surface
 
 - `GET /v1/status`

@@ -150,9 +150,84 @@ export type AskCitation = {
   snippet: string;
 };
 
+export type AskUsage = {
+  billable: boolean;
+  credits_used: number;
+  privacy: string;
+};
+
 export type AskResponse = {
   answer: string;
   citations: AskCitation[];
+  usage?: AskUsage;
+};
+
+export type AgentToolContract = {
+  name: string;
+  description: string;
+  method: string;
+  path: string;
+  stage: string;
+  input_schema: Record<string, unknown>;
+  output_contract: string;
+  safety: {
+    read_only: boolean;
+    billable: boolean;
+    requires_confirmation: boolean;
+    arbitrary_shell: boolean;
+    arbitrary_file_write: boolean;
+  };
+  evidence: {
+    returns_evidence_locators: boolean;
+    opens_in_cerul: boolean;
+  };
+};
+
+export type AgentToolsResponse = {
+  request_id: string;
+  execution: {
+    target: string;
+    account_id: string | null;
+    privacy: string;
+  };
+  runtime: {
+    tool_host: string;
+    renderer_access: string;
+    arbitrary_shell: boolean;
+    arbitrary_file_write: boolean;
+    write_actions_require_confirmation: boolean;
+  };
+  tools: AgentToolContract[];
+};
+
+type V1AskResponse = {
+  execution: {
+    privacy: string;
+  };
+  answer: string;
+  citations: V1SearchResult[];
+  usage: {
+    billable: boolean;
+    credits_used: number;
+  };
+};
+
+type V1SearchResult = {
+  id: string;
+  item: {
+    id: string;
+    title: string;
+    content_type: string;
+    source_type: string;
+  };
+  time: {
+    start_sec: number | null;
+    timestamp: string | null;
+  };
+  text: {
+    snippet: string;
+    quote: string;
+  };
 };
 
 export type EntitySummary = {
@@ -613,6 +688,47 @@ export async function askLibrary(q: string, limit = 6, locale?: string) {
   });
 }
 
+export function isAgentExperienceEnabled() {
+  return ["1", "true", "yes"].includes(
+    String(import.meta.env.VITE_CERUL_AGENT ?? "").toLowerCase(),
+  );
+}
+
+export async function listAgentTools() {
+  return fetchV1Json<AgentToolsResponse>("/agent/tools");
+}
+
+export async function askAgentLibrary(q: string, limit = 6, locale?: string) {
+  const response = await fetchV1Json<V1AskResponse>("/ask", {
+    method: "POST",
+    body: JSON.stringify({ question: q, max_results: limit, locale, target: "local" }),
+  });
+
+  return {
+    answer: response.answer,
+    citations: response.citations.map(v1SearchResultToAskCitation),
+    usage: {
+      billable: response.usage.billable,
+      credits_used: response.usage.credits_used,
+      privacy: response.execution.privacy,
+    },
+  } satisfies AskResponse;
+}
+
+function v1SearchResultToAskCitation(result: V1SearchResult): AskCitation {
+  const timestamp =
+    result.time.timestamp ??
+    (result.item.content_type === "document" ? "Document" : "00:00");
+  return {
+    playback_chunk_id: result.id,
+    item_id: result.item.id,
+    title: result.item.title,
+    timestamp,
+    start_sec: result.time.start_sec,
+    snippet: result.text.snippet || result.text.quote,
+  };
+}
+
 export async function listEntities() {
   return fetchJson<EntitySummary[]>("/entities");
 }
@@ -646,6 +762,10 @@ export async function listItemChunks(id: string) {
 }
 
 export function videoSegmentUrl(chunkId: string) {
+  return mediaSegmentUrl(chunkId);
+}
+
+export function mediaSegmentUrl(chunkId: string) {
   return `${localApiBaseUrl()}${INTERNAL_API_PREFIX}/chunks/${encodeURIComponent(chunkId)}/video-segment`;
 }
 
@@ -930,6 +1050,28 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     // Network-level failure (core not running / connection refused). The
     // browser's raw "Failed to fetch" is neither localized nor actionable.
+    throw new Error(coreUnreachableMessage());
+  }
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(humanizeApiError(body, response.status));
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function fetchV1Json<T>(path: string, init?: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${localApiBaseUrl()}/v1${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+  } catch {
     throw new Error(coreUnreachableMessage());
   }
 

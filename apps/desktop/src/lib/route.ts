@@ -5,6 +5,7 @@
 // settings section). Both `readRouteState` and `routeHash` round-trip
 // losslessly so reloads land back where you were.
 
+import type { KeyboardEvent } from "react";
 import type { RouteState, View } from "./types";
 
 // All valid View ids — broader than the sidebar so persisted routes for
@@ -63,4 +64,12 @@ export function routeHash(
   }
   const query = search.toString();
   return query ? `${view}?${query}` : view;
+}
+
+export function submitSearchInputOnEnter(event: KeyboardEvent<HTMLInputElement>) {
+  if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+    return;
+  }
+  event.preventDefault();
+  event.currentTarget.form?.requestSubmit();
 }

@@ -1,6 +1,5 @@
 use std::{
-    fs::{self, File},
-    io::BufReader,
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -11,22 +10,32 @@ use std::{
 };
 
 use cerul_storage::{
-    AppPaths, StorageImageChunk, StorageOcrChunk, StorageTranscriptChunk, StorageTranscriptLine,
-    StorageWriteSummary,
+    AppPaths, StorageDocumentChunk, StorageImageChunk, StorageOcrChunk, StorageWriteSummary,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    chunking, ffmpeg,
+    ffmpeg,
+    stages::{
+        document::extract_document_chunks,
+        extract::read_exif_metadata,
+        fetch::{fetch_audio_media, fetch_document_media, fetch_image_media, fetch_video_media},
+        ocr::read_ocr_frames_with_progress,
+        retrieval::{
+            rebuild_retrieval_embedding_plan, set_embedding_index_status,
+            write_unified_retrieval_vectors,
+        },
+        sample::sample_video_keyframes,
+        transcribe::{
+            audio_seconds_from_segments, transcript_storage_from_segments, TranscriptStorage,
+        },
+    },
     whisper::{Segment, TranscriptionProgress},
 };
 
 const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
-const WEB_VIDEO_COOKIE_MODE_SETTING: &str = "web_video_cookie_mode";
-const WEB_VIDEO_COOKIE_BROWSER_SETTING: &str = "web_video_cookie_browser";
-const WEB_VIDEO_COOKIES_PATH_SETTING: &str = "web_video_cookies_path";
 const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
 
 pub trait Transcriber: Send + Sync {
@@ -145,9 +154,12 @@ pub struct ProcessImageSummary {
     pub exif_fields: usize,
 }
 
-struct TranscriptStorage {
-    chunks: Vec<StorageTranscriptChunk>,
-    lines: Vec<StorageTranscriptLine>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessDocumentSummary {
+    pub item_id: String,
+    pub document_path: PathBuf,
+    pub document_chunks: usize,
+    pub text_vectors: usize,
 }
 
 #[derive(Clone)]
@@ -427,14 +439,6 @@ impl VideoPipeline {
 
         self.report_progress(item_id, "fetching", 0.05, "Fetching source media");
         let item = cerul_storage::get_item(&self.paths, item_id)?;
-        let source = cerul_sources::build(
-            &item.source_type,
-            source_config_with_app_cache(
-                &self.paths,
-                &item.source_type,
-                item.source_config.clone(),
-            ),
-        )?;
         let fetch_progress = {
             let progress = Arc::clone(&self.progress);
             let item_id = item_id.to_string();
@@ -443,15 +447,7 @@ impl VideoPipeline {
                 progress.update(&item_id, "downloading", progress_fraction, &message);
             }) as cerul_sources::FetchProgress
         };
-        let video_path = source
-            .fetch_with_progress(&item.as_discovered_item(), Some(fetch_progress))
-            .await?;
-        if matches!(item.source_type.as_str(), "web_video" | "youtube")
-            && item.raw_path.as_deref() != video_path.to_str()
-        {
-            cerul_storage::set_item_raw_path(&self.paths, item_id, &video_path)?;
-        }
-        update_item_duration_from_media(&self.paths, item_id, &video_path).await;
+        let video_path = fetch_video_media(&self.paths, &item, Some(fetch_progress)).await?;
         let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
             .paths
@@ -467,18 +463,16 @@ impl VideoPipeline {
             .join(&cache_key);
 
         self.report_progress(item_id, "sampling_frames", 0.18, "Sampling visual frames");
-        let frames =
-            ffmpeg::sample_frames(&video_path, &frames_dir, self.frame_interval_sec).await?;
-        let keyframes = keyframe_chunks(&frames, self.frame_interval_sec);
-        match cerul_storage::replace_item_keyframes(&self.paths, item_id, &keyframes) {
-            Ok(count) if count > 0 => {
-                tracing::info!(item_id, keyframes = count, "stored early video thumbnails");
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(%error, item_id, "failed to store early video thumbnails");
-            }
-        }
+        let sampled_keyframes = sample_video_keyframes(
+            &self.paths,
+            item_id,
+            &video_path,
+            &frames_dir,
+            self.frame_interval_sec,
+        )
+        .await?;
+        let frames = sampled_keyframes.frames;
+        let keyframes = sampled_keyframes.keyframes;
 
         // Audio is optional. Many screen recordings (and capture tools'
         // intermediate files) are video-only, so probe before extracting: a
@@ -711,10 +705,6 @@ impl VideoPipeline {
 
         let mut ocr_error: Option<String> = None;
         let ocr_frames = if self.ocr_enabled {
-            let ocr = Arc::clone(&self.ocr);
-            let frames_for_ocr = frames.clone();
-            let ocr_progress = Arc::clone(&self.progress);
-            let ocr_item_id = item_id.to_string();
             self.report_progress(
                 item_id,
                 "ocr_frames",
@@ -722,28 +712,15 @@ impl VideoPipeline {
                 "Reading text from visual frames",
             );
             let _model_permit = self.acquire_model_permit_with_wait(item_id, 0.64).await?;
-            let frames_result: anyhow::Result<Vec<OcrFrame>> =
-                match tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<OcrFrame>> {
-                    let total = frames_for_ocr.len();
-                    let mut collected = Vec::with_capacity(total);
-                    for (index, frame) in frames_for_ocr.iter().enumerate() {
-                        collected.extend(ocr.ocr_images(std::slice::from_ref(frame))?);
-                        let done = index + 1;
-                        let fraction = done as f64 / total.max(1) as f64;
-                        ocr_progress.update(
-                            &ocr_item_id,
-                            "ocr_frames",
-                            0.64 + fraction * 0.03,
-                            &format!("Reading text from visual frames · {done}/{total}"),
-                        );
-                    }
-                    Ok(collected)
-                })
-                .await
-                {
-                    Ok(result) => result,
-                    Err(error) => Err(error.into()),
-                };
+            let frames_result = read_ocr_frames_with_progress(
+                item_id,
+                frames.clone(),
+                Arc::clone(&self.ocr),
+                Arc::clone(&self.progress),
+                0.64,
+                0.03,
+            )
+            .await;
             match frames_result {
                 Ok(frames) => {
                     self.release_runtime_models(ModelReleaseScope::Ocr, item_id, "ocr complete");
@@ -959,12 +936,28 @@ impl VideoPipeline {
                         0,
                         0,
                     )?;
+                    if let Err(delete_error) =
+                        cerul_storage::vectors::delete_item_embeddings(&self.paths, item_id).await
+                    {
+                        tracing::warn!(
+                            error = %delete_error,
+                            item_id,
+                            "failed to delete stale video vectors after retrieval index write failure"
+                        );
+                    }
+                    let searchable_units =
+                        cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
+                    let (search_status, search_error) = if searchable_units > 0 {
+                        ("indexed", None)
+                    } else {
+                        ("failed", Some(message.as_str()))
+                    };
                     cerul_storage::set_item_search_index_status(
                         &self.paths,
                         item_id,
-                        "failed",
-                        Some(&message),
-                        0,
+                        search_status,
+                        search_error,
+                        searchable_units,
                         0,
                     )?;
                 }
@@ -986,6 +979,11 @@ impl VideoPipeline {
                     1.0,
                     if transcript_first_summary.is_some() {
                         "Transcript searchable; visual index unavailable"
+                    } else if cerul_storage::item_retrieval_unit_count(&self.paths, item_id)
+                        .unwrap_or(0)
+                        > 0
+                    {
+                        "Transcript searchable; embeddings unavailable"
                     } else {
                         "Transcript saved; search index unavailable"
                     },
@@ -1056,21 +1054,7 @@ impl VideoPipeline {
 
     pub async fn process_audio_item(&self, item_id: &str) -> anyhow::Result<ProcessAudioSummary> {
         let item = cerul_storage::get_item(&self.paths, item_id)?;
-        let source = cerul_sources::build(
-            &item.source_type,
-            source_config_with_app_cache(
-                &self.paths,
-                &item.source_type,
-                item.source_config.clone(),
-            ),
-        )?;
-        let source_audio_path = source.fetch(&item.as_discovered_item()).await?;
-        if item.source_type == "rss_podcast"
-            && item.raw_path.as_deref() != source_audio_path.to_str()
-        {
-            cerul_storage::set_item_raw_path(&self.paths, item_id, &source_audio_path)?;
-        }
-        update_item_duration_from_media(&self.paths, item_id, &source_audio_path).await;
+        let source_audio_path = fetch_audio_media(&self.paths, &item).await?;
         let cache_key = cache_key_for_item(&item.id, item.discovery_id());
         let audio_path = self
             .paths
@@ -1150,15 +1134,7 @@ impl VideoPipeline {
 
     pub async fn process_image_item(&self, item_id: &str) -> anyhow::Result<ProcessImageSummary> {
         let item = cerul_storage::get_item(&self.paths, item_id)?;
-        let source = cerul_sources::build(
-            &item.source_type,
-            source_config_with_app_cache(
-                &self.paths,
-                &item.source_type,
-                item.source_config.clone(),
-            ),
-        )?;
-        let image_path = source.fetch(&item.as_discovered_item()).await?;
+        let image_path = fetch_image_media(&self.paths, &item).await?;
         let exif = read_exif_metadata(&image_path)?;
         let exif_fields = exif
             .get("exif")
@@ -1240,6 +1216,107 @@ impl VideoPipeline {
         ))
     }
 
+    pub async fn process_document_item(
+        &self,
+        item_id: &str,
+    ) -> anyhow::Result<ProcessDocumentSummary> {
+        self.report_progress(item_id, "fetching", 0.05, "Fetching source document");
+        let item = cerul_storage::get_item(&self.paths, item_id)?;
+        let document_path = fetch_document_media(&self.paths, &item).await?;
+
+        self.report_progress(
+            item_id,
+            "extracting_document",
+            0.22,
+            "Extracting document text",
+        );
+        let extracted_chunks = extract_document_chunks(&document_path)?;
+        let document_chunks = extracted_chunks
+            .into_iter()
+            .map(|chunk| {
+                let mut metadata = chunk.metadata;
+                if !metadata.is_object() {
+                    metadata = json!({});
+                }
+                metadata["source_path"] = json!(document_path.to_string_lossy().to_string());
+                StorageDocumentChunk::new(chunk.text, chunk.page, chunk.section, metadata)
+            })
+            .collect::<Vec<_>>();
+
+        self.report_progress(item_id, "writing_document", 0.58, "Saving document chunks");
+        let sqlite_summary =
+            cerul_storage::write_document_sqlite_chunks(&self.paths, item_id, &document_chunks)?;
+        set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+
+        let vector_summary = match self
+            .embed_and_write_retrieval_units(item_id, 0.66, 0.26, false, true)
+            .await
+        {
+            Ok(write_summary) => write_summary,
+            Err(error) => {
+                let message = error.to_string();
+                tracing::warn!(
+                    %error,
+                    item_id,
+                    "document unified retrieval index write failed; keeping document chunks searchable by FTS if units exist"
+                );
+                if let Err(delete_error) =
+                    cerul_storage::vectors::delete_item_embeddings(&self.paths, item_id).await
+                {
+                    tracing::warn!(
+                        error = %delete_error,
+                        item_id,
+                        "failed to delete stale document vectors after retrieval index write failure"
+                    );
+                }
+                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                let searchable_units =
+                    cerul_storage::item_retrieval_unit_count(&self.paths, item_id).unwrap_or(0);
+                let (search_status, search_error) = if searchable_units > 0 {
+                    ("indexed", None)
+                } else {
+                    ("failed", Some(message.as_str()))
+                };
+                cerul_storage::set_item_search_index_status(
+                    &self.paths,
+                    item_id,
+                    search_status,
+                    search_error,
+                    searchable_units,
+                    0,
+                )?;
+                cerul_storage::mark_indexed(&self.paths, item_id)?;
+                return Ok(ProcessDocumentSummary::from_write_summary(
+                    item_id,
+                    document_path,
+                    sqlite_summary,
+                ));
+            }
+        };
+        let write_summary = StorageWriteSummary {
+            transcript_chunks: sqlite_summary.transcript_chunks,
+            keyframes: 0,
+            text_vectors: vector_summary.text_vectors,
+            image_vectors: 0,
+        };
+        set_embedding_index_status(
+            &self.paths,
+            item_id,
+            "indexed",
+            None,
+            write_summary.text_vectors,
+            write_summary.image_vectors,
+        )?;
+        cerul_storage::mark_indexed(&self.paths, item_id)?;
+        self.report_progress(item_id, "indexed", 1.0, "Document indexed");
+
+        Ok(ProcessDocumentSummary::from_write_summary(
+            item_id,
+            document_path,
+            write_summary,
+        ))
+    }
+
     async fn transcribe_to_storage_chunks(
         &self,
         item_id: &str,
@@ -1301,40 +1378,24 @@ impl VideoPipeline {
                 0,
             )?;
         }
-        let units = cerul_storage::rebuild_item_retrieval_units(&self.paths, item_id, &profile.id)?;
-        anyhow::ensure!(
-            !units.is_empty(),
-            "no retrieval units generated for item {item_id}"
-        );
-
-        let text_units = units
-            .iter()
-            .filter(|unit| !unit.uses_image_embedding())
-            .collect::<Vec<_>>();
-        let image_units = if include_image_embeddings {
-            units
-                .iter()
-                .filter(|unit| unit.has_image_embedding_source())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
+        let plan = rebuild_retrieval_embedding_plan(
+            &self.paths,
+            item_id,
+            &profile.id,
+            include_image_embeddings,
+        )?;
         self.log_pipeline_event(
             item_id,
             "retrieval_units_built",
             json!({
-                "units": units.len(),
-                "text_units": text_units.len(),
-                "image_units": image_units.len(),
+                "units": plan.unit_count(),
+                "text_units": plan.text_unit_count(),
+                "image_units": plan.image_unit_count(),
                 "include_image_embeddings": include_image_embeddings,
                 "replace_existing_vectors": replace_existing_vectors,
             }),
         );
 
-        let text_inputs = text_units
-            .iter()
-            .map(|unit| unit.content_text.clone())
-            .collect::<Vec<_>>();
         let text_vectors = match self
             .embed_texts_with_progress(
                 item_id,
@@ -1342,16 +1403,16 @@ impl VideoPipeline {
                 base,
                 span * 0.75,
                 "Embedding searchable moments",
-                &text_inputs,
+                plan.text_inputs(),
             )
             .await
         {
             Ok(vectors) => {
-                if !text_inputs.is_empty() {
+                if !plan.text_inputs().is_empty() {
                     self.record_embedding_text_usage(
                         item_id,
-                        estimate_text_tokens(&text_inputs),
-                        text_inputs.len(),
+                        estimate_text_tokens(plan.text_inputs()),
+                        plan.text_inputs().len(),
                         "succeeded",
                         json!({ "source": "indexing", "index": "retrieval_units" }),
                     );
@@ -1359,11 +1420,11 @@ impl VideoPipeline {
                 vectors
             }
             Err(error) => {
-                if !text_inputs.is_empty() {
+                if !plan.text_inputs().is_empty() {
                     self.record_embedding_text_usage(
                         item_id,
-                        estimate_text_tokens(&text_inputs),
-                        text_inputs.len(),
+                        estimate_text_tokens(plan.text_inputs()),
+                        plan.text_inputs().len(),
                         "failed",
                         json!({
                             "source": "indexing",
@@ -1376,10 +1437,6 @@ impl VideoPipeline {
             }
         };
 
-        let image_paths = image_units
-            .iter()
-            .filter_map(|unit| unit.representative_frame_path.as_ref().map(PathBuf::from))
-            .collect::<Vec<_>>();
         let image_vectors = match self
             .embed_images_with_progress(
                 item_id,
@@ -1387,7 +1444,7 @@ impl VideoPipeline {
                 base + span * 0.75,
                 span * 0.25,
                 "Embedding visual moments",
-                &image_paths,
+                plan.image_paths(),
             )
             .await
         {
@@ -1403,10 +1460,10 @@ impl VideoPipeline {
                 vectors
             }
             Err(error) => {
-                if !image_paths.is_empty() {
+                if !plan.image_paths().is_empty() {
                     self.record_embedding_image_usage(
                         item_id,
-                        image_paths.len(),
+                        plan.image_paths().len(),
                         "failed",
                         json!({
                             "source": "indexing",
@@ -1415,7 +1472,7 @@ impl VideoPipeline {
                         }),
                     );
                 }
-                if !image_paths.is_empty() && !text_vectors.is_empty() {
+                if !plan.image_paths().is_empty() && !text_vectors.is_empty() {
                     tracing::warn!(
                         item_id,
                         %error,
@@ -1428,102 +1485,34 @@ impl VideoPipeline {
             }
         };
 
-        anyhow::ensure!(
-            text_vectors.len() == text_units.len(),
-            "retrieval text unit count ({}) does not match vector count ({})",
-            text_units.len(),
-            text_vectors.len()
-        );
-        if !image_vectors.is_empty() {
-            anyhow::ensure!(
-                image_vectors.len() == image_units.len(),
-                "retrieval image unit count ({}) does not match vector count ({})",
-                image_units.len(),
-                image_vectors.len()
-            );
-        }
-
-        let mut records = Vec::with_capacity(text_vectors.len() + image_vectors.len());
-        for (unit, vector) in text_units.into_iter().zip(text_vectors.iter()) {
-            records.push(cerul_storage::vectors::VectorRecord::new_for_dimensions(
-                unit.id.clone(),
-                unit.item_id.clone(),
-                vector.clone(),
-                profile.output_dimension,
-            )?);
-        }
-        for (unit, vector) in image_units.into_iter().zip(image_vectors.iter()) {
-            records.push(
-                cerul_storage::vectors::VectorRecord::new_for_dimensions_with_point_key(
-                    format!("{}:image", unit.id),
-                    unit.id.clone(),
-                    unit.item_id.clone(),
-                    vector.clone(),
-                    profile.output_dimension,
-                )?,
-            );
-        }
-
-        let vector_index_started = Instant::now();
-        let stale_vectors_deleted = if replace_existing_vectors {
-            cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
-                &self.paths,
-                item_id,
-                &records,
-                &profile,
-                cerul_storage::SEARCH_INDEX_VERSION,
-            )
-            .await?;
-            0
-        } else {
-            cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
-                &self.paths,
-                &records,
-                &profile,
-                cerul_storage::SEARCH_INDEX_VERSION,
-            )
-            .await?;
-            cerul_storage::vectors::delete_stale_item_unified_embeddings_for_profile(
-                &self.paths,
-                item_id,
-                &records,
-                &profile,
-                cerul_storage::SEARCH_INDEX_VERSION,
-            )
-            .await?
-        };
-        let vector_index_write_ms = vector_index_started.elapsed().as_millis() as u64;
-        cerul_storage::set_item_search_index_status(
+        let index_write = write_unified_retrieval_vectors(
             &self.paths,
             item_id,
-            "indexed",
-            None,
-            units.len(),
-            records.len(),
-        )?;
+            &plan,
+            &text_vectors,
+            &image_vectors,
+            &profile,
+            replace_existing_vectors,
+        )
+        .await?;
         self.log_pipeline_event(
             item_id,
             "retrieval_index_written",
             json!({
-                "units": units.len(),
-                "vectors": records.len(),
-                "text_vectors": text_vectors.len(),
-                "image_vectors": image_vectors.len(),
-                "vector_index_write_ms": vector_index_write_ms,
+                "units": plan.unit_count(),
+                "vectors": index_write.vector_count,
+                "text_vectors": index_write.write_summary.text_vectors,
+                "image_vectors": index_write.write_summary.image_vectors,
+                "vector_index_write_ms": index_write.vector_index_write_ms,
                 "total_ms": started.elapsed().as_millis() as u64,
                 "embedding_profile_id": profile.id,
                 "include_image_embeddings": include_image_embeddings,
                 "replace_existing_vectors": replace_existing_vectors,
-                "stale_vectors_deleted": stale_vectors_deleted,
+                "stale_vectors_deleted": index_write.stale_vectors_deleted,
             }),
         );
 
-        Ok(StorageWriteSummary {
-            transcript_chunks: units.len(),
-            keyframes: image_paths.len(),
-            text_vectors: text_vectors.len(),
-            image_vectors: image_vectors.len(),
-        })
+        Ok(index_write.write_summary)
     }
 
     fn record_asr_usage(
@@ -1631,13 +1620,6 @@ const GROQ_WHISPER_LARGE_V3_TURBO_USD_PER_HOUR: f64 = 0.04;
 const OPENAI_WHISPER_1_USD_PER_MINUTE: f64 = 0.006;
 const GEMINI_EMBEDDING_2_TEXT_USD_PER_M_TOKENS: f64 = 0.20;
 const GEMINI_EMBEDDING_2_IMAGE_USD_EACH: f64 = 0.00012;
-
-fn audio_seconds_from_segments(segments: &[Segment]) -> f64 {
-    segments
-        .iter()
-        .map(|segment| segment.end.max(segment.start))
-        .fold(0.0, f64::max)
-}
 
 fn estimate_text_tokens(texts: &[String]) -> u64 {
     let chars = texts.iter().map(|text| text.chars().count()).sum::<usize>();
@@ -1752,6 +1734,21 @@ impl ProcessImageSummary {
             image_chunks: write_summary.keyframes,
             image_vectors: write_summary.image_vectors,
             exif_fields,
+        }
+    }
+}
+
+impl ProcessDocumentSummary {
+    fn from_write_summary(
+        item_id: &str,
+        document_path: PathBuf,
+        summary: StorageWriteSummary,
+    ) -> Self {
+        Self {
+            item_id: item_id.to_string(),
+            document_path,
+            document_chunks: summary.transcript_chunks,
+            text_vectors: summary.text_vectors,
         }
     }
 }
@@ -1985,244 +1982,11 @@ fn cache_key(input: &str) -> String {
         .collect()
 }
 
-async fn update_item_duration_from_media(paths: &AppPaths, item_id: &str, media_path: &Path) {
-    match ffmpeg::media_duration(media_path).await {
-        Ok(duration_sec) => {
-            if let Err(error) = cerul_storage::set_item_duration(paths, item_id, duration_sec) {
-                tracing::warn!(%error, item_id, "failed to store media duration");
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, item_id, "failed to read media duration");
-        }
-    }
-}
-
-fn keyframe_chunks(frames: &[PathBuf], interval_sec: u32) -> Vec<StorageImageChunk> {
-    let interval = f64::from(interval_sec.max(1));
-    frames
-        .iter()
-        .enumerate()
-        .map(|(index, frame)| {
-            let start = frame_index(frame).unwrap_or(index) as f64 * interval;
-            StorageImageChunk::keyframe_at(frame.clone(), start, start + interval)
-        })
-        .collect()
-}
-
-fn transcript_storage_from_segments(
-    segments: &[Segment],
-    window_sec: f64,
-    overlap_sec: f64,
-) -> TranscriptStorage {
-    let lines = segments
-        .iter()
-        .filter_map(|segment| {
-            let text = segment.text.trim();
-            if text.is_empty() {
-                return None;
-            }
-            Some(StorageTranscriptLine {
-                start: segment.start,
-                end: segment.end,
-                text: text.to_string(),
-            })
-        })
-        .collect::<Vec<_>>();
-    let chunks = chunking::chunk_segments(segments, window_sec, overlap_sec)
-        .into_iter()
-        .map(|chunk| StorageTranscriptChunk {
-            start: chunk.start,
-            end: chunk.end,
-            text: chunk.text,
-        })
-        .collect();
-
-    TranscriptStorage { chunks, lines }
-}
-
-fn frame_index(path: &Path) -> Option<usize> {
-    let stem = path.file_stem()?.to_str()?;
-    let raw = stem.strip_prefix("frame_")?;
-    raw.parse::<usize>().ok()?.checked_sub(1)
-}
-
-fn source_config_with_app_cache(
-    paths: &AppPaths,
-    source_type: &str,
-    config: serde_json::Value,
-) -> serde_json::Value {
-    if !matches!(source_type, "youtube" | "web_video" | "rss_podcast") {
-        return config;
-    }
-
-    let mut object = match config {
-        serde_json::Value::Object(object) => object,
-        other => return other,
-    };
-    object.entry("cache_dir").or_insert_with(|| {
-        serde_json::Value::String(
-            source_download_dir(paths, source_type)
-                .to_string_lossy()
-                .into_owned(),
-        )
-    });
-    apply_ytdlp_access_settings(paths, source_type, &mut object);
-    serde_json::Value::Object(object)
-}
-
-// Resolve where a source's downloaded media is written. Defaults to the app
-// cache (`<data>/cache/sources/<type>`), but honors a user-chosen download
-// directory (Settings → Storage, persisted as the `media_dir` setting) so large
-// video files can live on an external disk. The setting is read per fetch, so a
-// change takes effect for the next download without a restart; the lookup is a
-// cached single-row query. Models, the database and the vector index are never
-// relocated by this.
-fn source_download_dir(paths: &AppPaths, source_type: &str) -> PathBuf {
-    match cerul_storage::read_string_setting(paths, "media_dir") {
-        Ok(Some(dir)) => Path::new(&dir).join("sources").join(source_type),
-        Ok(None) => paths.source_cache_dir(source_type),
-        Err(error) => {
-            tracing::warn!(%error, "failed to read media_dir setting; using default cache dir");
-            paths.source_cache_dir(source_type)
-        }
-    }
-}
-
-fn apply_ytdlp_access_settings(
-    paths: &AppPaths,
-    source_type: &str,
-    object: &mut Map<String, Value>,
-) {
-    if !matches!(source_type, "youtube" | "web_video") || has_source_cookie_config(object) {
-        return;
-    }
-
-    let mode = setting_string(paths, WEB_VIDEO_COOKIE_MODE_SETTING)
-        .unwrap_or_else(|| "browser".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    match mode.as_str() {
-        "browser" => {
-            let browser = setting_string(paths, WEB_VIDEO_COOKIE_BROWSER_SETTING)
-                .unwrap_or_else(|| "chrome".to_string());
-            let browser = browser.trim();
-            if !browser.is_empty() {
-                object.insert(
-                    "cookies_from_browser".to_string(),
-                    Value::String(browser.to_string()),
-                );
-            }
-        }
-        "file" => {
-            if let Some(path) = setting_string(paths, WEB_VIDEO_COOKIES_PATH_SETTING) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    object.insert("cookies_path".to_string(), Value::String(path.to_string()));
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn has_source_cookie_config(object: &Map<String, Value>) -> bool {
-    [
-        "cookies_from_browser",
-        "cookie_browser",
-        "ytdlp_cookies_from_browser",
-        "ytdlp_cookie_browser",
-        "cookies_path",
-        "cookies_file",
-        "ytdlp_cookies_path",
-        "ytdlp_cookies_file",
-    ]
-    .iter()
-    .any(|key| {
-        object
-            .get(*key)
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
-    })
-}
-
-fn setting_string(paths: &AppPaths, key: &str) -> Option<String> {
-    let conn = cerul_storage::sqlite::open(paths).ok()?;
-    let raw: String = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-            row.get(0)
-        })
-        .ok()?;
-    match serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw)) {
-        Value::String(value) => Some(value),
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-fn read_exif_metadata(path: &Path) -> anyhow::Result<serde_json::Value> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let exif = match exif::Reader::new().read_from_container(&mut reader) {
-        Ok(exif) => exif,
-        Err(error) => {
-            return Ok(json!({
-                "exif": {},
-                "exif_error": error.to_string(),
-            }));
-        }
-    };
-    let mut fields = Map::new();
-
-    for field in exif.fields() {
-        fields.insert(
-            format!("{:?}.{:?}", field.ifd_num, field.tag),
-            json!(field.display_value().with_unit(&exif).to_string()),
-        );
-    }
-
-    Ok(json!({ "exif": fields }))
-}
-
-fn set_embedding_index_status(
-    paths: &AppPaths,
-    item_id: &str,
-    status: &str,
-    error: Option<&str>,
-    text_vectors: usize,
-    image_vectors: usize,
-) -> anyhow::Result<()> {
-    cerul_storage::update_item_metadata(paths, item_id, |metadata| {
-        metadata.insert(
-            "embedding_index_status".to_string(),
-            serde_json::Value::String(status.to_string()),
-        );
-        metadata.insert(
-            "embedding_text_vectors".to_string(),
-            serde_json::Value::from(text_vectors as u64),
-        );
-        metadata.insert(
-            "embedding_image_vectors".to_string(),
-            serde_json::Value::from(image_vectors as u64),
-        );
-        match error {
-            Some(error) => {
-                metadata.insert(
-                    "embedding_index_error".to_string(),
-                    serde_json::Value::String(error.to_string()),
-                );
-            }
-            None => {
-                metadata.remove("embedding_index_error");
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stages::fetch::source_config_with_app_cache;
+    use crate::stages::sample::keyframe_chunks;
     use anyhow::Context;
     use cerul_storage::{sqlite, vectors};
     use image::{Rgb, RgbImage};
@@ -3080,6 +2844,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn process_document_item_writes_chunks_and_retrieval_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let documents = temp.path().join("documents");
+        std::fs::create_dir(&documents).unwrap();
+        let document = documents.join("brief.md");
+        std::fs::write(
+            &document,
+            "# Roadmap\nDocument search should find the alpha launch brief.",
+        )
+        .unwrap();
+        insert_source(&paths, "document-source", "folder_document", &documents);
+        insert_item(
+            &paths,
+            "document-1",
+            "document-source",
+            "document",
+            "brief",
+            &document,
+        );
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        let summary = pipeline.process_document_item("document-1").await.unwrap();
+
+        assert_eq!(summary.document_chunks, 1);
+        assert_eq!(summary.text_vectors, 1);
+        assert_eq!(retrieval_unit_count_for_item(&paths, "document-1"), 1);
+        assert_eq!(unified_point_count(&paths).await, 1);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (status, search_status, chunk_type, text, metadata): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                r#"
+                SELECT i.status, i.search_index_status, c.chunk_type, c.text, c.metadata
+                FROM items i
+                JOIN chunks c ON c.item_id = i.id
+                WHERE i.id = 'document-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(status, "indexed");
+        assert_eq!(search_status, "indexed");
+        assert_eq!(chunk_type, "document");
+        assert!(text.contains("alpha launch brief"));
+        assert_eq!(metadata["page"], 1);
+        assert_eq!(metadata["section"], "Roadmap");
+        drop(conn);
+
+        let results = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "alpha launch brief".to_string(),
+                limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(results[0].chunk_type, "document");
+        assert_eq!(results[0].playback_chunk_id, "document-1:document:000000");
+    }
+
+    #[tokio::test]
+    async fn process_document_item_deletes_stale_vectors_when_vector_write_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let documents = temp.path().join("documents");
+        std::fs::create_dir(&documents).unwrap();
+        let document = documents.join("brief.md");
+        std::fs::write(
+            &document,
+            "# Roadmap\nDocument search should preserve FTS fallback.",
+        )
+        .unwrap();
+        insert_source(&paths, "document-source", "folder_document", &documents);
+        insert_item(
+            &paths,
+            "document-1",
+            "document-source",
+            "document",
+            "brief",
+            &document,
+        );
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        pipeline.process_document_item("document-1").await.unwrap();
+        assert_eq!(unified_point_count(&paths).await, 1);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FailingTextEmbedder),
+        );
+        let summary = pipeline.process_document_item("document-1").await.unwrap();
+
+        assert_eq!(summary.document_chunks, 1);
+        assert_eq!(summary.text_vectors, 0);
+        assert_eq!(unified_point_count(&paths).await, 0);
+
+        let conn = sqlite::open(&paths).unwrap();
+        let (status, metadata, search_index_status, search_index_vector_count): (
+            String,
+            String,
+            String,
+            i64,
+        ) = conn
+            .query_row(
+                r#"
+                SELECT status, metadata, search_index_status, search_index_vector_count
+                FROM items
+                WHERE id = 'document-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+
+        assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert_eq!(search_index_vector_count, 0);
+        assert_eq!(metadata["embedding_index_status"], "failed");
+        assert!(metadata["embedding_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("quota exceeded"));
+    }
+
+    #[tokio::test]
     async fn process_video_item_keeps_transcript_searchable_when_vector_write_fails() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
@@ -3103,16 +3021,37 @@ mod tests {
         assert_eq!(summary.image_vectors, 0);
 
         let conn = sqlite::open(&paths).unwrap();
-        let (status, metadata): (String, String) = conn
+        let (status, metadata, search_index_status, search_index_unit_count, search_index_vector_count): (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+        ) = conn
             .query_row(
-                "SELECT status, metadata FROM items WHERE id = 'item-1'",
+                r#"
+                SELECT status, metadata, search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items
+                WHERE id = 'item-1'
+                "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
 
         assert_eq!(status, "indexed");
+        assert_eq!(search_index_status, "indexed");
+        assert_eq!(search_index_unit_count, 1);
+        assert_eq!(search_index_vector_count, 0);
         assert_eq!(metadata["embedding_index_status"], "failed");
         assert_eq!(metadata["visual_index_status"], "display_only");
         assert!(metadata["embedding_index_error"]

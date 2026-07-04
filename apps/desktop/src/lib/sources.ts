@@ -34,7 +34,12 @@ export function sourceName(record: api.SourceRecord) {
   if (record.type === "file_video") {
     return cleanMediaTitle(configValue);
   }
-  if (record.type === "folder_video" || record.type === "folder_audio" || record.type === "folder_image") {
+  if (
+    record.type === "folder_video" ||
+    record.type === "folder_audio" ||
+    record.type === "folder_image" ||
+    record.type === "folder_document"
+  ) {
     return compactPathDisplay(configValue, 2) ?? configValue;
   }
   return configValue;

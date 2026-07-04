@@ -36,6 +36,9 @@ import { ProgressBar, highlightSnippet } from "./transcript";
  * status — for the detail subtitle, where indexed/failed status is shown
  * separately. itemSearchability() below folds status in for library cards. */
 export function itemModalityLabel(item: Item, t: TFunction): string {
+  if (item.contentType === "document") {
+    return t("library.itemCard.searchDocument");
+  }
   const hasVisual =
     item.contentType === "image" ||
     (item.contentType === "video" && item.visualIndexStatus === "indexed");
@@ -70,6 +73,9 @@ function itemSearchability(
   // the card in a warning state instead of advertising a full modality.
   if (itemHasPartialIndex(item)) {
     return { label: t("library.itemCard.partialIndex"), tone: "warn" };
+  }
+  if (item.contentType === "document") {
+    return { label: t("library.itemCard.searchDocument"), tone: "accent" };
   }
   // Visual search is real only once the visual index is actually indexed
   // (pending/null is not searchable yet); images are inherently visual.
@@ -118,6 +124,9 @@ function itemCapabilityChips(
   }
   if (hasVisual) {
     chips.push({ key: "visual", label: t("library.itemCard.capability.visual"), tone: "neutral" });
+  }
+  if (item.contentType === "document") {
+    chips.push({ key: "document", label: t("library.itemCard.capability.document"), tone: "neutral" });
   }
   if (itemHasPartialIndex(item)) {
     chips.push({ key: "partial", label: t("library.itemCard.partialIndexShort"), tone: "warn" });
@@ -202,7 +211,11 @@ export function ResultCard({
           <img src={result.thumbnailUrl} alt="" loading="lazy" />
         ) : (
           <>
-            <Play size={24} fill="currentColor" />
+            {modality === "document" ? (
+              <FileText size={24} />
+            ) : (
+              <Play size={24} fill="currentColor" />
+            )}
             <small className="mono">{result.timestamp}</small>
           </>
         )}
@@ -276,6 +289,9 @@ export function ItemModalityIcon({ item, size }: { item: Item; size: number }) {
   }
   if (item.contentType === "image") {
     return <ImageIcon size={size} />;
+  }
+  if (item.contentType === "document") {
+    return <FileText size={size} />;
   }
   return <FileVideo size={size} />;
 }

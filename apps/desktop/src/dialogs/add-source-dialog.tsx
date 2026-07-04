@@ -37,6 +37,16 @@ const DEFAULT_WEB_VIDEO_AUTHOR_MAX = 20;
 const MIN_WEB_VIDEO_AUTHOR_MAX = 1;
 const MAX_WEB_VIDEO_AUTHOR_MAX = 200;
 
+type FolderMediaKind = "video" | "audio" | "image" | "document";
+
+const folderMediaKinds: FolderMediaKind[] = ["video", "audio", "image", "document"];
+const folderSourceTypes: Record<FolderMediaKind, string> = {
+  video: "folder_video",
+  audio: "folder_audio",
+  image: "folder_image",
+  document: "folder_document",
+};
+
 const sourceTabs: {
   id: "folder" | "file" | "youtube" | "podcast";
   icon: LucideIcon;
@@ -59,6 +69,7 @@ export function AddSourceDialog({
 }) {
   const t = useT();
   const [tab, setTab] = useState<"folder" | "file" | "youtube" | "podcast">("folder");
+  const [folderMediaKind, setFolderMediaKind] = useState<FolderMediaKind>("video");
   const [folderPath, setFolderPath] = useState("");
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -183,7 +194,7 @@ export function AddSourceDialog({
           setError(t("addSource.folder.errorEmpty"));
           return;
         }
-        await onAddSource("folder_video", { path: folderPath });
+        await onAddSource(folderSourceTypes[folderMediaKind], { path: folderPath });
       } else if (tab === "file") {
         if (filePaths.length === 0) {
           setError(t("addSource.file.errorEmpty"));
@@ -296,7 +307,13 @@ export function AddSourceDialog({
             })}
           </div>
           {tab === "folder" ? (
-            <FolderTab path={folderPath} setPath={setFolderPath} onChooseFolder={chooseFolder} />
+            <FolderTab
+              mediaKind={folderMediaKind}
+              setMediaKind={setFolderMediaKind}
+              path={folderPath}
+              setPath={setFolderPath}
+              onChooseFolder={chooseFolder}
+            />
           ) : null}
           {tab === "file" ? (
             <FileTab paths={filePaths} onChooseFiles={chooseFiles} onRemove={removeFilePath} />
@@ -370,10 +387,14 @@ function clampWebVideoMax(value: number) {
 }
 
 function FolderTab({
+  mediaKind,
+  setMediaKind,
   path,
   setPath,
   onChooseFolder,
 }: {
+  mediaKind: FolderMediaKind;
+  setMediaKind: (kind: FolderMediaKind) => void;
   path: string;
   setPath: (path: string) => void;
   onChooseFolder: () => void;
@@ -381,6 +402,20 @@ function FolderTab({
   const t = useT();
   return (
     <div className="col gap-3">
+      <div className="segmented" role="radiogroup" aria-label={t("addSource.folder.kindAria")}>
+        {folderMediaKinds.map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            className={mediaKind === kind ? "active" : ""}
+            aria-checked={mediaKind === kind}
+            role="radio"
+            onClick={() => setMediaKind(kind)}
+          >
+            {t(`addSource.folder.kind.${kind}`)}
+          </button>
+        ))}
+      </div>
       <button className="btn btn-secondary block" type="button" onClick={onChooseFolder}>
         <Folder size={18} />
         <span>{t("onboarding.folder.choose")}</span>
@@ -391,10 +426,10 @@ function FolderTab({
           className="input mono"
           value={path}
           onChange={(event) => setPath(event.currentTarget.value)}
-          placeholder={t("addSource.folder.pathPlaceholder")}
+          placeholder={t(`addSource.folder.pathPlaceholder.${mediaKind}`)}
         />
       </label>
-      <p className="field-hint">{t("addSource.folder.helper")}</p>
+      <p className="field-hint">{t(`addSource.folder.helper.${mediaKind}`)}</p>
     </div>
   );
 }

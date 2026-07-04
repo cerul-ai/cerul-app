@@ -6,6 +6,7 @@ pub enum ContentType {
     Video,
     Audio,
     Image,
+    Document,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

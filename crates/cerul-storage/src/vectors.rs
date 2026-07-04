@@ -169,6 +169,26 @@ pub fn shutdown_vector_index() {
     }
 }
 
+pub fn clear_vector_collections(paths: &AppPaths) -> anyhow::Result<()> {
+    shutdown_vector_index();
+    let collections_dir = paths.vector_index.join("collections");
+    if collections_dir.exists() {
+        fs::remove_dir_all(&collections_dir).with_context(|| {
+            format!(
+                "failed to remove zvec collections at {}",
+                collections_dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&collections_dir).with_context(|| {
+        format!(
+            "failed to recreate zvec collections directory at {}",
+            collections_dir.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub async fn ensure_collections_for_profile(
     paths: &AppPaths,
     profile: &EmbeddingProfile,
