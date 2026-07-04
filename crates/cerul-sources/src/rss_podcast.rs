@@ -412,10 +412,8 @@ fn collect_entry_attributes(
     event: &BytesStart<'_>,
 ) -> anyhow::Result<()> {
     match tag {
-        "enclosure" => {
-            if entry.enclosure_url.is_none() {
-                entry.enclosure_url = attr_value(event, "url")?;
-            }
+        "enclosure" if entry.enclosure_url.is_none() => {
+            entry.enclosure_url = attr_value(event, "url")?;
         }
         "link" => {
             let href = attr_value(event, "href")?;
@@ -427,10 +425,8 @@ fn collect_entry_attributes(
                 entry.first_link = href;
             }
         }
-        "content" => {
-            if entry.enclosure_url.is_none() {
-                entry.enclosure_url = attr_value(event, "url")?.or(attr_value(event, "src")?);
-            }
+        "content" if entry.enclosure_url.is_none() => {
+            entry.enclosure_url = attr_value(event, "url")?.or(attr_value(event, "src")?);
         }
         _ => {}
     }

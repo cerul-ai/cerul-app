@@ -18,20 +18,15 @@ impl SearchRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchRankingPreference {
+    #[default]
     Smart,
     Video,
     Image,
     Document,
     Audio,
-}
-
-impl Default for SearchRankingPreference {
-    fn default() -> Self {
-        Self::Smart
-    }
 }
 
 impl SearchRankingPreference {
