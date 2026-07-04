@@ -81,7 +81,25 @@ fn inferred_ranking_preference(query: &str) -> Option<SearchRankingPreference> {
 }
 
 fn contains_any(value: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| value.contains(needle))
+    needles.iter().any(|needle| {
+        if needle.is_ascii() && needle.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            contains_ascii_token(value, needle)
+        } else {
+            value.contains(needle)
+        }
+    })
+}
+
+fn contains_ascii_token(value: &str, needle: &str) -> bool {
+    value.match_indices(needle).any(|(start, _)| {
+        let before = value[..start].chars().next_back();
+        let after = value[start + needle.len()..].chars().next();
+        is_ascii_token_boundary(before) && is_ascii_token_boundary(after)
+    })
+}
+
+fn is_ascii_token_boundary(ch: Option<char>) -> bool {
+    ch.is_none_or(|ch| !ch.is_ascii_alphanumeric())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1129,14 +1147,14 @@ fn modality_boost(result: &SearchResult, ranking_preference: SearchRankingPrefer
     if result.exact_match || result.match_score < RANKING_BOOST_THRESHOLD {
         return 0.0;
     }
-    let modality = result_modality(result);
     if ranking_preference == SearchRankingPreference::Smart {
-        return if modality == SearchResultModality::Video {
+        return if smart_result_modality(result) == SearchResultModality::Video {
             SMART_VIDEO_BOOST
         } else {
             0.0
         };
     }
+    let modality = result_modality(result);
     if modality == SearchResultModality::from_preference(ranking_preference) {
         EXPLICIT_MODALITY_BOOST
     } else {
@@ -1164,19 +1182,35 @@ impl SearchResultModality {
 }
 
 fn result_modality(result: &SearchResult) -> SearchResultModality {
-    match result.item_content_type.as_deref() {
-        Some("image") => return SearchResultModality::Image,
-        Some("document") => return SearchResultModality::Document,
-        Some("audio") => return SearchResultModality::Audio,
-        Some("video") => return SearchResultModality::Video,
-        _ => {}
+    if let Some(modality) = chunk_modality(&result.chunk_type) {
+        return modality;
     }
-    match result.chunk_type.as_str() {
-        "image" | "keyframe" | "ocr" => SearchResultModality::Image,
-        "document" => SearchResultModality::Document,
-        "transcript" | "transcript_line" | "audio" => SearchResultModality::Audio,
-        "understanding" | "video" => SearchResultModality::Video,
-        _ => SearchResultModality::Video,
+    item_modality(result).unwrap_or(SearchResultModality::Video)
+}
+
+fn smart_result_modality(result: &SearchResult) -> SearchResultModality {
+    item_modality(result)
+        .or_else(|| chunk_modality(&result.chunk_type))
+        .unwrap_or(SearchResultModality::Video)
+}
+
+fn item_modality(result: &SearchResult) -> Option<SearchResultModality> {
+    match result.item_content_type.as_deref() {
+        Some("image") => Some(SearchResultModality::Image),
+        Some("document") => Some(SearchResultModality::Document),
+        Some("audio") => Some(SearchResultModality::Audio),
+        Some("video") => Some(SearchResultModality::Video),
+        _ => None,
+    }
+}
+
+fn chunk_modality(chunk_type: &str) -> Option<SearchResultModality> {
+    match chunk_type {
+        "image" | "keyframe" | "ocr" => Some(SearchResultModality::Image),
+        "document" => Some(SearchResultModality::Document),
+        "transcript" | "transcript_line" | "audio" => Some(SearchResultModality::Audio),
+        "moment" | "understanding" | "video" => Some(SearchResultModality::Video),
+        _ => None,
     }
 }
 
@@ -1964,6 +1998,29 @@ mod tests {
     }
 
     #[test]
+    fn smart_inference_requires_ascii_keyword_boundaries() {
+        let neutral = SearchRequest {
+            q: "eclipse roadmap".to_string(),
+            limit: 10,
+            ranking_preference: SearchRankingPreference::Smart,
+        };
+        let explicit = SearchRequest {
+            q: "video clip roadmap".to_string(),
+            limit: 10,
+            ranking_preference: SearchRankingPreference::Smart,
+        };
+
+        assert_eq!(
+            neutral.effective_ranking_preference(),
+            SearchRankingPreference::Smart
+        );
+        assert_eq!(
+            explicit.effective_ranking_preference(),
+            SearchRankingPreference::Video
+        );
+    }
+
+    #[test]
     fn ranking_preference_does_not_override_exact_matches() {
         let video = vector_result("chunk-video", "item-video", "transcript", "video", 0.90);
         let mut image_exact = result("chunk-image", "item-image", "image", None, 0.01);
@@ -1974,6 +2031,38 @@ mod tests {
         let scored = finalize_results(vec![video, image_exact], 10, SearchRankingPreference::Smart);
 
         assert_eq!(scored[0].playback_chunk_id, "chunk-image");
+    }
+
+    #[test]
+    fn explicit_image_ranking_uses_visual_chunks_inside_video_items() {
+        let transcript = vector_result(
+            "chunk-transcript",
+            "item-video",
+            "transcript",
+            "video",
+            0.58,
+        );
+        let visual = vector_result("chunk-ocr", "item-video", "ocr", "video", 0.53);
+
+        let scored = finalize_results(vec![transcript, visual], 10, SearchRankingPreference::Image);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-ocr");
+    }
+
+    #[test]
+    fn explicit_audio_ranking_uses_transcript_chunks_inside_video_items() {
+        let visual = vector_result("chunk-ocr", "item-video", "ocr", "video", 0.58);
+        let transcript = vector_result(
+            "chunk-transcript",
+            "item-video",
+            "transcript",
+            "video",
+            0.53,
+        );
+
+        let scored = finalize_results(vec![visual, transcript], 10, SearchRankingPreference::Audio);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-transcript");
     }
 
     #[test]
