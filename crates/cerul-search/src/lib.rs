@@ -39,7 +39,7 @@ impl SearchRankingPreference {
         if self != Self::Smart {
             return self;
         }
-        inferred_ranking_preference(query).unwrap_or(Self::Video)
+        inferred_ranking_preference(query).unwrap_or(Self::Smart)
     }
 }
 
@@ -1942,6 +1942,25 @@ mod tests {
         let scored = finalize_results(vec![image, video], 10, SearchRankingPreference::Smart);
 
         assert_eq!(scored[0].playback_chunk_id, "chunk-video");
+    }
+
+    #[test]
+    fn neutral_smart_ranking_keeps_smart_video_boost() {
+        let request = SearchRequest {
+            q: "launch plan".to_string(),
+            limit: 10,
+            ranking_preference: SearchRankingPreference::Smart,
+        };
+        let image = vector_result("chunk-image", "item-image", "image", "image", 0.70);
+        let video = vector_result("chunk-video", "item-video", "transcript", "video", 0.62);
+
+        let scored = finalize_results(
+            vec![image, video],
+            10,
+            request.effective_ranking_preference(),
+        );
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-image");
     }
 
     #[test]

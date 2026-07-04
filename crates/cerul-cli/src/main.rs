@@ -199,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
                     cerul_search::SearchRequest {
                         q: item_query.clone(),
                         limit: count.max(3),
+                        ranking_preference: cerul_search::SearchRankingPreference::Smart,
                     },
                     smoke_vector(0),
                 )

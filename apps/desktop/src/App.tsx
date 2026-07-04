@@ -1716,10 +1716,16 @@ function AppWorkspace() {
     const trimmed = value.trim();
     if (!trimmed) {
       setSearchDiagnostics(null);
+      lastSearchRef.current = null;
       return;
     }
 
     rememberRecentSearch(trimmed);
+    lastSearchRef.current = {
+      query: trimmed,
+      retryWhenIdle: false,
+      rankingPreference,
+    };
     const seq = ++searchSeqRef.current;
     const isCurrent = () => seq === searchSeqRef.current;
     setIsSearching(true);
