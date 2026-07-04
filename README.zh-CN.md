@@ -22,7 +22,7 @@
   <p>
     <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-3b82f6?style=flat-square" /></a>
     <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-22c55e?style=flat-square" />
-    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.56-22c55e?style=flat-square" />
+    <img alt="Status" src="https://img.shields.io/badge/status-v0.0.57-22c55e?style=flat-square" />
   </p>
 
   <p>
@@ -36,7 +36,7 @@
 <br />
 
 > [!NOTE]
-> **初版发布。** Cerul App 是 [Cerul Cloud](https://cerul.ai) 的源码可得、可自托管配套客户端。当前版本：**0.0.56**。核心已可运行 —— 桌面外壳、Cerul Core、索引流水线、混合搜索、浮层和托盘今天就能跑。公开安装包通过 GitHub Releases 发布；release workflow 配置 Developer ID 凭据时，macOS 制品会经过签名与公证。
+> **初版发布。** Cerul App 是 [Cerul Cloud](https://cerul.ai) 的源码可得、可自托管配套客户端。当前版本：**0.0.57**。核心已可运行 —— 桌面外壳、Cerul Core、索引流水线、混合搜索、浮层和托盘今天就能跑。公开安装包通过 GitHub Releases 发布；release workflow 配置 Developer ID 凭据时，macOS 制品会经过签名与公证。
 
 ## 为什么用 Cerul App
 
@@ -137,7 +137,7 @@ scripts/           构建、打包与冒烟测试脚本
 
 ## 项目状态与路线图
 
-Cerul App 仍处于 alpha 阶段。当前版本：**0.0.56**。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
+Cerul App 仍处于 alpha 阶段。当前版本：**0.0.57**。整条链路已端到端跑通，公开 macOS 制品现在由 release workflow 通过签名、公证和安装版冒烟作为门禁。
 
 **今天已可用**
 - Electron 桌面外壳、本地 REST API、存储与索引流水线
