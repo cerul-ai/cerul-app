@@ -10,6 +10,9 @@ members = [
   "crates/cerul-sources",
   "crates/cerul-storage",
 ]
+exclude = [
+  "vendor/zvec-0.1.0",
+]
 resolver = "2"
 
 [workspace.package]
@@ -27,6 +30,12 @@ thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[patch.crates-io]
+# Keep this vendored patch until upstream zvec fixes Collection teardown:
+# zvec 0.1.0 drops handles with zvec_collection_destroy, which deletes
+# on-disk collection data on normal app exit and wipes the local vector index.
+zvec = { path = "vendor/zvec-0.1.0" }
 
 # Dev-build optimization, narrowed to the ML/numeric hot path.
 #

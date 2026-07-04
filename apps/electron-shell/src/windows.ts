@@ -22,6 +22,7 @@ export type OverlayWindowOptions = {
   height: number;
   preloadPath: string;
   iconPath: string;
+  shouldHideOnBlur?: () => boolean;
   onClosed: () => void;
 };
 
@@ -106,7 +107,9 @@ export function createOverlayBrowserWindow(options: OverlayWindowOptions) {
   secureDesktopWindow(window);
   // Dismiss like a normal spotlight: when the overlay loses focus, hide it.
   window.on("blur", () => {
-    window.hide();
+    if (options.shouldHideOnBlur?.() ?? true) {
+      window.hide();
+    }
   });
   window.on("closed", options.onClosed);
   window.webContents.once("did-finish-load", () => {

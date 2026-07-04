@@ -5467,8 +5467,6 @@ dependencies = [
 [[package]]
 name = "zvec"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd8ac51df24026a52849501c185202bf2d262ce545e8b3cf664c94fa2ac6751"
 dependencies = [
  "bindgen 0.70.1",
  "sha2",
