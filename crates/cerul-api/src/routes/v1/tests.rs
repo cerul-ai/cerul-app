@@ -153,7 +153,7 @@ async fn router_serves_v1_status_and_openapi() {
 }
 
 #[tokio::test]
-async fn v1_status_ignores_legacy_chunks_fts_readiness() {
+async fn v1_status_counts_legacy_chunks_as_text_ready() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::from_data_dir(temp.path()).unwrap();
     {
@@ -182,7 +182,7 @@ async fn v1_status_ignores_legacy_chunks_fts_readiness() {
                 'transcript',
                 1.0,
                 2.0,
-                'legacy chunks fts text should not mark v1 status ready',
+                'legacy chunks fts text should mark v1 status ready',
                 '{}'
             )
             "#,
@@ -205,9 +205,9 @@ async fn v1_status_ignores_legacy_chunks_fts_readiness() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let status_json = response_json(response).await;
-    assert_eq!(status_json["search"]["ready"], false);
-    assert_eq!(status_json["search"]["retrieval_mode"], "empty");
-    assert_eq!(status_json["search"]["text_ready"], false);
+    assert_eq!(status_json["search"]["ready"], true);
+    assert_eq!(status_json["search"]["retrieval_mode"], "text");
+    assert_eq!(status_json["search"]["text_ready"], true);
     assert_eq!(status_json["search"]["vector_ready"], false);
     assert_eq!(status_json["library"]["chunk_count"], 1);
 }
@@ -859,6 +859,10 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
                             "type": "string"
                         },
                         "query": {"minLength": "number", "type": "string"},
+                        "ranking_preference": {
+                            "enum": ["string", "string", "string", "string", "string"],
+                            "type": "string"
+                        },
                         "target": {"enum": ["string"], "type": "string"}
                     },
                     "required": ["string"],
@@ -1174,6 +1178,14 @@ async fn v1_golden_contract_shapes_cover_agent_endpoints() {
         ]
     );
     let tools = agent_tools["tools"].as_array().unwrap();
+    let search_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "search_library")
+        .unwrap();
+    assert_eq!(
+        search_tool["input_schema"]["properties"]["ranking_preference"]["enum"],
+        json!(["smart", "video", "image", "document", "audio"])
+    );
     let get_frame_tool = tools
         .iter()
         .find(|tool| tool["name"] == "get_frame")

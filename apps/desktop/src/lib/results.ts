@@ -317,7 +317,11 @@ export function isBackendFallbackSnippet(
   chunkType: string,
   startSec: number | null,
 ): boolean {
-  return snippet.trim() === backendFallbackSnippet(chunkType, startSec);
+  const normalized = snippet.trim();
+  if (normalized === backendFallbackSnippet(chunkType, startSec)) {
+    return true;
+  }
+  return chunkType === "document" && normalized === backendFallbackSnippet("", startSec);
 }
 
 function displaySnippet(record: api.SearchResultRecord, t: TFunction) {

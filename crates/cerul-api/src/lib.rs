@@ -960,6 +960,8 @@ struct SearchHealthDiagnostics {
     searchable_text_chunk_count: usize,
     image_chunk_count: usize,
     fts_row_count: usize,
+    legacy_searchable_text_chunk_count: usize,
+    legacy_chunk_fts_row_count: usize,
     retrieval_unit_fts_row_count: usize,
     orphan_job_count: usize,
     missing_raw_path_count: usize,
@@ -1048,6 +1050,8 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         "SELECT COUNT(*) FROM chunks WHERE frame_path IS NOT NULL AND TRIM(frame_path) <> ''",
     )?;
     let fts_row_count = count_query(&conn, "SELECT COUNT(*) FROM chunks_fts")?;
+    let legacy_searchable_text_chunk_count = legacy_searchable_text_chunk_count(&conn)?;
+    let legacy_chunk_fts_row_count = legacy_chunk_fts_row_count(&conn)?;
     let retrieval_unit_count = count_query(
         &conn,
         &format!(
@@ -1096,6 +1100,8 @@ async fn search_health_diagnostics(paths: &AppPaths) -> anyhow::Result<SearchHea
         searchable_text_chunk_count,
         image_chunk_count,
         fts_row_count,
+        legacy_searchable_text_chunk_count,
+        legacy_chunk_fts_row_count,
         retrieval_unit_fts_row_count,
         orphan_job_count,
         missing_raw_path_count,
@@ -1174,6 +1180,51 @@ fn count_missing_raw_paths(conn: &rusqlite::Connection) -> anyhow::Result<usize>
 fn count_query(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<usize> {
     conn.query_row(sql, [], |row| row.get::<_, i64>(0))
         .map(|count| count.max(0) as usize)
+}
+
+fn legacy_searchable_text_chunk_count(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    count_query(
+        conn,
+        &format!(
+            r#"
+        SELECT COUNT(*)
+        FROM chunks c
+        JOIN items i ON i.id = c.item_id
+        WHERE c.text IS NOT NULL
+          AND TRIM(c.text) <> ''
+          AND i.status = 'indexed'
+          AND (
+            i.search_index_version IS NULL
+            OR i.search_index_version != {}
+            OR i.search_index_status IS NULL
+            OR i.search_index_status != 'indexed'
+          )
+        "#,
+            cerul_storage::SEARCH_INDEX_VERSION
+        ),
+    )
+}
+
+fn legacy_chunk_fts_row_count(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    count_query(
+        conn,
+        &format!(
+            r#"
+        SELECT COUNT(*)
+        FROM chunks_fts
+        JOIN chunks c ON c.rowid = chunks_fts.rowid
+        JOIN items i ON i.id = c.item_id
+        WHERE i.status = 'indexed'
+          AND (
+            i.search_index_version IS NULL
+            OR i.search_index_version != {}
+            OR i.search_index_status IS NULL
+            OR i.search_index_status != 'indexed'
+          )
+        "#,
+            cerul_storage::SEARCH_INDEX_VERSION
+        ),
+    )
 }
 
 #[derive(Debug, Serialize)]
