@@ -91,7 +91,7 @@ export type ResultMatch = {
 };
 
 export type ResultConfidence = "high" | "medium" | "low";
-export type ResultModalityFilter = "all" | "video" | "audio" | "image";
+export type ResultModalityFilter = "all" | "video" | "audio" | "image" | "document";
 export type ResultConfidenceFilter = "all" | "strong" | "review";
 export type ResultTimeFilter = "all" | "first10" | "tenToThirty" | "thirtyPlus";
 

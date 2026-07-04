@@ -907,6 +907,8 @@ function AppWorkspace() {
     initialRoute.timestamp,
   );
   const [query, setQuery] = useState("");
+  const [searchRankingPreference, setSearchRankingPreference] =
+    useState<api.SearchRankingPreference>("smart");
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [showAddSource, setShowAddSource] = useState(false);
   const [showJobsSheet, setShowJobsSheet] = useState(false);
@@ -944,7 +946,11 @@ function AppWorkspace() {
   const [searchDiagnostics, setSearchDiagnostics] = useState<api.SearchDiagnostics | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const lastSearchRef = useRef<{ query: string; retryWhenIdle: boolean } | null>(null);
+  const lastSearchRef = useRef<{
+    query: string;
+    retryWhenIdle: boolean;
+    rankingPreference: api.SearchRankingPreference;
+  } | null>(null);
   // Monotonic token: every runSearch bumps it, stale responses are dropped.
   const searchSeqRef = useRef(0);
 
@@ -1438,10 +1444,16 @@ function AppWorkspace() {
       setApiStatus("online");
       const pendingRetry = lastSearchRef.current;
       if (pendingRetry?.retryWhenIdle && !hasSyncingSources && !jobRecords.some(isActiveJob)) {
-        lastSearchRef.current = { query: pendingRetry.query, retryWhenIdle: false };
+        lastSearchRef.current = {
+          query: pendingRetry.query,
+          retryWhenIdle: false,
+          rankingPreference: pendingRetry.rankingPreference,
+        };
         const seqAtSchedule = searchSeqRef.current;
         api
-          .search(pendingRetry.query, 20)
+          .search(pendingRetry.query, 20, {
+            rankingPreference: pendingRetry.rankingPreference,
+          })
           .then((response) => {
             // A newer user-initiated search supersedes this idle retry.
             if (seqAtSchedule !== searchSeqRef.current) return;
@@ -1450,6 +1462,7 @@ function AppWorkspace() {
             lastSearchRef.current = {
               query: pendingRetry.query,
               retryWhenIdle: false,
+              rankingPreference: pendingRetry.rankingPreference,
             };
           })
           .catch(() => undefined);
@@ -1689,7 +1702,17 @@ function AppWorkspace() {
     void runSearch(value);
   }
 
-  async function runSearch(value: string) {
+  function handleSearchRankingPreferenceChange(next: api.SearchRankingPreference) {
+    setSearchRankingPreference(next);
+    if (query.trim()) {
+      void runSearch(query, next);
+    }
+  }
+
+  async function runSearch(
+    value: string,
+    rankingPreference: api.SearchRankingPreference = searchRankingPreference,
+  ) {
     const trimmed = value.trim();
     if (!trimmed) {
       setSearchDiagnostics(null);
@@ -1710,7 +1733,7 @@ function AppWorkspace() {
       const searchData = latestData ?? data;
       const itemsForResults = searchData.items;
       let retryWhenIndexSettles = searchIndexIsSettling(searchData);
-      let response = await api.search(trimmed, 20);
+      let response = await api.search(trimmed, 20, { rankingPreference });
       if (!isCurrent()) return;
       setLiveResults(mapSearchResults(response.results, itemsForResults, t));
       setSearchDiagnostics(response.diagnostics);
@@ -1719,7 +1742,7 @@ function AppWorkspace() {
         if (!isCurrent()) return;
         const refreshed = await refreshCoreData();
         retryWhenIndexSettles = refreshed ? searchIndexIsSettling(refreshed) : retryWhenIndexSettles;
-        response = await api.search(trimmed, 20);
+        response = await api.search(trimmed, 20, { rankingPreference });
         if (!isCurrent()) return;
         setLiveResults(mapSearchResults(response.results, refreshed?.items ?? itemsForResults, t));
         setSearchDiagnostics(response.diagnostics);
@@ -1727,6 +1750,7 @@ function AppWorkspace() {
       lastSearchRef.current = {
         query: trimmed,
         retryWhenIdle: retryWhenIndexSettles,
+        rankingPreference,
       };
     } catch (error) {
       // A failed search is a search-level problem; flipping the whole app
@@ -2058,6 +2082,8 @@ function AppWorkspace() {
             query={query}
             setQuery={setQuery}
             onSubmit={submitSearch}
+            rankingPreference={searchRankingPreference}
+            onRankingPreferenceChange={handleSearchRankingPreferenceChange}
             onBack={() => navigate("home")}
             onOpen={(result) =>
               navigate("result-detail", {
@@ -3004,6 +3030,8 @@ function ResultsScreen({
   query,
   setQuery,
   onSubmit,
+  rankingPreference,
+  onRankingPreferenceChange,
   onBack,
   onOpen,
   results,
@@ -3017,6 +3045,8 @@ function ResultsScreen({
   query: string;
   setQuery: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  rankingPreference: api.SearchRankingPreference;
+  onRankingPreferenceChange: (value: api.SearchRankingPreference) => void;
   onBack: () => void;
   onOpen: (result: Result) => void;
   results: Result[];
@@ -3033,7 +3063,7 @@ function ResultsScreen({
   const [modalityFilter, setModalityFilter] = useState<ResultModalityFilter>("all");
   const [sortMode, setSortMode] = useState<"relevance" | "recent">("relevance");
   const filtersActive =
-    modalityFilter !== "all" || sortMode !== "relevance";
+    modalityFilter !== "all" || sortMode !== "relevance" || rankingPreference !== "smart";
   const filteredResults = results.filter((result) => {
     const matchesModality = modalityFilter === "all" || resultModality(result) === modalityFilter;
     return matchesModality;
@@ -3049,6 +3079,7 @@ function ResultsScreen({
   const modalityCounts = {
     all: results.length,
     audio: results.filter((result) => resultModality(result) === "audio").length,
+    document: results.filter((result) => resultModality(result) === "document").length,
     image: results.filter((result) => resultModality(result) === "image").length,
     video: results.filter((result) => resultModality(result) === "video").length,
   };
@@ -3060,7 +3091,7 @@ function ResultsScreen({
   useEffect(() => {
     setSelectedIndex(0);
     setExpandedResultIds(new Set());
-  }, [query, results.length, modalityFilter, sortMode]);
+  }, [query, results.length, modalityFilter, sortMode, rankingPreference]);
 
   function focusResult(index: number) {
     window.requestAnimationFrame(() => {
@@ -3071,6 +3102,7 @@ function ResultsScreen({
   function clearResultFilters() {
     setModalityFilter("all");
     setSortMode("relevance");
+    onRankingPreferenceChange("smart");
   }
 
   function handleResultsKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -3166,6 +3198,13 @@ function ResultsScreen({
             >
               {t("results.modeTabs.audio")} <span className="chip neutral">{modalityCounts.audio}</span>
             </button>
+            <button
+              type="button"
+              className={modalityFilter === "document" ? "active" : ""}
+              onClick={() => setModalityFilter("document")}
+            >
+              {t("results.modeTabs.document")} <span className="chip neutral">{modalityCounts.document}</span>
+            </button>
           </div>
           <div className="row gap-2">
             <span className="muted" style={{ fontSize: 12.5 }}>{t("results.sort.label")}</span>
@@ -3185,6 +3224,24 @@ function ResultsScreen({
                 {t("results.sort.recent")}
               </button>
             </div>
+          </div>
+          <div className="row gap-2">
+            <span className="muted" style={{ fontSize: 12.5 }}>{t("results.preference.label")}</span>
+            <select
+              className="select"
+              value={rankingPreference}
+              onChange={(event) =>
+                onRankingPreferenceChange(event.currentTarget.value as api.SearchRankingPreference)
+              }
+              aria-label={t("results.preference.aria")}
+              style={{ height: 32, width: 132 }}
+            >
+              <option value="smart">{t("results.preference.smart")}</option>
+              <option value="video">{t("results.preference.video")}</option>
+              <option value="image">{t("results.preference.image")}</option>
+              <option value="document">{t("results.preference.document")}</option>
+              <option value="audio">{t("results.preference.audio")}</option>
+            </select>
           </div>
         </div>
 

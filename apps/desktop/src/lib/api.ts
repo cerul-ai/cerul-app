@@ -309,6 +309,12 @@ export type SearchResultRecord = {
   nearest_frame_chunk_id?: string | null;
 };
 
+export type SearchRankingPreference = "smart" | "video" | "image" | "document" | "audio";
+
+export type SearchOptions = {
+  rankingPreference?: SearchRankingPreference;
+};
+
 export type SearchDiagnostics = {
   retrieval_mode:
     | "unified_vector"
@@ -709,10 +715,14 @@ export async function analyzeItemUnderstanding(id: string) {
   });
 }
 
-export async function search(q: string, limit = 20) {
+export async function search(q: string, limit = 20, options: SearchOptions = {}) {
   return fetchJson<SearchResponseRecord>("/search", {
     method: "POST",
-    body: JSON.stringify({ q, limit }),
+    body: JSON.stringify({
+      q,
+      limit,
+      rankingPreference: options.rankingPreference ?? "smart",
+    }),
   });
 }
 

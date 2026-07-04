@@ -10,6 +10,7 @@ import {
   Check,
   Eye,
   FileAudio,
+  FileText,
   FileVideo,
   Gauge,
   Image as ImageIcon,
@@ -138,6 +139,9 @@ export function ResultModalityIcon({
   if (modality === "image") {
     return <ImageIcon size={size} />;
   }
+  if (modality === "document") {
+    return <FileText size={size} />;
+  }
   return <FileVideo size={size} />;
 }
 
@@ -171,9 +175,17 @@ export function ResultCard({
       ? t("result.modality.spoken")
       : modality === "image"
         ? t("result.modality.shown")
-        : t("result.modality.both");
+        : modality === "document"
+          ? t("result.modality.document")
+          : t("result.modality.both");
   const ModalityBadgeIcon =
-    modality === "audio" ? Mic : modality === "image" ? Eye : Sparkles;
+    modality === "audio"
+      ? Mic
+      : modality === "image"
+        ? Eye
+        : modality === "document"
+          ? FileText
+          : Sparkles;
 
   return (
     <button

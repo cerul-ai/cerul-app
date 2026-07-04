@@ -8,6 +8,80 @@ use serde::{Deserialize, Serialize};
 pub struct SearchRequest {
     pub q: String,
     pub limit: usize,
+    #[serde(default, alias = "rankingPreference")]
+    pub ranking_preference: SearchRankingPreference,
+}
+
+impl SearchRequest {
+    fn effective_ranking_preference(&self) -> SearchRankingPreference {
+        self.ranking_preference.effective_for_query(&self.q)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchRankingPreference {
+    Smart,
+    Video,
+    Image,
+    Document,
+    Audio,
+}
+
+impl Default for SearchRankingPreference {
+    fn default() -> Self {
+        Self::Smart
+    }
+}
+
+impl SearchRankingPreference {
+    fn effective_for_query(self, query: &str) -> Self {
+        if self != Self::Smart {
+            return self;
+        }
+        inferred_ranking_preference(query).unwrap_or(Self::Video)
+    }
+}
+
+fn inferred_ranking_preference(query: &str) -> Option<SearchRankingPreference> {
+    let normalized = query.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if contains_any(
+        &normalized,
+        &[
+            ".pdf", ".doc", ".docx", ".ppt", ".pptx", "pdf", "docx", "pptx", "文档", "文稿",
+            "报告", "论文",
+        ],
+    ) {
+        return Some(SearchRankingPreference::Document);
+    }
+    if contains_any(
+        &normalized,
+        &[
+            ".jpg", ".jpeg", ".png", ".webp", "图片", "图像", "截图", "照片", "海报",
+        ],
+    ) {
+        return Some(SearchRankingPreference::Image);
+    }
+    if contains_any(
+        &normalized,
+        &["音频", "录音", "播客", "podcast", "语音", "声音", "audio"],
+    ) {
+        return Some(SearchRankingPreference::Audio);
+    }
+    if contains_any(
+        &normalized,
+        &["视频", "影片", "录像", "片段", "clip", "video"],
+    ) {
+        return Some(SearchRankingPreference::Video);
+    }
+    None
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -29,6 +103,8 @@ pub struct SearchResult {
     pub exact_match: bool,
     #[serde(skip)]
     source_mask: u8,
+    #[serde(skip)]
+    item_content_type: Option<String>,
     /// Item title, joined in so the UI can label a result without a separate
     /// items fetch (which can be empty/stale and leave the row showing a raw id).
     pub item_title: Option<String>,
@@ -88,6 +164,9 @@ const PER_ITEM_CAP: usize = 3;
 const LEXICAL_ONLY_SCORE_CEILING: f32 = 0.76;
 const VECTOR_ONLY_CONFIDENT_SIMILARITY: f32 = 0.52;
 const VECTOR_ONLY_LOW_CONFIDENCE_CEILING: f32 = 0.32;
+const RANKING_BOOST_THRESHOLD: f32 = 0.25;
+const SMART_VIDEO_BOOST: f32 = 0.06;
+const EXPLICIT_MODALITY_BOOST: f32 = 0.12;
 
 pub fn crate_ready() -> bool {
     true
@@ -193,7 +272,7 @@ pub async fn search_fts_only_with_diagnostics(
             fallback_reason.get_or_insert_with(|| "search_index_rebuilding_legacy_fts".to_string());
         }
     }
-    let results = finalize_results(results, limit);
+    let results = finalize_results(results, limit, req.effective_ranking_preference());
     Ok(SearchResponse {
         results,
         diagnostics: SearchDiagnostics::fts_only(fts_hits_count, fallback_reason),
@@ -310,7 +389,7 @@ pub async fn search_with_vectors_for_profile_diagnostics(
             fallback_reason.get_or_insert_with(|| "search_index_rebuilding_legacy_fts".to_string());
         }
     }
-    let results = finalize_results(results, limit);
+    let results = finalize_results(results, limit, req.effective_ranking_preference());
     let retrieval_mode = if used_legacy_fts {
         "fts_fallback".to_string()
     } else {
@@ -906,6 +985,7 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
             similarity_score: hit.similarity_score,
             exact_match: hit.exact_match,
             source_mask: hit.source_mask,
+            item_content_type: Some(unit.item_content_type.clone()),
             item_title: unit.item_title.clone(),
             nearest_frame_chunk_id,
         });
@@ -932,7 +1012,7 @@ fn hydrate_legacy_chunks(
         .join(",");
     let sql = format!(
         r#"
-        SELECT c.id, c.item_id, c.chunk_type, c.start_sec, c.end_sec, c.text, c.frame_path, i.title
+        SELECT c.id, c.item_id, c.chunk_type, c.start_sec, c.end_sec, c.text, c.frame_path, i.title, i.content_type
         FROM chunks c
         JOIN items i ON i.id = c.item_id
         WHERE c.id IN ({placeholders})
@@ -952,6 +1032,7 @@ fn hydrate_legacy_chunks(
             .unwrap_or_else(|| fallback_snippet(&chunk_type, start_sec));
         let frame_path = row.get(6)?;
         let item_title = row.get(7)?;
+        let item_content_type = row.get(8)?;
         Ok((
             chunk_id.clone(),
             SearchResult {
@@ -967,6 +1048,7 @@ fn hydrate_legacy_chunks(
                 similarity_score: None,
                 exact_match: false,
                 source_mask: SOURCE_TEXT,
+                item_content_type: Some(item_content_type),
                 item_title,
                 nearest_frame_chunk_id: None,
             },
@@ -997,23 +1079,32 @@ fn hydrate_legacy_chunks(
     Ok(results)
 }
 
-fn finalize_results(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+fn finalize_results(
+    results: Vec<SearchResult>,
+    limit: usize,
+    ranking_preference: SearchRankingPreference,
+) -> Vec<SearchResult> {
     let mut results = results;
     apply_match_scores(&mut results);
-    sort_results(&mut results);
+    sort_results(&mut results, ranking_preference);
     let results_len = results.len();
     let mut results = dedupe_results(results, results_len);
     apply_match_scores(&mut results);
-    sort_results(&mut results);
+    sort_results(&mut results, ranking_preference);
     results.truncate(limit);
     results
 }
 
-fn sort_results(results: &mut [SearchResult]) {
+fn sort_results(results: &mut [SearchResult], ranking_preference: SearchRankingPreference) {
     results.sort_by(|left, right| {
         right
             .exact_match
             .cmp(&left.exact_match)
+            .then_with(|| {
+                ranking_score(right, ranking_preference)
+                    .partial_cmp(&ranking_score(left, ranking_preference))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| {
                 right
                     .match_score
@@ -1028,6 +1119,65 @@ fn sort_results(results: &mut [SearchResult]) {
             })
             .then_with(|| left.playback_chunk_id.cmp(&right.playback_chunk_id))
     });
+}
+
+fn ranking_score(result: &SearchResult, ranking_preference: SearchRankingPreference) -> f32 {
+    result.match_score + modality_boost(result, ranking_preference)
+}
+
+fn modality_boost(result: &SearchResult, ranking_preference: SearchRankingPreference) -> f32 {
+    if result.exact_match || result.match_score < RANKING_BOOST_THRESHOLD {
+        return 0.0;
+    }
+    let modality = result_modality(result);
+    if ranking_preference == SearchRankingPreference::Smart {
+        return if modality == SearchResultModality::Video {
+            SMART_VIDEO_BOOST
+        } else {
+            0.0
+        };
+    }
+    if modality == SearchResultModality::from_preference(ranking_preference) {
+        EXPLICIT_MODALITY_BOOST
+    } else {
+        0.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchResultModality {
+    Video,
+    Image,
+    Document,
+    Audio,
+}
+
+impl SearchResultModality {
+    fn from_preference(preference: SearchRankingPreference) -> Self {
+        match preference {
+            SearchRankingPreference::Image => Self::Image,
+            SearchRankingPreference::Document => Self::Document,
+            SearchRankingPreference::Audio => Self::Audio,
+            SearchRankingPreference::Smart | SearchRankingPreference::Video => Self::Video,
+        }
+    }
+}
+
+fn result_modality(result: &SearchResult) -> SearchResultModality {
+    match result.item_content_type.as_deref() {
+        Some("image") => return SearchResultModality::Image,
+        Some("document") => return SearchResultModality::Document,
+        Some("audio") => return SearchResultModality::Audio,
+        Some("video") => return SearchResultModality::Video,
+        _ => {}
+    }
+    match result.chunk_type.as_str() {
+        "image" | "keyframe" | "ocr" => SearchResultModality::Image,
+        "document" => SearchResultModality::Document,
+        "transcript" | "transcript_line" | "audio" => SearchResultModality::Audio,
+        "understanding" | "video" => SearchResultModality::Video,
+        _ => SearchResultModality::Video,
+    }
 }
 
 fn apply_match_scores(results: &mut [SearchResult]) {
@@ -1099,6 +1249,7 @@ struct HydratedUnit {
     summary_text: Option<String>,
     representative_chunk_id: Option<String>,
     representative_frame_path: Option<String>,
+    item_content_type: String,
     item_title: Option<String>,
 }
 
@@ -1139,6 +1290,7 @@ fn load_units_for_hits(
             u.summary_text,
             u.representative_chunk_id,
             u.representative_frame_path,
+            i.content_type,
             i.title
         FROM retrieval_units u
         JOIN items i ON i.id = u.item_id
@@ -1163,7 +1315,8 @@ fn load_units_for_hits(
             summary_text: row.get(9)?,
             representative_chunk_id: row.get(10)?,
             representative_frame_path: row.get(11)?,
-            item_title: row.get(12)?,
+            item_content_type: row.get(12)?,
+            item_title: row.get(13)?,
         })
     })?;
 
@@ -1624,7 +1777,11 @@ mod tests {
         exact.source_mask = SOURCE_TEXT | SOURCE_EXACT;
         exact.exact_match = true;
 
-        let scored = finalize_results(vec![semantic, lexical, exact], 10);
+        let scored = finalize_results(
+            vec![semantic, lexical, exact],
+            10,
+            SearchRankingPreference::Smart,
+        );
 
         assert_eq!(
             scored
@@ -1652,7 +1809,7 @@ mod tests {
         let mut second = result("chunk-b", "item-2", "transcript", Some(20.0), 6.0);
         second.source_mask = SOURCE_TEXT;
 
-        let scored = finalize_results(vec![best, second], 10);
+        let scored = finalize_results(vec![best, second], 10, SearchRankingPreference::Smart);
 
         assert!(scored[0].match_score <= LEXICAL_ONLY_SCORE_CEILING + 0.03);
         assert!(scored[1].match_score < scored[0].match_score);
@@ -1665,7 +1822,7 @@ mod tests {
         let mut second = result("chunk-b", "item-2", "transcript", Some(20.0), 0.006);
         second.source_mask = SOURCE_TEXT;
 
-        let scored = finalize_results(vec![best, second], 10);
+        let scored = finalize_results(vec![best, second], 10, SearchRankingPreference::Smart);
 
         assert!((scored[0].match_score - (LEXICAL_ONLY_SCORE_CEILING + 0.03)).abs() < 0.001);
         assert!((scored[1].match_score - (LEXICAL_ONLY_SCORE_CEILING * 0.5 + 0.03)).abs() < 0.001);
@@ -1677,7 +1834,7 @@ mod tests {
         weak.source_mask = SOURCE_TEXT_VECTOR;
         weak.similarity_score = Some(0.41);
 
-        let scored = finalize_results(vec![weak], 10);
+        let scored = finalize_results(vec![weak], 10, SearchRankingPreference::Smart);
 
         assert!(scored[0].match_score < 0.48);
     }
@@ -1690,7 +1847,7 @@ mod tests {
         let mut lexical = result("chunk-b", "item-1", "transcript", Some(18.0), 0.20);
         lexical.source_mask = SOURCE_TEXT;
 
-        let scored = finalize_results(vec![semantic, lexical], 10);
+        let scored = finalize_results(vec![semantic, lexical], 10, SearchRankingPreference::Smart);
 
         assert_eq!(scored.len(), 1);
         assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
@@ -1705,7 +1862,7 @@ mod tests {
         let mut lexical = result("chunk-b", "item-1", "transcript", Some(18.0), 12.0);
         lexical.source_mask = SOURCE_TEXT;
 
-        let scored = finalize_results(vec![semantic, lexical], 10);
+        let scored = finalize_results(vec![semantic, lexical], 10, SearchRankingPreference::Smart);
 
         assert_eq!(scored.len(), 1);
         assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
@@ -1723,7 +1880,11 @@ mod tests {
         weaker_vector.source_mask = SOURCE_TEXT_VECTOR;
         weaker_vector.similarity_score = Some(0.62);
 
-        let scored = finalize_results(vec![lexical_with_vector, weaker_vector], 10);
+        let scored = finalize_results(
+            vec![lexical_with_vector, weaker_vector],
+            10,
+            SearchRankingPreference::Smart,
+        );
 
         assert_eq!(scored.len(), 1);
         assert_ne!(scored[0].source_mask & SOURCE_TEXT_VECTOR, 0);
@@ -1744,7 +1905,11 @@ mod tests {
         nearby_vector.source_mask = SOURCE_TEXT_VECTOR;
         nearby_vector.similarity_score = Some(0.62);
 
-        let scored = finalize_results(vec![high_bm25, stronger_final, nearby_vector], 10);
+        let scored = finalize_results(
+            vec![high_bm25, stronger_final, nearby_vector],
+            10,
+            SearchRankingPreference::Smart,
+        );
 
         assert_eq!(
             scored
@@ -1763,10 +1928,59 @@ mod tests {
         exact.source_mask = SOURCE_TEXT | SOURCE_EXACT;
         exact.exact_match = true;
 
-        let scored = finalize_results(vec![semantic, exact], 1);
+        let scored = finalize_results(vec![semantic, exact], 1, SearchRankingPreference::Smart);
 
         assert_eq!(scored[0].playback_chunk_id, "chunk-b");
         assert!(scored[0].exact_match);
+    }
+
+    #[test]
+    fn smart_ranking_prefers_video_when_relevance_is_close() {
+        let image = vector_result("chunk-image", "item-image", "image", "image", 0.55);
+        let video = vector_result("chunk-video", "item-video", "transcript", "video", 0.52);
+
+        let scored = finalize_results(vec![image, video], 10, SearchRankingPreference::Smart);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-video");
+    }
+
+    #[test]
+    fn ranking_preference_does_not_override_exact_matches() {
+        let video = vector_result("chunk-video", "item-video", "transcript", "video", 0.90);
+        let mut image_exact = result("chunk-image", "item-image", "image", None, 0.01);
+        image_exact.item_content_type = Some("image".to_string());
+        image_exact.source_mask = SOURCE_TEXT | SOURCE_EXACT;
+        image_exact.exact_match = true;
+
+        let scored = finalize_results(vec![video, image_exact], 10, SearchRankingPreference::Smart);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-image");
+    }
+
+    #[test]
+    fn explicit_document_ranking_prefers_documents_when_close() {
+        let video = vector_result("chunk-video", "item-video", "transcript", "video", 0.58);
+        let document = vector_result(
+            "chunk-document",
+            "item-document",
+            "document",
+            "document",
+            0.53,
+        );
+
+        let scored = finalize_results(vec![video, document], 10, SearchRankingPreference::Document);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-document");
+    }
+
+    #[test]
+    fn ranking_boost_ignores_low_confidence_video_hits() {
+        let image = vector_result("chunk-image", "item-image", "image", "image", 0.26);
+        let video = vector_result("chunk-video", "item-video", "transcript", "video", 0.24);
+
+        let scored = finalize_results(vec![video, image], 10, SearchRankingPreference::Smart);
+
+        assert_eq!(scored[0].playback_chunk_id, "chunk-image");
     }
 
     #[test]
@@ -1838,6 +2052,7 @@ mod tests {
             SearchRequest {
                 q: "needle phrase".to_string(),
                 limit: 2,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             fake_vector(0),
         )
@@ -1918,6 +2133,7 @@ mod tests {
             SearchRequest {
                 q: "fallback transcript".to_string(),
                 limit: 5,
+                ranking_preference: SearchRankingPreference::Smart,
             },
         )
         .await
@@ -1945,6 +2161,7 @@ mod tests {
             SearchRequest {
                 q: "fallback diagnostics".to_string(),
                 limit: 5,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             Some("query_embedding_failed".to_string()),
         )
@@ -2226,6 +2443,7 @@ mod tests {
             SearchRequest {
                 q: "地下室".to_string(),
                 limit: 5,
+                ranking_preference: SearchRankingPreference::Smart,
             },
         )
         .await
@@ -2261,6 +2479,7 @@ mod tests {
             SearchRequest {
                 q: "legacy transcript".to_string(),
                 limit: 5,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             None,
         )
@@ -2316,6 +2535,7 @@ mod tests {
             SearchRequest {
                 q: "shared phrase".to_string(),
                 limit: 5,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             None,
         )
@@ -2596,6 +2816,7 @@ mod tests {
             SearchRequest {
                 q: "not in transcript".to_string(),
                 limit: 1,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             fake_vector(21),
             fake_vector(20),
@@ -2733,6 +2954,7 @@ mod tests {
             SearchRequest {
                 q: "not in transcript".to_string(),
                 limit: 1,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             fake_vector(21),
             fake_vector(0),
@@ -2788,6 +3010,7 @@ mod tests {
             SearchRequest {
                 q: "not in transcript".to_string(),
                 limit: 1,
+                ranking_preference: SearchRankingPreference::Smart,
             },
             fake_vector(0),
             fake_vector(0),
@@ -2820,6 +3043,7 @@ mod tests {
                 SearchRequest {
                     q: query.clone(),
                     limit: 5,
+                    ranking_preference: SearchRankingPreference::Smart,
                 },
                 fake_vector(topic),
             )
@@ -3096,8 +3320,23 @@ mod tests {
             similarity_score: None,
             exact_match: false,
             source_mask: SOURCE_TEXT,
+            item_content_type: Some("video".to_string()),
             item_title: None,
             nearest_frame_chunk_id: None,
         }
+    }
+
+    fn vector_result(
+        chunk_id: &str,
+        item_id: &str,
+        chunk_type: &str,
+        item_content_type: &str,
+        score: f32,
+    ) -> SearchResult {
+        let mut result = result(chunk_id, item_id, chunk_type, None, score);
+        result.source_mask = SOURCE_TEXT_VECTOR;
+        result.similarity_score = Some(score);
+        result.item_content_type = Some(item_content_type.to_string());
+        result
     }
 }

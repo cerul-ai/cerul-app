@@ -237,10 +237,14 @@ export function resultModality(result: Result): import("./types").ResultModality
     result.chunkType,
     ...result.moreMatches.map((match) => match.chunkType ?? ""),
   ].filter(Boolean);
+  const hasDocument = chunkTypes.some(isDocumentChunkType);
   const hasShown = chunkTypes.some(isShownChunkType);
   const hasSpoken = chunkTypes.some(isSpokenChunkType);
   const hasBoth = chunkTypes.some(isBothChunkType);
 
+  if (hasDocument) {
+    return "document";
+  }
   if (hasBoth || (hasShown && hasSpoken)) {
     return "video";
   }
@@ -278,6 +282,9 @@ export function backendFallbackSnippet(chunkType: string, startSec: number | nul
   if (chunkType === "understanding") {
     return ts ? `Video understanding at ${ts}` : "Video understanding match";
   }
+  if (chunkType === "document") {
+    return "Document match";
+  }
   return ts ? `Search match at ${ts}` : "Search match";
 }
 
@@ -309,6 +316,9 @@ function displaySnippet(record: api.SearchResultRecord, t: TFunction) {
       ? t("results.snippet.understandingMatch")
       : t("results.snippet.understandingAt", { ts: timestamp });
   }
+  if (isDocumentChunkType(record.chunk_type)) {
+    return t("results.snippet.documentMatch");
+  }
   return record.start_sec === null
     ? t("results.snippet.searchMatch")
     : t("results.snippet.searchMatchAt", { ts: timestamp });
@@ -332,6 +342,10 @@ function isShownChunkType(chunkType: string) {
 
 function isBothChunkType(chunkType: string) {
   return chunkType === "understanding" || chunkType === "video";
+}
+
+export function isDocumentChunkType(chunkType: string) {
+  return chunkType === "document";
 }
 
 export function resultMatchesTimeFilter(
