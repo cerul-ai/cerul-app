@@ -101,7 +101,7 @@ import {
   youtubeChannelFromUrl,
 } from "./lib/validation";
 import { ConfirmDialog } from "./dialogs/confirm-dialog";
-import { JobsSheet } from "./dialogs/jobs-sheet";
+import { JobsSheet, type JobsFilter } from "./dialogs/jobs-sheet";
 import { HomeScreen } from "./screens/home";
 import { LibraryScreen } from "./screens/library";
 import { MomentsScreen } from "./screens/moments";
@@ -230,6 +230,27 @@ const automaticUpdateWakeProbeIntervalMs = 60_000;
 const automaticUpdateWakeGapMs = 5 * 60 * 1000;
 const automaticUpdateOfflineRetryMs = 15 * 60 * 1000;
 const manualUpdateCheckCooldownMs = 30_000;
+const cancelQueuedFallbackBatchSize = 8;
+
+function isMissingBatchCancelEndpoint(error: unknown) {
+  return error instanceof api.ApiRequestError && (error.status === 404 || error.status === 405);
+}
+
+async function cancelQueuedJobsWithCompatibilityFallback(queuedJobIds: string[]) {
+  try {
+    await api.cancelQueuedJobsBatch();
+    return;
+  } catch (error) {
+    if (!isMissingBatchCancelEndpoint(error) || queuedJobIds.length === 0) {
+      throw error;
+    }
+  }
+
+  for (let index = 0; index < queuedJobIds.length; index += cancelQueuedFallbackBatchSize) {
+    const batch = queuedJobIds.slice(index, index + cancelQueuedFallbackBatchSize);
+    await Promise.all(batch.map((id) => api.cancelJob(id)));
+  }
+}
 
 function hasOpenModalSurface() {
   // Every transient surface must be reachable from this selector, otherwise
@@ -600,6 +621,11 @@ function AppWorkspace() {
   const [settingsSection, setSettingsSection] = useState<string>(() =>
     normalizeSettingsSection(initialRoute.settingsSection),
   );
+  const [jobsSheetFilter, setJobsSheetFilter] = useState<JobsFilter>("all");
+  const [jobsSheetJobs, setJobsSheetJobs] = useState<api.JobRecord[]>([]);
+  const [jobsSheetLoading, setJobsSheetLoading] = useState(false);
+  const jobsSheetRequestSeq = useRef(0);
+  const jobsSheetDisplayedFilterRef = useRef<JobsFilter>("all");
   const [modelDownloadState, setModelDownloadState] = useState<{
     status: "idle" | "saving_sources" | "downloading" | "error";
     error: string | null;
@@ -616,6 +642,7 @@ function AppWorkspace() {
     sources: [],
     items: [],
     jobs: [],
+    jobSummary: null,
     settings: {},
     whisperModels: [],
     daemonStatus: null,
@@ -643,18 +670,18 @@ function AppWorkspace() {
   const themePreference = settingString(data.settings, "theme", "System");
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
-  // The Tasks drawer hides orphaned jobs whose item was removed from the
-  // library; cancelling a task now keeps the item and marks the job cancelled.
-  const drawerJobs = visibleJobs.filter(
-    (job) => !job.item_id || data.items.some((item) => item.id === job.item_id),
-  );
+  // The jobs endpoint applies the same item visibility rules as the library;
+  // render its page directly so jobs for items outside the current item page stay visible.
+  const drawerJobs = visibleJobs;
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
   const selectedResult = visibleResults.find(
     (result) =>
       (selectedPlaybackChunkId && result.playbackChunkId === selectedPlaybackChunkId) ||
       (result.itemId === selectedItemId && result.timestamp === selectedTimestamp),
   );
-  const activeJobCount = visibleJobs.filter(isActiveJob).length;
+  const activeJobCount = apiStatus === "online" && data.jobSummary
+    ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
+    : visibleJobs.filter(isActiveJob).length;
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
   const syncingSourceCount = syncingSources.length;
   const backgroundActivityCount = activeJobCount + syncingSourceCount;
@@ -662,6 +689,76 @@ function AppWorkspace() {
   const kickActivityPolling = useCallback((durationMs = 120_000) => {
     const until = Date.now() + durationMs;
     setActivityPollUntil((current) => Math.max(current, until));
+  }, []);
+  const jobsListParamsForFilter = useCallback((filter: JobsFilter): api.ListJobsParams => {
+    if (filter === "running") {
+      return { status: "queued,running", limit: 250 };
+    }
+    if (filter === "done") {
+      return { status: "completed,cancelled", limit: 250 };
+    }
+    if (filter === "failed") {
+      return { status: "failed", limit: 250 };
+    }
+    return { scope: "drawer", limit: 250 };
+  }, []);
+  const refreshJobsSheetJobs = useCallback(
+    async (filter = jobsSheetFilter) => {
+      const seq = jobsSheetRequestSeq.current + 1;
+      jobsSheetRequestSeq.current = seq;
+      const filterChanged = jobsSheetDisplayedFilterRef.current !== filter;
+      if (filter === "all") {
+        jobsSheetDisplayedFilterRef.current = "all";
+        setJobsSheetJobs([]);
+        setJobsSheetLoading(false);
+        return;
+      }
+      if (apiStatus !== "online") {
+        jobsSheetDisplayedFilterRef.current = filter;
+        setJobsSheetJobs([]);
+        setJobsSheetLoading(false);
+        return;
+      }
+      if (filterChanged) {
+        setJobsSheetJobs([]);
+      }
+      setJobsSheetLoading(true);
+      try {
+        const nextJobs = await api.listJobs(jobsListParamsForFilter(filter));
+        if (jobsSheetRequestSeq.current === seq) {
+          jobsSheetDisplayedFilterRef.current = filter;
+          setJobsSheetJobs(nextJobs);
+        }
+      } catch (error) {
+        console.warn("failed to refresh jobs sheet jobs", error);
+        if (jobsSheetRequestSeq.current === seq && filterChanged) {
+          jobsSheetDisplayedFilterRef.current = filter;
+          setJobsSheetJobs([]);
+        }
+      } finally {
+        if (jobsSheetRequestSeq.current === seq) {
+          setJobsSheetLoading(false);
+        }
+      }
+    },
+    [apiStatus, jobsListParamsForFilter, jobsSheetFilter],
+  );
+  const refreshJobsSheetIfFiltered = useCallback(async () => {
+    if (showJobsSheet && jobsSheetFilter !== "all") {
+      await refreshJobsSheetJobs(jobsSheetFilter);
+    }
+  }, [jobsSheetFilter, refreshJobsSheetJobs, showJobsSheet]);
+
+  useEffect(() => {
+    if (!showJobsSheet) return;
+    void refreshJobsSheetJobs(jobsSheetFilter);
+  }, [showJobsSheet, jobsSheetFilter, refreshJobsSheetJobs]);
+  const jobsSheetVisibleJobs = jobsSheetFilter === "all" ? drawerJobs : jobsSheetJobs;
+  const openJobsSheet = useCallback(() => {
+    setJobsSheetFilter("all");
+    setJobsSheetJobs([]);
+    setJobsSheetLoading(false);
+    setShowJobsSheet(true);
   }, []);
 
   // First-run on-device-model consent + download. Fetches capability and shows
@@ -1041,7 +1138,11 @@ function AppWorkspace() {
     }
 
     const intervalId = window.setInterval(() => {
-      void refreshCoreData();
+      void refreshCoreData().then((result) => {
+        if (result) {
+          void refreshJobsSheetIfFiltered();
+        }
+      });
     }, syncingSourceCount > 0 && activeJobCount === 0 ? 1500 : 2500);
     const timeoutId = pollWindowOpen
       ? window.setTimeout(() => {
@@ -1054,7 +1155,14 @@ function AppWorkspace() {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [apiStatus, activeJobCount, syncingSourceCount, backgroundActivityCount, activityPollUntil]);
+  }, [
+    apiStatus,
+    activeJobCount,
+    syncingSourceCount,
+    backgroundActivityCount,
+    activityPollUntil,
+    refreshJobsSheetIfFiltered,
+  ]);
 
   // Items/sources are mapped through t() at fetch time; re-map once when the
   // user switches language so dates/status text don't stay in the old locale.
@@ -1103,12 +1211,25 @@ function AppWorkspace() {
     setApiError(null);
 
     try {
-      const [health, sourceRecords, itemRecords, jobRecords, settings, whisperModels, daemonStatus] =
+      const [
+        health,
+        sourceRecords,
+        itemRecords,
+        jobRecords,
+        jobSummary,
+        settings,
+        whisperModels,
+        daemonStatus,
+      ] =
         await Promise.all([
           api.health(),
           api.listSources(),
           api.listItems(),
           api.listJobs(),
+          api.jobSummary().catch((error) => {
+            console.warn("failed to load job summary", error);
+            return null;
+          }),
           api.listSettings(),
           api.listWhisperModels(),
           readDaemonStatus(),
@@ -1119,6 +1240,7 @@ function AppWorkspace() {
         sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
         jobs: jobRecords,
+        jobSummary,
         settings,
         whisperModels,
         daemonStatus,
@@ -1646,7 +1768,7 @@ function AppWorkspace() {
                 className="rail-item"
                 type="button"
                 disabled={onboardingActive}
-                onClick={() => setShowJobsSheet(true)}
+                onClick={openJobsSheet}
                 title={t("nav.jobs")}
               >
                 <span className="rail-ind" aria-hidden="true" />
@@ -1715,7 +1837,7 @@ function AppWorkspace() {
             <button
               className="btn-icon sm"
               type="button"
-              onClick={() => setShowJobsSheet(true)}
+              onClick={openJobsSheet}
               aria-label={t("nav.jobs")}
             >
               <span style={{ position: "relative", display: "inline-flex" }}>
@@ -1787,7 +1909,7 @@ function AppWorkspace() {
             error={searchError}
             apiStatus={apiStatus}
             hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
-            hasActiveJobs={visibleJobs.some(isActiveJob)}
+            hasActiveJobs={activeJobCount > 0}
           />
         ) : null}
         {view === "result-detail" && !currentItem ? (
@@ -1835,7 +1957,7 @@ function AppWorkspace() {
             indexingPaused={indexingPaused}
             actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
-            onOpenJobs={() => setShowJobsSheet(true)}
+            onOpenJobs={openJobsSheet}
             onDeleteItems={async (itemIds, onProgress, options) => {
               const deletingIds = new Set(itemIds);
               setData((current) => ({
@@ -2029,16 +2151,21 @@ function AppWorkspace() {
       ) : null}
       {showJobsSheet ? (
         <JobsSheet
-          jobs={drawerJobs}
+          jobs={jobsSheetVisibleJobs}
+          summary={apiStatus === "online" ? data.jobSummary : null}
+          filter={jobsSheetFilter}
+          loading={jobsSheetLoading}
           syncingSources={syncingSources}
           items={visibleItems}
           stepStarts={stepStarts}
           paused={indexingPaused}
           controlsEnabled={apiStatus === "online"}
+          onFilterChange={setJobsSheetFilter}
           onTogglePause={async () => {
             try {
               await api.updateSettings({ indexing_paused: !indexingPaused });
               await refreshCoreData();
+              await refreshJobsSheetJobs(jobsSheetFilter);
             } catch (error) {
               console.warn("failed to toggle indexing pause", error);
             }
@@ -2055,8 +2182,29 @@ function AppWorkspace() {
             try {
               await api.cancelJob(job.id);
               await refreshCoreData();
+              await refreshJobsSheetJobs(jobsSheetFilter);
             } catch (error) {
               console.warn("failed to cancel job", error);
+            }
+          }}
+          onCancelQueuedJobs={async () => {
+            const confirmed = await requestConfirm({
+              title: t("jobs.confirm.clearQueued.title"),
+              body: t("jobs.confirm.clearQueued.body"),
+              confirmLabel: t("jobs.confirm.clearQueued.confirm"),
+            });
+            if (!confirmed) {
+              return;
+            }
+            try {
+              const queuedJobIds = jobsSheetVisibleJobs
+                .filter((job) => job.status === "queued")
+                .map((job) => job.id);
+              await cancelQueuedJobsWithCompatibilityFallback(queuedJobIds);
+              await refreshCoreData();
+              await refreshJobsSheetJobs(jobsSheetFilter);
+            } catch (error) {
+              console.warn("failed to cancel queued jobs", error);
             }
           }}
           onClose={() => setShowJobsSheet(false)}

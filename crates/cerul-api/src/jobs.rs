@@ -41,8 +41,20 @@ pub struct JobOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelledJob {
-    pub item_id: String,
+    pub id: String,
+    pub item_id: Option<String>,
     pub was_running: bool,
+    pub cleanup_deferred: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JobStatusSummary {
+    pub queued_jobs: u64,
+    pub running_jobs: u64,
+    pub failed_jobs: u64,
+    pub completed_jobs: u64,
+    pub cancelled_jobs: u64,
+    pub total_jobs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,6 +612,18 @@ pub fn indexing_diagnostics(paths: &AppPaths) -> anyhow::Result<IndexingDiagnost
     })
 }
 
+pub fn job_status_summary(paths: &AppPaths) -> anyhow::Result<JobStatusSummary> {
+    let conn = cerul_storage::sqlite::open(paths)?;
+    Ok(JobStatusSummary {
+        queued_jobs: visible_job_count(&conn, Some("queued"))?,
+        running_jobs: visible_job_count(&conn, Some("running"))?,
+        failed_jobs: visible_job_count(&conn, Some("failed"))?,
+        completed_jobs: visible_job_count(&conn, Some("completed"))?,
+        cancelled_jobs: visible_job_count(&conn, Some("cancelled"))?,
+        total_jobs: visible_job_count(&conn, None)?,
+    })
+}
+
 pub fn requeue_interrupted_jobs(paths: &AppPaths) -> anyhow::Result<usize> {
     let conn = cerul_storage::sqlite::open(paths)?;
     let item_ids = {
@@ -940,6 +964,33 @@ fn count_rows(conn: &rusqlite::Connection, sql: &str) -> anyhow::Result<u64> {
     Ok(count.try_into()?)
 }
 
+fn visible_job_count(
+    conn: &rusqlite::Connection,
+    status: Option<&'static str>,
+) -> anyhow::Result<u64> {
+    let mut sql = String::from(
+        r#"
+        SELECT COUNT(*)
+        FROM jobs j
+        WHERE (
+            j.item_id IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM items i
+                WHERE i.id = j.item_id
+                  AND i.status != 'deleting'
+            )
+        )
+        "#,
+    );
+    if let Some(status) = status {
+        sql.push_str(" AND j.status = '");
+        sql.push_str(status);
+        sql.push('\'');
+    }
+    count_rows(conn, &sql)
+}
+
 fn job_stage_counts(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexingStageCount>> {
     let mut stmt = conn.prepare(
         r#"
@@ -1168,8 +1219,9 @@ pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<Cance
         return Ok(None);
     };
     let was_running = status == "running";
+    let cancellable = matches!(status.as_str(), "queued" | "running" | "failed");
 
-    if matches!(status.as_str(), "queued" | "running" | "failed") {
+    if cancellable {
         tx.execute(
             r#"
             UPDATE jobs
@@ -1199,10 +1251,109 @@ pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<Cance
     }
 
     tx.commit()?;
-    Ok(item_id.map(|item_id| CancelledJob {
+    if item_id.is_none() && !cancellable {
+        return Ok(None);
+    }
+    Ok(Some(CancelledJob {
+        id: job_id.to_string(),
         item_id,
         was_running,
+        cleanup_deferred: was_running,
     }))
+}
+
+pub fn cancel_queued_jobs_batch(
+    paths: &AppPaths,
+    job_ids: Option<&[String]>,
+    source_id: Option<&str>,
+) -> anyhow::Result<Vec<CancelledJob>> {
+    let mut conn = cerul_storage::sqlite::open(paths)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    let mut sql = String::from(
+        r#"
+        SELECT j.id, j.item_id,
+               EXISTS (
+                   SELECT 1
+                   FROM jobs running
+                   WHERE running.item_id = j.item_id
+                     AND running.status = 'running'
+                     AND running.id != j.id
+               ) AS has_running_job
+        FROM jobs j
+        WHERE j.status = 'queued'
+        "#,
+    );
+    if let Some(ids) = job_ids.filter(|ids| !ids.is_empty()) {
+        sql.push_str(" AND j.id IN (");
+        sql.push_str(
+            &std::iter::repeat_n("?", ids.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push(')');
+        params.extend(ids.iter().cloned().map(rusqlite::types::Value::from));
+    }
+    if let Some(source_id) = source_id.filter(|value| !value.trim().is_empty()) {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM items i WHERE i.id = j.item_id AND i.source_id = ?)",
+        );
+        params.push(rusqlite::types::Value::from(source_id.to_string()));
+    }
+
+    let jobs = {
+        let mut stmt = tx.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(CancelledJob {
+                id: row.get(0)?,
+                item_id: row.get::<_, Option<String>>(1)?,
+                was_running: false,
+                cleanup_deferred: row.get::<_, i64>(2)? != 0,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    if jobs.is_empty() {
+        tx.commit()?;
+        return Ok(jobs);
+    }
+
+    for job in &jobs {
+        tx.execute(
+            r#"
+            UPDATE jobs
+            SET status = 'cancelled',
+                finished_at = strftime('%s','now'),
+                error = NULL,
+                progress = 1,
+                stage = 'cancelled',
+                stage_message = 'Cancelled'
+            WHERE id = ?1
+              AND status = 'queued'
+            "#,
+            [job.id.as_str()],
+        )?;
+        if !job.cleanup_deferred {
+            let Some(item_id) = job.item_id.as_deref() else {
+                continue;
+            };
+            tx.execute(
+                r#"
+                UPDATE items
+                SET status = 'discovered',
+                    error = NULL,
+                    indexed_at = NULL
+                WHERE id = ?1
+                  AND status IN ('fetching', 'processing', 'failed')
+                "#,
+                [item_id],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(jobs)
 }
 
 fn is_job_cancelled(paths: &AppPaths, job_id: &str) -> anyhow::Result<bool> {
@@ -2184,8 +2335,10 @@ mod tests {
         assert_eq!(
             cancelled,
             Some(CancelledJob {
-                item_id: "item-1".to_string(),
+                id: "job-1".to_string(),
+                item_id: Some("item-1".to_string()),
                 was_running: false,
+                cleanup_deferred: false,
             })
         );
         assert_job(&paths, "job-1", "cancelled", 1.0, None);
