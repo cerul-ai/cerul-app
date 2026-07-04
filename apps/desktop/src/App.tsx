@@ -1862,7 +1862,11 @@ function AppWorkspace() {
           <MomentsScreen
             actionsEnabled={apiStatus === "online"}
             onOpenItem={(moment) =>
-              navigate("item-detail", { itemId: moment.item_id, timestamp: moment.timestamp })
+              navigate("item-detail", {
+                itemId: moment.item_id,
+                playbackChunkId: moment.chunk_id,
+                timestamp: moment.timestamp,
+              })
             }
           />
         ) : null}

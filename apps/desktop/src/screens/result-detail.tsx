@@ -119,7 +119,7 @@ function usePlaybackPositionPersistence({
 }: {
   itemId: string;
   videoRef: RefObject<HTMLVideoElement | null>;
-  videoElement?: HTMLVideoElement | null;
+  videoElement?: HTMLMediaElement | null;
   chunkId: string | null;
   enabled: boolean;
 }) {
@@ -755,8 +755,13 @@ export function ResultDetail({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const handleVideoElement = useCallback((video: HTMLVideoElement | null) => {
     setVideoElement(video);
+  }, []);
+  const handleAudioElement = useCallback((audio: HTMLAudioElement | null) => {
+    audioRef.current = audio;
+    setAudioElement(audio);
   }, []);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
@@ -791,6 +796,7 @@ export function ResultDetail({
     item.contentType === "audio" && mediaState.chunkId
       ? api.mediaSegmentUrl(mediaState.chunkId)
       : null;
+  const activePlaybackElement = playbackUrl ? videoElement : audioPlaybackUrl ? audioElement : null;
   const imagePreviewUrl =
     item.contentType === "image" && mediaState.chunkId
       ? api.chunkFrameUrl(mediaState.chunkId)
@@ -871,9 +877,9 @@ export function ResultDetail({
   usePlaybackPositionPersistence({
     itemId: item.id,
     videoRef,
-    videoElement,
+    videoElement: activePlaybackElement,
     chunkId: mediaState.chunkId,
-    enabled: actionsEnabled && Boolean(playbackUrl),
+    enabled: actionsEnabled && Boolean(playbackUrl || audioPlaybackUrl),
   });
 
   useEffect(() => {
@@ -939,7 +945,7 @@ export function ResultDetail({
   }, [currentTimestamp, playbackUrl, videoElement]);
 
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = audioElement;
     if (!audio || !audioPlaybackUrl) {
       return;
     }
@@ -966,7 +972,7 @@ export function ResultDetail({
 
     audio.addEventListener("loadedmetadata", applySeek, { once: true });
     return () => audio.removeEventListener("loadedmetadata", applySeek);
-  }, [audioPlaybackUrl, currentTimestamp]);
+  }, [audioElement, audioPlaybackUrl, currentTimestamp]);
 
   useEffect(() => {
     if (copyStatus === "idle") {
@@ -1276,7 +1282,7 @@ export function ResultDetail({
                   <p className="section-label">{t("detail.audioPlayer.label")}</p>
                   <strong>{item.title}</strong>
                   <audio
-                    ref={audioRef}
+                    ref={handleAudioElement}
                     controls
                     src={audioPlaybackUrl}
                     onPlay={() => setIsPlaying(true)}

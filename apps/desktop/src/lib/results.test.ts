@@ -179,18 +179,21 @@ describe("results helpers", () => {
   it("filters results by modality, time, and confidence", () => {
     const audioResult = result({
       timestamp: "12:00",
+      startSec: 12 * 60,
       confidence: "high",
       color: "amber",
       chunkType: "audio",
     });
     const visualResult = result({
       timestamp: "35:00",
+      startSec: 35 * 60,
       confidence: "low",
       color: "rose",
       chunkType: "keyframe",
     });
     const documentResult = result({
       timestamp: "Document",
+      startSec: null,
       confidence: "medium",
       chunkType: "document",
     });
@@ -200,21 +203,33 @@ describe("results helpers", () => {
     expect(resultModality(documentResult)).toBe("document");
     expect(resultMatchesTimeFilter(audioResult, "tenToThirty")).toBe(true);
     expect(resultMatchesTimeFilter(visualResult, "thirtyPlus")).toBe(true);
+    expect(resultMatchesTimeFilter(documentResult, "all")).toBe(true);
+    expect(resultMatchesTimeFilter(documentResult, "first10")).toBe(false);
     expect(resultMatchesConfidenceFilter(audioResult, "strong")).toBe(true);
     expect(resultMatchesConfidenceFilter(visualResult, "review")).toBe(true);
   });
 
   it("labels document search results without fake timestamps", () => {
     const results = mapSearchResults(
-      [record({ chunk_id: "doc-1", chunk_type: "document", start_sec: null, snippet: "" })],
+      [
+        record({ chunk_id: "doc-1", chunk_type: "document", start_sec: null, snippet: "" }),
+        record({ chunk_id: "doc-2", chunk_type: "document", start_sec: null, snippet: "second passage" }),
+      ],
       [item],
       t,
     );
 
+    expect(results).toHaveLength(2);
     expect(results[0]).toMatchObject({
       playbackChunkId: "doc-1",
       timestamp: "Document",
       snippet: "document match",
+      chunkType: "document",
+    });
+    expect(results[1]).toMatchObject({
+      playbackChunkId: "doc-2",
+      timestamp: "Document",
+      snippet: "second passage",
       chunkType: "document",
     });
   });

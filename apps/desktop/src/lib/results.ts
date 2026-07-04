@@ -174,6 +174,9 @@ function resultThumbnailUrl(record: api.SearchResultRecord, item: Item | undefin
 }
 
 function resultGroupKey(record: api.SearchResultRecord) {
+  if (isDocumentChunkType(record.chunk_type)) {
+    return `${record.item_id}:${resultPlaybackChunkId(record)}`;
+  }
   if (typeof record.start_sec === "number") {
     const bucket = Math.floor(record.start_sec / RESULT_GROUP_WINDOW_SEC);
     return `${record.item_id}:${bucket}`;
@@ -416,7 +419,13 @@ export function resultMatchesTimeFilter(
   result: Result,
   filter: import("./types").ResultTimeFilter,
 ) {
-  const seconds = parseTimestampSeconds(result.timestamp);
+  if (filter === "all") {
+    return true;
+  }
+  if (typeof result.startSec !== "number" || !Number.isFinite(result.startSec)) {
+    return false;
+  }
+  const seconds = result.startSec;
   if (filter === "first10") {
     return seconds < 10 * 60;
   }
