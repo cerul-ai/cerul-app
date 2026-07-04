@@ -1060,17 +1060,36 @@ fn load_units_for_hits(
     conn: &rusqlite::Connection,
     hits: &[RawHit],
 ) -> anyhow::Result<HashMap<String, HydratedUnit>> {
-    let mut seen = HashSet::new();
-    let unit_ids = hits
-        .iter()
-        .filter_map(|hit| {
-            if seen.insert(hit.chunk_id.as_str()) {
-                Some(hit.chunk_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut seen = HashMap::<String, bool>::new();
+    for hit in hits {
+        let include_pending = hit.source_mask & SOURCE_TEXT != 0;
+        seen.entry(hit.chunk_id.clone())
+            .and_modify(|existing_include_pending| {
+                *existing_include_pending |= include_pending;
+            })
+            .or_insert(include_pending);
+    }
+
+    let mut include_pending_ids = Vec::new();
+    let mut indexed_only_ids = Vec::new();
+    for (unit_id, include_pending) in seen {
+        if include_pending {
+            include_pending_ids.push(unit_id);
+        } else {
+            indexed_only_ids.push(unit_id);
+        }
+    }
+
+    let mut units = load_units_for_ids(conn, &include_pending_ids, true)?;
+    units.extend(load_units_for_ids(conn, &indexed_only_ids, false)?);
+    Ok(units)
+}
+
+fn load_units_for_ids(
+    conn: &rusqlite::Connection,
+    unit_ids: &[String],
+    include_pending: bool,
+) -> anyhow::Result<HashMap<String, HydratedUnit>> {
     if unit_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1079,7 +1098,7 @@ fn load_units_for_hits(
         .collect::<Vec<_>>()
         .join(", ");
     let version_placeholder = format!("?{}", unit_ids.len() + 1);
-    let searchable_predicate = searchable_unit_predicate(&version_placeholder, false);
+    let searchable_predicate = searchable_unit_predicate(&version_placeholder, include_pending);
     let sql = format!(
         r#"
         SELECT
@@ -2417,7 +2436,8 @@ mod tests {
         let hits = sqlite_text_search(&paths, "pending rebuilt phrase", 5)
             .await
             .unwrap();
-        let hydrated = hydrate(
+        let text_hydrated = hydrate(&paths, &hits, "pending rebuilt phrase").unwrap();
+        let vector_hydrated = hydrate(
             &paths,
             &[RawHit {
                 chunk_id: "item-1:unit:v2:000000".to_string(),
@@ -2434,7 +2454,13 @@ mod tests {
             hits.first().map(|hit| hit.chunk_id.as_str()),
             Some("item-1:unit:v2:000000")
         );
-        assert!(hydrated.is_empty());
+        assert_eq!(
+            text_hydrated
+                .first()
+                .map(|result| result.playback_chunk_id.as_str()),
+            Some("item-1:unit:v2:000000")
+        );
+        assert!(vector_hydrated.is_empty());
     }
 
     #[tokio::test]
