@@ -178,6 +178,7 @@ export type AppData = {
   sources: Source[];
   items: Item[];
   jobs: api.JobRecord[];
+  jobSummary: api.JobStatusSummary | null;
   settings: api.SettingsMap;
   whisperModels: api.WhisperModelRecord[];
   daemonStatus: DaemonStatus | null;

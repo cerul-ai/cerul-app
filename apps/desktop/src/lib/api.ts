@@ -3,6 +3,17 @@ const INTERNAL_API_PREFIX = "/internal";
 import { localApiBaseUrl } from "./desktopHost";
 import { appLocaleTag } from "./i18n";
 
+export class ApiRequestError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly body: string,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 function coreUnreachableMessage(): string {
   return appLocaleTag() === "zh-CN"
     ? "Cerul Core 暂时无法连接。"
@@ -48,6 +59,15 @@ export type JobRecord = {
   stage_message: string | null;
   usage: UsageTotals;
   error_info: JobErrorInfo | null;
+};
+
+export type JobStatusSummary = {
+  queued_jobs: number;
+  running_jobs: number;
+  failed_jobs: number;
+  completed_jobs: number;
+  cancelled_jobs: number;
+  total_jobs: number;
 };
 
 export type JobErrorInfo = {
@@ -655,14 +675,50 @@ export async function listItems(params?: {
   return fetchJson<ItemRecord[]>(`/items${suffix ? `?${suffix}` : ""}`);
 }
 
-export async function listJobs() {
-  return fetchJson<JobRecord[]>("/jobs?scope=drawer");
+export type ListJobsParams = {
+  status?: string;
+  scope?: string;
+  limit?: number;
+  cursor?: number;
+  light?: boolean;
+  includeUsage?: boolean;
+};
+
+export async function listJobs(params?: ListJobsParams) {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.scope) qs.set("scope", params.scope);
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.cursor != null) qs.set("cursor", String(params.cursor));
+  if (params?.light) qs.set("light", "true");
+  if (params?.includeUsage != null) qs.set("include_usage", params.includeUsage ? "true" : "false");
+  if (!params?.status && !params?.scope) qs.set("scope", "drawer");
+  const suffix = qs.toString();
+  return fetchJson<JobRecord[]>(`/jobs${suffix ? `?${suffix}` : ""}`);
+}
+
+export async function jobSummary() {
+  return fetchJson<JobStatusSummary>("/jobs/summary");
 }
 
 export async function cancelJob(id: string) {
   return fetchJson<{ status: string; id: string; item_id: string | null }>(
     `/jobs/${encodeURIComponent(id)}/cancel`,
     { method: "POST" },
+  );
+}
+
+export async function cancelQueuedJobsBatch(params?: { ids?: string[]; sourceId?: string }) {
+  return fetchJson<{ status: string; cancelled: number; ids: string[]; item_ids: string[] }>(
+    "/jobs/cancel-batch",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ids: params?.ids,
+        status: params?.ids?.length ? undefined : "queued",
+        source_id: params?.sourceId,
+      }),
+    },
   );
 }
 
@@ -1057,7 +1113,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(humanizeApiError(body, response.status));
+    throw new ApiRequestError(response.status, humanizeApiError(body, response.status), body);
   }
 
   return response.json() as Promise<T>;
@@ -1079,7 +1135,7 @@ async function fetchV1Json<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(humanizeApiError(body, response.status));
+    throw new ApiRequestError(response.status, humanizeApiError(body, response.status), body);
   }
 
   return response.json() as Promise<T>;

@@ -366,6 +366,8 @@ pub fn router_with_paths(paths: AppPaths) -> Router {
         .route("/weekly-review", get(weekly_review))
         .merge(routes::library::router())
         .route("/jobs", get(list_jobs))
+        .route("/jobs/summary", get(job_summary))
+        .route("/jobs/cancel-batch", post(cancel_jobs_batch))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/usage/events", get(list_usage_events))
         .route("/usage/summary", get(usage_summary))
@@ -2233,6 +2235,13 @@ struct ListJobsQuery {
     include_usage: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CancelJobsBatchRequest {
+    ids: Option<Vec<String>>,
+    status: Option<String>,
+    source_id: Option<String>,
+}
+
 fn list_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT)
 }
@@ -2257,6 +2266,10 @@ async fn list_jobs(
     let light = query.light.unwrap_or(false);
     let include_usage = query.include_usage.unwrap_or(!light);
     let statuses = split_filter_values(query.status.as_deref());
+    let terminal_status_filter = !statuses.is_empty()
+        && statuses
+            .iter()
+            .all(|status| matches!(status.as_str(), "completed" | "cancelled" | "failed"));
     let drawer_scope = statuses.is_empty()
         && query.scope.as_deref().map(str::trim).is_some_and(|scope| {
             scope.eq_ignore_ascii_case("drawer") || scope.eq_ignore_ascii_case("active")
@@ -2270,7 +2283,15 @@ async fn list_jobs(
         SELECT j.id, j.item_id, j.job_type, j.status, j.started_at, j.finished_at,
                {error_expr} AS error, j.progress, j.stage, {stage_message_expr} AS stage_message
         FROM jobs j
-        WHERE 1 = 1
+        WHERE (
+            j.item_id IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM items visible_item
+                WHERE visible_item.id = j.item_id
+                  AND visible_item.status != 'deleting'
+            )
+        )
         "#
     );
     if !statuses.is_empty() {
@@ -2324,12 +2345,21 @@ async fn list_jobs(
             "#,
         );
     } else {
-        sql.push_str(
-            r#"
-            ORDER BY COALESCE(j.started_at, 0) DESC, j.id ASC
-            LIMIT ? OFFSET ?
-            "#,
-        );
+        if terminal_status_filter {
+            sql.push_str(
+                r#"
+                ORDER BY COALESCE(j.finished_at, j.started_at, 0) DESC, j.id ASC
+                LIMIT ? OFFSET ?
+                "#,
+            );
+        } else {
+            sql.push_str(
+                r#"
+                ORDER BY COALESCE(j.started_at, 0) DESC, j.id ASC
+                LIMIT ? OFFSET ?
+                "#,
+            );
+        }
     }
     params.push(SqlValue::from(limit as i64));
     params.push(SqlValue::from(offset as i64));
@@ -2369,35 +2399,96 @@ async fn list_jobs(
     Ok(Json(jobs))
 }
 
+async fn job_summary(State(state): State<ApiState>) -> ApiResult<Json<jobs::JobStatusSummary>> {
+    Ok(Json(jobs::job_status_summary(&state.paths)?))
+}
+
+async fn cleanup_cancelled_job_artifacts(
+    state: &ApiState,
+    job: &jobs::CancelledJob,
+) -> ApiResult<()> {
+    let Some(item_id) = job.item_id.as_deref() else {
+        return Ok(());
+    };
+    match cerul_storage::get_item(&state.paths, item_id) {
+        Ok(item) if item.status == "indexed" => {
+            tracing::info!(
+                item_id = %item_id,
+                job_id = %job.id,
+                "skipped artifact cleanup for cancelled indexed-item rebuild"
+            );
+        }
+        Ok(item) => routes::library::cleanup_item_artifacts(&state.paths, &item).await?,
+        Err(error) => tracing::warn!(
+            %error,
+            job_id = %job.id,
+            item_id = %item_id,
+            "cancelled job item was not available for artifact cleanup"
+        ),
+    }
+    Ok(())
+}
+
 async fn cancel_job(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let cancelled = jobs::cancel_job(&state.paths, &id)?
         .ok_or_else(|| ApiError::not_found(format!("job not found: {id}")))?;
-    if !cancelled.was_running {
-        match cerul_storage::get_item(&state.paths, &cancelled.item_id) {
-            Ok(item) if item.status == "indexed" => {
-                tracing::info!(
-                    item_id = %cancelled.item_id,
-                    job_id = %id,
-                    "skipped artifact cleanup for cancelled indexed-item rebuild"
-                );
-            }
-            Ok(item) => routes::library::cleanup_item_artifacts(&state.paths, &item).await?,
-            Err(error) => tracing::warn!(
-                %error,
-                job_id = %id,
-                item_id = %cancelled.item_id,
-                "cancelled job item was not available for artifact cleanup"
-            ),
-        }
+    if !cancelled.cleanup_deferred {
+        cleanup_cancelled_job_artifacts(&state, &cancelled).await?;
     }
     Ok(Json(json!({
         "status": "cancelled",
         "id": id,
         "item_id": cancelled.item_id,
-        "cleanup_deferred": cancelled.was_running,
+        "cleanup_deferred": cancelled.cleanup_deferred,
+    })))
+}
+
+async fn cancel_jobs_batch(
+    State(state): State<ApiState>,
+    Json(request): Json<CancelJobsBatchRequest>,
+) -> ApiResult<Json<Value>> {
+    let ids = request
+        .ids
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .take(MAX_LIST_LIMIT)
+        .collect::<Vec<_>>();
+    let has_ids = !ids.is_empty();
+    let status = request.status.as_deref().map(str::trim).unwrap_or_default();
+    if !has_ids && !status.eq_ignore_ascii_case("queued") {
+        return Err(ApiError::bad_request(
+            "cancel-batch requires ids or status=queued".to_string(),
+        ));
+    }
+    if !status.is_empty() && !status.eq_ignore_ascii_case("queued") {
+        return Err(ApiError::bad_request(
+            "cancel-batch only supports queued jobs".to_string(),
+        ));
+    }
+
+    let source_id = request
+        .source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let cancelled =
+        jobs::cancel_queued_jobs_batch(&state.paths, has_ids.then_some(ids.as_slice()), source_id)?;
+    for job in &cancelled {
+        if !job.cleanup_deferred {
+            cleanup_cancelled_job_artifacts(&state, job).await?;
+        }
+    }
+    Ok(Json(json!({
+        "status": "cancelled",
+        "cancelled": cancelled.len(),
+        "ids": cancelled.iter().map(|job| job.id.clone()).collect::<Vec<_>>(),
+        "item_ids": cancelled.iter().filter_map(|job| job.item_id.clone()).collect::<Vec<_>>(),
+        "cleanup_deferred": cancelled.iter().filter(|job| job.cleanup_deferred).count()
     })))
 }
 
@@ -4538,6 +4629,8 @@ const API_PATHS: &[(&str, &[&str])] = &[
     ("/internal/chunks/{id}/video-segment", &["get"]),
     ("/internal/chunks/{id}/video-clip", &["get"]),
     ("/internal/jobs", &["get"]),
+    ("/internal/jobs/summary", &["get"]),
+    ("/internal/jobs/cancel-batch", &["post"]),
     ("/internal/jobs/{id}/cancel", &["post"]),
     ("/internal/usage/events", &["get"]),
     ("/internal/usage/summary", &["get"]),
@@ -5078,6 +5171,8 @@ mod tests {
         let paths = openapi_json["paths"].as_object().unwrap();
         assert!(paths.len() >= 19);
         assert!(paths["/internal/items/{id}"].get("patch").is_some());
+        assert!(paths["/internal/jobs/summary"].get("get").is_some());
+        assert!(paths["/internal/jobs/cancel-batch"].get("post").is_some());
         assert!(paths["/internal/jobs/{id}/cancel"].get("post").is_some());
     }
 
@@ -5104,6 +5199,8 @@ mod tests {
             (Method::GET, "/chunks/chunk-1/video-segment"),
             (Method::GET, "/chunks/chunk-1/video-clip"),
             (Method::GET, "/jobs"),
+            (Method::GET, "/jobs/summary"),
+            (Method::POST, "/jobs/cancel-batch"),
             (Method::GET, "/usage/summary"),
             (Method::GET, "/storage/usage"),
             (Method::GET, "/providers"),
@@ -8797,6 +8894,389 @@ mod tests {
         assert!(!ids.contains(&"job-completed-old".to_string()));
         assert!(!ids.contains(&"job-stale-completed".to_string()));
         assert!(!ids.contains(&"job-old-failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_jobs_terminal_status_filters_order_by_finished_at() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, finished_at, progress, stage
+                )
+                VALUES
+                    ('job-old-completed', NULL, 'index_video', 'completed', 100, 200, 1, 'completed'),
+                    ('job-fresh-cancelled', NULL, 'index_video', 'cancelled', NULL, 500, 1, 'cancelled'),
+                    ('job-mid-completed', NULL, 'index_video', 'completed', 300, 400, 1, 'completed')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/jobs?status=completed,cancelled&light=true&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let jobs = response_json(response).await;
+        let ids = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "job-fresh-cancelled".to_string(),
+                "job-mid-completed".to_string(),
+                "job-old-completed".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_jobs_filters_invisible_items_before_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, status, metadata)
+                VALUES
+                    ('item-visible', 'source-a', 'video', 'visible.mp4', 'indexed', '{}'),
+                    ('item-deleting', 'source-a', 'video', 'deleting.mp4', 'deleting', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (
+                    id, item_id, job_type, status, started_at, finished_at, progress, stage
+                )
+                VALUES
+                    ('job-orphan-newest', 'item-missing', 'index_video', 'completed', 100, 1000, 1, 'completed'),
+                    ('job-deleting-newest', 'item-deleting', 'index_video', 'completed', 100, 900, 1, 'completed'),
+                    ('job-visible-older', 'item-visible', 'index_video', 'completed', 100, 100, 1, 'completed')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/jobs?status=completed&light=true&limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let jobs = response_json(response).await;
+        let jobs = jobs.as_array().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["id"], "job-visible-older");
+    }
+
+    #[tokio::test]
+    async fn job_summary_counts_all_statuses() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, status, metadata)
+                VALUES ('item-deleting', 'source-a', 'video', 'deleting.mp4', 'deleting', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES
+                    ('job-queued', NULL, 'index_video', 'queued', 0),
+                    ('job-running', NULL, 'index_video', 'running', 0.5),
+                    ('job-failed', NULL, 'index_video', 'failed', 1),
+                    ('job-completed', NULL, 'index_video', 'completed', 1),
+                    ('job-cancelled', NULL, 'index_video', 'cancelled', 1),
+                    ('job-deleting-queued', 'item-deleting', 'index_video', 'queued', 0),
+                    ('job-deleting-completed', 'item-deleting', 'index_video', 'completed', 1),
+                    ('job-orphan-running', 'item-missing', 'index_video', 'running', 0.5)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/internal/jobs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let summary = response_json(response).await;
+        assert_eq!(summary["queued_jobs"], 1);
+        assert_eq!(summary["running_jobs"], 1);
+        assert_eq!(summary["failed_jobs"], 1);
+        assert_eq!(summary["completed_jobs"], 1);
+        assert_eq!(summary["cancelled_jobs"], 1);
+        assert_eq!(summary["total_jobs"], 5);
+    }
+
+    #[tokio::test]
+    async fn cancel_jobs_batch_cancels_only_matching_queued_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active'), ('source-b', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (id, source_id, content_type, external_id, title, status, metadata)
+                VALUES
+                    ('item-a', 'source-a', 'video', 'a.mp4', 'A', 'processing', '{}'),
+                    ('item-b', 'source-b', 'video', 'b.mp4', 'B', 'processing', '{}'),
+                    ('item-running', 'source-b', 'video', 'running.mp4', 'Running', 'processing', '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress, stage)
+                VALUES
+                    ('job-a-queued', 'item-a', 'index_video', 'queued', 0, 'queued'),
+                    ('job-b-queued', 'item-b', 'index_video', 'queued', 0, 'queued'),
+                    ('job-itemless-queued', NULL, 'index_video', 'queued', 0, 'queued'),
+                    ('job-running', 'item-running', 'index_video', 'running', 0.5, 'processing')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/internal/jobs/cancel-batch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"status":"queued","source_id":"source-a"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["cancelled"], 1, "response body: {body}");
+        assert_eq!(body["ids"], json!(["job-a-queued"]));
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let job_statuses = conn
+            .prepare(
+                "SELECT id, status FROM jobs WHERE id IN ('job-a-queued', 'job-b-queued', 'job-itemless-queued', 'job-running') ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            job_statuses,
+            vec![
+                ("job-a-queued".to_string(), "cancelled".to_string()),
+                ("job-b-queued".to_string(), "queued".to_string()),
+                ("job-itemless-queued".to_string(), "queued".to_string()),
+                ("job-running".to_string(), "running".to_string())
+            ]
+        );
+        let item_status: String = conn
+            .query_row("SELECT status FROM items WHERE id = 'item-a'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(item_status, "discovered");
+    }
+
+    #[tokio::test]
+    async fn cancel_jobs_batch_cancels_itemless_queued_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress, stage)
+                VALUES
+                    ('job-itemless-queued', NULL, 'index_video', 'queued', 0, 'queued'),
+                    ('job-itemless-running', NULL, 'index_video', 'running', 0.5, 'processing')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/internal/jobs/cancel-batch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"status":"queued"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["cancelled"], 1, "response body: {body}");
+        assert_eq!(body["ids"], json!(["job-itemless-queued"]));
+        assert_eq!(body["item_ids"], json!([]));
+        assert_eq!(body["cleanup_deferred"], 0);
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let job_statuses = conn
+            .prepare("SELECT id, status FROM jobs ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            job_statuses,
+            vec![
+                ("job-itemless-queued".to_string(), "cancelled".to_string()),
+                ("job-itemless-running".to_string(), "running".to_string())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_jobs_batch_defers_item_reset_when_item_still_has_running_job() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        {
+            let conn = cerul_storage::sqlite::open(&paths).unwrap();
+            conn.execute(
+                "INSERT INTO sources (id, type, config, status) VALUES ('source-a', 'folder_video', '{}', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO items (
+                    id, source_id, content_type, external_id, title,
+                    status, indexed_at, metadata
+                )
+                VALUES ('item-a', 'source-a', 'video', 'a.mp4', 'A', 'processing', 123, '{}')
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress, stage)
+                VALUES
+                    ('job-a-running', 'item-a', 'index_video', 'running', 0.5, 'processing'),
+                    ('job-a-queued', 'item-a', 'index_video', 'queued', 0, 'queued')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+        let app = router_with_paths(paths.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/internal/jobs/cancel-batch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"status":"queued"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["cancelled"], 1);
+        assert_eq!(body["cleanup_deferred"], 1);
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
+        let item: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT status, indexed_at FROM items WHERE id = 'item-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(item, ("processing".to_string(), Some(123)));
+        let job_statuses = conn
+            .prepare("SELECT id, status FROM jobs ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            job_statuses,
+            vec![
+                ("job-a-queued".to_string(), "cancelled".to_string()),
+                ("job-a-running".to_string(), "running".to_string())
+            ]
+        );
     }
 
     #[tokio::test]

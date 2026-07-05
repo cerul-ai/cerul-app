@@ -650,6 +650,7 @@
 .jobs-filter:hover { border-color: var(--accent-line-soft); color: var(--text); }
 .jobs-filter.on { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 1px 3px rgba(62, 107, 157, 0.4); }
 .jobs-filter-n { opacity: 0.7; }
+.jobs-clear-queued { margin-left: auto; flex: none; }
 .jobs-cost-pill {
   margin-left: auto;
   display: inline-flex;

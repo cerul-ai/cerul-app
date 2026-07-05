@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 // Tasks panel — a filterable timeline of indexing jobs (running / done /
 // failed). Restyled to the FGH React/Tailwind prototype (§H). Extracted from
 // App.tsx (B13 Phase D).
@@ -29,6 +29,7 @@ import { EmptyState } from "../components/leaf";
 import { ProgressBar } from "../components/transcript";
 
 type JobGroup = "running" | "done" | "failed";
+export type JobsFilter = "all" | JobGroup;
 
 function jobGroup(job: api.JobRecord): JobGroup {
   const badge = jobBadgeStatus(job.status);
@@ -43,25 +44,35 @@ function jobSortTime(job: api.JobRecord): number {
 
 export function JobsSheet({
   jobs,
+  summary,
+  filter,
+  loading = false,
   syncingSources = [],
   items,
   stepStarts,
   paused = false,
   controlsEnabled = true,
   onTogglePause,
+  onFilterChange,
   onCancelJob,
+  onCancelQueuedJobs,
   onClose,
   onOpenSettingsFix,
   onOpenSources,
 }: {
   jobs: api.JobRecord[];
+  summary: api.JobStatusSummary | null;
+  filter: JobsFilter;
+  loading?: boolean;
   syncingSources?: Source[];
   items: Item[];
   stepStarts: Record<string, number>;
   paused?: boolean;
   controlsEnabled?: boolean;
   onTogglePause?: () => void;
+  onFilterChange: (filter: JobsFilter) => void;
   onCancelJob?: (job: api.JobRecord) => void;
+  onCancelQueuedJobs?: () => void;
   onClose: () => void;
   onOpenSettingsFix: (section: string) => void;
   onOpenSources?: () => void;
@@ -70,7 +81,6 @@ export function JobsSheet({
   useEscapeToClose(onClose);
   const dialogRef = useRef<HTMLElement | null>(null);
   useDialogFocus(dialogRef);
-  const [filter, setFilter] = useState<"all" | JobGroup>("all");
 
   const sortedJobs = [...jobs].sort((a, b) => {
     const activeDelta = Number(isActiveJob(b)) - Number(isActiveJob(a));
@@ -82,32 +92,37 @@ export function JobsSheet({
   const activeJobs = sortedJobs.filter(isActiveJob);
   const queuedJobs = activeJobs.filter((job) => job.status === "queued");
   const runningJobs = activeJobs.filter((job) => job.status === "running");
-  const activeCount = activeJobs.length + syncingSources.length;
-  const totalCount = sortedJobs.length + syncingSources.length;
+  const queuedCount = summary?.queued_jobs ?? queuedJobs.length;
+  const runningCount = summary?.running_jobs ?? runningJobs.length;
+  const activeCount = queuedCount + runningCount + syncingSources.length;
+  const totalCount = (summary?.total_jobs ?? sortedJobs.length) + syncingSources.length;
   const onlyPausedQueuedJobs =
-    paused && syncingSources.length === 0 && runningJobs.length === 0 && queuedJobs.length > 0;
+    paused && syncingSources.length === 0 && runningCount === 0 && queuedCount > 0;
   const failedJobs = sortedJobs.filter((job) => jobGroup(job) === "failed");
   const doneJobs = sortedJobs.filter((job) => jobGroup(job) === "done");
+  const failedCount = summary?.failed_jobs ?? failedJobs.length;
+  const doneCount = summary ? summary.completed_jobs + summary.cancelled_jobs : doneJobs.length;
+  const hasAnyJobSignal = totalCount > 0;
   const now = useNowSeconds(activeCount > 0);
   const itemForJob = (job: api.JobRecord) =>
     job.item_id ? items.find((item) => item.id === job.item_id) ?? null : null;
   const focusJob = activeJobs[0] ?? doneJobs[0] ?? failedJobs[0] ?? sortedJobs[0] ?? null;
   const focusItem = focusJob ? itemForJob(focusJob) : null;
 
-  const filters: { id: "all" | JobGroup; label: string; n: number }[] = [
+  const filters: { id: JobsFilter; label: string; n: number }[] = [
     { id: "all", label: t("jobs.filter.all"), n: totalCount },
     { id: "running", label: t(paused ? "jobs.groupQueued" : "jobs.groupRunning"), n: activeCount },
-    { id: "done", label: t("jobs.status.completed"), n: doneJobs.length },
-    { id: "failed", label: t("jobs.status.failed"), n: failedJobs.length },
+    { id: "done", label: t("jobs.status.completed"), n: doneCount },
+    { id: "failed", label: t("jobs.status.failed"), n: failedCount },
   ];
-  const visibleJobs = sortedJobs.filter((job) => filter === "all" || filter === jobGroup(job));
+  const showFilterControls = hasAnyJobSignal || filter !== "all" || loading;
   const visibleSyncingSources = filter === "all" || filter === "running" ? syncingSources : [];
 
   // Header summary, with the failed count tinted red (prototype §H).
   const runningLabel =
     onlyPausedQueuedJobs
-      ? t(queuedJobs.length === 1 ? "jobs.queuedCountOne" : "jobs.queuedCountOther", {
-          count: queuedJobs.length,
+      ? t(queuedCount === 1 ? "jobs.queuedCountOne" : "jobs.queuedCountOther", {
+          count: queuedCount,
         })
       : activeCount > 0
       ? t(activeCount === 1 ? "jobs.activeCountOne" : "jobs.activeCountOther", {
@@ -115,10 +130,10 @@ export function JobsSheet({
         })
       : null;
   const subtitle =
-    totalCount > 0
+    hasAnyJobSignal
       ? t("jobs.subtitle", {
-          done: doneJobs.length,
-          failed: failedJobs.length,
+          done: doneCount,
+          failed: failedCount,
           running: activeCount,
         })
       : t("jobs.emptyBody");
@@ -295,11 +310,11 @@ export function JobsSheet({
             <p className="section-label eyebrow">{t("jobs.eyebrow")}</p>
             <h2 id="jobs-title" className="jobs-center-title">
               {runningLabel ? <span>{runningLabel}</span> : null}
-              {runningLabel && failedJobs.length > 0 ? <span> · </span> : null}
-              {failedJobs.length > 0 ? (
-                <span className="jobs-title-failed">{t("jobs.failedCount", { count: failedJobs.length })}</span>
+              {runningLabel && failedCount > 0 ? <span> · </span> : null}
+              {failedCount > 0 ? (
+                <span className="jobs-title-failed">{t("jobs.failedCount", { count: failedCount })}</span>
               ) : null}
-              {!runningLabel && failedJobs.length === 0 ? <span>{t("jobs.noneTitle")}</span> : null}
+              {!runningLabel && failedCount === 0 ? <span>{t("jobs.noneTitle")}</span> : null}
             </h2>
             <p className="jobs-center-subtitle">{subtitle}</p>
           </div>
@@ -338,14 +353,14 @@ export function JobsSheet({
               <span>{t("jobs.status.completed")}</span>
               <span>{t("jobs.summary.done")}</span>
             </span>
-            <strong className="jobs-summary-value mono">{doneJobs.length}</strong>
+            <strong className="jobs-summary-value mono">{doneCount}</strong>
           </div>
           <div className="jobs-summary-card danger">
             <span className="jobs-summary-label">
               <span>{t("jobs.status.failed")}</span>
-              <span>{failedJobs.length > 0 ? t("jobs.summary.needsFix") : t("jobs.summary.clear")}</span>
+              <span>{failedCount > 0 ? t("jobs.summary.needsFix") : t("jobs.summary.clear")}</span>
             </span>
-            <strong className="jobs-summary-value mono">{failedJobs.length}</strong>
+            <strong className="jobs-summary-value mono">{failedCount}</strong>
           </div>
         </div>
 
@@ -400,7 +415,7 @@ export function JobsSheet({
             </div>
           ) : null}
 
-          {totalCount > 0 ? (
+          {showFilterControls ? (
             <>
               <div className="jobs-filters jobs-center-filters" role="tablist" aria-label={t("jobs.filter.aria")}>
                 {filters.map((f) => (
@@ -410,7 +425,7 @@ export function JobsSheet({
                     className={filter === f.id ? "jobs-filter on" : "jobs-filter"}
                     role="tab"
                     aria-selected={filter === f.id}
-                    onClick={() => setFilter(f.id)}
+                    onClick={() => onFilterChange(f.id)}
                   >
                     {f.label} <span className="jobs-filter-n">{f.n}</span>
                   </button>
@@ -419,13 +434,21 @@ export function JobsSheet({
                   <span className="jobs-cost-pill-dot" />
                   {t("jobs.localProcessing")}
                 </span>
+                {onCancelQueuedJobs && controlsEnabled && filter === "running" && queuedCount > 0 ? (
+                  <button type="button" className="btn btn-secondary sm jobs-clear-queued" onClick={onCancelQueuedJobs}>
+                    <Trash2 size={13} />
+                    <span>{t("jobs.clearQueued")}</span>
+                  </button>
+                ) : null}
               </div>
 
               <div className="jobs-center-scroll">
-                {visibleJobs.length > 0 || visibleSyncingSources.length > 0 ? (
+                {loading ? (
+                  <EmptyState title={t("jobs.loadingTitle")} body={t("jobs.loadingBody")} />
+                ) : sortedJobs.length > 0 || visibleSyncingSources.length > 0 ? (
                   <div className="jobs-list-v2">
                     {visibleSyncingSources.map(renderSyncingSourceCard)}
-                    {visibleJobs.map(renderCard)}
+                    {sortedJobs.map(renderCard)}
                   </div>
                 ) : (
                   <EmptyState title={emptyTitle} body={emptyBody} />
