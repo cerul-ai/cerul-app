@@ -17,6 +17,8 @@ cerul_cli="$target_dir/debug/cerul-cli"
 if [ ! -x "$cerul_cli" ] && [ -x "$target_dir/debug/cerul-cli.exe" ]; then
   cerul_cli="$target_dir/debug/cerul-cli.exe"
 fi
+export DYLD_LIBRARY_PATH="$target_dir/debug${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$target_dir/debug${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 AUDIO_DIR="$TMP_DIR/audio"
 IMAGE_DIR="$TMP_DIR/images"

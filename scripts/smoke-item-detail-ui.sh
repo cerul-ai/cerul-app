@@ -11,7 +11,7 @@ rg -qF "sourceKind: ItemSourceKind" apps/desktop/src
 rg -qF "rawPath: string | null" apps/desktop/src
 rg -qF "originalUrl: string | null" apps/desktop/src
 rg -qF "error: string | null" apps/desktop/src
-rg -qF "mapChunkRecords(records)" apps/desktop/src
+rg -qF "mapChunkRecords(records, t)" apps/desktop/src
 rg -qF ".listItemChunks(item.id)" apps/desktop/src
 rg -qF 'actionsEnabled={apiStatus === "online"}' apps/desktop/src
 rg -qF "const detailIssue = itemDetailIssue(item, t)" apps/desktop/src

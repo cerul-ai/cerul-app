@@ -11,7 +11,8 @@ rg -qF "const [sortKey, setSortKey]" apps/desktop/src
 rg -qF "const [viewMode, setViewMode]" apps/desktop/src
 rg -qF "const [selectedItemIds, setSelectedItemIds]" apps/desktop/src
 rg -qF "async function runBatchAction" apps/desktop/src
-rg -qF "const activeJobCount = visibleJobs.filter(isActiveJob).length" apps/desktop/src
+rg -qF 'const activeJobCount = apiStatus === "online" && data.jobSummary' apps/desktop/src
+rg -qF "data.jobSummary.queued_jobs + data.jobSummary.running_jobs" apps/desktop/src
 rg -qF ": [];" apps/desktop/src/App.tsx
 rg -qF "<IndexingStrip" apps/desktop/src/screens/library.tsx
 rg -qF "jobs={jobs}" apps/desktop/src/screens/library.tsx

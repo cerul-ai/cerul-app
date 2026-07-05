@@ -17,10 +17,12 @@ rg -qF "setSelectedPlaybackChunkId" apps/desktop/src
 rg -qF "search.set(\"playbackChunkId\", params.playbackChunkId)" apps/desktop/src
 rg -qF "!state.hasCompletedOnboarding && !state.lastRoute && !window.location.hash" apps/desktop/src
 rg -qF "void persistOnboardingCompleted(true)" apps/desktop/src
-rg -qF "mainWindow.on(\"close\"" apps/electron-shell/src/main.ts
-rg -qF "shouldCloseToTray().then" apps/electron-shell/src/main.ts
-rg -qF "event.preventDefault()" apps/electron-shell/src/main.ts
-rg -qF "mainWindow?.hide()" apps/electron-shell/src/main.ts
+rg -qF "createMainBrowserWindow({" apps/electron-shell/src/main.ts
+rg -qF "shouldCloseToTray," apps/electron-shell/src/main.ts
+rg -qF 'window.on("close", (event) => {' apps/electron-shell/src/windows.ts
+rg -qF "event.preventDefault()" apps/electron-shell/src/windows.ts
+rg -qF "options.shouldCloseToTray().then" apps/electron-shell/src/windows.ts
+rg -qF "window.hide()" apps/electron-shell/src/windows.ts
 rg -qF "settingBoolean(await readApiSettings(), \"close_to_tray\", true)" apps/electron-shell/src/main.ts
 rg -qF "scripts/smoke-ui-state.sh" scripts/smoke.sh
 

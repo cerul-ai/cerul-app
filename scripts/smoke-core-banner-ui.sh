@@ -20,7 +20,7 @@ rg -qF 'show={view !== "settings" && coreLevel === "unresponsive"}' apps/desktop
 rg -qF '"coreBanner.starting": "Core starting"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"coreBanner.unresponsive": "Core offline"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "role=\"status\"" apps/desktop/src
-rg -qF 'className="settings-core-status"' apps/desktop/src/App.tsx
+rg -qF 'className="settings-core-status"' apps/desktop/src
 rg -qF '.rail-status-dot[data-level="starting"]' apps/desktop/src/styles/app.css
 rg -qF '.rail-status-dot[data-level="unresponsive"]' apps/desktop/src/styles/app.css
 rg -qF '.core-toast[data-show="true"]' apps/desktop/src/styles/extensions.css

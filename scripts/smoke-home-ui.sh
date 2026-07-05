@@ -20,7 +20,9 @@ rg -qF '"home.lockedHint": "Cerul is indexing your first sources. Search becomes
 rg -qF 'className={searchDisabled ? "search-wrap disabled" : "search-wrap"}' apps/desktop/src
 rg -qF "disabled={searchDisabled}" apps/desktop/src
 rg -qF "function handleGlobalKeyDown(event: globalThis.KeyboardEvent)" apps/desktop/src
-rg -qF "event.key.toLowerCase() === \"n\"" apps/desktop/src
+rg -qF 'settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY)' apps/desktop/src
+rg -qF "acceleratorMatchesEvent(newSourceHotkey, event)" apps/desktop/src
+rg -qF "shouldIgnoreNewSourceShortcut(event.target)" apps/desktop/src
 rg -qF "setShowAddSource(true)" apps/desktop/src
 rg -qF ".search-wrap.disabled .search-input" apps/desktop/src/styles/ui.css
 rg -qF ".home-status-line" apps/desktop/src/styles/app.css

@@ -17,7 +17,7 @@ rg -qF "function resolveClipTarget()" apps/desktop/src
 rg -qF "const detailIssue = itemDetailIssue(item, t)" apps/desktop/src
 rg -qF "function hasOpenModalSurface" apps/desktop/src
 rg -qF "if (hasOpenModalSurface())" apps/desktop/src
-rg -qF "api.videoSegmentUrl(mediaState.chunkId)" apps/desktop/src
+rg -qF "api.videoSegmentUrl(playableChunkId)" apps/desktop/src
 rg -qF ".listItemChunks(item.id)" apps/desktop/src
 rg -qF "function selectPlaybackChunkId" apps/desktop/src
 rg -qF "video-frame thumb" apps/desktop/src
@@ -29,7 +29,7 @@ rg -qF "item.issue.youtube.title" apps/desktop/src
 rg -qF "detail.issue.locate" apps/desktop/src
 rg -qF "item.issue.removeLabel" apps/desktop/src
 rg -qF "detail.stillProcessing" apps/desktop/src
-rg -qF "function seekTo(timestamp: string)" apps/desktop/src
+rg -qF "function seekTo(timestamp: string" apps/desktop/src
 rg -qF "async function locateSourceFile" apps/desktop/src
 rg -qF "async function reindexCurrentItem" apps/desktop/src
 rg -qF "async function deleteCurrentItem" apps/desktop/src
@@ -38,13 +38,12 @@ rg -qF "onDeleteItem={async (itemToDelete)" apps/desktop/src
 rg -qF "onReindexItem={async (itemToReindex)" apps/desktop/src
 rg -qF "api.deleteItem(itemToDelete.id)" apps/desktop/src
 rg -qF "api.reindexItem(itemToReindex.id)" apps/desktop/src
-rg -qF "onClick={() => seekTo(timestamp)}" apps/desktop/src
+rg -qF "onClick={() => onSeek?.(line.time, line)}" apps/desktop/src
 rg -qF "onSeek={seekTo}" apps/desktop/src
 rg -qF "matchTime={startTimestamp}" apps/desktop/src
 rg -qF "line.time === matchTime" apps/desktop/src
 rg -qF "function copyTimestampLink" apps/desktop/src
-rg -qF "timestampDeepLink(item.id, currentTimestamp, mediaState.chunkId)" apps/desktop/src
-rg -qF "timestampDeepLink(item.id, currentTimestamp, playableChunkId)" apps/desktop/src
+rg -qF 'const timestampLink = timestampDeepLink(item.id, detailTimestamp, detailChunkId, "item-detail")' apps/desktop/src
 rg -qF "playbackChunkId: result.playbackChunkId" apps/desktop/src
 rg -qF "cerul-app://item/" apps/desktop/src
 rg -qF "function canOpenOriginalSource(item: Item)" apps/desktop/src
