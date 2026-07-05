@@ -706,7 +706,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "zvec",
+ "zvec-safe",
 ]
 
 [[package]]
@@ -4023,7 +4023,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5465,8 +5465,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "zvec"
-version = "0.1.0"
+name = "zvec-safe"
+version = "0.0.1"
+source = "git+https://github.com/cerul-ai/zvec-safe?tag=v0.0.1#39ebd9656191b7270ca3dbf6aac53a5e88f7acac"
 dependencies = [
  "bindgen 0.70.1",
  "sha2",
