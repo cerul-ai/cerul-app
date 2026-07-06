@@ -7,7 +7,8 @@
     </picture>
   </a>
   <h1>Cerul App</h1>
-  <p><strong>A self-hosted second brain for everything you watch and hear.</strong></p>
+  <p><strong>Where video becomes citable.</strong></p>
+  <p>Stop scrubbing. Start searching.</p>
   <p>Point it at your folders, YouTube channels, and podcast feeds. Cerul watches them locally, transcribes with provider keys you control or local models, and indexes the results on your machine — then lets you search by meaning across speech and on-screen content, and jump straight to the moment, from a desktop app, a global overlay, or the Cerul Core API.</p>
 
   <p>
