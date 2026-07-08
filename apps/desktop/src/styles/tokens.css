@@ -56,9 +56,9 @@
   --dur-fast: 120ms;
   --dur: 180ms;
 
-  /* ---- App-icon container gradients (brushed silver / graphite) ---- */
-  --icon-grad-silver:   linear-gradient(150deg, #f3f4f6, #cdd2d9);
+  /* ---- App-icon container gradients (graphite on light, paper on dark) ---- */
   --icon-grad-graphite: linear-gradient(155deg, #3a3f49, #15171c);
+  --icon-grad-paper:    linear-gradient(150deg, #ffffff, #dcdfe4);
 
   /* ---- Luminous handoff: floating-card elevation (shared) ----
      Designed to read against the layered light background so white cards
@@ -202,12 +202,12 @@
   --focus-ring: 0 0 0 3px rgba(143, 176, 216, 0.32);
 }
 
-/* ---- App-icon container (brushed silver, graphite in dark) ---- */
+/* ---- App-icon container (graphite on light, paper on dark) ---- */
 .app-icon-grad {
-  background: var(--icon-grad-silver);
+  background: var(--icon-grad-graphite);
 }
 [data-theme="dark"] .app-icon-grad {
-  background: var(--icon-grad-graphite);
+  background: var(--icon-grad-paper);
 }
 
 /* ============================================================
