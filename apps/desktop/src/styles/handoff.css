@@ -195,7 +195,7 @@
   width: 96px;
   height: 60px;
   border-radius: 4px 12px 12px 12px;
-  background: linear-gradient(180deg, #e9f1fb, #d6e4f4);
+  background: linear-gradient(180deg, #f8f2ec, #efe3d3);
   border: 1px solid var(--accent-line-soft);
   display: grid;
   place-items: center;
@@ -294,8 +294,8 @@
   right: 6px; bottom: 6px;
   font-size: 9.5px;
   font-weight: 600;
-  color: var(--success);
-  background: var(--success-tint);
+  color: var(--text-muted);
+  background: var(--surface-2);
   padding: 2px 6px;
   border-radius: 999px;
 }
@@ -322,7 +322,7 @@
 .onb-detail-text strong { display: block; font-size: 13px; font-weight: 600; }
 .onb-detail-text span { font-size: 12.5px; color: var(--text-muted); line-height: 1.5; }
 .onb-cost { margin: 14px 0 0; font-size: 12.5px; color: var(--text-faint); }
-.onb-cost-amt { color: var(--success); font-weight: 700; }
+.onb-cost-amt { color: var(--text-muted); font-weight: 700; }
 
 /* ============================================================
    EMPTY STATE — drag zone · example chips · result preview (handoff §3)
@@ -469,15 +469,15 @@
 .indexing-strip__track { display: flex; align-items: center; gap: 9px; }
 .indexing-strip__track .progress { flex: 1; }
 .indexing-strip__pct { flex: none; font-size: 11px; color: var(--accent); font-weight: 600; min-width: 34px; text-align: right; }
-.indexing-strip__cost { color: var(--success); font-weight: 600; }
+.indexing-strip__cost { color: var(--text-muted); font-weight: 600; }
 
 /* ---- Tasks drawer cost panel: success-tinted while everything is local ---- */
-.jobs-cost-card.local { background: var(--success-tint); border-color: var(--success-line); }
-.jobs-cost-card.local .jobs-cost-label { color: var(--success); }
-.jobs-cost-card.local .jobs-cost-value { color: var(--success); font-size: 22px; }
+.jobs-cost-card.local { background: var(--surface-2); border-color: var(--line); }
+.jobs-cost-card.local .jobs-cost-label { color: var(--text-muted); }
+.jobs-cost-card.local .jobs-cost-value { color: var(--text); font-size: 22px; }
 
 /* ---- Elegant processing card (shimmer header + ring + pill) ---- */
-.item-thumb.indexing { background: linear-gradient(135deg, #eef1f5, #e3e8ef); }
+.item-thumb.indexing { background: linear-gradient(145deg, #f0f2f5 0%, #edeff2 45%, #f0ede8 100%); }
 [data-theme="dark"] .item-thumb.indexing { background: linear-gradient(135deg, #232a33, #1a1f26); }
 .item-shimmer {
   position: absolute;
@@ -532,9 +532,9 @@
   margin-bottom: 12px;
   padding: 9px 12px;
   border-radius: var(--r-md);
-  background: var(--warn-tint);
-  border: 1px solid var(--warn-line);
-  color: var(--warn);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-muted);
   font-size: 12.5px;
   line-height: 1.4;
 }
@@ -657,14 +657,14 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--success);
-  background: var(--success-tint);
+  color: var(--text-muted);
+  background: var(--surface-2);
   border: 1px solid var(--success-line);
   padding: 4px 10px;
   border-radius: 9px;
   white-space: nowrap;
 }
-.jobs-cost-pill-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--success); }
+.jobs-cost-pill-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--text-faint); }
 .jobs-cost-pill b { font-weight: 700; }
 
 /* ---- Timeline ---- */
@@ -804,7 +804,7 @@
   color: var(--text);
 }
 .jobs-summary-card.success .jobs-summary-label,
-.jobs-summary-card.success .jobs-summary-value { color: var(--success); }
+.jobs-summary-card.success .jobs-summary-value { color: var(--text); }
 .jobs-summary-card.danger .jobs-summary-value { color: var(--danger); }
 .jobs-center-body {
   min-height: 0;
@@ -884,9 +884,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--success);
-  border: 1px solid var(--success-line);
-  background: var(--success-tint);
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
 }
 .jobs-focus-empty {
   color: var(--text-muted);
@@ -957,15 +957,15 @@
   height: 100%;
   object-fit: cover;
 }
-.jobs-media-thumb.mint { background: linear-gradient(135deg, #e5f5ef, #b8d9ca); color: #2e7d56; }
-.jobs-media-thumb.amber { background: linear-gradient(135deg, #fff3d8, #e8c876); color: #9a6a09; }
-.jobs-media-thumb.rose { background: linear-gradient(135deg, #ffe8ef, #efb2c4); color: #a33d58; }
-.jobs-media-thumb.steel { background: linear-gradient(135deg, var(--surface-3), var(--accent-tint)); color: var(--accent); }
+.jobs-media-thumb.mint { background: linear-gradient(145deg, #f0f2f5 0%, #edeff2 45%, #f0ede8 100%); color: var(--text-faint); }
+.jobs-media-thumb.amber { background: linear-gradient(145deg, #f0f2f5 0%, #edeff2 45%, #f0ede8 100%); color: var(--text-faint); }
+.jobs-media-thumb.rose { background: linear-gradient(145deg, #f0f2f5 0%, #edeff2 45%, #f0ede8 100%); color: var(--text-faint); }
+.jobs-media-thumb.steel { background: linear-gradient(145deg, #f0f2f5 0%, #edeff2 45%, #f0ede8 100%); color: var(--text-faint); }
 [data-theme="dark"] .jobs-media-thumb.mint,
 [data-theme="dark"] .jobs-media-thumb.amber,
 [data-theme="dark"] .jobs-media-thumb.rose,
 [data-theme="dark"] .jobs-media-thumb.steel {
-  background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+  background: linear-gradient(145deg, #262a31 0%, #22262e 45%, #262622 100%);
 }
 .jobs-media-thumb small {
   position: absolute;

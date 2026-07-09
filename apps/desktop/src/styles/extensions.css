@@ -2111,8 +2111,18 @@ body.overlay-body {
   justify-content: center;
   aspect-ratio: 16 / 9;
   border-radius: var(--r-md);
-  background: var(--surface-3);
+  /* E11 铜雾一角 — soft slate haze + one copper corner */
+  background:
+    radial-gradient(55% 62% at 35% 38%, rgba(120, 134, 152, 0.18), transparent 70%),
+    radial-gradient(48% 55% at 85% 90%, rgba(168, 90, 40, 0.16), transparent 68%),
+    var(--surface-3);
   color: var(--text-muted);
+}
+[data-theme="dark"] .player-loading {
+  background:
+    radial-gradient(55% 62% at 35% 38%, rgba(74, 86, 104, 0.4), transparent 70%),
+    radial-gradient(48% 55% at 85% 90%, rgba(217, 154, 98, 0.28), transparent 68%),
+    #1b1f26;
 }
 .play-button {
   display: inline-flex;

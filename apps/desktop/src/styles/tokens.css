@@ -53,8 +53,9 @@
 
   /* ---- Motion ---- */
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
-  --dur-fast: 120ms;
-  --dur: 180ms;
+  --dur-fast: 120ms;  /* micro: hover, press */
+  --dur: 240ms;       /* panels, transitions */
+  --dur-hero: 420ms;  /* signature: jump-to-the-second scrub */
 
   /* ---- App-icon container gradients (brushed silver / graphite) ---- */
   --icon-grad-silver:   linear-gradient(150deg, #f3f4f6, #cdd2d9);
