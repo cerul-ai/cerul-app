@@ -10,7 +10,7 @@
 .settings-page .page-head { padding: 32px 0 22px; }
 .settings-page .page-eyebrow { color: var(--accent); font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12px; font-weight: 500; }
 .settings-page .page-h1 { font-size: 30px; letter-spacing: -0.025em; }
-[data-theme="dark"] .settings-page .page-h1 { text-shadow: 0 2px 26px rgba(143, 176, 216, 0.14); }
+[data-theme="dark"] .settings-page .page-h1 { text-shadow: 0 2px 26px rgba(217, 154, 98, 0.14); }
 /* editorial section number beside the title (matches the design mockup) */
 .settings-head-lead { display: flex; align-items: flex-start; gap: 16px; }
 .settings-num { flex: none; padding-top: 2px; font-family: var(--font-mono); font-weight: 300; font-size: 30px; line-height: 1; letter-spacing: -0.03em; color: var(--text-faint); opacity: 0.5; }

@@ -2021,7 +2021,7 @@ body.overlay-body {
 .cplayer-mark.match {
   /* Fixed light steel: the chrome is theme-independent dark, so this matches
      the dark-theme accent rather than reading var(--accent) from the page. */
-  background: #8fb0d8;
+  background: #d99a62;
   box-shadow: 0 0 0 2px rgb(143 176 216 / 35%);
 }
 .cplayer-mark.match:hover {
@@ -4288,7 +4288,7 @@ body.overlay-body {
 }
 .lm-dl-status.is-clickable:hover {
   border-color: var(--accent-line);
-  box-shadow: 0 10px 28px rgba(62, 107, 157, 0.14);
+  box-shadow: 0 10px 28px rgba(168, 90, 40, 0.14);
 }
 .lm-dl-status__row {
   display: flex;

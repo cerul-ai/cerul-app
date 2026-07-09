@@ -100,15 +100,15 @@
   --text-faint:  #8a93a0;
   --text-on-accent: #ffffff;
 
-  /* Accent (steel) */
-  --accent:        #3e6b9d;
-  --accent-hover:  #365f8c;
-  --accent-press:  #2f5478;
-  --accent-soft:   rgba(62, 107, 157, 0.10); /* tint fill */
-  --accent-soft-2: rgba(62, 107, 157, 0.16);
-  --accent-line:   rgba(62, 107, 157, 0.40);
-  --accent-line-soft: #d4e0ee; /* soft steel hairline — active nav / chips / drag zone (handoff: steel-line) */
-  --accent-tint:   #eef4fb;  /* solid steel tint — selected rows / active line (handoff: steel-soft) */
+  /* Accent (copper) */
+  --accent:        #a85a28;
+  --accent-hover:  #964f22;
+  --accent-press:  #7f421d;
+  --accent-soft:   rgba(168, 90, 40, 0.10); /* tint fill */
+  --accent-soft-2: rgba(168, 90, 40, 0.16);
+  --accent-line:   rgba(168, 90, 40, 0.40);
+  --accent-line-soft: #ead6c2; /* soft copper hairline — active nav / chips / drag zone (handoff: steel-line) */
+  --accent-tint:   #f7efe6;  /* solid steel tint — selected rows / active line (handoff: steel-soft) */
   --accent-2:      #a06f39;  /* warm copper — podcast modality only */
   --copper-soft:   #f3ebe0;  /* copper tint background (podcast/audio-only) */
 
@@ -137,7 +137,7 @@
   --scrim: rgba(20, 28, 40, 0.28);
 
   /* Focus ring (soft, steel) */
-  --focus-ring: 0 0 0 3px rgba(62, 107, 157, 0.20);
+  --focus-ring: 0 0 0 3px rgba(168, 90, 40, 0.20);
 }
 
 /* ============================================================
@@ -146,27 +146,27 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --bg-app:      #0f1114;
-  --bg-sunken:   #0b0d10;
-  --surface:     #181b20;
-  --surface-2:   #1e2127;
-  --surface-3:   #262a31;
+  --bg-app:      #171a1f;
+  --bg-sunken:   #14171c;
+  --surface:     #22262e;
+  --surface-2:   #2a2f38;
+  --surface-3:   #323845;
 
   --line:        rgba(255, 255, 255, 0.12);
   --line-strong: rgba(255, 255, 255, 0.16);
 
-  --text:        #eef0f4;
-  --text-muted:  #9aa3b0;
-  --text-faint:  #6b7480;
+  --text:        #eff1f4;
+  --text-muted:  #a6adb8;
+  --text-faint:  #737b87;
   --text-on-accent: #14171c;
 
-  --accent:        #8fb0d8;
-  --accent-hover:  #a3c0e2;
-  --accent-press:  #bcd2ea;
-  --accent-soft:   rgba(143, 176, 216, 0.16);
-  --accent-soft-2: rgba(143, 176, 216, 0.24);
-  --accent-line:   rgba(143, 176, 216, 0.45);
-  --accent-tint:   rgba(143, 176, 216, 0.14);
+  --accent:        #d99a62;
+  --accent-hover:  #e8b483;
+  --accent-press:  #f0c9a2;
+  --accent-soft:   rgba(217, 154, 98, 0.16);
+  --accent-soft-2: rgba(217, 154, 98, 0.24);
+  --accent-line:   rgba(217, 154, 98, 0.45);
+  --accent-tint:   rgba(217, 154, 98, 0.14);
   --accent-2:      #caa066; /* warm copper — podcast modality only */
 
   --success:      #45d59f;
@@ -182,7 +182,7 @@
   --danger-tint:  rgba(240, 111, 98, 0.14);
   --danger-line:  rgba(240, 111, 98, 0.30);
 
-  --cream:        #181b20;
+  --cream:        #22262e;
 
   --shadow-1: none;
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -194,12 +194,12 @@
   --win-sh:       0 40px 90px -30px rgba(0, 0, 0, 0.7), 0 12px 28px -12px rgba(0, 0, 0, 0.5);
   --card-hairline: rgba(255, 255, 255, 0.07);
   --hair-2:        rgba(255, 255, 255, 0.08);
-  --accent-line-soft: rgba(143, 176, 216, 0.30);
+  --accent-line-soft: rgba(217, 154, 98, 0.30);
   --copper-soft:   rgba(202, 160, 102, 0.14);
 
   --scrim: rgba(0, 0, 0, 0.55);
 
-  --focus-ring: 0 0 0 3px rgba(143, 176, 216, 0.32);
+  --focus-ring: 0 0 0 3px rgba(217, 154, 98, 0.32);
 }
 
 /* ---- App-icon container (brushed silver, graphite in dark) ---- */

@@ -71,7 +71,7 @@
   width: 212px;
   height: 212px;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(62, 107, 157, 0.11), rgba(62, 107, 157, 0) 66%);
+  background: radial-gradient(circle, rgba(168, 90, 40, 0.11), rgba(168, 90, 40, 0) 66%);
   pointer-events: none;
 }
 
@@ -127,7 +127,7 @@
   height: 7px;
   border-radius: 9px;
   background: var(--accent);
-  box-shadow: 0 1px 3px rgba(62, 107, 157, 0.45);
+  box-shadow: 0 1px 3px rgba(168, 90, 40, 0.45);
   transition: left 0.42s cubic-bezier(0.5, 1.4, 0.4, 1);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -285,7 +285,7 @@
   position: absolute;
   left: 0; right: 0; top: 0;
   height: 24px;
-  background: linear-gradient(180deg, rgba(62, 107, 157, 0.18), transparent);
+  background: linear-gradient(180deg, rgba(168, 90, 40, 0.18), transparent);
   animation: cerScan 2.8s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) { .onb-scan { animation: none; } }
@@ -341,7 +341,7 @@
   padding: 30px 24px;
   border: 1.5px dashed var(--accent-line-soft);
   border-radius: 14px;
-  background: rgba(62, 107, 157, 0.035);
+  background: rgba(168, 90, 40, 0.035);
   text-align: center;
   transition: border-color 0.28s cubic-bezier(0.4, 0, 0.2, 1),
               background 0.28s cubic-bezier(0.4, 0, 0.2, 1),
@@ -352,7 +352,7 @@
   border-color: var(--accent);
   background: var(--accent-tint);
   transform: translateY(-2px) scale(1.01);
-  box-shadow: 0 18px 40px -16px rgba(62, 107, 157, 0.5);
+  box-shadow: 0 18px 40px -16px rgba(168, 90, 40, 0.5);
 }
 .drag-icon {
   width: 46px;
@@ -621,7 +621,7 @@
 }
 .cw-banner:hover .cw-resume { transform: translateY(-1px); }
 .cw-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255, 255, 255, 0.15); }
-.cw-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #7aa7d8, #3e6b9d); box-shadow: 0 0 14px rgba(90, 134, 184, 0.85); }
+.cw-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #d99a62, #a85a28); box-shadow: 0 0 14px rgba(90, 134, 184, 0.85); }
 @media (prefers-reduced-motion: reduce) { .cw-banner:hover, .cw-banner:hover .cw-resume { transform: none; } }
 
 /* ============================================================
@@ -648,7 +648,7 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .jobs-filter:hover { border-color: var(--accent-line-soft); color: var(--text); }
-.jobs-filter.on { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 1px 3px rgba(62, 107, 157, 0.4); }
+.jobs-filter.on { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 1px 3px rgba(168, 90, 40, 0.4); }
 .jobs-filter-n { opacity: 0.7; }
 .jobs-clear-queued { margin-left: auto; flex: none; }
 .jobs-cost-pill {
@@ -1106,7 +1106,7 @@
   width: 124px;
   height: 124px;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(62, 107, 157, 0.12), rgba(62, 107, 157, 0) 68%);
+  background: radial-gradient(circle, rgba(168, 90, 40, 0.12), rgba(168, 90, 40, 0) 68%);
   pointer-events: none;
 }
 .home-hero-icon {
@@ -1152,7 +1152,7 @@
 .lm-foot { margin: 13px 0 0; font-size: 11.5px; color: var(--text-faint); }
 .lm-overall { margin: 2px 0 16px; }
 .lm-track { display: block; height: 8px; border-radius: 999px; background: var(--accent-tint); overflow: hidden; }
-.lm-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #5a86b8, #3e6b9d); box-shadow: 0 1px 4px rgba(62, 107, 157, 0.5); transition: width var(--dur) var(--ease); }
+.lm-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #c07f4a, #a85a28); box-shadow: 0 1px 4px rgba(168, 90, 40, 0.5); transition: width var(--dur) var(--ease); }
 .lm-meta { margin: 9px 0 0; font-size: 11.5px; color: var(--text-faint); }
 .lm-source-warning { margin: -6px 0 12px; color: var(--warn); font-size: 11.5px; line-height: 1.45; }
 .lm-list { text-align: left; margin: 0 0 18px; display: flex; flex-direction: column; gap: 2px; }
