@@ -169,6 +169,16 @@ type BundleProcessHolder = {
   knownBundleSidecar?: boolean;
 };
 
+// In dev the app runs from the stock Electron binary, so app.name defaults to
+// "Electron" (menu bar, About panel, notifications). Rename it to Cerul, but
+// pin userData back first: setName() would otherwise move the default userData
+// dir from .../Electron to .../Cerul and orphan existing dev-mode data.
+if (!app.isPackaged) {
+  const devUserDataPath = app.getPath("userData");
+  app.setName("Cerul");
+  app.setPath("userData", devUserDataPath);
+}
+
 registerPrivilegedAppScheme();
 
 if (!loginItemCliCommand) {
