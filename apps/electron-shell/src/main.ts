@@ -169,6 +169,19 @@ type BundleProcessHolder = {
   knownBundleSidecar?: boolean;
 };
 
+// In dev the app runs from the stock Electron binary, so app.name defaults to
+// "Electron" (menu bar, About panel, notifications). Rename it to Cerul, but
+// keep userData in the legacy Electron directory so existing dev-mode state is
+// not orphaned. Compute it explicitly because the macOS dev launcher patches
+// the bundle name before this process starts, and create it for fresh machines
+// before app.setPath() validates the override.
+if (!app.isPackaged) {
+  const devUserDataPath = path.join(app.getPath("appData"), "Electron");
+  fs.mkdirSync(devUserDataPath, { recursive: true });
+  app.setName("Cerul");
+  app.setPath("userData", devUserDataPath);
+}
+
 registerPrivilegedAppScheme();
 
 if (!loginItemCliCommand) {
@@ -3599,7 +3612,16 @@ function getSecureToken(key: string) {
   }
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
-  } catch {
+  } catch (error) {
+    // The macOS dev launcher is renamed from Electron to Cerul. Keychain keys
+    // are app-scoped, so a token encrypted under the old dev identity can fail
+    // to decrypt after that rename. Keep the encrypted record intact: signing
+    // in again will overwrite it with a Cerul-scoped token, while deleting it
+    // here would silently discard the user's existing provider credentials.
+    if (!app.isPackaged && process.platform === "darwin") {
+      console.warn("preserving undecryptable legacy dev secure token", error);
+      return undefined;
+    }
     delete store[tokenKey];
     dirtyStores.add(secureTokenStorePath);
     saveStore(secureTokenStorePath);
