@@ -171,10 +171,13 @@ type BundleProcessHolder = {
 
 // In dev the app runs from the stock Electron binary, so app.name defaults to
 // "Electron" (menu bar, About panel, notifications). Rename it to Cerul, but
-// pin userData back first: setName() would otherwise move the default userData
-// dir from .../Electron to .../Cerul and orphan existing dev-mode data.
+// keep userData in the legacy Electron directory so existing dev-mode state is
+// not orphaned. Compute it explicitly because the macOS dev launcher patches
+// the bundle name before this process starts, and create it for fresh machines
+// before app.setPath() validates the override.
 if (!app.isPackaged) {
-  const devUserDataPath = app.getPath("userData");
+  const devUserDataPath = path.join(app.getPath("appData"), "Electron");
+  fs.mkdirSync(devUserDataPath, { recursive: true });
   app.setName("Cerul");
   app.setPath("userData", devUserDataPath);
 }
