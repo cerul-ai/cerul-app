@@ -3611,7 +3611,16 @@ function getSecureToken(key: string) {
   }
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
-  } catch {
+  } catch (error) {
+    // The macOS dev launcher is renamed from Electron to Cerul. Keychain keys
+    // are app-scoped, so a token encrypted under the old dev identity can fail
+    // to decrypt after that rename. Keep the encrypted record intact: signing
+    // in again will overwrite it with a Cerul-scoped token, while deleting it
+    // here would silently discard the user's existing provider credentials.
+    if (!app.isPackaged && process.platform === "darwin") {
+      console.warn("preserving undecryptable legacy dev secure token", error);
+      return undefined;
+    }
     delete store[tokenKey];
     dirtyStores.add(secureTokenStorePath);
     saveStore(secureTokenStorePath);
