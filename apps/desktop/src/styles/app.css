@@ -575,10 +575,11 @@
 .onb-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--line-strong); transition: width var(--dur) var(--ease), background var(--dur) var(--ease); }
 .onb-dot.active { width: 20px; background: var(--accent); }
 .onb-brand { display: flex; justify-content: center; margin-bottom: 20px; }
-/* Match the app icon: a graphite mark on the brushed-silver tile (silver→graphite in dark). */
-.onb-brand .logo-lockup { width: 64px; height: 64px; border-radius: 16px; display: grid; place-items: center; background: var(--icon-grad-silver); box-shadow: var(--shadow-2); }
-:root[data-theme="dark"] .onb-brand .logo-lockup { background: var(--icon-grad-graphite); }
+/* Match the app icon: graphite tile in light, paper tile in dark. */
+.onb-brand .logo-lockup { width: 64px; height: 64px; border-radius: 16px; display: grid; place-items: center; background: var(--icon-grad-graphite); box-shadow: var(--shadow-2); }
+:root[data-theme="dark"] .onb-brand .logo-lockup { background: var(--icon-grad-paper); }
 .onb-brand .brand-logo-mark { width: 34px; height: 34px; color: #fff; }
+:root[data-theme="dark"] .onb-brand .brand-logo-mark { color: #232830; }
 .onb-title { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 10px; }
 .onb-subtitle { font-size: 14px; margin: 0 0 26px; }
 .onb-actions { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 28px; flex-wrap: wrap; }
