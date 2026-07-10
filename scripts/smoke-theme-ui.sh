@@ -16,7 +16,7 @@ rg -qF "[data-theme=\"dark\"] {" apps/desktop/src/styles/tokens.css
 rg -qF -- "--accent:        #a85a28;" apps/desktop/src/styles/tokens.css
 rg -qF -- "--accent:        #d99a62;" apps/desktop/src/styles/tokens.css
 rg -qF ".app {" apps/desktop/src/styles/app.css
-rg -qF ".rail {" apps/desktop/src/styles/app.css
+rg -qF ".bridge {" apps/desktop/src/styles/bridge.css
 rg -qF "[data-theme=\"dark\"] .segmented button.active" apps/desktop/src/styles/ui.css
 rg -qF "scripts/smoke-theme-ui.sh" scripts/smoke.sh
 

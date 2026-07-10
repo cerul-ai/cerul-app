@@ -3486,26 +3486,7 @@ body.overlay-body {
   margin-top: 12px;
 }
 
-/* ---- Account rail button + popover (Codex-style bottom-left) ---- */
-.rail-account-avatar {
-  width: 17px;
-  height: 17px;
-  flex: none;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-}
-.rail-account-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ---- Account popover (opened from the bridge avatar menu) ---- */
 .account-pop-backdrop {
   position: fixed;
   inset: 0;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { AlertCircle, CheckCircle2, LogOut, Mail, User } from "lucide-react";
+import { AlertCircle, CheckCircle2, LogOut, Mail } from "lucide-react";
 import { useT, type TFunction } from "../lib/i18n";
 import { useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { InlineNotice } from "./leaf";
@@ -36,37 +36,6 @@ function friendlyError(error: unknown, t: TFunction): string {
     }
   }
   return t("settings.account.error.generic");
-}
-
-// Persistent account control in the bottom-left rail (Codex-style). Signed out it
-// shows "Sign in"; signed in it shows an avatar + email. Clicking opens a popover
-// anchored above the button with the account surface.
-export function AccountRailButton() {
-  const t = useT();
-  const status = useAuthStore((state) => state.status);
-  const user = useAuthStore((state) => state.user);
-
-  const signedIn = status === "signedIn" && !!user;
-  const label = signedIn && user ? user.email : t("settings.account.signIn");
-
-  return (
-    <button
-      className="rail-item"
-      type="button"
-      onClick={() => window.dispatchEvent(new Event("cerul:open-account"))}
-      title={label}
-    >
-      <span className="rail-ind" aria-hidden="true" />
-      {signedIn && user ? (
-        <span className="rail-account-avatar" aria-hidden="true">
-          {user.email.charAt(0).toUpperCase()}
-        </span>
-      ) : (
-        <User size={17} />
-      )}
-      <span className="rail-label rail-account-label">{label}</span>
-    </button>
-  );
 }
 
 export function AccountDialogController() {
