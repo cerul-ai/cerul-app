@@ -1517,6 +1517,9 @@ function AppWorkspace() {
     try {
       await api.updateSettings({ theme: next });
       await refreshCoreData();
+      // Same follow-up as the Settings screen: keep Electron nativeTheme
+      // (scrollbars, traffic lights, vibrancy) in step with the in-app theme.
+      await syncNativeTheme().catch(() => undefined);
     } catch {
       // best-effort; the settings screen surfaces persistent failures
     }

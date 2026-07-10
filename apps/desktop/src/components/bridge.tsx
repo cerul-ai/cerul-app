@@ -312,11 +312,14 @@ export function Bridge(props: BridgeProps) {
                 className={
                   rankingPreference === preference ? "bridge-scope-chip active" : "bridge-scope-chip"
                 }
-                // mousedown so the chip applies before the input blur collapses the row
+                // mousedown so the chip applies before the input blur collapses the
+                // row; onClick covers keyboard activation (Enter/Space) and is
+                // idempotent after the mousedown path.
                 onMouseDown={(event) => {
                   event.preventDefault();
                   onRankingPreferenceChange(preference);
                 }}
+                onClick={() => onRankingPreferenceChange(preference)}
               >
                 {rankingLabel[preference]}
               </button>

@@ -318,7 +318,7 @@
   .bridge-tab { padding: 6px 10px; }
 }
 @media (max-width: 720px) {
-  .bridge-wrap { display: none; }
+  .app > .bridge-wrap { display: none; }
 }
 
 /* ============================================================

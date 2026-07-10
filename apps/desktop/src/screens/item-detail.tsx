@@ -1166,10 +1166,25 @@ export function ItemDetail({
   const citeSelectionLine = citeSelection
     ? transcriptLines.find((line) => line.id === citeSelection.lineId) ?? null
     : null;
-  const citePlayheadLine =
-    transcriptLines.find(
+  // Resolve the playhead line by time range (last line whose start is at or
+  // before the playhead), not just by exact seek id, so the card stays correct
+  // mid-segment during normal playback.
+  const citePlayheadLine = (() => {
+    const exact = transcriptLines.find(
       (line) => line.id === currentTimestamp || line.time === currentTimestamp,
-    ) ?? transcriptLines[0] ?? null;
+    );
+    if (exact) return exact;
+    let best: TranscriptLine | null = null;
+    let bestStart = -1;
+    for (const line of transcriptLines) {
+      const start = parseTimestampSeconds(line.time);
+      if (Number.isFinite(start) && start <= currentPlayheadSec + 0.05 && start >= bestStart) {
+        bestStart = start;
+        best = line;
+      }
+    }
+    return best ?? transcriptLines[0] ?? null;
+  })();
   const citationDraft: CitationDraft | null =
     citeSelection && citeSelectionLine
       ? {
