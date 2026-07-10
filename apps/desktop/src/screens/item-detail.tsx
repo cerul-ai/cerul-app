@@ -1151,15 +1151,16 @@ export function ItemDetail({
   const [citeSelection, setCiteSelection] = useState<{ lineId: string; quote: string } | null>(null);
   const captureCiteSelection = useCallback(() => {
     const sel = window.getSelection();
-    const text = sel?.toString().trim() ?? "";
-    if (!text || !sel || sel.rangeCount === 0) {
-      setCiteSelection(null);
-      return;
-    }
+    if (!sel || sel.rangeCount === 0) return;
+    const text = sel.toString().trim();
     const anchorNode = sel.anchorNode;
     const el = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
     const lineId = el?.closest?.("[data-line-id]")?.getAttribute("data-line-id") ?? null;
-    if (!lineId) {
+    // Keep the last valid transcript quote when focus moves to the citation
+    // card. Pointer-down on its actions commonly collapses the DOM selection
+    // before the click handler reads the draft.
+    if (!lineId) return;
+    if (!text) {
       setCiteSelection(null);
       return;
     }
