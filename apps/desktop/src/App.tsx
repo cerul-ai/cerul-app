@@ -677,6 +677,7 @@ function AppWorkspace() {
     "theme",
     DEFAULT_THEME_PREFERENCE,
   );
+  const globalHotkey = settingString(data.settings, "global_hotkey", "Alt+Space");
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
   // The jobs endpoint applies the same item visibility rules as the library;
@@ -1533,13 +1534,21 @@ function AppWorkspace() {
     }
   }
 
-  function handleSearchRankingPreferenceChange(next: api.SearchRankingPreference) {
-    if (next === searchRankingPreference) {
+  function handleSearchRankingPreferenceChange(
+    next: api.SearchRankingPreference,
+    draftQuery: string = query,
+  ) {
+    if (next === searchRankingPreference && draftQuery === query) {
       return;
     }
     setSearchRankingPreference(next);
-    if (query.trim()) {
-      void runSearch(query, next);
+    if (draftQuery !== query) {
+      setQuery(draftQuery);
+    }
+    if (draftQuery.trim()) {
+      resolveFirstRun();
+      navigate("results");
+      void runSearch(draftQuery, next);
     }
   }
 
@@ -1770,11 +1779,12 @@ function AppWorkspace() {
                   ? t("shell.coreStarting")
                   : t("shell.coreUnresponsive")
             }
-            searchVisible={view !== "home" && view !== "onboarding"}
+            searchVisible={view !== "home" && view !== "onboarding" && view !== "results"}
             query={query}
             onRunQuery={runQuery}
             rankingPreference={searchRankingPreference}
             onRankingPreferenceChange={handleSearchRankingPreferenceChange}
+            hotkeyLabel={formatHotkeyLabel(globalHotkey)}
             themePreference={themePreference}
             themeLabel={t(`settings.general.theme.${themePreference.toLowerCase()}`)}
             onCycleTheme={() => void cycleThemePreference()}
@@ -1848,7 +1858,7 @@ function AppWorkspace() {
             jobs={visibleJobs}
             indexingPaused={indexingPaused}
             apiStatus={apiStatus}
-            globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
+            globalHotkey={globalHotkey}
             firstRunActive={firstRunActive}
             onResolveFirstRun={resolveFirstRun}
             onRunQuery={runQuery}

@@ -3,6 +3,7 @@
    ============================================================ */
 .app {
   --titlebar-h: 40px;
+  --bridge-row-h: 51px;
   --detail-sticky-top: 78px;
   display: grid;
   grid-template-columns: 1fr;
@@ -20,6 +21,7 @@
     radial-gradient(680px 360px at 50% 4%, #fffdf8, rgba(255, 253, 248, 0) 66%),
     linear-gradient(180deg, #f9f6f1, #efeae1);
 }
+.app:has(> .bridge-wrap .bridge.is-tall) { --bridge-row-h: 86px; }
 /* Graphite: deep base + ambient top glow + a steel brand halo. */
 [data-theme="dark"] .app {
   background:
@@ -604,7 +606,7 @@
 /* The left column sticks while you scroll the transcript. Cap its height and let
    it scroll on its own so a long analysis (chapters, key moments) stays reachable
    instead of having its bottom pinned off-screen. */
-.detail-media { position: sticky; top: var(--detail-sticky-top); max-height: calc(100vh - var(--titlebar-h) - var(--detail-sticky-top) - 20px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.detail-media { position: sticky; top: var(--detail-sticky-top); max-height: calc(100vh - var(--titlebar-h) - var(--bridge-row-h) - var(--detail-sticky-top) - 20px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .detail-transcript { min-width: 0; padding-bottom: 20px; }
 .transcript-reading { max-width: 64ch; margin: 0 auto; padding: 4px 2px 24px; }
 .transcript-reading .reading-title { font-size: var(--fs-title); font-weight: var(--fw-semibold); margin: 0 0 16px; line-height: var(--lh-tight); }

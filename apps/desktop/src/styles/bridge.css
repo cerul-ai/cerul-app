@@ -186,7 +186,7 @@
   border-radius: 50%;
   border: 2px solid var(--accent);
   border-top-color: transparent;
-  animation: spin 1s linear infinite;
+  animation: cerul-spin 1s linear infinite;
 }
 
 /* ---- avatar + menu ---- */

@@ -22,8 +22,16 @@ rg -qF ".app {" apps/desktop/src/styles/app.css
 rg -qF ".bridge {" apps/desktop/src/styles/bridge.css
 rg -qF -- "--ring: 0 0 0 3px rgba(168, 90, 40, 0.18);" apps/desktop/public/menubar.html
 rg -qF 'event.stopPropagation();' apps/desktop/src/components/bridge.tsx
+rg -qF 'onKeyDown={onSearchEscape}' apps/desktop/src/components/bridge.tsx
 rg -qF 'onMouseDown={(event) => event.preventDefault()}' apps/desktop/src/components/bridge.tsx
-rg -qF 'if (next === searchRankingPreference)' apps/desktop/src/App.tsx
+rg -qF 'onRankingPreferenceChange(preference, value)' apps/desktop/src/components/bridge.tsx
+rg -qF 'hotkeyLabel={formatHotkeyLabel(globalHotkey)}' apps/desktop/src/App.tsx
+rg -qF 'if (next === searchRankingPreference && draftQuery === query)' apps/desktop/src/App.tsx
+rg -qF 'view !== "results"' apps/desktop/src/App.tsx
+rg -qF 'animation: cerul-spin 1s linear infinite;' apps/desktop/src/styles/bridge.css
+rg -qF 'rgb(217 154 98 / 35%)' apps/desktop/src/styles/extensions.css
+rg -qF -- '--bridge-row-h: 51px;' apps/desktop/src/styles/app.css
+rg -qF 'var(--bridge-row-h)' apps/desktop/src/styles/app.css
 rg -qF '".scrim, .account-pop, .menu, .bridge-menu' apps/desktop/src/App.tsx apps/desktop/src/screens/item-detail.tsx
 ! rg -qF 'rgba(28,40,60' apps/desktop/src/styles apps/desktop/public/brand/dmg/dmg-background-source.html
 ! rg -qF '.rail-dl-pill' apps/desktop/src

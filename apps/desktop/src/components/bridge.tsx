@@ -34,7 +34,8 @@ type BridgeProps = {
   query: string;
   onRunQuery: (q: string) => void;
   rankingPreference: api.SearchRankingPreference;
-  onRankingPreferenceChange: (v: api.SearchRankingPreference) => void;
+  onRankingPreferenceChange: (v: api.SearchRankingPreference, draftQuery: string) => void;
+  hotkeyLabel: string;
   /* theme cycles through the same persisted setting used by Settings */
   themePreference: string;
   themeLabel: string;
@@ -73,6 +74,7 @@ export function Bridge(props: BridgeProps) {
     onRunQuery,
     rankingPreference,
     onRankingPreferenceChange,
+    hotkeyLabel,
     themeLabel,
     onCycleTheme,
     downloadPill,
@@ -117,6 +119,13 @@ export function Bridge(props: BridgeProps) {
       return;
     }
     setFocused(false);
+  }
+  function onSearchEscape(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFocused(false);
+    inputRef.current?.blur();
   }
 
   /* ---- avatar menu ---- */
@@ -197,16 +206,10 @@ export function Bridge(props: BridgeProps) {
               aria-label={t("home.searchAria")}
               disabled={onboardingActive}
               onChange={(event) => setValue(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
-                event.preventDefault();
-                event.stopPropagation();
-                setFocused(false);
-                inputRef.current?.blur();
-              }}
+              onKeyDown={onSearchEscape}
             />
             <kbd className="bridge-kbd" aria-hidden="true">
-              {focused ? "esc" : "⌥Space"}
+              {focused ? "esc" : hotkeyLabel}
             </kbd>
           </form>
         ) : (
@@ -220,6 +223,7 @@ export function Bridge(props: BridgeProps) {
             role="radiogroup"
             aria-label={t("results.preference.label")}
             onBlur={onScopeBlur}
+            onKeyDown={onSearchEscape}
           >
             <span className="bridge-scope-label mono">{t("results.preference.label")}</span>
             {RANKING_VALUES.map((preference) => (
@@ -236,7 +240,7 @@ export function Bridge(props: BridgeProps) {
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   if (rankingPreference !== preference) {
-                    onRankingPreferenceChange(preference);
+                    onRankingPreferenceChange(preference, value);
                   }
                 }}
               >

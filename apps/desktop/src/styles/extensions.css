@@ -2019,10 +2019,10 @@ body.overlay-body {
   background: #fff;
 }
 .cplayer-mark.match {
-  /* Fixed light steel: the chrome is theme-independent dark, so this matches
+  /* Fixed copper: the chrome is theme-independent dark, so this matches
      the dark-theme accent rather than reading var(--accent) from the page. */
   background: #d99a62;
-  box-shadow: 0 0 0 2px rgb(143 176 216 / 35%);
+  box-shadow: 0 0 0 2px rgb(217 154 98 / 35%);
 }
 .cplayer-mark.match:hover {
   background: #fff;
