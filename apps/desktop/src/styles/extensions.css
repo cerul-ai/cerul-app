@@ -6,7 +6,7 @@
    .artifacts/redesign/frontend-map.json (cssAndDesign.appOnlyClassGroups).
 
    Conventions:
-   - Steel var(--accent) is the ONLY accent. No cyan (#22d3ee), no
+   - Copper var(--accent) is the ONLY accent. No cyan (#22d3ee), no
      amber-as-accent. Amber tokens (--warn) are status-only.
    - GREEN = success only (var(--success)); never decorative.
    - Dark theme is neutral charcoal via [data-theme="dark"] (tokens drive it).
@@ -1308,7 +1308,7 @@ body.overlay-body {
   --ov-kbd: rgba(255, 255, 255, 0.55);
   --ov-chip: rgba(255, 255, 255, 0.50);
   --ov-skel: rgba(31, 34, 40, 0.08);
-  --ov-thumb: linear-gradient(135deg, #6b7686, #3f4651);
+  --ov-thumb: linear-gradient(135deg, #6f6355, #403931);
   --ov-thumb2: linear-gradient(135deg, #c0915a, #a06f39);
 }
 [data-theme="dark"] .overlay-root {
@@ -1319,7 +1319,7 @@ body.overlay-body {
   --ov-kbd: rgba(255, 255, 255, 0.08);
   --ov-chip: rgba(255, 255, 255, 0.06);
   --ov-skel: rgba(255, 255, 255, 0.08);
-  --ov-thumb: linear-gradient(135deg, #576070, #333a45);
+  --ov-thumb: linear-gradient(135deg, #57493a, #2e2a25);
   --ov-thumb2: linear-gradient(135deg, #caa066, #9a6f3a);
 }
 
@@ -2019,10 +2019,10 @@ body.overlay-body {
   background: #fff;
 }
 .cplayer-mark.match {
-  /* Fixed light steel: the chrome is theme-independent dark, so this matches
+  /* Fixed copper: the chrome is theme-independent dark, so this matches
      the dark-theme accent rather than reading var(--accent) from the page. */
-  background: #8fb0d8;
-  box-shadow: 0 0 0 2px rgb(143 176 216 / 35%);
+  background: #d99a62;
+  box-shadow: 0 0 0 2px rgb(217 154 98 / 35%);
 }
 .cplayer-mark.match:hover {
   background: #fff;
@@ -2111,8 +2111,18 @@ body.overlay-body {
   justify-content: center;
   aspect-ratio: 16 / 9;
   border-radius: var(--r-md);
-  background: var(--surface-3);
+  /* E11 铜雾一角 — soft slate haze + one copper corner */
+  background:
+    radial-gradient(55% 62% at 35% 38%, rgba(120, 134, 152, 0.18), transparent 70%),
+    radial-gradient(48% 55% at 85% 90%, rgba(168, 90, 40, 0.16), transparent 68%),
+    var(--surface-3);
   color: var(--text-muted);
+}
+[data-theme="dark"] .player-loading {
+  background:
+    radial-gradient(55% 62% at 35% 38%, rgba(74, 86, 104, 0.4), transparent 70%),
+    radial-gradient(48% 55% at 85% 90%, rgba(217, 154, 98, 0.28), transparent 68%),
+    #1b1f26;
 }
 .play-button {
   display: inline-flex;
@@ -3476,26 +3486,7 @@ body.overlay-body {
   margin-top: 12px;
 }
 
-/* ---- Account rail button + popover (Codex-style bottom-left) ---- */
-.rail-account-avatar {
-  width: 17px;
-  height: 17px;
-  flex: none;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-}
-.rail-account-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ---- Account popover (opened from the bridge avatar menu) ---- */
 .account-pop-backdrop {
   position: fixed;
   inset: 0;
@@ -4288,7 +4279,7 @@ body.overlay-body {
 }
 .lm-dl-status.is-clickable:hover {
   border-color: var(--accent-line);
-  box-shadow: 0 10px 28px rgba(62, 107, 157, 0.14);
+  box-shadow: 0 10px 28px rgba(168, 90, 40, 0.14);
 }
 .lm-dl-status__row {
   display: flex;
@@ -4792,7 +4783,6 @@ body.overlay-body {
    Keyboard navigation used to mix the brand focus ring with
    the browser default outline on these six control families.
    ============================================================ */
-.rail-item:focus-visible,
 .segmented button:focus-visible,
 .seg-btn-main:focus-visible,
 .menu button:focus-visible,

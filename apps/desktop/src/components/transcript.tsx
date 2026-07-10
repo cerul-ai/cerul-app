@@ -99,6 +99,7 @@ const TranscriptRow = memo(function TranscriptRow({
   const displayTime = line.displayTime ?? line.time;
   return (
     <div
+      data-line-id={line.id}
       className={["seg-btn", isActive ? "selected hot" : "", isMatch ? "accent matched" : ""]
         .filter(Boolean)
         .join(" ")}

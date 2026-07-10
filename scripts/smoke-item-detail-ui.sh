@@ -17,6 +17,11 @@ rg -qF 'actionsEnabled={apiStatus === "online"}' apps/desktop/src
 rg -qF "const detailIssue = itemDetailIssue(item, t)" apps/desktop/src
 rg -qF "DetailIssuePanel" apps/desktop/src
 rg -qF "if (hasOpenModalSurface())" apps/desktop/src
+rg -qF "const citationTimestampLink = timestampDeepLink(" apps/desktop/src/screens/item-detail.tsx
+rg -qF "link={item.originalUrl ?? citationTimestampLink}" apps/desktop/src/screens/item-detail.tsx
+rg -qF 'document.addEventListener("selectionchange", captureCiteSelection)' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'if (!lineId) return;' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'if (!text) {' apps/desktop/src/screens/item-detail.tsx
 rg -qF "item.issue.missingFile.title" apps/desktop/src
 rg -qF "item.issue.youtube.title" apps/desktop/src
 rg -qF 'className="page-sub"' apps/desktop/src

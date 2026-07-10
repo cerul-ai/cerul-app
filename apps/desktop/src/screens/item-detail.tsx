@@ -24,6 +24,7 @@ import { DetailIssuePanel } from "../components/detail-issue-panel";
 import { DocumentEvidencePanel } from "../components/document-evidence";
 import { FrameStrip } from "../components/FrameStrip";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "../components/player";
+import { CitationCard, type CitationDraft } from "../components/citation-card";
 import { SplitStage } from "../components/SplitStage";
 import { SummaryCard } from "../components/SummaryCard";
 import { InlineNotice } from "../components/leaf";
@@ -61,7 +62,9 @@ const transcript: TranscriptLine[] = [];
 
 function hasOpenModalSurface() {
   return Boolean(
-    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
+    document.querySelector(
+      ".scrim, .account-pop, .menu, .bridge-menu, .model-combobox__pop, [role='dialog']",
+    ),
   );
 }
 
@@ -1143,16 +1146,84 @@ export function ItemDetail({
     }
   }
 
+  // ---- 引文卡（I_应用主题 §一.4）----
+  // 选中转写文字 → 引文卡显示选区；无选区时跟随当前播放句。
+  const [citeSelection, setCiteSelection] = useState<{ lineId: string; quote: string } | null>(null);
+  const captureCiteSelection = useCallback(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const text = sel.toString().trim();
+    const anchorNode = sel.anchorNode;
+    const el = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
+    const lineId = el?.closest?.("[data-line-id]")?.getAttribute("data-line-id") ?? null;
+    // Keep the last valid transcript quote when focus moves to the citation
+    // card. Pointer-down on its actions commonly collapses the DOM selection
+    // before the click handler reads the draft.
+    if (!lineId) return;
+    if (!text) {
+      setCiteSelection(null);
+      return;
+    }
+    setCiteSelection({ lineId, quote: text });
+  }, []);
+  useEffect(() => {
+    document.addEventListener("selectionchange", captureCiteSelection);
+    return () => document.removeEventListener("selectionchange", captureCiteSelection);
+  }, [captureCiteSelection]);
+  const citeSelectionLine = citeSelection
+    ? transcriptLines.find((line) => line.id === citeSelection.lineId) ?? null
+    : null;
+  // Resolve the playhead line by time range (last line whose start is at or
+  // before the playhead), not just by exact seek id, so the card stays correct
+  // mid-segment during normal playback.
+  const citePlayheadLine = (() => {
+    const exact = transcriptLines.find(
+      (line) => line.id === currentTimestamp || line.time === currentTimestamp,
+    );
+    if (exact) return exact;
+    let best: TranscriptLine | null = null;
+    let bestStart = -1;
+    for (const line of transcriptLines) {
+      const start = parseTimestampSeconds(line.time);
+      if (Number.isFinite(start) && start <= currentPlayheadSec + 0.05 && start >= bestStart) {
+        bestStart = start;
+        best = line;
+      }
+    }
+    return best ?? transcriptLines[0] ?? null;
+  })();
+  const citationDraft: CitationDraft | null =
+    citeSelection && citeSelectionLine
+      ? {
+          quote: citeSelection.quote,
+          displayTime: citeSelectionLine.displayTime ?? citeSelectionLine.time,
+          source: "selection",
+        }
+      : citePlayheadLine
+        ? {
+            quote: citePlayheadLine.text,
+            displayTime: citePlayheadLine.displayTime ?? citePlayheadLine.time,
+            source: "playhead",
+          }
+        : null;
+  const citationTimestampLink = timestampDeepLink(
+    item.id,
+    citationDraft?.displayTime ?? detailTimestamp,
+    detailChunkId,
+    "item-detail",
+  );
+
   async function copyCitation() {
     try {
-      const line = transcriptLines.find(
-        (candidate) => candidate.id === currentTimestamp || candidate.time === currentTimestamp,
-      );
+      const line = citePlayheadLine;
+      const lineTimestamp = line?.displayTime ?? line?.time ?? detailTimestamp;
       const citation = buildMomentCitation({
         title: item.title,
-        timestamp: line?.displayTime ?? detailTimestamp,
+        timestamp: lineTimestamp,
         quote: line?.text,
-        link: item.originalUrl ?? timestampLink,
+        link:
+          item.originalUrl ??
+          timestampDeepLink(item.id, lineTimestamp, detailChunkId, "item-detail"),
       });
       await writeClipboardText(citation);
       setCopyStatus("copied");
@@ -1347,10 +1418,20 @@ export function ItemDetail({
             </div>
           )
         }
+        under={
+          item.contentType !== "document" && transcriptLines.length > 0 ? (
+            <CitationCard
+              title={detailTitle}
+              link={item.originalUrl ?? citationTimestampLink}
+              draft={citationDraft}
+            />
+          ) : null
+        }
         right={
           /* The exact right rail that used to live in `.detail-transcript`:
-             understanding panel + notices + transcript. */
-          <>
+             understanding panel + notices + transcript. Mouse-up capture feeds
+             the citation card from the current text selection. */
+          <div className="detail-right-stack" onMouseUp={captureCiteSelection}>
             <VideoUnderstandingPanel
               item={item}
               enabled={actionsEnabled}
@@ -1405,7 +1486,7 @@ export function ItemDetail({
                 }}
               />
             ) : null}
-          </>
+          </div>
         }
       />
       <FrameStrip

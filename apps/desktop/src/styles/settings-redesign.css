@@ -10,7 +10,7 @@
 .settings-page .page-head { padding: 32px 0 22px; }
 .settings-page .page-eyebrow { color: var(--accent); font-family: var(--font-sans); text-transform: none; letter-spacing: 0.01em; font-size: 12px; font-weight: 500; }
 .settings-page .page-h1 { font-size: 30px; letter-spacing: -0.025em; }
-[data-theme="dark"] .settings-page .page-h1 { text-shadow: 0 2px 26px rgba(143, 176, 216, 0.14); }
+[data-theme="dark"] .settings-page .page-h1 { text-shadow: 0 2px 26px rgba(217, 154, 98, 0.14); }
 /* editorial section number beside the title (matches the design mockup) */
 .settings-head-lead { display: flex; align-items: flex-start; gap: 16px; }
 .settings-num { flex: none; padding-top: 2px; font-family: var(--font-mono); font-weight: 300; font-size: 30px; line-height: 1; letter-spacing: -0.03em; color: var(--text-faint); opacity: 0.5; }
@@ -22,13 +22,13 @@
   z-index: 30; max-width: none; margin: 0; padding: 0;
   display: grid; grid-template-columns: 264px minmax(0, 1fr);
   background:
-    radial-gradient(680px 360px at 50% 4%, #ffffff, rgba(255, 255, 255, 0) 66%),
-    linear-gradient(180deg, #fafbfc, #eef1f4);
+    radial-gradient(680px 360px at 50% 4%, #fffdf8, rgba(255, 253, 248, 0) 66%),
+    linear-gradient(180deg, #f9f6f1, #efeae1);
 }
 [data-theme="dark"] .settings-page.settings-shell {
   background:
     radial-gradient(700px 380px at 50% -10%, #222933, transparent 62%),
-    radial-gradient(440px 240px at 82% 4%, rgba(90, 134, 184, 0.22), transparent 58%),
+    radial-gradient(440px 240px at 82% 4%, rgba(150, 158, 172, 0.22), transparent 58%),
     linear-gradient(180deg, #14181d, #0d1014);
 }
 .settings-shell-side {
@@ -168,7 +168,7 @@
 [data-theme="light"] .settings-page .settings-group-rows {
   background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74));
   border: 1px solid var(--line);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(96,74,52,0.22);
 }
 [data-theme="dark"] .settings-page .settings-group-rows {
   background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5));
@@ -186,10 +186,10 @@
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
 .settings-page .imode-card:hover { transform: translateY(-2px); }
-[data-theme="light"] .settings-page .imode-card { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22); }
+[data-theme="light"] .settings-page .imode-card { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(96,74,52,0.22); }
 [data-theme="dark"] .settings-page .imode-card { background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5)); border-color: rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 22px 54px -26px rgba(0,0,0,0.72); }
 .settings-page .imode-card.selected { border-color: var(--accent-line); }
-[data-theme="light"] .settings-page .imode-card.selected { box-shadow: 0 0 0 3px var(--accent-soft), 0 20px 46px -22px rgba(28,40,60,0.26); }
+[data-theme="light"] .settings-page .imode-card.selected { box-shadow: 0 0 0 3px var(--accent-soft), 0 20px 46px -22px rgba(96,74,52,0.26); }
 [data-theme="dark"] .settings-page .imode-card.selected { box-shadow: inset 0 1px 0 rgba(255,255,255,0.09), 0 0 0 1px var(--accent-soft-2), 0 18px 44px -20px var(--accent); }
 .settings-page .imode-card.selected .imode-card__radio { background: var(--accent); box-shadow: 0 0 14px -3px var(--accent); }
 .settings-page .imode-card.selected .imode-card__radio-dot { background: var(--text-on-accent); }
@@ -418,7 +418,7 @@
 .settings-page .usage-split, .settings-page .usage-breakdown { border-radius: var(--r-xl); }
 [data-theme="light"] .settings-page .usage-account,
 [data-theme="light"] .settings-page .usage-split,
-[data-theme="light"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(28,40,60,0.22); }
+[data-theme="light"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.74)); border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 20px 46px -24px rgba(96,74,52,0.22); }
 [data-theme="dark"] .settings-page .usage-account,
 [data-theme="dark"] .settings-page .usage-split,
 [data-theme="dark"] .settings-page .usage-breakdown { background: linear-gradient(165deg, rgba(36,40,49,0.66), rgba(22,25,31,0.5)); border: 1px solid rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 22px 54px -26px rgba(0,0,0,0.72); }
@@ -600,7 +600,7 @@
 .settings-page .kbd-recorder.is-conflict { border-style: solid; border-color: var(--danger); }
 .settings-page .kbd-recorder-hint { color: var(--accent); font-size: var(--fs-caption); }
 .settings-page .kbd { display: inline-flex; align-items: center; gap: 4px; }
-.settings-page .kbd .cap { min-width: 22px; height: 24px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: linear-gradient(180deg, #fff, #eef1f5); border: 1px solid #cfd6de; box-shadow: inset 0 1px 0 #fff, 0 1.5px 1px rgba(28, 40, 60, 0.12); font-size: 12.5px; font-weight: var(--fw-semibold); color: var(--text); }
+.settings-page .kbd .cap { min-width: 22px; height: 24px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: linear-gradient(180deg, #fff, #f1ece3); border: 1px solid #d9d1c3; box-shadow: inset 0 1px 0 #fff, 0 1.5px 1px rgba(70, 55, 38, 0.12); font-size: 12.5px; font-weight: var(--fw-semibold); color: var(--text); }
 [data-theme="dark"] .settings-page .kbd .cap { background: linear-gradient(180deg, #2a2f37, #1d2127); border-color: rgba(255, 255, 255, 0.14); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1.5px 2px rgba(0, 0, 0, 0.5); }
 .settings-page .kbd-conflict { color: var(--danger); font-size: var(--fs-caption); width: 100%; text-align: right; }
 

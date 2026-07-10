@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-test -s apps/desktop/public/brand/svg/cerul-icon-silver.svg
+test -s apps/desktop/public/brand/svg/cerul-icon-graphite.svg
 test -s apps/desktop/public/brand/svg/cerul-icon-graphite.svg
 test -s apps/desktop/public/brand/svg/cerul-wordmark-light.svg
 test -s apps/desktop/public/brand/svg/cerul-wordmark-dark.svg
@@ -56,10 +56,10 @@ test -s apps/desktop/public/brand/wordmark/cerul-wordmark-lockup-light-2x.png
 test -s apps/desktop/public/brand/wordmark/cerul-wordmark-lockup-dark-1x.png
 test -s apps/desktop/public/brand/wordmark/cerul-wordmark-lockup-dark-2x.png
 
-rg -qF "markLight: \"/brand/svg/cerul-icon-silver.svg\"" apps/desktop/src/lib/brand.ts
-rg -qF "markDark: \"/brand/svg/cerul-icon-graphite.svg\"" apps/desktop/src/lib/brand.ts
-rg -qF "markWhite: \"/brand/svg/cerul-icon-graphite.svg\"" apps/desktop/src/lib/brand.ts
-rg -qF "markColor: \"/brand/svg/cerul-icon-silver.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markLight: \"/brand/svg/cerul-icon-graphite.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markDark: \"/brand/svg/cerul-icon-paper.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markWhite: \"/brand/svg/cerul-icon-paper.svg\"" apps/desktop/src/lib/brand.ts
+rg -qF "markColor: \"/brand/svg/cerul-icon-graphite.svg\"" apps/desktop/src/lib/brand.ts
 rg -qF "function BrandMarkAsset" apps/desktop/src/components/brand.tsx
 rg -qF "src={brandAssets.markLight}" apps/desktop/src/components/brand.tsx
 rg -qF "src={brandAssets.markDark}" apps/desktop/src/components/brand.tsx

@@ -78,6 +78,7 @@ import {
   formatHotkeyLabel,
 } from "./lib/formatters";
 import {
+  DEFAULT_THEME_PREFERENCE,
   resolveThemePreference,
   settingBoolean,
   settingString,
@@ -115,7 +116,8 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
-import { AccountDialogController, AccountRailButton } from "./components/account-sidebar";
+import { AccountDialogController } from "./components/account-sidebar";
+import { Bridge } from "./components/bridge";
 import type {
   ApiStatus,
   AppData,
@@ -256,7 +258,9 @@ function hasOpenModalSurface() {
   // Every transient surface must be reachable from this selector, otherwise
   // page-level Escape handlers fire underneath it (e.g. detail "back").
   return Boolean(
-    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
+    document.querySelector(
+      ".scrim, .account-pop, .menu, .bridge-menu, .model-combobox__pop, [role='dialog']",
+    ),
   );
 }
 
@@ -666,8 +670,14 @@ function AppWorkspace() {
   const visibleItems = data.items;
   const visibleResults = liveResults;
   const visibleJobs = apiStatus === "online" ? data.jobs : [];
-  // Follow the OS by default — first launch on a light-mode Mac used to open dark.
-  const themePreference = settingString(data.settings, "theme", "System");
+  // Light is the product default on every platform. System remains available
+  // only when the user explicitly chooses it in Settings.
+  const themePreference = settingString(
+    data.settings,
+    "theme",
+    DEFAULT_THEME_PREFERENCE,
+  );
+  const globalHotkey = settingString(data.settings, "global_hotkey", "Alt+Space");
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
   // The jobs endpoint applies the same item visibility rules as the library;
@@ -1508,10 +1518,37 @@ function AppWorkspace() {
     void runSearch(value);
   }
 
-  function handleSearchRankingPreferenceChange(next: api.SearchRankingPreference) {
+  // Bridge avatar-menu theme row cycles the same persisted "theme" setting the
+  // Settings screen writes (System → Light → Dark).
+  async function cycleThemePreference() {
+    const order = ["System", "Light", "Dark"];
+    const next = order[(order.indexOf(themePreference) + 1) % order.length];
+    try {
+      await api.updateSettings({ theme: next });
+      await refreshCoreData();
+      // Same follow-up as the Settings screen: keep Electron nativeTheme
+      // (scrollbars, traffic lights, vibrancy) in step with the in-app theme.
+      await syncNativeTheme().catch(() => undefined);
+    } catch {
+      // best-effort; the settings screen surfaces persistent failures
+    }
+  }
+
+  function handleSearchRankingPreferenceChange(
+    next: api.SearchRankingPreference,
+    draftQuery: string = query,
+  ) {
+    if (next === searchRankingPreference && draftQuery === query) {
+      return;
+    }
     setSearchRankingPreference(next);
-    if (query.trim()) {
-      void runSearch(query, next);
+    if (draftQuery !== query) {
+      setQuery(draftQuery);
+    }
+    if (draftQuery.trim()) {
+      resolveFirstRun();
+      navigate("results");
+      void runSearch(draftQuery, next);
     }
   }
 
@@ -1728,101 +1765,40 @@ function AppWorkspace() {
       </div>
       {!settingsTakeoverActive ? (
         <>
-          <aside className="rail">
-            <div className="rail-top">
-              <button
-                className="rail-brand"
-                type="button"
-                disabled={onboardingActive}
-                onClick={() => navigate("home")}
-                aria-label={t("shell.openHome")}
-              >
-                <BrandMark />
-                <span className="rail-wordmark rail-label">Cerul</span>
-              </button>
-            </div>
-
-            <nav className="rail-nav" aria-label={t("nav.home")}>
-              {railItems.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    className={item.id === sidebarActiveView ? "rail-item active" : "rail-item"}
-                    key={item.id}
-                    type="button"
-                    disabled={onboardingActive}
-                    onClick={() => navigate(item.id)}
-                    title={t(item.labelKey)}
-                  >
-                    <span className="rail-ind" aria-hidden="true" />
-                    <Icon size={17} />
-                    <span className="rail-label">{t(item.labelKey)}</span>
-                  </button>
-                );
-              })}
-            </nav>
-
-            <div className="rail-bottom">
-              <div className="rail-sep" aria-hidden="true" />
-              <button
-                className="rail-item"
-                type="button"
-                disabled={onboardingActive}
-                onClick={openJobsSheet}
-                title={t("nav.jobs")}
-              >
-                <span className="rail-ind" aria-hidden="true" />
-                <span style={{ position: "relative", display: "inline-flex" }}>
-                  <ListChecks size={17} />
-                  {backgroundActivityCount > 0 ? (
-                    <span className="badge-count" aria-hidden="true">
-                      {backgroundActivityCount > 9 ? "9+" : backgroundActivityCount}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="rail-label">{t("nav.jobs")}</span>
-              </button>
-              <button
-                className={sidebarActiveView === "settings" ? "rail-item active" : "rail-item"}
-                type="button"
-                disabled={onboardingActive}
-                onClick={() => navigate("settings")}
-                title={t("nav.settings")}
-              >
-                <span className="rail-ind" aria-hidden="true" />
-                <Settings size={17} />
-                <span className="rail-label">{t("nav.settings")}</span>
-              </button>
-              <AccountRailButton />
-              {lm.minimized && lm.download && lm.download.phase !== "ready" ? (
-                <button
-                  type="button"
-                  className="rail-dl-pill"
-                  onClick={lm.reopen}
-                  title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
-                >
-                  <span className="ring" aria-hidden="true" />
-                  <span className="rail-label clamp1">
-                    {t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
-                  </span>
-                </button>
-              ) : null}
-              <div className="rail-status mono">
-                <span
-                  className="rail-status-dot"
-                  data-level={coreLevel === "grace" ? "ok" : coreLevel}
-                  aria-hidden="true"
-                />
-                <span className="rail-label">
-                  {coreLevel === "ok" || coreLevel === "grace"
-                    ? t("shell.coreLocal")
-                    : coreLevel === "starting"
-                      ? t("shell.coreStarting")
-                      : t("shell.coreUnresponsive")}
-                </span>
-              </div>
-            </div>
-          </aside>
+          <Bridge
+            activeView={sidebarActiveView}
+            onboardingActive={onboardingActive}
+            onNavigate={(next) => navigate(next)}
+            onOpenJobs={openJobsSheet}
+            jobsCount={backgroundActivityCount}
+            coreLevel={coreLevel}
+            coreLabel={
+              coreLevel === "ok" || coreLevel === "grace"
+                ? t("shell.coreLocal")
+                : coreLevel === "starting"
+                  ? t("shell.coreStarting")
+                  : t("shell.coreUnresponsive")
+            }
+            searchVisible={view !== "home" && view !== "onboarding" && view !== "results"}
+            query={query}
+            onRunQuery={runQuery}
+            rankingPreference={searchRankingPreference}
+            onRankingPreferenceChange={handleSearchRankingPreferenceChange}
+            hotkeyLabel={formatHotkeyLabel(globalHotkey)}
+            themePreference={themePreference}
+            themeLabel={t(`settings.general.theme.${themePreference.toLowerCase()}`)}
+            onCycleTheme={() => void cycleThemePreference()}
+            downloadPill={
+              lm.minimized && lm.download && lm.download.phase !== "ready"
+                ? {
+                    label: t("localModel.rail.downloading", {
+                      pct: lm.download.overall_progress,
+                    }),
+                    onReopen: lm.reopen,
+                  }
+                : null
+            }
+          />
 
           <div className="mobilebar">
             <button
@@ -1882,7 +1858,7 @@ function AppWorkspace() {
             jobs={visibleJobs}
             indexingPaused={indexingPaused}
             apiStatus={apiStatus}
-            globalHotkey={settingString(data.settings, "global_hotkey", "Alt+Space")}
+            globalHotkey={globalHotkey}
             firstRunActive={firstRunActive}
             onResolveFirstRun={resolveFirstRun}
             onRunQuery={runQuery}

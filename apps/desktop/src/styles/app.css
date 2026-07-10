@@ -3,27 +3,30 @@
    ============================================================ */
 .app {
   --titlebar-h: 40px;
+  --bridge-row-h: 51px;
   --detail-sticky-top: 78px;
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: var(--titlebar-h) 1fr;
+  grid-template-columns: 1fr;
+  grid-template-rows: var(--titlebar-h) auto 1fr;
   grid-template-areas:
-    "titlebar titlebar"
-    "rail content";
+    "titlebar"
+    "bridge"
+    "content";
   height: 100vh;
   overflow: hidden;
   position: relative;
   /* Luminous: top-centre white glow over a soft vertical gradient. The rail and
      content are transparent so the two areas read as one continuous surface. */
   background:
-    radial-gradient(680px 360px at 50% 4%, #ffffff, rgba(255, 255, 255, 0) 66%),
-    linear-gradient(180deg, #fafbfc, #eef1f4);
+    radial-gradient(680px 360px at 50% 4%, #fffdf8, rgba(255, 253, 248, 0) 66%),
+    linear-gradient(180deg, #f9f6f1, #efeae1);
 }
+.app:has(> .bridge-wrap .bridge.is-tall) { --bridge-row-h: 86px; }
 /* Graphite: deep base + ambient top glow + a steel brand halo. */
 [data-theme="dark"] .app {
   background:
     radial-gradient(700px 380px at 50% -10%, #222933, transparent 62%),
-    radial-gradient(440px 240px at 82% 4%, rgba(90, 134, 184, 0.22), transparent 58%),
+    radial-gradient(440px 240px at 82% 4%, rgba(150, 158, 172, 0.22), transparent 58%),
     linear-gradient(180deg, #14181d, #0d1014);
 }
 /* Brushed-metal grain — dark only, sits above the gradient, below the UI. */
@@ -38,12 +41,10 @@
   pointer-events: none;
   z-index: 0;
 }
-.app > .rail,
+.app > .bridge-wrap,
 .app > .content,
 .app > .titlebar { position: relative; z-index: 1; }
-.app[data-onboarding="true"] > .rail {
-  z-index: 70;
-}
+
 
 /* ---------------- Title bar (Codex-style: traffic lights + update affordance) ----------------
    macOS hiddenInset overlays the native traffic lights on the left; this bar is the
@@ -63,35 +64,18 @@
   align-items: center;
   justify-content: flex-end;
   padding: 0 14px 0 82px;
-  border-right: 1px solid rgba(28, 40, 60, 0.06);
+  border-right: 1px solid rgba(70, 55, 38, 0.06);
 }
 [data-theme="dark"] .titlebar-lead { border-right-color: rgba(255, 255, 255, 0.06); }
 .titlebar-drag { flex: 1; }
 .app > .titlebar { z-index: 80; }
 .titlebar .rail-update { -webkit-app-region: no-drag; app-region: no-drag; margin-left: 0; }
 
-/* ---------------- Rail ---------------- */
-.rail {
-  grid-area: rail;
-  width: 220px;
-  /* Transparent so the .app luminous gradient flows continuously into the rail;
-     a near-invisible hairline is the only thing splitting rail from content. */
-  background: transparent;
-  border-right: 1px solid rgba(28, 40, 60, 0.06);
-  display: flex;
-  flex-direction: column;
-  padding: 10px 10px 12px;
-  transition: width var(--dur) var(--ease);
-  flex: none;
-}
-[data-theme="dark"] .rail { border-right-color: rgba(255, 255, 255, 0.06); }
-.rail-top { padding: 6px 4px 16px; display: flex; align-items: center; gap: 6px; }
 .rail-brand { display: flex; align-items: center; gap: 9px; background: none; border: 0; cursor: pointer; padding: 4px 6px; border-radius: 9px; min-width: 0; }
 .rail-brand:hover { background: var(--surface-3); }
 .rail-brand:disabled { cursor: default; opacity: 0.45; }
 .rail-brand:disabled:hover { background: none; }
 .rail-brand .brand-mark { width: 24px; height: 24px; }
-.rail-wordmark { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
 /* Update pill — appears in the rail header only when a newer release exists. */
 .rail-update {
   margin-left: auto;
@@ -236,34 +220,6 @@
 .brandmark-img-dark { display: none; }
 :root[data-theme="dark"] .brandmark-img-light { display: none; }
 :root[data-theme="dark"] .brandmark-img-dark { display: block; }
-.rail-nav { display: flex; flex-direction: column; gap: 2px; }
-.rail-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
-.rail-sep { height: 1px; background: var(--line); margin: 8px 6px; }
-.rail-status { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: 11px; color: var(--text-faint); }
-.rail-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.rail-status-dot[data-level="ok"] { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); animation: cerDot 2.4s ease-in-out infinite; }
-.rail-status-dot[data-level="starting"] { background: #c2892e; box-shadow: 0 0 0 3px var(--warn-soft); animation: cerDot 1.3s ease-in-out infinite; }
-.rail-status-dot[data-level="unresponsive"] { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
-@media (prefers-reduced-motion: reduce) { .rail-status-dot { animation: none; } }
-
-.rail-item {
-  position: relative;
-  display: flex; align-items: center; gap: 11px;
-  height: 38px; padding: 0 10px;
-  border: 0; background: transparent; cursor: pointer;
-  color: var(--text-muted); border-radius: var(--r-md);
-  font-family: var(--font-sans); font-size: var(--fs-meta); font-weight: 500;
-  white-space: nowrap; overflow: hidden;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.rail-item:hover { background: var(--surface-3); color: var(--text); }
-.rail-item:disabled { cursor: default; opacity: 0.42; }
-.rail-item:disabled:hover { background: transparent; color: var(--text-muted); }
-/* Active = steel text on a steel-soft tint with a soft steel hairline (handoff). */
-.rail-item.active { color: var(--accent); background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent-line-soft); }
-.rail-item .rail-ind { display: none; }
-.rail-item.active svg { color: var(--accent); }
-.rail-label { overflow: hidden; }
 .badge-dot { position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 999px; background: var(--accent); border: 2px solid var(--bg-sunken); }
 .badge-count {
   position: absolute;
@@ -650,7 +606,7 @@
 /* The left column sticks while you scroll the transcript. Cap its height and let
    it scroll on its own so a long analysis (chapters, key moments) stays reachable
    instead of having its bottom pinned off-screen. */
-.detail-media { position: sticky; top: var(--detail-sticky-top); max-height: calc(100vh - var(--titlebar-h) - var(--detail-sticky-top) - 20px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.detail-media { position: sticky; top: var(--detail-sticky-top); max-height: calc(100vh - var(--titlebar-h) - var(--bridge-row-h) - var(--detail-sticky-top) - 20px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .detail-transcript { min-width: 0; padding-bottom: 20px; }
 .transcript-reading { max-width: 64ch; margin: 0 auto; padding: 4px 2px 24px; }
 .transcript-reading .reading-title { font-size: var(--fs-title); font-weight: var(--fw-semibold); margin: 0 0 16px; line-height: var(--lh-tight); }
@@ -783,14 +739,9 @@
 
 /* tablet: tighten the rail to icons-only so result/library density stays usable */
 @media (max-width: 1000px) {
-  .rail { width: 60px; }
   .titlebar-lead { width: 60px; padding: 0 8px; justify-content: center; }
-  .rail .rail-label { display: none; }
-  .rail .rail-top { flex-direction: column; gap: 6px; }
-  .rail .rail-update { margin-left: 0; padding: 0 6px; }
-  .rail .rail-update-label { display: none; }
-  .rail .rail-item { justify-content: center; padding: 0; gap: 0; }
-  .rail .tip::after { display: block; }
+  .titlebar .rail-update { margin-left: 0; padding: 0 6px; }
+  .titlebar .rail-update-label { display: none; }
   .page { padding: 0 28px 80px; }
   .lib-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 }
@@ -798,7 +749,6 @@
 @media (max-width: 720px) {
   .app { display: flex; flex-direction: column; height: 100vh; }
   .titlebar { display: none; }
-  .rail { display: none; }
   .mobilebar { display: flex; }
   .bottomnav { display: flex; }
   .content { flex: 1; height: auto; min-height: 0; }

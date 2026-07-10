@@ -3,6 +3,8 @@
 
 import type * as api from "./api";
 
+export const DEFAULT_THEME_PREFERENCE = "Light";
+
 export function settingString(settings: api.SettingsMap, key: string, fallback: string) {
   const value = settings[key];
   return typeof value === "string" ? value : fallback;
@@ -25,7 +27,10 @@ export function resolveThemePreference(theme: string, prefersLight: boolean) {
   if (theme === "Dark") {
     return "dark";
   }
-  return prefersLight ? "light" : "dark";
+  if (theme === "System") {
+    return prefersLight ? "light" : "dark";
+  }
+  return "light";
 }
 
 export function formatDownloadSize(bytes: number): string {

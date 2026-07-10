@@ -355,7 +355,7 @@ export function JobsSheet({
             </span>
             <strong className="jobs-summary-value mono">{doneCount}</strong>
           </div>
-          <div className="jobs-summary-card danger">
+          <div className={failedCount > 0 ? "jobs-summary-card danger" : "jobs-summary-card"}>
             <span className="jobs-summary-label">
               <span>{t("jobs.status.failed")}</span>
               <span>{failedCount > 0 ? t("jobs.summary.needsFix") : t("jobs.summary.clear")}</span>

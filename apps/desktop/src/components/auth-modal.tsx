@@ -107,7 +107,7 @@ const IconGithub = () => (
 
 export function AuthModal({
   theme,
-  accent = "#3E6B9D",
+  accent = "#A85A28",
   mode,
   email,
   password,
