@@ -6,7 +6,7 @@
    .artifacts/redesign/frontend-map.json (cssAndDesign.appOnlyClassGroups).
 
    Conventions:
-   - Steel var(--accent) is the ONLY accent. No cyan (#22d3ee), no
+   - Copper var(--accent) is the ONLY accent. No cyan (#22d3ee), no
      amber-as-accent. Amber tokens (--warn) are status-only.
    - GREEN = success only (var(--success)); never decorative.
    - Dark theme is neutral charcoal via [data-theme="dark"] (tokens drive it).
@@ -1308,7 +1308,7 @@ body.overlay-body {
   --ov-kbd: rgba(255, 255, 255, 0.55);
   --ov-chip: rgba(255, 255, 255, 0.50);
   --ov-skel: rgba(31, 34, 40, 0.08);
-  --ov-thumb: linear-gradient(135deg, #6b7686, #3f4651);
+  --ov-thumb: linear-gradient(135deg, #6f6355, #403931);
   --ov-thumb2: linear-gradient(135deg, #c0915a, #a06f39);
 }
 [data-theme="dark"] .overlay-root {
@@ -1319,7 +1319,7 @@ body.overlay-body {
   --ov-kbd: rgba(255, 255, 255, 0.08);
   --ov-chip: rgba(255, 255, 255, 0.06);
   --ov-skel: rgba(255, 255, 255, 0.08);
-  --ov-thumb: linear-gradient(135deg, #576070, #333a45);
+  --ov-thumb: linear-gradient(135deg, #57493a, #2e2a25);
   --ov-thumb2: linear-gradient(135deg, #caa066, #9a6f3a);
 }
 

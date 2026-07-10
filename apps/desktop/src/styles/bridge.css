@@ -221,7 +221,8 @@
 .bridge-core-dot[data-level="ok"] { background: var(--success); }
 .bridge-core-dot[data-level="starting"] { background: var(--warn); }
 .bridge-core-dot[data-level="down"],
-.bridge-core-dot[data-level="error"] { background: var(--danger); }
+.bridge-core-dot[data-level="error"],
+.bridge-core-dot[data-level="unresponsive"] { background: var(--danger); }
 
 .bridge-menu {
   position: absolute;
