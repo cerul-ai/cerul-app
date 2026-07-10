@@ -78,6 +78,7 @@ import {
   formatHotkeyLabel,
 } from "./lib/formatters";
 import {
+  DEFAULT_THEME_PREFERENCE,
   resolveThemePreference,
   settingBoolean,
   settingString,
@@ -669,8 +670,13 @@ function AppWorkspace() {
   const visibleItems = data.items;
   const visibleResults = liveResults;
   const visibleJobs = apiStatus === "online" ? data.jobs : [];
-  // Follow the OS by default — first launch on a light-mode Mac used to open dark.
-  const themePreference = settingString(data.settings, "theme", "System");
+  // Light is the product default on every platform. System remains available
+  // only when the user explicitly chooses it in Settings.
+  const themePreference = settingString(
+    data.settings,
+    "theme",
+    DEFAULT_THEME_PREFERENCE,
+  );
   // Global indexing pause (the worker skips queued jobs while this is on).
   const indexingPaused = settingBoolean(data.settings, "indexing_paused", false);
   // The jobs endpoint applies the same item visibility rules as the library;

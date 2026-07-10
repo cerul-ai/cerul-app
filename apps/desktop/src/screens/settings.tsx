@@ -56,6 +56,7 @@ import {
   uniqueStrings,
 } from "../lib/formatters";
 import {
+  DEFAULT_THEME_PREFERENCE,
   resolveThemePreference,
   settingBoolean,
   settingNumber,
@@ -590,7 +591,7 @@ function GeneralSettings({
 }) {
   const t = useT();
   const { lang, setLang } = useLang();
-  const theme = settingString(settings, "theme", "System");
+  const theme = settingString(settings, "theme", DEFAULT_THEME_PREFERENCE);
   const startAtLoginEnabled =
     daemonStatus?.installed ?? settingBoolean(settings, "start_at_login", true);
   // The description explains what the toggle does; transient daemon status

@@ -5,7 +5,11 @@ import { classifyWebVideoUrl } from "./lib/validation";
 import { cleanMediaTitle, compactPathParent, errorMessage } from "./lib/formatters";
 import { useI18n } from "./lib/i18n";
 import type { TFunction } from "./lib/i18n";
-import { resolveThemePreference, settingString } from "./lib/settings-helpers";
+import {
+  DEFAULT_THEME_PREFERENCE,
+  resolveThemePreference,
+  settingString,
+} from "./lib/settings-helpers";
 import { invokeHostCommand } from "./lib/desktopHost";
 import { loadPersistedUiState, persistFirstRunActive } from "./lib/uiStore";
 import { isBackendFallbackSnippet } from "./lib/results";
@@ -153,7 +157,7 @@ export function OverlayApp() {
           const prefersLight =
             window.matchMedia?.("(prefers-color-scheme: light)").matches ?? false;
           document.documentElement.dataset.theme = resolveThemePreference(
-            settingString(settings, "theme", "Dark"),
+            settingString(settings, "theme", DEFAULT_THEME_PREFERENCE),
             prefersLight,
           );
         }

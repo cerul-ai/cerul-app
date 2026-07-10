@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-rg -qF "const themePreference = settingString(data.settings, \"theme\", \"System\")" apps/desktop/src
+rg -qF 'DEFAULT_THEME_PREFERENCE = "Light"' apps/desktop/src/lib/settings-helpers.ts
+rg -qF 'DEFAULT_THEME_PREFERENCE' apps/desktop/src/App.tsx apps/desktop/src/OverlayApp.tsx apps/desktop/src/screens/settings.tsx
+rg -qF 'settingString(await readApiSettings(), "theme", "Light")' apps/electron-shell/src/main.ts
+rg -qF 'data-theme="light" data-theme-preference="light"' apps/desktop/index.html apps/desktop/overlay.html
 rg -qF "function resolveThemePreference" apps/desktop/src
 rg -qF "window.matchMedia(\"(prefers-color-scheme: light)\")" apps/desktop/src
 rg -qF "root.dataset.theme = resolvedTheme" apps/desktop/src
@@ -27,4 +30,4 @@ rg -qF '".scrim, .account-pop, .menu, .bridge-menu' apps/desktop/src/App.tsx app
 rg -qF "[data-theme=\"dark\"] .segmented button.active" apps/desktop/src/styles/ui.css
 rg -qF "scripts/smoke-theme-ui.sh" scripts/smoke.sh
 
-echo "theme_ui_smoke setting=system_light_dark root_data_theme=enabled system_preference_listener=enabled light_tokens=enabled"
+echo "theme_ui_smoke default=light setting=system_light_dark root_data_theme=enabled system_preference_listener=enabled light_tokens=enabled"

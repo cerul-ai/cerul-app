@@ -1739,10 +1739,11 @@ async function shouldCloseToTray() {
 // looks mismatched whenever it differs from the theme the user picked in-app.
 // Mirror the saved theme onto themeSource so the native glass (and the main
 // window's native chrome: traffic lights, scrollbars, form controls) tracks the
-// in-app theme. "System" keeps following the OS, which is the intended behaviour.
+// in-app theme. With no saved preference, every build starts light; "System"
+// follows the OS only after the user explicitly selects it.
 async function syncNativeThemeFromSettings() {
-  const theme = settingString(await readApiSettings(), "theme", "Dark");
-  nativeTheme.themeSource = theme === "Light" ? "light" : theme === "Dark" ? "dark" : "system";
+  const theme = settingString(await readApiSettings(), "theme", "Light");
+  nativeTheme.themeSource = theme === "Dark" ? "dark" : theme === "System" ? "system" : "light";
 }
 
 async function readApiSettings() {
