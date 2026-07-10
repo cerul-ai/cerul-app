@@ -1,6 +1,7 @@
 /* ============================================================
    CERUL · UNIFIED DESIGN TOKENS
-   Brushed Silver (light) / Graphite Glass (dark) · steel-blue accent.
+   Warm Glass 暖玻璃 (light, default) / Cool Graphite 冷石墨 (dark) · copper accent.
+   2026-07-10 定稿，见 cerul-brand I_应用主题/README.md。
    One token set; light/dark share structure, only lightness changes.
    ============================================================ */
 
@@ -64,9 +65,9 @@
   /* ---- Luminous handoff: floating-card elevation (shared) ----
      Designed to read against the layered light background so white cards
      genuinely lift off the surface (handoff design_handoff_cerul). */
-  --card-sh:      0 1px 2px rgba(28, 40, 60, 0.05), 0 14px 30px -12px rgba(28, 40, 60, 0.22);
-  --card-sh-lift: 0 2px 4px rgba(28, 40, 60, 0.06), 0 26px 48px -16px rgba(28, 40, 60, 0.32);
-  --win-sh:       0 36px 80px -28px rgba(22, 32, 52, 0.42), 0 10px 24px -10px rgba(22, 32, 52, 0.20);
+  --card-sh:      0 1px 2px rgba(96, 74, 52, 0.05), 0 14px 30px -12px rgba(96, 74, 52, 0.20);
+  --card-sh-lift: 0 2px 4px rgba(96, 74, 52, 0.06), 0 26px 48px -16px rgba(96, 74, 52, 0.30);
+  --win-sh:       0 36px 80px -28px rgba(60, 46, 30, 0.40), 0 10px 24px -10px rgba(60, 46, 30, 0.18);
   /* Top-highlight hairline that rims floating white cards. */
   --card-hairline: rgba(255, 255, 255, 0.85);
 
@@ -75,30 +76,31 @@
 }
 
 /* ============================================================
-   LIGHT THEME (default) — Brushed Silver
+   LIGHT THEME (default) — Warm Glass（暖玻璃，2026-07-10 定稿）
+   cerul-brand I_应用主题：亮色中性由冷灰修订为暖白。
    ============================================================ */
 :root,
 [data-theme="light"] {
   color-scheme: light;
 
-  /* Surfaces — luminous near-white; the layered gradient lives on .app so
-     white cards float. These solids approximate the gradient for the few
+  /* Surfaces — warm luminous white; the layered gradient lives on .app so
+     warm cards float. These solids approximate the gradient for the few
      spots that need a flat colour (frosted topbar, badge cut-outs). */
-  --bg-app:      #eef1f4;   /* gradient base / content well */
-  --bg-sunken:   #eef1f4;   /* rail shares the same luminous surface */
-  --surface:     #ffffff;   /* cards, panels, popovers */
-  --surface-2:   #f4f6f8;   /* inset fields, secondary surface (inset) */
-  --surface-3:   #eaeef2;   /* hover / pressed fills */
-  --hair-2:      #eef1f5;   /* skeleton / placeholder fills */
+  --bg-app:      #f3efe8;   /* gradient base / content well */
+  --bg-sunken:   #f3efe8;   /* rail shares the same luminous surface */
+  --surface:     #fffdf9;   /* cards, panels, popovers */
+  --surface-2:   #f5f1ea;   /* inset fields, secondary surface (inset) */
+  --surface-3:   #ede7dd;   /* hover / pressed fills */
+  --hair-2:      #f1ece3;   /* skeleton / placeholder fills */
 
   /* Hairlines */
-  --line:        #e6e9ee;   /* card / panel hairlines (handoff: hair) */
-  --line-strong: #d5dae0;   /* rail divider, stronger separators */
+  --line:        #e7e0d4;   /* card / panel hairlines (handoff: hair) */
+  --line-strong: #d9d1c3;   /* rail divider, stronger separators */
 
-  /* Text — cool metal neutrals */
-  --text:        #1c2229;
-  --text-muted:  #525d6b;
-  --text-faint:  #8a93a0;
+  /* Text — warm stone neutrals */
+  --text:        #2b2622;
+  --text-muted:  #5d564b;
+  --text-faint:  #8a8177;
   --text-on-accent: #ffffff;
 
   /* Accent (copper) */
@@ -128,17 +130,31 @@
   --danger-line:  #f1c8c0;
 
   /* Neutral tint */
-  --cream:        #f3f5f7;
+  --cream:        #f3efe8;
 
-  /* Elevation — light uses a whisper of shadow */
-  --shadow-1: 0 1px 2px rgba(20, 30, 45, 0.04);
-  --shadow-2: 0 1px 3px rgba(20, 30, 45, 0.07), 0 1px 2px rgba(20, 30, 45, 0.04);
-  --shadow-pop: 0 8px 28px rgba(20, 30, 45, 0.14), 0 2px 6px rgba(20, 30, 45, 0.08);
+  /* Elevation — light uses a whisper of warm shadow */
+  --shadow-1: 0 1px 2px rgba(70, 55, 38, 0.05);
+  --shadow-2: 0 1px 3px rgba(70, 55, 38, 0.08), 0 1px 2px rgba(70, 55, 38, 0.05);
+  --shadow-pop: 0 8px 28px rgba(70, 55, 38, 0.15), 0 2px 6px rgba(70, 55, 38, 0.09);
 
-  --scrim: rgba(20, 28, 40, 0.28);
+  --scrim: rgba(40, 32, 22, 0.30);
 
-  /* Focus ring (soft, steel) */
+  /* Focus ring (soft, copper) */
   --focus-ring: 0 0 0 3px rgba(168, 90, 40, 0.20);
+
+  /* ---- 舰桥 / 引文卡（I_应用主题 定稿；桥两主题恒暗） ---- */
+  --bridge-bg:     rgba(26, 25, 22, 0.93);
+  --bridge-line:   rgba(255, 255, 255, 0.11);
+  --bridge-field:  rgba(255, 255, 255, 0.09);
+  --bridge-text:   #f2ede4;
+  --bridge-muted:  #b3aca1;
+  --bridge-faint:  #8f887c;
+  --bridge-active: rgba(217, 154, 98, 0.20);
+  --bridge-active-text: #f0c9a2;
+  --cite-bg:       linear-gradient(150deg, #242730, #16181d);
+  --cite-line:     rgba(255, 255, 255, 0.08);
+  --cite-text:     #eff1f4;
+  --cite-muted:    #8b919b;
 }
 
 /* ============================================================
@@ -201,6 +217,20 @@
   --scrim: rgba(0, 0, 0, 0.55);
 
   --focus-ring: 0 0 0 3px rgba(217, 154, 98, 0.32);
+
+  /* ---- 舰桥 / 引文卡（暗色下桥体略提亮以与背景分层） ---- */
+  --bridge-bg:     rgba(40, 44, 53, 0.90);
+  --bridge-line:   rgba(255, 255, 255, 0.13);
+  --bridge-field:  rgba(255, 255, 255, 0.08);
+  --bridge-text:   #eff1f4;
+  --bridge-muted:  #a8b0bc;
+  --bridge-faint:  #818996;
+  --bridge-active: rgba(217, 154, 98, 0.18);
+  --bridge-active-text: #f0c9a2;
+  --cite-bg:       linear-gradient(150deg, #2a2e37, #1a1d23);
+  --cite-line:     rgba(217, 154, 98, 0.22);
+  --cite-text:     #eff1f4;
+  --cite-muted:    #8b919b;
 }
 
 /* ---- App-icon container (brushed silver, graphite in dark) ---- */
