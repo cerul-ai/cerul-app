@@ -15,11 +15,11 @@ export type CitationDraft = {
   source: "selection" | "playhead";
 };
 
-const BASKET_KEY = "cerul.citationBasket.v1";
+const BASKET_STORE = "cerul.citationBasket.v1";
 
 function loadBasket(): string[] {
   try {
-    const raw = localStorage.getItem(BASKET_KEY);
+    const raw = localStorage.getItem(BASKET_STORE);
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
   } catch {
@@ -29,7 +29,7 @@ function loadBasket(): string[] {
 
 function saveBasket(entries: string[]) {
   try {
-    localStorage.setItem(BASKET_KEY, JSON.stringify(entries));
+    localStorage.setItem(BASKET_STORE, JSON.stringify(entries));
   } catch {
     // best-effort persistence; the in-memory basket still works this session
   }
