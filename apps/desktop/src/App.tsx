@@ -115,7 +115,8 @@ import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
-import { AccountDialogController, AccountRailButton } from "./components/account-sidebar";
+import { AccountDialogController } from "./components/account-sidebar";
+import { Bridge } from "./components/bridge";
 import type {
   ApiStatus,
   AppData,
@@ -1508,6 +1509,19 @@ function AppWorkspace() {
     void runSearch(value);
   }
 
+  // Bridge avatar-menu theme row cycles the same persisted "theme" setting the
+  // Settings screen writes (System → Light → Dark).
+  async function cycleThemePreference() {
+    const order = ["System", "Light", "Dark"];
+    const next = order[(order.indexOf(themePreference) + 1) % order.length];
+    try {
+      await api.updateSettings({ theme: next });
+      await refreshCoreData();
+    } catch {
+      // best-effort; the settings screen surfaces persistent failures
+    }
+  }
+
   function handleSearchRankingPreferenceChange(next: api.SearchRankingPreference) {
     setSearchRankingPreference(next);
     if (query.trim()) {
@@ -1728,101 +1742,39 @@ function AppWorkspace() {
       </div>
       {!settingsTakeoverActive ? (
         <>
-          <aside className="rail">
-            <div className="rail-top">
-              <button
-                className="rail-brand"
-                type="button"
-                disabled={onboardingActive}
-                onClick={() => navigate("home")}
-                aria-label={t("shell.openHome")}
-              >
-                <BrandMark />
-                <span className="rail-wordmark rail-label">Cerul</span>
-              </button>
-            </div>
-
-            <nav className="rail-nav" aria-label={t("nav.home")}>
-              {railItems.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    className={item.id === sidebarActiveView ? "rail-item active" : "rail-item"}
-                    key={item.id}
-                    type="button"
-                    disabled={onboardingActive}
-                    onClick={() => navigate(item.id)}
-                    title={t(item.labelKey)}
-                  >
-                    <span className="rail-ind" aria-hidden="true" />
-                    <Icon size={17} />
-                    <span className="rail-label">{t(item.labelKey)}</span>
-                  </button>
-                );
-              })}
-            </nav>
-
-            <div className="rail-bottom">
-              <div className="rail-sep" aria-hidden="true" />
-              <button
-                className="rail-item"
-                type="button"
-                disabled={onboardingActive}
-                onClick={openJobsSheet}
-                title={t("nav.jobs")}
-              >
-                <span className="rail-ind" aria-hidden="true" />
-                <span style={{ position: "relative", display: "inline-flex" }}>
-                  <ListChecks size={17} />
-                  {backgroundActivityCount > 0 ? (
-                    <span className="badge-count" aria-hidden="true">
-                      {backgroundActivityCount > 9 ? "9+" : backgroundActivityCount}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="rail-label">{t("nav.jobs")}</span>
-              </button>
-              <button
-                className={sidebarActiveView === "settings" ? "rail-item active" : "rail-item"}
-                type="button"
-                disabled={onboardingActive}
-                onClick={() => navigate("settings")}
-                title={t("nav.settings")}
-              >
-                <span className="rail-ind" aria-hidden="true" />
-                <Settings size={17} />
-                <span className="rail-label">{t("nav.settings")}</span>
-              </button>
-              <AccountRailButton />
-              {lm.minimized && lm.download && lm.download.phase !== "ready" ? (
-                <button
-                  type="button"
-                  className="rail-dl-pill"
-                  onClick={lm.reopen}
-                  title={t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
-                >
-                  <span className="ring" aria-hidden="true" />
-                  <span className="rail-label clamp1">
-                    {t("localModel.rail.downloading", { pct: lm.download.overall_progress })}
-                  </span>
-                </button>
-              ) : null}
-              <div className="rail-status mono">
-                <span
-                  className="rail-status-dot"
-                  data-level={coreLevel === "grace" ? "ok" : coreLevel}
-                  aria-hidden="true"
-                />
-                <span className="rail-label">
-                  {coreLevel === "ok" || coreLevel === "grace"
-                    ? t("shell.coreLocal")
-                    : coreLevel === "starting"
-                      ? t("shell.coreStarting")
-                      : t("shell.coreUnresponsive")}
-                </span>
-              </div>
-            </div>
-          </aside>
+          <Bridge
+            activeView={sidebarActiveView}
+            onboardingActive={onboardingActive}
+            onNavigate={(next) => navigate(next)}
+            onOpenJobs={openJobsSheet}
+            jobsCount={backgroundActivityCount}
+            coreLevel={coreLevel}
+            coreLabel={
+              coreLevel === "ok" || coreLevel === "grace"
+                ? t("shell.coreLocal")
+                : coreLevel === "starting"
+                  ? t("shell.coreStarting")
+                  : t("shell.coreUnresponsive")
+            }
+            searchVisible={view !== "home" && view !== "onboarding"}
+            query={query}
+            onRunQuery={runQuery}
+            rankingPreference={searchRankingPreference}
+            onRankingPreferenceChange={handleSearchRankingPreferenceChange}
+            themePreference={themePreference}
+            themeLabel={t(`settings.general.theme.${themePreference.toLowerCase()}`)}
+            onCycleTheme={() => void cycleThemePreference()}
+            downloadPill={
+              lm.minimized && lm.download && lm.download.phase !== "ready"
+                ? {
+                    label: t("localModel.rail.downloading", {
+                      pct: lm.download.overall_progress,
+                    }),
+                    onReopen: lm.reopen,
+                  }
+                : null
+            }
+          />
 
           <div className="mobilebar">
             <button

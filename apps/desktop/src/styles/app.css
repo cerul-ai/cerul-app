@@ -5,11 +5,12 @@
   --titlebar-h: 40px;
   --detail-sticky-top: 78px;
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: var(--titlebar-h) 1fr;
+  grid-template-columns: 1fr;
+  grid-template-rows: var(--titlebar-h) auto 1fr;
   grid-template-areas:
-    "titlebar titlebar"
-    "rail content";
+    "titlebar"
+    "bridge"
+    "content";
   height: 100vh;
   overflow: hidden;
   position: relative;
@@ -38,12 +39,10 @@
   pointer-events: none;
   z-index: 0;
 }
-.app > .rail,
+.app > .bridge-wrap,
 .app > .content,
 .app > .titlebar { position: relative; z-index: 1; }
-.app[data-onboarding="true"] > .rail {
-  z-index: 70;
-}
+
 
 /* ---------------- Title bar (Codex-style: traffic lights + update affordance) ----------------
    macOS hiddenInset overlays the native traffic lights on the left; this bar is the
