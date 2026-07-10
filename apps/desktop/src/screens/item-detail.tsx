@@ -24,6 +24,7 @@ import { DetailIssuePanel } from "../components/detail-issue-panel";
 import { DocumentEvidencePanel } from "../components/document-evidence";
 import { FrameStrip } from "../components/FrameStrip";
 import { CerulPlayer, type PlayerChapter, type PlayerMarker } from "../components/player";
+import { CitationCard, type CitationDraft } from "../components/citation-card";
 import { SplitStage } from "../components/SplitStage";
 import { SummaryCard } from "../components/SummaryCard";
 import { InlineNotice } from "../components/leaf";
@@ -1143,6 +1144,47 @@ export function ItemDetail({
     }
   }
 
+  // ---- 引文卡（I_应用主题 §一.4）----
+  // 选中转写文字 → 引文卡显示选区；无选区时跟随当前播放句。
+  const [citeSelection, setCiteSelection] = useState<{ lineId: string; quote: string } | null>(null);
+  function captureCiteSelection() {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() ?? "";
+    if (!text || !sel || sel.rangeCount === 0) {
+      setCiteSelection(null);
+      return;
+    }
+    const anchorNode = sel.anchorNode;
+    const el = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
+    const lineId = el?.closest?.("[data-line-id]")?.getAttribute("data-line-id") ?? null;
+    if (!lineId) {
+      setCiteSelection(null);
+      return;
+    }
+    setCiteSelection({ lineId, quote: text });
+  }
+  const citeSelectionLine = citeSelection
+    ? transcriptLines.find((line) => line.id === citeSelection.lineId) ?? null
+    : null;
+  const citePlayheadLine =
+    transcriptLines.find(
+      (line) => line.id === currentTimestamp || line.time === currentTimestamp,
+    ) ?? transcriptLines[0] ?? null;
+  const citationDraft: CitationDraft | null =
+    citeSelection && citeSelectionLine
+      ? {
+          quote: citeSelection.quote,
+          displayTime: citeSelectionLine.displayTime ?? citeSelectionLine.time,
+          source: "selection",
+        }
+      : citePlayheadLine
+        ? {
+            quote: citePlayheadLine.text,
+            displayTime: citePlayheadLine.displayTime ?? citePlayheadLine.time,
+            source: "playhead",
+          }
+        : null;
+
   async function copyCitation() {
     try {
       const line = transcriptLines.find(
@@ -1347,10 +1389,20 @@ export function ItemDetail({
             </div>
           )
         }
+        under={
+          item.contentType !== "document" && transcriptLines.length > 0 ? (
+            <CitationCard
+              title={detailTitle}
+              link={item.originalUrl ?? timestampLink}
+              draft={citationDraft}
+            />
+          ) : null
+        }
         right={
           /* The exact right rail that used to live in `.detail-transcript`:
-             understanding panel + notices + transcript. */
-          <>
+             understanding panel + notices + transcript. Mouse-up capture feeds
+             the citation card from the current text selection. */
+          <div className="detail-right-stack" onMouseUp={captureCiteSelection}>
             <VideoUnderstandingPanel
               item={item}
               enabled={actionsEnabled}
@@ -1405,7 +1457,7 @@ export function ItemDetail({
                 }}
               />
             ) : null}
-          </>
+          </div>
         }
       />
       <FrameStrip

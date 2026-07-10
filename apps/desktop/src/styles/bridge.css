@@ -319,3 +319,84 @@
 @media (max-width: 720px) {
   .bridge-wrap { display: none; }
 }
+
+/* ============================================================
+   引文卡工作台（I_应用主题 §一.4）— 深底石墨卡，两主题同深底。
+   ============================================================ */
+.cite-card {
+  margin-top: 14px;
+  background: var(--cite-bg);
+  border: 1px solid var(--cite-line);
+  border-radius: 16px;
+  padding: 16px 18px;
+  color: var(--cite-text);
+  box-shadow: 0 20px 44px -16px rgba(30, 22, 12, 0.4);
+}
+[data-theme="dark"] .cite-card { box-shadow: 0 20px 44px -16px rgba(0, 0, 0, 0.6); }
+.cite-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--cite-muted);
+  margin-bottom: 8px;
+}
+.cite-label .cite-ts { color: #d99a62; }
+.cite-quote {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  font-weight: 550;
+  color: #f2f0ea;
+}
+.cite-by {
+  margin-top: 9px;
+  font-size: 11px;
+  color: #d99a62;
+}
+.cite-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.cite-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  padding: 4.5px 13px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: none;
+  color: #a6adb8;
+  cursor: pointer;
+}
+.cite-btn:hover { color: #eff1f4; }
+.cite-btn.pri {
+  background: #d99a62;
+  border-color: transparent;
+  color: #14171c;
+  font-weight: 600;
+}
+.cite-btn.pri:hover { background: #e8b483; color: #14171c; }
+.cite-basket {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--cite-muted);
+}
+.cite-basket-btn {
+  border: 0;
+  background: rgba(217, 154, 98, 0.16);
+  color: #e8b483;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  padding: 2.5px 10px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.cite-basket-btn:hover { background: rgba(217, 154, 98, 0.26); }
+.detail-right-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }

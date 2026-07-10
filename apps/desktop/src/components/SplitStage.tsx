@@ -27,6 +27,8 @@ type SplitStageProps = {
   // right pane: anything the parent puts in the existing detail-transcript
   // column (VideoUnderstandingPanel + transcript + notices + skeleton).
   right: React.ReactNode;
+  // optional slot under the player in the left pane (citation card).
+  under?: React.ReactNode;
 };
 
 export function SplitStage({
@@ -36,6 +38,7 @@ export function SplitStage({
   understood,
   left,
   right,
+  under,
 }: SplitStageProps) {
   const t = useT();
   const ref = useRef<HTMLDivElement | null>(null);
@@ -85,6 +88,7 @@ export function SplitStage({
       {/* Left pane: caller-provided player chrome + (optional) chapter seek */}
       <div className="pane pane-left">
         {left}
+        {under}
         {understood && chapters.length > 0 ? (
           <div className="card split-chapters">
             <div className="split-chapters-head">
