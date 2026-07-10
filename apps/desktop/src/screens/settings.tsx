@@ -131,7 +131,9 @@ type StorageLocations = {
 
 function hasOpenModalSurface() {
   return Boolean(
-    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
+    document.querySelector(
+      ".scrim, .account-pop, .menu, .bridge-menu, .model-combobox__pop, [role='dialog']",
+    ),
   );
 }
 

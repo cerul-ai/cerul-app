@@ -257,7 +257,9 @@ function hasOpenModalSurface() {
   // Every transient surface must be reachable from this selector, otherwise
   // page-level Escape handlers fire underneath it (e.g. detail "back").
   return Boolean(
-    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
+    document.querySelector(
+      ".scrim, .account-pop, .menu, .bridge-menu, .model-combobox__pop, [role='dialog']",
+    ),
   );
 }
 
@@ -1526,6 +1528,9 @@ function AppWorkspace() {
   }
 
   function handleSearchRankingPreferenceChange(next: api.SearchRankingPreference) {
+    if (next === searchRankingPreference) {
+      return;
+    }
     setSearchRankingPreference(next);
     if (query.trim()) {
       void runSearch(query, next);

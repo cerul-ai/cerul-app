@@ -4783,7 +4783,6 @@ body.overlay-body {
    Keyboard navigation used to mix the brand focus ring with
    the browser default outline on these six control families.
    ============================================================ */
-.rail-item:focus-visible,
 .segmented button:focus-visible,
 .seg-btn-main:focus-visible,
 .menu button:focus-visible,

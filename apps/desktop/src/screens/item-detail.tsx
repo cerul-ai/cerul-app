@@ -62,7 +62,9 @@ const transcript: TranscriptLine[] = [];
 
 function hasOpenModalSurface() {
   return Boolean(
-    document.querySelector(".scrim, .account-pop, .menu, .model-combobox__pop, [role='dialog']"),
+    document.querySelector(
+      ".scrim, .account-pop, .menu, .bridge-menu, .model-combobox__pop, [role='dialog']",
+    ),
   );
 }
 
@@ -1147,7 +1149,7 @@ export function ItemDetail({
   // ---- 引文卡（I_应用主题 §一.4）----
   // 选中转写文字 → 引文卡显示选区；无选区时跟随当前播放句。
   const [citeSelection, setCiteSelection] = useState<{ lineId: string; quote: string } | null>(null);
-  function captureCiteSelection() {
+  const captureCiteSelection = useCallback(() => {
     const sel = window.getSelection();
     const text = sel?.toString().trim() ?? "";
     if (!text || !sel || sel.rangeCount === 0) {
@@ -1162,7 +1164,11 @@ export function ItemDetail({
       return;
     }
     setCiteSelection({ lineId, quote: text });
-  }
+  }, []);
+  useEffect(() => {
+    document.addEventListener("selectionchange", captureCiteSelection);
+    return () => document.removeEventListener("selectionchange", captureCiteSelection);
+  }, [captureCiteSelection]);
   const citeSelectionLine = citeSelection
     ? transcriptLines.find((line) => line.id === citeSelection.lineId) ?? null
     : null;
@@ -1199,17 +1205,24 @@ export function ItemDetail({
             source: "playhead",
           }
         : null;
+  const citationTimestampLink = timestampDeepLink(
+    item.id,
+    citationDraft?.displayTime ?? detailTimestamp,
+    detailChunkId,
+    "item-detail",
+  );
 
   async function copyCitation() {
     try {
-      const line = transcriptLines.find(
-        (candidate) => candidate.id === currentTimestamp || candidate.time === currentTimestamp,
-      );
+      const line = citePlayheadLine;
+      const lineTimestamp = line?.displayTime ?? line?.time ?? detailTimestamp;
       const citation = buildMomentCitation({
         title: item.title,
-        timestamp: line?.displayTime ?? detailTimestamp,
+        timestamp: lineTimestamp,
         quote: line?.text,
-        link: item.originalUrl ?? timestampLink,
+        link:
+          item.originalUrl ??
+          timestampDeepLink(item.id, lineTimestamp, detailChunkId, "item-detail"),
       });
       await writeClipboardText(citation);
       setCopyStatus("copied");
@@ -1408,7 +1421,7 @@ export function ItemDetail({
           item.contentType !== "document" && transcriptLines.length > 0 ? (
             <CitationCard
               title={detailTitle}
-              link={item.originalUrl ?? timestampLink}
+              link={item.originalUrl ?? citationTimestampLink}
               draft={citationDraft}
             />
           ) : null

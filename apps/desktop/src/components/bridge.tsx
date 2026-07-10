@@ -82,6 +82,7 @@ export function Bridge(props: BridgeProps) {
   const [value, setValue] = useState(query);
   const [focused, setFocused] = useState(false);
   const searchRef = useRef<HTMLFormElement | null>(null);
+  const scopeRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     setValue(query);
@@ -96,8 +97,25 @@ export function Bridge(props: BridgeProps) {
     inputRef.current?.blur();
   }
   function onSearchBlur(event: React.FocusEvent<HTMLFormElement>) {
-    // Keep the tall state while focus moves within the search form (scope chips).
-    if (event.relatedTarget && searchRef.current?.contains(event.relatedTarget as Node)) return;
+    const nextTarget = event.relatedTarget as Node | null;
+    // Scope chips are visually the bridge's second row but intentionally come
+    // next in DOM order so keyboard users can reach them directly from input.
+    if (
+      nextTarget &&
+      (searchRef.current?.contains(nextTarget) || scopeRef.current?.contains(nextTarget))
+    ) {
+      return;
+    }
+    setFocused(false);
+  }
+  function onScopeBlur(event: React.FocusEvent<HTMLDivElement>) {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (
+      nextTarget &&
+      (searchRef.current?.contains(nextTarget) || scopeRef.current?.contains(nextTarget))
+    ) {
+      return;
+    }
     setFocused(false);
   }
 
@@ -179,6 +197,13 @@ export function Bridge(props: BridgeProps) {
               aria-label={t("home.searchAria")}
               disabled={onboardingActive}
               onChange={(event) => setValue(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                event.stopPropagation();
+                setFocused(false);
+                inputRef.current?.blur();
+              }}
             />
             <kbd className="bridge-kbd" aria-hidden="true">
               {focused ? "esc" : "⌥Space"}
@@ -187,6 +212,42 @@ export function Bridge(props: BridgeProps) {
         ) : (
           <div className="bridge-spacer" aria-hidden="true" />
         )}
+
+        {tall ? (
+          <div
+            ref={scopeRef}
+            className="bridge-scope"
+            role="radiogroup"
+            aria-label={t("results.preference.label")}
+            onBlur={onScopeBlur}
+          >
+            <span className="bridge-scope-label mono">{t("results.preference.label")}</span>
+            {RANKING_VALUES.map((preference) => (
+              <button
+                key={preference}
+                type="button"
+                role="radio"
+                aria-checked={rankingPreference === preference}
+                className={
+                  rankingPreference === preference ? "bridge-scope-chip active" : "bridge-scope-chip"
+                }
+                // Keep input focus for mouse users so the row does not collapse;
+                // click remains the single activation path for mouse and keyboard.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  if (rankingPreference !== preference) {
+                    onRankingPreferenceChange(preference);
+                  }
+                }}
+              >
+                {rankingLabel[preference]}
+              </button>
+            ))}
+            <span className="bridge-scope-hint mono" aria-hidden="true">
+              ↵ {t("home.searchSubmit")}
+            </span>
+          </div>
+        ) : null}
 
         <button
           className="bridge-tab bridge-jobs"
@@ -299,36 +360,6 @@ export function Bridge(props: BridgeProps) {
             </div>
           ) : null}
         </div>
-
-        {tall ? (
-          <div className="bridge-scope" role="radiogroup" aria-label={t("results.preference.label")}>
-            <span className="bridge-scope-label mono">{t("results.preference.label")}</span>
-            {RANKING_VALUES.map((preference) => (
-              <button
-                key={preference}
-                type="button"
-                role="radio"
-                aria-checked={rankingPreference === preference}
-                className={
-                  rankingPreference === preference ? "bridge-scope-chip active" : "bridge-scope-chip"
-                }
-                // mousedown so the chip applies before the input blur collapses the
-                // row; onClick covers keyboard activation (Enter/Space) and is
-                // idempotent after the mousedown path.
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  onRankingPreferenceChange(preference);
-                }}
-                onClick={() => onRankingPreferenceChange(preference)}
-              >
-                {rankingLabel[preference]}
-              </button>
-            ))}
-            <span className="bridge-scope-hint mono" aria-hidden="true">
-              ↵ {t("home.searchSubmit")}
-            </span>
-          </div>
-        ) : null}
       </div>
     </div>
   );

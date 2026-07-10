@@ -128,6 +128,7 @@
 
 /* ---- scope row（呼吸态第二行：检索偏好，复用 rankingPreference） ---- */
 .bridge-scope {
+  order: 1;
   flex-basis: 100%;
   display: flex;
   align-items: center;

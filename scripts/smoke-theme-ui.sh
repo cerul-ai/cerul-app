@@ -17,6 +17,13 @@ rg -qF -- "--accent:        #a85a28;" apps/desktop/src/styles/tokens.css
 rg -qF -- "--accent:        #d99a62;" apps/desktop/src/styles/tokens.css
 rg -qF ".app {" apps/desktop/src/styles/app.css
 rg -qF ".bridge {" apps/desktop/src/styles/bridge.css
+rg -qF -- "--ring: 0 0 0 3px rgba(168, 90, 40, 0.18);" apps/desktop/public/menubar.html
+rg -qF 'event.stopPropagation();' apps/desktop/src/components/bridge.tsx
+rg -qF 'onMouseDown={(event) => event.preventDefault()}' apps/desktop/src/components/bridge.tsx
+rg -qF 'if (next === searchRankingPreference)' apps/desktop/src/App.tsx
+rg -qF '".scrim, .account-pop, .menu, .bridge-menu' apps/desktop/src/App.tsx apps/desktop/src/screens/item-detail.tsx
+! rg -qF 'rgba(28,40,60' apps/desktop/src/styles apps/desktop/public/brand/dmg/dmg-background-source.html
+! rg -qF '.rail-dl-pill' apps/desktop/src
 rg -qF "[data-theme=\"dark\"] .segmented button.active" apps/desktop/src/styles/ui.css
 rg -qF "scripts/smoke-theme-ui.sh" scripts/smoke.sh
 
