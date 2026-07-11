@@ -4,7 +4,7 @@ import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/formatters";
 import { useLang, useT, type TFunction } from "../lib/i18n";
-import { buildFollowupQuestion, resultModality } from "../lib/results";
+import { buildFollowupQuestion, buildGroundedAnswerQuestion, resultModality } from "../lib/results";
 import type { ApiStatus, Result, ResultModalityFilter } from "../lib/types";
 import { EmptyState } from "../components/leaf";
 import { ResultCard } from "../components/cards";
@@ -118,9 +118,10 @@ export function ResultsScreen({
       setAnswerError(null);
       return;
     }
-    const timer = window.setTimeout(() => void requestAnswer(query), 220);
+    const groundedQuestion = buildGroundedAnswerQuestion(query, displayedResults);
+    const timer = window.setTimeout(() => void requestAnswer(groundedQuestion), 220);
     return () => window.clearTimeout(timer);
-  }, [query, results.length, isSearching, apiStatus, lang]);
+  }, [query, results.length, isSearching, apiStatus, lang, sourceFilter, modalityFilter, sortMode, rankingPreference]);
 
   function focusResult(index: number) {
     window.requestAnimationFrame(() => {
@@ -269,7 +270,7 @@ export function ResultsScreen({
         <aside className="results-answer-rail" aria-label={t("results.answer.title")}>
           <header>
             <span><Sparkles size={13} />{t("results.answer.title")}</span>
-            <button type="button" aria-label={t("results.answer.retry")} disabled={!query.trim() || answerState === "loading"} onClick={() => void requestAnswer(query)}><RefreshCcw size={13} /></button>
+            <button type="button" aria-label={t("results.answer.retry")} disabled={!query.trim() || answerState === "loading"} onClick={() => void requestAnswer(buildGroundedAnswerQuestion(query, displayedResults))}><RefreshCcw size={13} /></button>
           </header>
           <p className="results-answer-grounding">{t("results.answer.grounding", { count: results.length })}</p>
           {answerState === "loading" ? <div className="results-answer-loading"><Loader2 size={18} className="spin" /><span>{t("results.answer.loading")}</span></div> : null}

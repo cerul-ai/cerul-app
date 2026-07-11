@@ -20,9 +20,7 @@ export function buildFollowupQuestion(
   results: Result[],
   previousAnswer: api.AskResponse | null,
 ) {
-  const evidence = results.slice(0, 6).map((result, index) =>
-    `${index + 1}. ${result.title} (${result.timestamp}) — ${result.snippet}`,
-  );
+  const evidence = formatAnswerEvidence(results);
   const context = [
     `Original search: ${originalQuery.trim()}`,
     previousAnswer?.answer ? `Previous answer: ${previousAnswer.answer}` : null,
@@ -30,6 +28,20 @@ export function buildFollowupQuestion(
     `Follow-up question: ${followup.trim()}`,
   ].filter((entry): entry is string => Boolean(entry));
   return context.join("\n\n");
+}
+
+export function buildGroundedAnswerQuestion(originalQuery: string, results: Result[]) {
+  const evidence = formatAnswerEvidence(results);
+  return [
+    `Search question: ${originalQuery.trim()}`,
+    evidence.length ? `Answer only from these currently displayed results:\n${evidence.join("\n")}` : null,
+  ].filter((entry): entry is string => Boolean(entry)).join("\n\n");
+}
+
+function formatAnswerEvidence(results: Result[]) {
+  return results.slice(0, 6).map((result, index) =>
+    `${index + 1}. [${result.playbackChunkId}] ${result.title} (${result.timestamp}) — ${result.snippet}`,
+  );
 }
 
 export function mapResultMatch(

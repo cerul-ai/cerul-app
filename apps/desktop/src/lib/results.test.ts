@@ -4,6 +4,7 @@ import type * as api from "./api";
 import {
   backendFallbackSnippet,
   buildFollowupQuestion,
+  buildGroundedAnswerQuestion,
   isBackendFallbackSnippet,
   mapChunkRecords,
   mapSearchResults,
@@ -96,6 +97,17 @@ function result(overrides: Partial<Result>): Result {
 }
 
 describe("results helpers", () => {
+  it("grounds the first answer in the currently displayed result set", () => {
+    const question = buildGroundedAnswerQuestion(
+      "automation platforms",
+      [result({ playbackChunkId: "visible-a", title: "Visible clip", snippet: "visible evidence" })],
+    );
+
+    expect(question).toContain("Search question: automation platforms");
+    expect(question).toContain("[visible-a] Visible clip");
+    expect(question).toContain("Answer only from these currently displayed results");
+  });
+
   it("keeps the original search, evidence, and prior answer in follow-up questions", () => {
     const question = buildFollowupQuestion(
       "automation platforms",
@@ -106,7 +118,7 @@ describe("results helpers", () => {
 
     expect(question).toContain("Original search: automation platforms");
     expect(question).toContain("Previous answer: The first clip discusses Sola.");
-    expect(question).toContain("2. Second clip");
+    expect(question).toContain("2. [chunk-1] Second clip");
     expect(question).toContain("Follow-up question: what about the second clip?");
   });
 
