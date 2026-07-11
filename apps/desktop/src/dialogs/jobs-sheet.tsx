@@ -148,7 +148,7 @@ export function JobsSheet({
   const pageCount = Math.max(1, Math.ceil(ledgerJobs.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageJobs = ledgerJobs.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
-  const selectedJobs = sortedJobs.filter((job) => selectedIds.has(job.id));
+  const selectedJobs = sortedJobs.filter((job) => selectedIds.has(job.id) && isActiveJob(job));
   const selectablePageJobs = pageJobs.filter(isActiveJob);
   const allPageSelected = selectablePageJobs.length > 0 && selectablePageJobs.every((job) => selectedIds.has(job.id));
   const forceMotion = import.meta.env.DEV && new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("forceMotion") === "1";
@@ -160,7 +160,7 @@ export function JobsSheet({
   }, [filter, normalizedQuery]);
 
   useEffect(() => {
-    const ids = new Set(jobs.map((job) => job.id));
+    const ids = new Set(jobs.filter(isActiveJob).map((job) => job.id));
     setSelectedIds((current) => new Set([...current].filter((id) => ids.has(id))));
   }, [jobs]);
 
@@ -218,6 +218,9 @@ export function JobsSheet({
     setDismissedIssueIds((current) => new Set(current).add(job.id));
     setIssueOpen(false);
     setActiveIssueId(null);
+    setRepairingJob(null);
+    setRepairPhase("idle");
+    setRepairStep(0);
     setRepairError(null);
   }
 
@@ -387,7 +390,7 @@ export function JobsSheet({
                     <div className="jobs-repair-actions">
                       <button type="button" className="btn btn-primary sm" disabled={!controlsEnabled} onClick={() => void retryIssue(repairJob)}>{t("jobs.repair.retry")}</button>
                       {repairJob.error_info?.code === "source_unavailable" && onOpenSources ? <button type="button" className="btn btn-secondary sm" onClick={onOpenSources}>{t("jobs.viewSources")}</button> : null}
-                      {repairJob.error_info?.settings_section ? <button type="button" className="btn btn-secondary sm" onClick={() => onOpenSettingsFix(repairJob.error_info?.settings_section ?? "General")}>{t("jobs.fixSettings")}</button> : null}
+                      {repairJob.error_info?.code !== "source_unavailable" && repairJob.error_info?.settings_section ? <button type="button" className="btn btn-secondary sm" onClick={() => onOpenSettingsFix(repairJob.error_info?.settings_section ?? "General")}>{t("jobs.fixSettings")}</button> : null}
                       <button type="button" className="btn btn-ghost sm" onClick={() => dismissIssue(repairJob)}>{t("jobs.repair.later")}</button>
                     </div>
                   ) : null}
@@ -423,7 +426,7 @@ export function JobsSheet({
             </div>
             <footer className="jobs-ledger-footer">
               <label><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />{t("jobs.ledger.selectPage")}</label>
-              <span>{t("jobs.ledger.selected", { count: selectedIds.size })}</span>
+              <span>{t("jobs.ledger.selected", { count: selectedJobs.length })}</span>
               {selectedJobs.length > 0 && onCancelJobs ? <button type="button" className="btn btn-secondary sm" onClick={() => onCancelJobs(selectedJobs)}><Trash2 size={13} />{t("jobs.ledger.cancelSelected")}</button> : null}
               <div className="jobs-ledger-pagination">
                 <span>{t("jobs.ledger.page", { page: safePage + 1, pages: pageCount })}</span>

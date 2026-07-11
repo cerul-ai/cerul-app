@@ -28,6 +28,8 @@ import { SummaryCard } from "../components/SummaryCard";
 import { InlineNotice } from "../components/leaf";
 import { TranscriptList, TranscriptSkeleton } from "../components/transcript";
 import * as api from "../lib/api";
+import { useAuthStore } from "../lib/cloud/authStore";
+import { cloudClient } from "../lib/cloud/client";
 import { canOpenOriginalSource, sourceFileDialogFilter, timestampDeepLink } from "../lib/detail";
 import { openDialog, invokeHostCommand } from "../lib/desktopHost";
 import {
@@ -37,7 +39,7 @@ import {
   formatTimestamp,
   parseTimestampSeconds,
 } from "../lib/formatters";
-import { useT, type TFunction } from "../lib/i18n";
+import { appLocaleTag, useT, type TFunction } from "../lib/i18n";
 import {
   isNearEndPosition,
   itemDetailIssue,
@@ -799,6 +801,8 @@ export function ItemDetail({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
+  const cloudAuthStatus = useAuthStore((state) => state.status);
+  const cloudAccessToken = useAuthStore((state) => state.accessToken);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const handleVideoElement = useCallback((video: HTMLVideoElement | null) => {
@@ -1224,6 +1228,57 @@ export function ItemDetail({
     detailChunkId,
     "item-detail",
   );
+  const shareChunkId = citeSelectionLine?.id ?? citePlayheadLine?.id ?? detailChunkId;
+  const sharePosterChunkId = chunkState.records.reduce<{ id: string; distance: number } | null>((best, record) => {
+    if (!record.frame_path || record.start_sec === null) return best;
+    const distance = Math.abs(record.start_sec - currentPlayheadSec);
+    return !best || distance < best.distance ? { id: record.id, distance } : best;
+  }, null)?.id ?? null;
+
+  async function createPublicShare(): Promise<string | null> {
+    if (cloudAuthStatus !== "signedIn" || !cloudAccessToken) {
+      setItemAction({ status: "error", message: t("detail.share.signIn") });
+      window.dispatchEvent(new CustomEvent("cerul:open-account"));
+      return null;
+    }
+    if (!shareChunkId) throw new Error(t("detail.share.unavailable"));
+    const posterUrl = sharePosterChunkId ? api.chunkFrameUrl(sharePosterChunkId) : item.thumbnailUrl;
+    if (!posterUrl || !citationDraft?.quote) throw new Error(t("detail.share.unavailable"));
+    const confirmed = await requestConfirm({
+      title: t("detail.share.confirm.title"),
+      body: t("detail.share.confirm.body"),
+      confirmLabel: t("detail.share.confirm.label"),
+    });
+    if (!confirmed) return null;
+
+    let draftId: string | null = null;
+    try {
+      const [clipResponse, posterResponse] = await Promise.all([
+        fetch(api.videoClipUrl(shareChunkId, { beforeSec: 3, afterSec: 8 })),
+        fetch(posterUrl),
+      ]);
+      if (!clipResponse.ok || !posterResponse.ok) throw new Error(t("detail.share.mediaError"));
+      const [clipBlob, posterBlob] = await Promise.all([clipResponse.blob(), posterResponse.blob()]);
+      const draft = await cloudClient.createShare(cloudAccessToken, {
+        title: detailTitle,
+        headline: citationDraft.quote,
+        summary: activeUnderstandingRecord?.summary?.trim() || citationDraft.quote,
+        source_label: item.source,
+        language: appLocaleTag() === "zh-CN" ? "zh" : "en",
+      });
+      draftId = draft.id;
+      await Promise.all([
+        cloudClient.uploadShareMedia(cloudAccessToken, draft.clip_upload_url, clipBlob),
+        cloudClient.uploadShareMedia(cloudAccessToken, draft.poster_upload_url, posterBlob),
+      ]);
+      const published = await cloudClient.publishShare(cloudAccessToken, draft.id);
+      setItemAction({ status: "idle", message: t("detail.share.success") });
+      return published.share_url;
+    } catch (error) {
+      if (draftId) await cloudClient.revokeShare(cloudAccessToken, draftId).catch(() => undefined);
+      throw error;
+    }
+  }
 
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
   // full source video with Range support, so the loaded src is the whole file.
@@ -1424,6 +1479,7 @@ export function ItemDetail({
                 title={detailTitle}
                 link={item.originalUrl ?? citationTimestampLink}
                 draft={citationDraft}
+                onShare={item.contentType === "video" ? createPublicShare : undefined}
               />
             ) : null}
           </div>

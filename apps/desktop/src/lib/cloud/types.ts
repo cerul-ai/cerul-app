@@ -36,6 +36,40 @@ export interface OAuthExchangeInput {
   state: string;
 }
 
+export interface CreateShareInput {
+  title: string;
+  headline: string;
+  summary?: string;
+  source_label?: string;
+  language?: "zh" | "en";
+}
+
+export interface ShareDraftResponse {
+  id: string;
+  status: "draft";
+  clip_upload_url: string;
+  poster_upload_url: string;
+}
+
+export interface PublicShare {
+  id: string;
+  title: string;
+  headline: string;
+  summary: string;
+  source_label: string;
+  shared_by: string;
+  language: "zh" | "en";
+  clip_url: string;
+  poster_url: string;
+  created_at: string;
+  published_at: string;
+}
+
+export interface PublishedShareResponse {
+  share: PublicShare;
+  share_url: string;
+}
+
 // Thrown for non-2xx responses; carries the server's error code + HTTP status
 // so callers can branch (e.g. 401 → clear session, "email_already_registered").
 export class CloudApiError extends Error {

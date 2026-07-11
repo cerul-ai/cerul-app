@@ -1676,6 +1676,8 @@
 .detail-workbench-page .pane-center > .cerul-player,.detail-workbench-page .pane-center > .video-frame,.detail-workbench-page .pane-center > .detail-media-issue { min-height:0; flex:1; max-height:none; }
 .detail-center-stack { flex:none; min-height:0; display:block; overflow:hidden; }
 .detail-center-stack .citation-card { margin-top:0; }
+.cite-share-status { min-height:24px; display:inline-flex; align-items:center; gap:5px; margin:7px 0 0; color:var(--accent); font-size:8px; text-decoration:none; }
+.cite-share-status.error { color:var(--danger); }
 .detail-center-stack .stripwrap { min-height:0; margin-top:0; padding:7px 9px; overflow:hidden; }
 .detail-center-stack .strip-head { margin-bottom:5px; }
 .detail-center-stack .strip-track { height:54px; }

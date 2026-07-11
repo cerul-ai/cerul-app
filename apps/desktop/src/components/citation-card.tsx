@@ -4,7 +4,7 @@
 // 当前播放句。引用篮 v1 = localStorage，导出 = 拼接复制。
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Copy, Inbox, Plus } from "lucide-react";
+import { Check, Copy, ExternalLink, Inbox, Loader2, Plus, Share2 } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { buildMomentCitation } from "../lib/formatters";
 import { writeClipboardText } from "../lib/clipboard";
@@ -39,20 +39,26 @@ export function CitationCard({
   title,
   link,
   draft,
+  onShare,
 }: {
   title: string;
   link: string;
   draft: CitationDraft | null;
+  onShare?: () => Promise<string | null>;
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const [added, setAdded] = useState(false);
   const [basket, setBasket] = useState<string[]>(() => loadBasket());
   const [exported, setExported] = useState(false);
+  const [shareState, setShareState] = useState<"idle" | "sharing" | "shared" | "error">("idle");
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setCopied(false);
     setAdded(false);
+    setShareState("idle");
+    setShareUrl(null);
   }, [draft?.quote, draft?.displayTime]);
 
   const citationText = draft
@@ -102,6 +108,24 @@ export function CitationCard({
     saveBasket([]);
   }, []);
 
+  const share = useCallback(async () => {
+    if (!onShare || shareState === "sharing") return;
+    setShareState("sharing");
+    setShareUrl(null);
+    try {
+      const url = await onShare();
+      if (!url) {
+        setShareState("idle");
+        return;
+      }
+      await writeClipboardText(url);
+      setShareUrl(url);
+      setShareState("shared");
+    } catch {
+      setShareState("error");
+    }
+  }, [onShare, shareState]);
+
   if (!draft) return null;
 
   return (
@@ -121,6 +145,12 @@ export function CitationCard({
             {copied ? <Check size={13} /> : <Copy size={13} />}
             {copied ? t("detail.copy.copied") : t("detail.copy.label")}
           </button>
+          {onShare ? (
+            <button className="cite-btn" type="button" disabled={shareState === "sharing"} onClick={() => void share()}>
+              {shareState === "sharing" ? <Loader2 className="spin" size={13} /> : shareState === "shared" ? <Check size={13} /> : <Share2 size={13} />}
+              {shareState === "sharing" ? t("detail.share.creating") : shareState === "shared" ? t("detail.share.copied") : t("detail.share.action")}
+            </button>
+          ) : null}
           <button className="cite-btn" type="button" onClick={addToBasket}>
             {added ? <Check size={13} /> : <Plus size={13} />}
             {added ? t("detail.cite.added") : t("detail.cite.add")}
@@ -138,6 +168,8 @@ export function CitationCard({
             </span>
           ) : null}
         </div>
+        {shareState === "error" ? <p className="cite-share-status error" role="alert">{t("detail.share.error")}</p> : null}
+        {shareUrl ? <a className="cite-share-status" href={shareUrl} target="_blank" rel="noreferrer"><ExternalLink size={12} />{t("detail.share.open")}</a> : null}
       </div>
     </section>
   );
