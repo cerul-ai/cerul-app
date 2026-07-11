@@ -1633,7 +1633,7 @@
 
 /* P1/S2 detail: fixed viewport, two draggable rules, only side rails scroll. */
 .content:has(.detail-workbench-page) { overflow:hidden; }
-.detail-workbench-page { height:100%; display:flex; flex-direction:column; overflow:hidden; padding:0 20px 14px; }
+.detail-workbench-page { width:100%; max-width:none; height:100%; display:flex; flex-direction:column; overflow:hidden; padding:0 clamp(14px,1.6vw,28px) 14px; }
 .detail-workbench-page > .page-head { flex:none; padding:12px 0 9px; }
 .detail-workbench-page > .page-head > .row { margin-top:7px !important; }
 .detail-workbench-page .page-h1 { max-width:760px; font-size:19px; }
@@ -1647,8 +1647,8 @@
 .detail-summary-slot .speedread-expanded { position:absolute; left:0; right:0; top:100%; z-index:30; margin-top:7px; padding:14px 16px; border-color:var(--accent-line-soft); box-shadow:var(--shadow-pop); animation:final-summary-in var(--dur) var(--ease); }
 @keyframes final-summary-in { from { opacity:0; transform:translateY(-6px) scale(.992) } }
 .detail-workbench-page .splitstage { min-height:0; flex:1; align-items:stretch; margin-top:8px; }
-.detail-workbench-page .splitstage.splitstage-three { grid-template-columns:var(--split-left) 10px minmax(360px,1fr) 10px var(--split-right); gap:0; }
-.detail-workbench-page .splitstage.splitstage-two { grid-template-columns:minmax(360px,1fr) 10px var(--split-right); gap:0; }
+.detail-workbench-page .splitstage.splitstage-three { grid-template-columns:minmax(190px,calc(var(--split-left) * 1%)) 10px minmax(360px,1fr) 10px minmax(280px,calc(var(--split-right) * 1%)); gap:0; }
+.detail-workbench-page .splitstage.splitstage-two { grid-template-columns:minmax(360px,1fr) 10px minmax(280px,calc(var(--split-right) * 1%)); gap:0; }
 .splitstage-resizer { position:relative; z-index:4; display:grid; place-items:center; align-self:stretch; color:transparent; cursor:col-resize; touch-action:none; }
 .splitstage-resizer::before { content:""; width:1px; position:absolute; inset:4px auto; background:var(--line); transition:width var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease); }
 .splitstage-resizer:hover,.splitstage-resizer:focus-visible { color:var(--accent); outline:0; }
@@ -1686,16 +1686,20 @@
 .detail-workbench-page .pane-right-head { flex:none; min-height:32px; margin:0 0 3px; }
 .detail-workbench-page .detail-right-stack { min-height:0; height:100%; display:flex; overflow:hidden; }
 .detail-workbench-page .detail-right-stack > .understanding-panel,.detail-workbench-page .detail-right-stack > .understanding-progress { flex:none; padding:9px; gap:6px; }
-.detail-workbench-page .understanding-compact-completed { position:relative; min-height:38px; display:flex; align-items:center; padding:5px 38px 5px 8px; }
+.detail-workbench-page .understanding-compact-completed { min-height:38px; display:flex; align-items:center; padding:6px 9px; overflow:hidden; }
 .detail-workbench-page .understanding-compact-completed .understanding-header { width:100%; min-height:0; margin:0; padding:0; border:0; }
 .detail-workbench-page .understanding-compact-completed .understanding-header .section-label { margin:0; font-size:9px; }
-.detail-workbench-page .understanding-compact-action { width:28px; height:28px; position:absolute; top:5px; right:5px; display:grid; place-items:center; padding:0; }
+.detail-workbench-page .understanding-complete-label { flex:none; color:var(--text-muted); font-size:10px; font-weight:600; white-space:nowrap; }
 .detail-video-chat-placeholder { flex:none; min-height:48px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; margin:0 0 5px; padding:7px 8px; border:1px dashed var(--line-strong); border-radius:8px; color:var(--text-faint); background:var(--surface-2); }
 .detail-video-chat-placeholder > span { min-width:0; display:grid; gap:2px; }
 .detail-video-chat-placeholder strong { color:var(--text); font-size:9px; }
 .detail-video-chat-placeholder small { overflow:hidden; font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
 .detail-video-chat-placeholder em { color:var(--text-faint); font:7px var(--font-mono); font-style:normal; }
-.detail-workbench-page .detail-right-stack > .transcript { min-height:0; flex:1; overflow-y:auto; overscroll-behavior:contain; }
+.detail-workbench-page .detail-right-stack > .transcript { min-width:0; min-height:0; width:100%; flex:1; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+.detail-workbench-page .transcript .seg-btn { width:100%; max-width:100%; margin:0; padding:13px 8px; overflow:hidden; border-radius:0; }
+.detail-workbench-page .transcript .seg-btn-main { min-width:0; grid-template-columns:56px minmax(0,1fr); gap:10px; padding-right:26px; }
+.detail-workbench-page .transcript .seg-btn .ts { width:56px; max-width:56px; padding-top:2px; font-size:11px; }
+.detail-workbench-page .transcript .seg-text { min-width:0; margin:0; color:var(--text); font-size:14px; line-height:1.68; overflow-wrap:anywhere; word-break:break-word; }
 .detail-workbench-page .understanding-summary,.detail-workbench-page .understanding-topics,.detail-workbench-page .understanding-list { display:none; }
 .detail-workbench-page .understanding-header strong { font-size:11px; }
 
@@ -1719,6 +1723,36 @@
 .settings-page .settings-command-nav button.active svg { color:var(--accent); filter:none; }
 .settings-command-empty { margin:8px 6px; color:var(--text-faint); font-size:9px; }
 .settings-p1-page .settings-head-lead { gap:0; }
+
+/* Settings type contract: one readable scale instead of per-component micro
+   sizes. The command rail is navigation, not a compressed diagnostic panel. */
+.settings-p1-page .settings-back { font-size:14px; }
+.settings-p1-page .settings-command-search { height:44px; padding:0 12px; }
+.settings-p1-page .settings-command-search input { font-size:13px; line-height:1.4; }
+.settings-p1-page .settings-command-nav button { min-height:56px; padding:9px 12px; gap:10px; }
+.settings-p1-page .settings-command-nav button strong { font-size:14px; line-height:1.35; }
+.settings-p1-page .settings-command-nav button small { font-size:12px; line-height:1.35; }
+.settings-p1-page .settings-shell-main .page-eyebrow { font-size:12px; }
+.settings-p1-page .settings-shell-main .page-h1 { font-size:28px; line-height:1.2; }
+.settings-p1-page .settings-group-title { margin-bottom:10px; font-size:13px; font-weight:600; }
+.settings-p1-page .setting-row strong,.settings-p1-page .field-label { font-size:14px; line-height:1.4; }
+.settings-p1-page .setting-row p,.settings-p1-page .field-hint { font-size:12.5px; line-height:1.55; }
+.settings-p1-page :is(.btn,.select,input,textarea) { font-size:13px; }
+.settings-p1-page .settings-core-status { gap:6px; min-height:32px; font-size:12px; }
+.settings-p1-page .settings-core-status-name { color:var(--text-muted); font-family:var(--font-sans); font-weight:600; }
+.settings-p1-page .settings-core-status-state::before { content:"·"; margin-right:6px; color:var(--text-faint); }
+
+/* Maintenance is a quiet two-row list. Destructive meaning lives in the
+   wording and final confirmation, not a red-tinted selected-state card. */
+.settings-p1-page .settings-danger-group { padding:0 2px; }
+.settings-p1-page .settings-danger-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:center; padding:16px 4px; border:0; border-bottom:1px solid var(--line); border-radius:0; background:transparent; box-shadow:none; }
+.settings-p1-page .settings-danger-card + .settings-danger-card { margin-top:0; }
+.settings-p1-page .settings-danger-card--standard { border-style:solid; background:transparent; }
+.settings-p1-page .settings-danger-card--critical { border-bottom:0; box-shadow:none; }
+.settings-p1-page .settings-danger-card .settings-danger-main strong { color:var(--text); font-size:14px; }
+.settings-p1-page .settings-danger-card .settings-danger-main p { max-width:64ch; margin-top:4px; font-size:12.5px; line-height:1.55; }
+.settings-p1-page .settings-danger-card .btn-danger,.settings-p1-page .settings-danger-card--critical .btn-danger { color:var(--danger); border:1px solid var(--danger-line); background:transparent; box-shadow:none; }
+.settings-p1-page .settings-danger-card .btn-danger:hover { color:#fff; border-color:var(--danger); background:var(--danger); }
 
 /* J6 normal state: one ledger plus a selected-task inspector. During H2 repair,
    the inspector yields its width to the anomaly cabin and never duplicates the queue. */

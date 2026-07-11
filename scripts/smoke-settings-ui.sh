@@ -25,6 +25,11 @@ rg -qF 'selection-pointer-sweep' apps/desktop/src/styles/selected-ui.css
 ! rg -qF '<span>{t("settings.shell.subtitle")}</span>' apps/desktop/src/App.tsx
 rg -qF '"settings.shell.title": "Cerul"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF 'className="settings-core-status"' apps/desktop/src/screens/settings.tsx
+! rg -qF 'settings-core-status-dot' apps/desktop/src/screens/settings.tsx
+rg -qF '"settings.coreStatus.name": "本机功能"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '.settings-p1-page .settings-command-nav button strong { font-size:14px' apps/desktop/src/styles/selected-ui.css
+rg -qF '.settings-p1-page .settings-danger-card { display:grid' apps/desktop/src/styles/selected-ui.css
+! rg -qF 'className="settings-danger-ic"' apps/desktop/src/screens/settings.tsx
 rg -qF "settings.coreStatus.ready" apps/desktop/src/lib/i18n-catalog.ts
 rg -qF ".settings-core-status" apps/desktop/src/styles/settings-redesign.css
 rg -qF "function SettingsQuietNotice" apps/desktop/src/components/settings-quiet-notice.tsx
@@ -107,4 +112,4 @@ rg -qF ".settings-stack-control" apps/desktop/src/styles/extensions.css
 rg -qF ".setting-row-control > .select" apps/desktop/src/styles/extensions.css
 rg -qF ".select:disabled" apps/desktop/src/styles/ui.css
 
-echo "settings_ui_smoke default_section=general layout=K5_command_console selection=A4_pointer_sweep bridge_search=linked duplicate_brand=absent numbered_selection=absent search_section=merged_into_shortcuts core_sidebar_status=enabled quiet_error_states=enabled library_storage_combined=enabled disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced shortcuts_directory=configurable native_menu_shortcuts=synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled updater_auto_install=enabled advanced_actions=remote_auth maintenance_actions=advanced about_actions=enabled"
+echo "settings_ui_smoke default_section=general layout=K5_command_console typography=unified selection=A4_pointer_sweep bridge_search=linked duplicate_brand=absent numbered_selection=absent search_section=merged_into_shortcuts local_features_status=plain_language_no_dot quiet_error_states=enabled library_storage_combined=enabled disconnected_controls=disabled autosave_status=enabled start_at_login=daemon_status_synced shortcuts_directory=configurable native_menu_shortcuts=synced global_hotkey=configurable inference_mode=remote_or_local provider_controls=guarded model_discovery=enabled storage_actions=enabled maintenance=quiet_rows updater_auto_install=enabled advanced_actions=remote_auth about_actions=enabled"

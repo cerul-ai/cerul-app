@@ -529,7 +529,6 @@ export function SettingsScreen({
           aria-label={settingsCoreStatus.label}
           title={settingsCoreStatus.label}
         >
-          <span className="settings-core-status-dot" aria-hidden="true" />
           <span className="settings-core-status-name">{t("settings.coreStatus.name")}</span>
           <span className="settings-core-status-state">{settingsCoreStatus.state}</span>
         </div>
@@ -3360,9 +3359,6 @@ function AdvancedSettings({
       <section className="settings-group settings-danger-group">
         <p className="settings-group-title">{t("settings.advanced.maintenance.title")}</p>
         <div className="settings-danger-card settings-danger-card--standard">
-          <span className="settings-danger-ic" aria-hidden="true">
-            <AlertTriangle size={18} />
-          </span>
           <div className="settings-danger-main">
             <strong>{t("settings.storage.resetLocalData")}</strong>
             <p>{t("settings.storage.resetLocalData.desc")}</p>
@@ -3378,9 +3374,6 @@ function AdvancedSettings({
           </button>
         </div>
         <div className="settings-danger-card settings-danger-card--critical">
-          <span className="settings-danger-ic" aria-hidden="true">
-            <AlertTriangle size={18} />
-          </span>
           <div className="settings-danger-main">
             <strong>{t("settings.storage.factoryReset")}</strong>
             <p>{t("settings.storage.factoryReset.desc")}</p>

@@ -34,16 +34,18 @@ export function SplitStage({
   const showFrames = Boolean(frames);
   const showNavigation = showChapters || showFrames;
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const [leftWidth, setLeftWidth] = useState(228);
-  const [rightWidth, setRightWidth] = useState(354);
+  // Percentages let all three panes grow naturally with the window. Dragging
+  // adjusts the proportions instead of freezing either rail to a pixel width.
+  const [leftWidth, setLeftWidth] = useState(19);
+  const [rightWidth, setRightWidth] = useState(28);
   const [navigationTab, setNavigationTab] = useState<"chapters" | "frames">(
     showChapters ? "chapters" : "frames",
   );
 
   useEffect(() => {
-    if (navigationTab === "chapters" && !showChapters && showFrames) setNavigationTab("frames");
-    if (navigationTab === "frames" && !showFrames && showChapters) setNavigationTab("chapters");
-  }, [navigationTab, showChapters, showFrames]);
+    if (showChapters) setNavigationTab("chapters");
+    else if (showFrames) setNavigationTab("frames");
+  }, [showChapters, showFrames]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
     const stage = stageRef.current;
@@ -57,11 +59,11 @@ export function SplitStage({
     const onMove = (moveEvent: PointerEvent) => {
       const delta = moveEvent.clientX - startX;
       if (side === "left") {
-        const maxLeft = Math.max(220, bounds.width - rightWidth - 500);
-        setLeftWidth(Math.min(maxLeft, Math.max(190, startLeft + delta)));
+        const next = startLeft + (delta / bounds.width) * 100;
+        setLeftWidth(Math.min(28, Math.max(15, Math.min(next, 64 - rightWidth))));
       } else {
-        const maxRight = Math.max(320, bounds.width - (showNavigation ? leftWidth : 0) - 500);
-        setRightWidth(Math.min(maxRight, Math.max(300, startRight - delta)));
+        const next = startRight - (delta / bounds.width) * 100;
+        setRightWidth(Math.min(36, Math.max(22, Math.min(next, 64 - (showNavigation ? leftWidth : 0)))));
       }
     };
     const onUp = () => {
@@ -73,16 +75,17 @@ export function SplitStage({
   }
 
   function nudge(side: "left" | "right", delta: number) {
+    const step = delta < 0 ? -1 : 1;
     if (side === "left") {
-      setLeftWidth((value) => Math.min(340, Math.max(190, value + delta)));
+      setLeftWidth((value) => Math.min(28, Math.max(15, value + step)));
     } else {
-      setRightWidth((value) => Math.min(470, Math.max(300, value + delta)));
+      setRightWidth((value) => Math.min(36, Math.max(22, value + step)));
     }
   }
 
   const stageStyle = {
-    "--split-left": `${leftWidth}px`,
-    "--split-right": `${rightWidth}px`,
+    "--split-left": leftWidth,
+    "--split-right": rightWidth,
   } as CSSProperties;
 
   return (

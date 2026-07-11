@@ -71,5 +71,11 @@ rg -qF ".detail-issue" apps/desktop/src/styles/extensions.css
 rg -qF ".detail-issue-actions" apps/desktop/src/styles/extensions.css
 rg -qF ".seg-btn.matched" apps/desktop/src/styles/app.css
 rg -qF ".transcript .seg-btn" apps/desktop/src/styles/extensions.css
+rg -qF 'const [leftWidth, setLeftWidth] = useState(19)' apps/desktop/src/components/SplitStage.tsx
+rg -qF 'if (showChapters) setNavigationTab("chapters")' apps/desktop/src/components/SplitStage.tsx
+rg -qF 'max-width:none; height:100%' apps/desktop/src/styles/selected-ui.css
+rg -qF '.detail-workbench-page .transcript .seg-btn { width:100%' apps/desktop/src/styles/selected-ui.css
+! rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
+! rg -qF 'addToBasket' apps/desktop/src/components/citation-card.tsx
 
-echo "detail_ui_smoke copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches playback_state=api_video_segment matched_marker=enabled item_delete_reindex=enabled"
+echo "detail_ui_smoke layout=fluid_three_pane default_navigation=chapters transcript=vertical_only citation_actions=copy_only analysis=compact_no_overlap copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches playback_state=api_video_segment matched_marker=enabled item_delete_reindex=enabled"

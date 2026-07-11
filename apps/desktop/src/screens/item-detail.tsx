@@ -633,18 +633,8 @@ function VideoUnderstandingPanel({
       <section className="understanding-panel understanding-compact-completed">
         <div className="understanding-header">
           <div><p className="section-label">{t("understanding.title")}</p></div>
-          <span className={statusChipClass}><span className="dot" />{statusLabel}</span>
+          <span className="understanding-complete-label">{statusLabel}</span>
         </div>
-        <button
-          type="button"
-          className="btn btn-ghost sm understanding-compact-action"
-          disabled={!canAnalyze}
-          onClick={() => void analyze()}
-          title={t("understanding.action.reanalyze")}
-          aria-label={t("understanding.action.reanalyze")}
-        >
-          <RefreshCcw size={13} />
-        </button>
       </section>
     );
   }
@@ -1482,7 +1472,6 @@ export function ItemDetail({
                 title={detailTitle}
                 link={item.originalUrl ?? citationTimestampLink}
                 draft={citationDraft}
-                onShare={item.contentType === "video" ? createPublicShare : undefined}
               />
             ) : null}
           </div>
