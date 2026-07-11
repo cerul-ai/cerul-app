@@ -2250,7 +2250,7 @@ function AppWorkspace() {
               return;
             }
             try {
-              const queuedJobIds = jobsSheetVisibleJobs
+              const queuedJobIds = drawerJobs
                 .filter((job) => job.status === "queued")
                 .map((job) => job.id);
               await cancelQueuedJobsWithCompatibilityFallback(queuedJobIds);

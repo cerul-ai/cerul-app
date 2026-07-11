@@ -371,7 +371,7 @@ export function JobsSheet({
             ))}
           </div>
           <span className="jobs-ledger-local"><i />{t("jobs.localProcessing")}</span>
-          {onCancelQueuedJobs && controlsEnabled && queuedCount > 0 ? <button type="button" className="btn btn-secondary sm" onClick={onCancelQueuedJobs}>{t("jobs.clearQueued")}</button> : null}
+          {onCancelQueuedJobs && controlsEnabled && queuedCount > 0 && (filter === "all" || filter === "running") ? <button type="button" className="btn btn-secondary sm" onClick={onCancelQueuedJobs}>{t("jobs.clearQueued")}</button> : null}
         </div>
 
         <div ref={workspaceRef} className={issueOpen && repairJob ? "jobs-ledger-workspace has-issue" : "jobs-ledger-workspace"}>

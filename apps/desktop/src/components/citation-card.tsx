@@ -51,7 +51,7 @@ export function CitationCard({
   const [added, setAdded] = useState(false);
   const [basket, setBasket] = useState<string[]>(() => loadBasket());
   const [exported, setExported] = useState(false);
-  const [shareState, setShareState] = useState<"idle" | "sharing" | "shared" | "error">("idle");
+  const [shareState, setShareState] = useState<"idle" | "sharing" | "shared" | "published" | "error">("idle");
   const [shareUrl, setShareUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -118,9 +118,15 @@ export function CitationCard({
         setShareState("idle");
         return;
       }
-      await writeClipboardText(url);
       setShareUrl(url);
-      setShareState("shared");
+      try {
+        await writeClipboardText(url);
+        setShareState("shared");
+      } catch {
+        // Publishing succeeded. Keep the URL available even when clipboard
+        // access is denied so retrying does not create a duplicate share.
+        setShareState("published");
+      }
     } catch {
       setShareState("error");
     }
@@ -147,8 +153,8 @@ export function CitationCard({
           </button>
           {onShare ? (
             <button className="cite-btn" type="button" disabled={shareState === "sharing"} onClick={() => void share()}>
-              {shareState === "sharing" ? <Loader2 className="spin" size={13} /> : shareState === "shared" ? <Check size={13} /> : <Share2 size={13} />}
-              {shareState === "sharing" ? t("detail.share.creating") : shareState === "shared" ? t("detail.share.copied") : t("detail.share.action")}
+              {shareState === "sharing" ? <Loader2 className="spin" size={13} /> : shareState === "shared" || shareState === "published" ? <Check size={13} /> : <Share2 size={13} />}
+              {shareState === "sharing" ? t("detail.share.creating") : shareState === "shared" ? t("detail.share.copied") : shareState === "published" ? t("detail.share.published") : t("detail.share.action")}
             </button>
           ) : null}
           <button className="cite-btn" type="button" onClick={addToBasket}>

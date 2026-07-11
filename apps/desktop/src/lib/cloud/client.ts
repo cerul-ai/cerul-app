@@ -20,14 +20,18 @@ interface RequestOptions {
 }
 
 async function upload(path: string, token: string, body: Blob) {
+  const isAbsolute = /^https?:\/\//i.test(path);
+  const target = isAbsolute ? path : `${CLOUD_API_BASE_URL}${path}`;
   let response: Response;
   try {
-    response = await fetch(`${CLOUD_API_BASE_URL}${path}`, {
+    response = await fetch(target, {
       method: "PUT",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": body.type || "application/octet-stream",
-      },
+      headers: isAbsolute
+        ? { "content-type": body.type || "application/octet-stream" }
+        : {
+            authorization: `Bearer ${token}`,
+            "content-type": body.type || "application/octet-stream",
+          },
       body,
     });
   } catch {

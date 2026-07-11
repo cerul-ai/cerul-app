@@ -1229,9 +1229,12 @@ export function ItemDetail({
     "item-detail",
   );
   const shareChunkId = citeSelectionLine?.id ?? citePlayheadLine?.id ?? detailChunkId;
+  const shareTargetSec = citeSelectionLine
+    ? parseTimestampSeconds(citeSelectionLine.displayTime ?? citeSelectionLine.time)
+    : currentPlayheadSec;
   const sharePosterChunkId = chunkState.records.reduce<{ id: string; distance: number } | null>((best, record) => {
     if (!record.frame_path || record.start_sec === null) return best;
-    const distance = Math.abs(record.start_sec - currentPlayheadSec);
+    const distance = Math.abs(record.start_sec - (Number.isFinite(shareTargetSec) ? shareTargetSec : currentPlayheadSec));
     return !best || distance < best.distance ? { id: record.id, distance } : best;
   }, null)?.id ?? null;
 

@@ -4,7 +4,7 @@ import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/formatters";
 import { useLang, useT, type TFunction } from "../lib/i18n";
-import { resultModality } from "../lib/results";
+import { buildFollowupQuestion, resultModality } from "../lib/results";
 import type { ApiStatus, Result, ResultModalityFilter } from "../lib/types";
 import { EmptyState } from "../components/leaf";
 import { ResultCard } from "../components/cards";
@@ -166,7 +166,9 @@ export function ResultsScreen({
   function submitFollowup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!followup.trim()) return;
-    void requestAnswer(followup);
+    const contextualQuestion = buildFollowupQuestion(query, followup, displayedResults, answer);
+    setFollowup("");
+    void requestAnswer(contextualQuestion);
   }
 
   return (

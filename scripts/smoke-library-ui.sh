@@ -75,5 +75,7 @@ rg -qF ".item-card-shell.selected" apps/desktop/src/styles/extensions.css
 rg -qF ".item-thumb.has-image img" apps/desktop/src/styles/extensions.css
 rg -qF ".item-progress-overlay" apps/desktop/src/styles/extensions.css
 rg -qF ".library-retrieval-controls" apps/desktop/src/styles/selected-ui.css
+rg -qF ".library-source-rail button.active" apps/desktop/src/styles/selected-ui.css
+rg -qF "selection-pointer-sweep" apps/desktop/src/styles/selected-ui.css
 
-echo "library_ui_smoke layout=L3_source_rail search_filter_sort=enabled views=grid_default_and_list thumbnails=first_frame_chunk batch_delete_reindex=enabled indexing_progress_overlay=enabled active_job_polling=enabled"
+echo "library_ui_smoke layout=L3_source_rail selection=A4_pointer_sweep search_filter_sort=enabled views=grid_default_and_list thumbnails=first_frame_chunk batch_delete_reindex=enabled indexing_progress_overlay=enabled active_job_polling=enabled"

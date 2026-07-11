@@ -48,5 +48,7 @@ rg -qF 'className="results-answer-rail"' apps/desktop/src/screens/results.tsx
 rg -qF 'api.askLibrary' apps/desktop/src/screens/results.tsx
 rg -qF 'api.askAgentLibrary' apps/desktop/src/screens/results.tsx
 rg -qF 'onOpenCitation' apps/desktop/src/screens/results.tsx
+rg -qF '.results-filter-group button.active' apps/desktop/src/styles/selected-ui.css
+rg -qF 'selection-pointer-sweep' apps/desktop/src/styles/selected-ui.css
 
-echo "results_ui_smoke layout=R1_three_column_evidence_stream answer=comprehensive_grounded_qa bridge_search=single_owner sort=relevance_recent ranking=smart_literal citation_actions=jump_copy keyboard_nav=enabled thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image"
+echo "results_ui_smoke layout=R1_three_column_evidence_stream selection=A4_pointer_sweep answer=comprehensive_grounded_qa bridge_search=single_owner sort=relevance_recent ranking=smart_literal citation_actions=jump_copy keyboard_nav=enabled thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image"

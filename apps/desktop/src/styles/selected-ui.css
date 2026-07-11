@@ -1767,6 +1767,162 @@
 .scrim > [role="dialog"] { animation:final-surface-in var(--dur) var(--ease); }
 @keyframes final-surface-in { from { opacity:0; transform:translateY(8px) scale(.988) } }
 
+/* A4 selection pointer — canonical list/navigation selection language.
+   Copper appears while the target changes, then settles into a fine directional
+   cue. Segmented controls, checkboxes, playback state, and semantic status
+   indicators intentionally keep their own interaction models. */
+:where(
+  .library-source-rail button,
+  .results-filter-group button,
+  .settings-page .settings-command-nav button,
+  .overlay-result,
+  .model-combobox__opt
+) {
+  position:relative;
+  isolation:isolate;
+  overflow:hidden;
+}
+
+:where(
+  .library-source-rail button,
+  .results-filter-group button,
+  .settings-page .settings-command-nav button,
+  .overlay-result,
+  .model-combobox__opt
+)::before {
+  content:"";
+  position:absolute;
+  z-index:0;
+  inset:2px;
+  border-radius:inherit;
+  background:linear-gradient(90deg,transparent,var(--accent-soft) 42%,transparent 78%);
+  opacity:0;
+  transform:translateX(-72%);
+  pointer-events:none;
+}
+
+:where(
+  .library-source-rail button,
+  .results-filter-group button,
+  .settings-page .settings-command-nav button,
+  .overlay-result,
+  .model-combobox__opt
+)::after {
+  content:"";
+  position:absolute;
+  z-index:2;
+  right:10px;
+  top:50%;
+  width:var(--selection-cue-size);
+  height:var(--selection-cue-size);
+  border-top:1.5px solid var(--accent);
+  border-right:1.5px solid var(--accent);
+  opacity:0;
+  transform:translate(-5px,-50%) rotate(45deg);
+  transition:opacity var(--dur-fast) var(--ease),transform var(--dur) var(--ease);
+  pointer-events:none;
+}
+
+:where(
+  .library-source-rail button.active,
+  .results-filter-group button.active,
+  .settings-page .settings-command-nav button.active,
+  .overlay-result.active,
+  .overlay-result[aria-selected="true"],
+  .model-combobox__opt[aria-selected="true"]
+) {
+  color:var(--text);
+  background:transparent;
+  box-shadow:none;
+  font-weight:650;
+}
+
+.library-source-rail button.active,
+.results-filter-group button.active,
+.settings-page .settings-command-nav button.active,
+.overlay-root .overlay-result.active,
+.overlay-root .overlay-result[aria-selected="true"],
+.model-combobox__opt[aria-selected="true"] {
+  color:var(--text);
+  background:transparent;
+  box-shadow:none;
+  font-weight:650;
+}
+
+:where(
+  .library-source-rail button.active,
+  .results-filter-group button.active,
+  .settings-page .settings-command-nav button.active,
+  .overlay-result.active,
+  .overlay-result[aria-selected="true"],
+  .model-combobox__opt[aria-selected="true"]
+)::before {
+  animation:selection-pointer-sweep var(--selection-sweep-duration) var(--ease) both;
+}
+
+:where(
+  .library-source-rail button.active,
+  .results-filter-group button.active,
+  .settings-page .settings-command-nav button.active,
+  .overlay-result.active,
+  .overlay-result[aria-selected="true"],
+  .model-combobox__opt[aria-selected="true"]
+)::after {
+  opacity:1;
+  transform:translate(0,-50%) rotate(45deg);
+}
+
+.library-source-rail button.active,
+.results-filter-group button.active,
+.model-combobox__opt[aria-selected="true"] { padding-right:27px; }
+.settings-page .settings-command-nav button.active { padding-right:30px; }
+.settings-page .settings-command-nav button.active svg { color:var(--accent); }
+.overlay-result.active,.overlay-result[aria-selected="true"] { padding-right:32px; }
+.library-source-rail button.active code,.results-filter-group button.active code { color:var(--accent); opacity:1; }
+
+/* Keyboard-current result rows use the same moving sweep, but keep the cue at
+   the left content gutter so it never overlaps Jump/Copy actions. */
+.result-card.result-row.active {
+  position:relative;
+  isolation:isolate;
+  overflow:hidden;
+  background:transparent;
+  box-shadow:none;
+}
+.result-card.result-row.active::before {
+  content:"";
+  position:absolute;
+  z-index:0;
+  inset:2px;
+  border-radius:inherit;
+  background:linear-gradient(90deg,transparent,var(--accent-soft) 42%,transparent 78%);
+  opacity:0;
+  transform:translateX(-72%);
+  animation:selection-pointer-sweep var(--selection-sweep-duration) var(--ease) both;
+  pointer-events:none;
+}
+.result-card.result-row.active::after {
+  content:"";
+  position:absolute;
+  z-index:2;
+  left:15px;
+  top:50%;
+  width:var(--selection-cue-size);
+  height:var(--selection-cue-size);
+  border-top:1.5px solid var(--accent);
+  border-right:1.5px solid var(--accent);
+  opacity:1;
+  transform:translateY(-50%) rotate(45deg);
+  pointer-events:none;
+}
+.result-card.result-row.active > * { position:relative; z-index:1; }
+
+@keyframes selection-pointer-sweep {
+  0% { opacity:0; transform:translateX(-72%); }
+  32% { opacity:1; }
+  100% { opacity:0; transform:translateX(72%); }
+}
+
 @media (max-width: 1120px) {
   .results-r1-layout { grid-template-columns:145px minmax(360px,1fr) 280px; }
   .library-l3-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
@@ -1810,4 +1966,5 @@
 @media (prefers-reduced-motion: reduce) {
   .cerul-launch.splash-playing .cerul-launch__mark,.cerul-launch.splash-playing .cerul-launch__rule,.cerul-launch.splash-playing .cerul-launch__word,.cerul-launch.splash-playing .cerul-launch__tagline { animation-duration:1ms; animation-delay:0ms; }
   .speedread-expanded,.scrim > [role="dialog"] { animation:none; }
+  :where(.library-source-rail button,.results-filter-group button,.settings-page .settings-command-nav button,.overlay-result,.model-combobox__opt,.result-card.result-row)::before { animation:none !important; }
 }

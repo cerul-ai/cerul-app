@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type * as api from "./api";
 import {
   backendFallbackSnippet,
+  buildFollowupQuestion,
   isBackendFallbackSnippet,
   mapChunkRecords,
   mapSearchResults,
@@ -95,6 +96,20 @@ function result(overrides: Partial<Result>): Result {
 }
 
 describe("results helpers", () => {
+  it("keeps the original search, evidence, and prior answer in follow-up questions", () => {
+    const question = buildFollowupQuestion(
+      "automation platforms",
+      "what about the second clip?",
+      [result({ title: "First clip", snippet: "first evidence" }), result({ title: "Second clip", snippet: "second evidence" })],
+      { answer: "The first clip discusses Sola.", citations: [], usage: { billable: false, credits_used: 0, privacy: "local" } },
+    );
+
+    expect(question).toContain("Original search: automation platforms");
+    expect(question).toContain("Previous answer: The first clip discusses Sola.");
+    expect(question).toContain("2. Second clip");
+    expect(question).toContain("Follow-up question: what about the second clip?");
+  });
+
   it("maps and groups backend search records into UI results", () => {
     const results = mapSearchResults(
       [
