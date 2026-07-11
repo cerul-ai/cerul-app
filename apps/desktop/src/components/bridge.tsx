@@ -108,15 +108,20 @@ export function Bridge(props: BridgeProps) {
   const searchRef = useRef<HTMLFormElement | null>(null);
   const scopeRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const settingsMode = activeView === "settings";
   useEffect(() => {
-    setValue(query);
-  }, [query]);
-  const tall = searchVisible && focused;
+    setValue(settingsMode ? "" : query);
+  }, [query, settingsMode]);
+  const tall = searchVisible && focused && !settingsMode;
 
   function submit(event: FormEvent) {
     event.preventDefault();
     const trimmed = value.trim();
     if (!trimmed) return;
+    if (settingsMode) {
+      window.dispatchEvent(new CustomEvent("cerul:settings-command", { detail: trimmed }));
+      return;
+    }
     onRunQuery(trimmed);
     inputRef.current?.blur();
   }
@@ -193,7 +198,7 @@ export function Bridge(props: BridgeProps) {
 
   return (
     <div className="bridge-wrap">
-      <div className={tall ? "bridge is-tall" : "bridge"}>
+      <div className={`${tall ? "bridge is-tall" : "bridge"}${settingsMode ? " settings-mode" : ""}`}>
         <button
           className="bridge-brand"
           type="button"
@@ -239,10 +244,14 @@ export function Bridge(props: BridgeProps) {
               ref={inputRef}
               type="text"
               value={value}
-              placeholder={t("home.searchPlaceholder")}
+              placeholder={settingsMode ? t("settings.command.bridgePlaceholder") : t("home.searchPlaceholder")}
               aria-label={t("home.searchAria")}
               disabled={onboardingActive}
-              onChange={(event) => setValue(event.currentTarget.value)}
+              onChange={(event) => {
+                const nextValue = event.currentTarget.value;
+                setValue(nextValue);
+                if (settingsMode) window.dispatchEvent(new CustomEvent("cerul:settings-command", { detail: nextValue }));
+              }}
               onKeyDown={onSearchEscape}
             />
             <kbd className="bridge-kbd" aria-hidden="true">

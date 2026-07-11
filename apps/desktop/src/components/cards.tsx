@@ -230,7 +230,7 @@ export function ResultCard({
       aria-expanded={result.moreMatches.length > 0 ? expanded : undefined}
       onFocus={onFocus}
       onKeyDown={(event) => {
-        if (event.key === "Enter") {
+        if (event.key === "Enter" && event.target === event.currentTarget) {
           event.preventDefault();
           onOpen(result);
         }

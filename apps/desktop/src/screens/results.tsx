@@ -112,6 +112,7 @@ export function ResultsScreen({
 
   useEffect(() => {
     if (!query.trim() || results.length === 0 || isSearching || apiStatus !== "online") {
+      answerRequest.current += 1;
       setAnswer(null);
       setAnswerState("idle");
       setAnswerError(null);

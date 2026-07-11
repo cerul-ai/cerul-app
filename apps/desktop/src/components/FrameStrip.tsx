@@ -26,6 +26,7 @@ type FrameStripProps = {
   currentTime?: number; // seconds, used for the playhead
   understood: boolean;
   onSeek?: (timestamp: string) => void;
+  layout?: "strip" | "grid";
 };
 
 type Frame = {
@@ -107,6 +108,7 @@ export function FrameStrip({
   currentTime = 0,
   understood,
   onSeek,
+  layout = "strip",
 }: FrameStripProps) {
   const t = useT();
   const total = durationSec && durationSec > 0 ? durationSec : null;
@@ -174,6 +176,27 @@ export function FrameStrip({
   // leave a blank band.
   if (frames.length === 0) {
     return null;
+  }
+
+  if (layout === "grid") {
+    return (
+      <div className="frame-nav-grid" role="list" aria-label={t("dt.navigation.frames")}>
+        {frames.map((frame, index) => (
+          <button
+            key={`${frame.seconds}-${index}`}
+            type="button"
+            role="listitem"
+            className={Math.abs(frame.seconds - currentTime) < 1 ? "frame-nav-item active" : "frame-nav-item"}
+            onClick={() => onSeek?.(frame.label)}
+            aria-label={`${frame.label}${frame.caption ? ` · ${frame.caption}` : ""}`}
+          >
+            {frame.url ? <img src={frame.url} alt="" loading="lazy" draggable="false" /> : <span className="strip-frame-placeholder" />}
+            <span className="frame-nav-time mono">{frame.label}</span>
+            {frame.caption ? <span className="frame-nav-caption clamp2">{frame.caption}</span> : null}
+          </button>
+        ))}
+      </div>
+    );
   }
 
   return (

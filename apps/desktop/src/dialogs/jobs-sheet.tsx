@@ -117,6 +117,16 @@ export function JobsSheet({
   const inspectedItem = inspectedJob ? itemForJob(inspectedJob) : null;
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredSyncingSources = syncingSources.filter((source) => {
+    if (filter !== "all" && filter !== "running") return false;
+    if (!normalizedQuery) return true;
+    return [
+      source.name,
+      t("jobs.type.source_discovery"),
+      t("jobs.sourceDiscovery.body"),
+      t("jobs.status.discovering"),
+    ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+  });
   const filteredJobs = sortedJobs.filter((job) => {
     if (filter !== "all" && jobGroup(job) !== filter) return false;
     if (!normalizedQuery) return true;
@@ -264,7 +274,7 @@ export function JobsSheet({
 
   const filters: { id: JobsFilter; label: string; n: number }[] = [
     { id: "all", label: t("jobs.filter.all"), n: totalCount },
-    { id: "running", label: t(paused ? "jobs.groupQueued" : "jobs.groupRunning"), n: queuedCount + runningCount },
+    { id: "running", label: t(paused ? "jobs.groupQueued" : "jobs.groupRunning"), n: queuedCount + runningCount + syncingSources.length },
     { id: "done", label: t("jobs.status.completed"), n: doneCount },
     { id: "failed", label: t("jobs.status.failed"), n: failedCount },
   ];
@@ -403,13 +413,13 @@ export function JobsSheet({
               <div className="jobs-ledger-columns" aria-hidden="true">
                 <span><input type="checkbox" checked={allPageSelected} readOnly /></span><span>{t("jobs.ledger.col.content")}</span><span>{t("jobs.ledger.col.type")}</span><span>{t("jobs.ledger.col.source")}</span><span>{t("jobs.ledger.col.stage")}</span><span>{t("jobs.ledger.col.status")}</span><span>{t("jobs.ledger.col.action")}</span>
               </div>
-              {syncingSources.map((source) => (
+              {filteredSyncingSources.map((source) => (
                 <div className="jobs-ledger-row jobs-source-discovery-row" key={`source:${source.id}`}>
                   <span /><strong className="clamp1">{source.name}</strong><span className="muted">{t("jobs.type.source_discovery")}</span><span className="muted">{source.name}</span><span className="jobs-ledger-stage">{t("jobs.sourceDiscovery.body")}</span><span className="job-status-pill" data-tone="running">{t("jobs.status.discovering")}</span><span />
                 </div>
               ))}
               {returningJob ? ledgerRow(returningJob, "jobs-return-row") : null}
-              {loading ? <EmptyState title={t("jobs.loadingTitle")} body={t("jobs.loadingBody")} /> : pageJobs.length > 0 ? pageJobs.map((job) => ledgerRow(job)) : <EmptyState title={t("jobs.noneTitle")} body={t("jobs.emptyBody")} />}
+              {loading ? <EmptyState title={t("jobs.loadingTitle")} body={t("jobs.loadingBody")} /> : pageJobs.length > 0 ? pageJobs.map((job) => ledgerRow(job)) : filteredSyncingSources.length === 0 ? <EmptyState title={t("jobs.noneTitle")} body={t("jobs.emptyBody")} /> : null}
             </div>
             <footer className="jobs-ledger-footer">
               <label><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />{t("jobs.ledger.selectPage")}</label>

@@ -1,7 +1,5 @@
 import {
-  Check,
   ChevronRight,
-  Copy,
   Download,
   ExternalLink,
   Folder,
@@ -30,12 +28,10 @@ import { SummaryCard } from "../components/SummaryCard";
 import { InlineNotice } from "../components/leaf";
 import { TranscriptList, TranscriptSkeleton } from "../components/transcript";
 import * as api from "../lib/api";
-import { writeClipboardText } from "../lib/clipboard";
 import { canOpenOriginalSource, sourceFileDialogFilter, timestampDeepLink } from "../lib/detail";
 import { openDialog, invokeHostCommand } from "../lib/desktopHost";
 import {
   basenameFromPath,
-  buildMomentCitation,
   errorMessage,
   extractChunkIdFromThumbnail,
   formatTimestamp,
@@ -630,6 +626,27 @@ function VideoUnderstandingPanel({
   const canAnalyze = enabled && !isPending;
   const privacyNote = t("understanding.privacyNote");
 
+  if (compactCompleted && hasUnderstandingContent) {
+    return (
+      <section className="understanding-panel understanding-compact-completed">
+        <div className="understanding-header">
+          <div><p className="section-label">{t("understanding.title")}</p></div>
+          <span className={statusChipClass}><span className="dot" />{statusLabel}</span>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost sm understanding-compact-action"
+          disabled={!canAnalyze}
+          onClick={() => void analyze()}
+          title={t("understanding.action.reanalyze")}
+          aria-label={t("understanding.action.reanalyze")}
+        >
+          <RefreshCcw size={13} />
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section className={`understanding-panel ${analysisStatus}`}>
       <div className="understanding-header">
@@ -884,6 +901,10 @@ export function ItemDetail({
           : extractChunkIdFromThumbnail(item.thumbnailUrl)
       : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+  const hasKeyframes =
+    item.contentType !== "document" &&
+    ((activeUnderstandingRecord?.events ?? []).some((event) => event.start_sec !== null) ||
+      chunkState.records.some((record) => Boolean(record.frame_path) && record.start_sec !== null));
   const documentChunks = useMemo(
     () => chunkState.records.filter((record) => isDocumentChunkType(record.chunk_type)),
     [chunkState.records],
@@ -897,7 +918,6 @@ export function ItemDetail({
         null
       : null;
 
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const itemBusy =
     itemAction.status === "reindexing" ||
     itemAction.status === "deleting" ||
@@ -927,14 +947,6 @@ export function ItemDetail({
       : parseTimestampSeconds(currentTimestamp);
     return resolveClipTarget_(transcriptLines, targetSec);
   }
-
-  useEffect(() => {
-    if (copyStatus === "idle") {
-      return;
-    }
-    const timeout = window.setTimeout(() => setCopyStatus("idle"), 1600);
-    return () => window.clearTimeout(timeout);
-  }, [copyStatus]);
 
   usePlaybackPositionPersistence({
     itemId: item.id,
@@ -1213,29 +1225,6 @@ export function ItemDetail({
     "item-detail",
   );
 
-  async function copyCitation() {
-    try {
-      const line = citePlayheadLine;
-      const lineTimestamp = line?.displayTime ?? line?.time ?? detailTimestamp;
-      const citation = buildMomentCitation({
-        title: item.title,
-        timestamp: lineTimestamp,
-        quote: line?.text,
-        link:
-          item.originalUrl ??
-          timestampDeepLink(item.id, lineTimestamp, detailChunkId, "item-detail"),
-      });
-      await writeClipboardText(citation);
-      setCopyStatus("copied");
-    } catch (error) {
-      // Surface the failure (the header button has no error affordance, so a
-      // failed copy used to look like nothing happened).
-      setCopyStatus("error");
-      setItemAction({ status: "error", message: errorMessage(error) });
-    }
-  }
-
-
   // Seek the inline player to a timestamp. The /video-segment endpoint serves the
   // full source video with Range support, so the loaded src is the whole file.
   // This drives the transcript rows, chapters, and key moments.
@@ -1302,10 +1291,6 @@ export function ItemDetail({
             </p>
           </div>
           <div className="row gap-2" style={{ flex: "none" }}>
-            <button className="btn btn-ghost sm" type="button" onClick={() => void copyCitation()}>
-              {copyStatus === "copied" ? <Check size={15} /> : <Copy size={15} />}
-              <span>{copyStatus === "copied" ? t("detail.copy.copied") : t("detail.copy.label")}</span>
-            </button>
             <button
               className="btn btn-secondary sm"
               type="button"
@@ -1368,6 +1353,18 @@ export function ItemDetail({
         chapters={activeUnderstandingRecord?.chapters ?? []}
         onSeek={seekTo}
         understood={understood}
+        frames={hasKeyframes ? (
+          <FrameStrip
+            events={activeUnderstandingRecord?.events ?? []}
+            chapters={activeUnderstandingRecord?.chapters ?? []}
+            chunks={chunkState.records}
+            durationSec={item.durationSec}
+            currentTime={currentPlayheadSec}
+            understood={understood}
+            onSeek={seekTo}
+            layout="grid"
+          />
+        ) : undefined}
         left={
           /* The exact chrome that used to live in `.detail-media`: issue panel,
              or the live CerulPlayer, or the placeholder big play-button. */
@@ -1429,15 +1426,6 @@ export function ItemDetail({
                 draft={citationDraft}
               />
             ) : null}
-            <FrameStrip
-              events={activeUnderstandingRecord?.events ?? []}
-              chapters={activeUnderstandingRecord?.chapters ?? []}
-              chunks={chunkState.records}
-              durationSec={item.durationSec}
-              currentTime={currentPlayheadSec}
-              understood={understood}
-              onSeek={seekTo}
-            />
           </div>
         }
         right={
@@ -1455,6 +1443,11 @@ export function ItemDetail({
               onAnalyzed={handleUnderstandingAnalyzed}
               compactCompleted
             />
+            <div className="detail-video-chat-placeholder">
+              <Sparkles size={13} />
+              <span><strong>{t("detail.chat.title")}</strong><small>{t("detail.chat.placeholder")}</small></span>
+              <em>{t("detail.chat.soon")}</em>
+            </div>
             {itemAction.message ? (
               <p
                 className={itemAction.status === "error" ? "field-error" : "field-hint"}

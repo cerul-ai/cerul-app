@@ -1,7 +1,7 @@
 // P1 detail workbench: independently scrollable chapters and transcript with
 // two draggable separators around a stable player/citation stage.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { GripVertical, Mic } from "lucide-react";
 import { useT } from "../lib/i18n";
@@ -16,6 +16,7 @@ type SplitStageProps = {
   left: React.ReactNode;
   right: React.ReactNode;
   under?: React.ReactNode;
+  frames?: React.ReactNode;
 };
 
 export function SplitStage({
@@ -26,12 +27,23 @@ export function SplitStage({
   left,
   right,
   under,
+  frames,
 }: SplitStageProps) {
   const t = useT();
   const showChapters = understood && chapters.length > 0;
+  const showFrames = Boolean(frames);
+  const showNavigation = showChapters || showFrames;
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [leftWidth, setLeftWidth] = useState(228);
   const [rightWidth, setRightWidth] = useState(354);
+  const [navigationTab, setNavigationTab] = useState<"chapters" | "frames">(
+    showChapters ? "chapters" : "frames",
+  );
+
+  useEffect(() => {
+    if (navigationTab === "chapters" && !showChapters && showFrames) setNavigationTab("frames");
+    if (navigationTab === "frames" && !showFrames && showChapters) setNavigationTab("chapters");
+  }, [navigationTab, showChapters, showFrames]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
     const stage = stageRef.current;
@@ -48,7 +60,7 @@ export function SplitStage({
         const maxLeft = Math.max(220, bounds.width - rightWidth - 500);
         setLeftWidth(Math.min(maxLeft, Math.max(190, startLeft + delta)));
       } else {
-        const maxRight = Math.max(320, bounds.width - (showChapters ? leftWidth : 0) - 500);
+        const maxRight = Math.max(320, bounds.width - (showNavigation ? leftWidth : 0) - 500);
         setRightWidth(Math.min(maxRight, Math.max(300, startRight - delta)));
       }
     };
@@ -76,47 +88,39 @@ export function SplitStage({
   return (
     <div
       ref={stageRef}
-      className={showChapters ? "splitstage splitstage-three" : "splitstage splitstage-two"}
+      className={showNavigation ? "splitstage splitstage-three" : "splitstage splitstage-two"}
       style={stageStyle}
     >
-      {showChapters ? (
-        <aside className="pane chapter-rail" aria-label={t("dt.chapters.direct")}>
+      {showNavigation ? (
+        <aside className="pane chapter-rail" aria-label={t("dt.navigation.title")}>
           <div className="chapter-rail-head">
-            <span className="strip-label">{t("dt.chapters.direct")}</span>
+            <span className="strip-label">{t("dt.navigation.title")}</span>
             <span className="independent-scroll-label">{t("dt.split.independentScroll")}</span>
           </div>
-          <div className="split-chapters-list">
-            {chapters.map((chapter, index) => {
-              const next = chapters[index + 1];
-              const isCurrent =
-                currentSec >= (chapter.start_sec ?? 0) &&
-                (!next || currentSec < (next.start_sec ?? 0));
-              return (
-                <button
-                  key={`${chapter.start_sec ?? "unknown"}:${chapter.title}:${index}`}
-                  type="button"
-                  className={`chap-btn${isCurrent ? " active" : ""}`}
-                  onClick={() =>
-                    chapter.start_sec !== null
-                      ? onSeek(formatTimestamp(chapter.start_sec))
-                      : undefined
-                  }
-                >
-                  <span className="ts mono">
-                    {chapter.start_sec !== null ? formatTimestamp(chapter.start_sec) : "--:--"}
-                  </span>
-                  <span className="chap-body">
-                    <b>{chapter.title}</b>
-                    {chapter.summary ? <span className="chap-sum">{chapter.summary}</span> : null}
-                  </span>
-                </button>
-              );
-            })}
+          <div className="detail-navigation-tabs" role="tablist" aria-label={t("dt.navigation.title")}>
+            {showChapters ? <button type="button" role="tab" aria-selected={navigationTab === "chapters"} className={navigationTab === "chapters" ? "active" : ""} onClick={() => setNavigationTab("chapters")}>{t("dt.navigation.chapters")}</button> : null}
+            {showFrames ? <button type="button" role="tab" aria-selected={navigationTab === "frames"} className={navigationTab === "frames" ? "active" : ""} onClick={() => setNavigationTab("frames")}>{t("dt.navigation.frames")}</button> : null}
+          </div>
+          <div className="detail-navigation-content">
+            {navigationTab === "frames" && showFrames ? frames : (
+              <div className="split-chapters-list">
+                {chapters.map((chapter, index) => {
+                  const next = chapters[index + 1];
+                  const isCurrent = currentSec >= (chapter.start_sec ?? 0) && (!next || currentSec < (next.start_sec ?? 0));
+                  return (
+                    <button key={`${chapter.start_sec ?? "unknown"}:${chapter.title}:${index}`} type="button" className={`chap-btn${isCurrent ? " active" : ""}`} onClick={() => chapter.start_sec !== null ? onSeek(formatTimestamp(chapter.start_sec)) : undefined}>
+                      <span className="ts mono">{chapter.start_sec !== null ? formatTimestamp(chapter.start_sec) : "--:--"}</span>
+                      <span className="chap-body"><b>{chapter.title}</b>{chapter.summary ? <span className="chap-sum">{chapter.summary}</span> : null}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </aside>
       ) : null}
 
-      {showChapters ? (
+      {showNavigation ? (
         <ResizeHandle
           label={t("dt.split.resize")}
           onPointerDown={(event) => beginResize("left", event)}
