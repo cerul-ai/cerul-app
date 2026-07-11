@@ -73,7 +73,7 @@ rg -qF ".seg-btn.matched" apps/desktop/src/styles/app.css
 rg -qF ".transcript .seg-btn" apps/desktop/src/styles/extensions.css
 rg -qF 'const [leftWidth, setLeftWidth] = useState(19)' apps/desktop/src/components/SplitStage.tsx
 rg -qF 'if (showChapters) setNavigationTab("chapters")' apps/desktop/src/components/SplitStage.tsx
-rg -qF 'max-width:none; height:100%' apps/desktop/src/styles/selected-ui.css
+rg -qF '.page.wide.detail-workbench-page { width:100%; max-width:none; height:100%; margin:0' apps/desktop/src/styles/selected-ui.css
 rg -qF '.detail-workbench-page .transcript .seg-btn { width:100%' apps/desktop/src/styles/selected-ui.css
 ! rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
 ! rg -qF 'addToBasket' apps/desktop/src/components/citation-card.tsx

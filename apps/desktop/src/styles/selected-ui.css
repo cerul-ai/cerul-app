@@ -1633,7 +1633,7 @@
 
 /* P1/S2 detail: fixed viewport, two draggable rules, only side rails scroll. */
 .content:has(.detail-workbench-page) { overflow:hidden; }
-.detail-workbench-page { width:100%; max-width:none; height:100%; display:flex; flex-direction:column; overflow:hidden; padding:0 clamp(14px,1.6vw,28px) 14px; }
+.page.wide.detail-workbench-page { width:100%; max-width:none; height:100%; margin:0; display:flex; flex-direction:column; overflow:hidden; padding:0 clamp(10px,1vw,18px) 14px; }
 .detail-workbench-page > .page-head { flex:none; padding:12px 0 9px; }
 .detail-workbench-page > .page-head > .row { margin-top:7px !important; }
 .detail-workbench-page .page-h1 { max-width:760px; font-size:19px; }
