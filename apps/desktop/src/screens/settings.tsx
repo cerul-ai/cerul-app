@@ -42,7 +42,7 @@ import { BrandMark } from "../components/brand";
 import { EmptyState, InlineNotice } from "../components/leaf";
 import { LocalModelConsent } from "../components/local-model-consent";
 import { SettingsQuietNotice } from "../components/settings-quiet-notice";
-import { useClickOutside, useEscapeToClose, useDialogFocus } from "../lib/use-dismissable";
+import { useClickOutside, useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { type CoreLevel } from "../components/core-banner";
 import {
   errorMessage,
@@ -467,7 +467,10 @@ export function SettingsScreen({
           : "chip neutral";
 
   return (
-    <div className="page settings-page settings-shell">
+    <section
+      className="page settings-page settings-shell settings-p1-page"
+      aria-labelledby="settings-shell-title"
+    >
       <aside className="settings-shell-side">
         <button type="button" className="settings-back" onClick={onBack}>
           <ArrowLeft size={16} />
@@ -572,7 +575,7 @@ export function SettingsScreen({
         </div>
         </div>
       </section>
-    </div>
+    </section>
   );
 }
 

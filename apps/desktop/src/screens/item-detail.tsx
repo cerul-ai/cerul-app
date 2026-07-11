@@ -1269,7 +1269,7 @@ export function ItemDetail({
   }
 
   return (
-    <div className="page wide">
+    <div className="page wide detail-workbench-page">
       <div className="page-head">
         <button className="btn btn-ghost sm" type="button" onClick={onBack}>
           <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
@@ -1355,10 +1355,12 @@ export function ItemDetail({
           keyframes below the main viewing stage. Empty data does not render
           placeholder chrome. */}
       {understood ? (
-        <SummaryCard
-          summary={activeUnderstandingRecord?.summary ?? null}
-          topics={activeUnderstandingRecord?.topics ?? []}
-        />
+        <div className="detail-summary-slot">
+          <SummaryCard
+            summary={activeUnderstandingRecord?.summary ?? null}
+            topics={activeUnderstandingRecord?.topics ?? []}
+          />
+        </div>
       ) : null}
 
       <SplitStage
@@ -1419,13 +1421,24 @@ export function ItemDetail({
           )
         }
         under={
-          item.contentType !== "document" && transcriptLines.length > 0 ? (
-            <CitationCard
-              title={detailTitle}
-              link={item.originalUrl ?? citationTimestampLink}
-              draft={citationDraft}
+          <div className="detail-center-stack">
+            {item.contentType !== "document" && transcriptLines.length > 0 ? (
+              <CitationCard
+                title={detailTitle}
+                link={item.originalUrl ?? citationTimestampLink}
+                draft={citationDraft}
+              />
+            ) : null}
+            <FrameStrip
+              events={activeUnderstandingRecord?.events ?? []}
+              chapters={activeUnderstandingRecord?.chapters ?? []}
+              chunks={chunkState.records}
+              durationSec={item.durationSec}
+              currentTime={currentPlayheadSec}
+              understood={understood}
+              onSeek={seekTo}
             />
-          ) : null
+          </div>
         }
         right={
           /* The exact right rail that used to live in `.detail-transcript`:
@@ -1488,15 +1501,6 @@ export function ItemDetail({
             ) : null}
           </div>
         }
-      />
-      <FrameStrip
-        events={activeUnderstandingRecord?.events ?? []}
-        chapters={activeUnderstandingRecord?.chapters ?? []}
-        chunks={chunkState.records}
-        durationSec={item.durationSec}
-        currentTime={currentPlayheadSec}
-        understood={understood}
-        onSeek={seekTo}
       />
     </div>
   );

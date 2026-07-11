@@ -6,15 +6,9 @@ cd "$ROOT"
 
 rg -qF "function handleResultsKeyDown" apps/desktop/src
 rg -qF "const [expandedResultIds, setExpandedResultIds]" apps/desktop/src
-rg -qF "const [modalityFilter, setModalityFilter]" apps/desktop/src
 rg -qF "const [sortMode, setSortMode]" apps/desktop/src
-rg -qF "const filteredResults = results.filter" apps/desktop/src
-rg -qF "const displayedResults =" apps/desktop/src
+rg -qF "const displayedResults =" apps/desktop/src/screens/results.tsx
 rg -qF "right.indexedAtEpoch" apps/desktop/src
-rg -qF "modalityCounts.image" apps/desktop/src
-rg -qF "function clearResultFilters" apps/desktop/src
-rg -qF '"results.modeTabs.aria": "Result modality counts"' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"results.modeTabs.shown": "shown"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"results.sort.recent": "Recent"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "function resultModality" apps/desktop/src
 rg -qF "function ResultModalityIcon" apps/desktop/src
@@ -25,7 +19,12 @@ rg -qF "record.nearest_frame_chunk_id" apps/desktop/src/lib/results.ts
 rg -qF "return item?.thumbnailUrl ?? null" apps/desktop/src/lib/results.ts
 rg -qF "result.thumbnailUrl" apps/desktop/src
 rg -qF "chunkFrameUrl" apps/desktop/src/lib/api.ts
-rg -qF "<ResultModalityIcon result={result} size={14} />" apps/desktop/src
+rg -qF 'className="page wide results-page-r1"' apps/desktop/src/screens/results.tsx
+rg -qF 'className="results-r1-head"' apps/desktop/src/screens/results.tsx
+rg -qF 'className="results-card-list results-citation-stream"' apps/desktop/src/screens/results.tsx
+rg -qF 'const citation = buildMomentCitation' apps/desktop/src/components/cards.tsx
+rg -qF 'await writeClipboardText(citation)' apps/desktop/src/components/cards.tsx
+rg -qF 'timestampDeepLink(' apps/desktop/src/components/cards.tsx
 rg -qF 'if ((event.metaKey || event.ctrlKey) && event.key === "ArrowDown")' apps/desktop/src
 rg -qF 'event.key === "ArrowDown" || event.key === "ArrowUp"' apps/desktop/src
 rg -qF 'event.key === "Enter" && event.target === event.currentTarget' apps/desktop/src
@@ -43,6 +42,11 @@ rg -qF ".result-card.result-row:focus-visible" apps/desktop/src/styles/extension
 rg -qF ".result-skeleton" apps/desktop/src/styles/extensions.css
 rg -qF ".thumb.has-image img" apps/desktop/src/styles/extensions.css
 rg -qF ".result-more-matches" apps/desktop/src/styles/extensions.css
-rg -qF ".results-filter-row" apps/desktop/src/styles/app.css
+rg -qF ".results-citation-stream" apps/desktop/src/styles/selected-ui.css
+rg -qF 'className="results-filter-rail"' apps/desktop/src/screens/results.tsx
+rg -qF 'className="results-answer-rail"' apps/desktop/src/screens/results.tsx
+rg -qF 'api.askLibrary' apps/desktop/src/screens/results.tsx
+rg -qF 'api.askAgentLibrary' apps/desktop/src/screens/results.tsx
+rg -qF 'onOpenCitation' apps/desktop/src/screens/results.tsx
 
-echo "results_ui_smoke keyboard_nav=arrow_up_down enter_opens_active_result cmd_down_expands_more_matches filters=modality sort=recent_by_item_indexed_at thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image active_result_style=enabled loading_skeleton=enabled local_empty_state=enabled"
+echo "results_ui_smoke layout=R1_three_column_evidence_stream answer=comprehensive_grounded_qa bridge_search=single_owner sort=relevance_recent ranking=smart_literal citation_actions=jump_copy keyboard_nav=enabled thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image"

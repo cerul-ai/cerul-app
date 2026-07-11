@@ -8,7 +8,7 @@ rg -qF "const [showJobsSheet, setShowJobsSheet]" apps/desktop/src
 rg -qF 'const visibleJobs = apiStatus === "online" ? data.jobs : []' apps/desktop/src
 rg -qF "const drawerJobs = visibleJobs" apps/desktop/src/App.tsx
 rg -qF "jobsSheetJobs" apps/desktop/src
-rg -qF 'summary={apiStatus === "online" ? data.jobSummary : null}' apps/desktop/src
+rg -qF 'summary={apiStatus === "online" ? jobsSheetSummaryWithFixture : null}' apps/desktop/src
 rg -qF "const openJobsSheet = useCallback" apps/desktop/src/App.tsx
 rg -qF "onClick={openJobsSheet}" apps/desktop/src
 rg -qF "hasActiveJobs={activeJobCount > 0}" apps/desktop/src
@@ -22,10 +22,18 @@ rg -qF "filterChanged" apps/desktop/src/App.tsx
 rg -qF "setJobsSheetJobs(nextJobs)" apps/desktop/src/App.tsx
 rg -qF "export function JobsSheet" apps/desktop/src
 rg -qF "const totalCount = (summary?.total_jobs ?? sortedJobs.length) + syncingSources.length" apps/desktop/src/dialogs/jobs-sheet.tsx
-rg -qF "hasAnyJobSignal" apps/desktop/src/dialogs/jobs-sheet.tsx
-rg -qF "showFilterControls" apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className="jobs-ledger-dialog jobs-sheet"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className={issueOpen && repairJob ? "jobs-ledger-workspace has-issue" : "jobs-ledger-workspace"}' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className={`jobs-repair-cabin phase-${repairPhase}`}' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'await onRetryJob(job)' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'if (from && returnRowRef.current) await flyTransfer(from, returnRowRef.current, job)' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'onCancelJobs={async (selectedJobs) =>' apps/desktop/src/App.tsx
+rg -qF 'await Promise.all(selectedJobs.map((job) => api.cancelJob(job.id)))' apps/desktop/src/App.tsx
+rg -qF 'await api.reindexItem(job.item_id)' apps/desktop/src/App.tsx
+rg -qF 'className="bridge-jobs-popover"' apps/desktop/src/components/bridge.tsx
+rg -qF 'jobs.popover.viewAll' apps/desktop/src/components/bridge.tsx
 rg -qF "role=\"dialog\"" apps/desktop/src
-rg -qF "aria-labelledby=\"jobs-title\"" apps/desktop/src
+rg -qF "aria-labelledby=\"jobs-ledger-title\"" apps/desktop/src
 rg -qF "jobStepProgressPercent(job)" apps/desktop/src
 rg -qF "jobDisplayStatus(job, t)" apps/desktop/src
 rg -qF "jobItemTitle(job, items, t)" apps/desktop/src
@@ -47,7 +55,7 @@ rg -qF "COALESCE(j.finished_at, j.started_at, 0) DESC" crates/cerul-api/src/lib.
 rg -qF '"/jobs/:id/cancel"' crates/cerul-api/src/lib.rs
 rg -qF "async fn cancel_job" crates/cerul-api/src/lib.rs
 rg -qF "async fn cancel_jobs_batch" crates/cerul-api/src/lib.rs
-rg -qF 'className="btn-icon sm job-cancel"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className="jobs-ledger-action"' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'jobs.clearQueued' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF '"jobs.noneTitle": "No active jobs"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "sheet-backdrop" apps/desktop/src/dialogs/jobs-sheet.tsx
@@ -56,6 +64,11 @@ rg -qF ".jobs-sheet" apps/desktop/src/styles/extensions.css
 rg -qF ".jobs-filters" apps/desktop/src/styles/handoff.css
 rg -qF ".jobs-timeline" apps/desktop/src/styles/handoff.css
 rg -qF ".jobs-tl-card" apps/desktop/src/styles/handoff.css
+rg -qF ".jobs-ledger-workspace.has-issue" apps/desktop/src/styles/selected-ui.css
+rg -qF ".jobs-transfer-ghost" apps/desktop/src/styles/selected-ui.css
+rg -qF 'className="jobs-current-inspector"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className={item?.thumbnailUrl ? "jobs-ledger-thumb has-image" : "jobs-ledger-thumb"}' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'grid-template-columns:0 minmax(0,1fr) 276px' apps/desktop/src/styles/selected-ui.css
 rg -qF "scripts/smoke-jobs-ui.sh" scripts/smoke.sh
 
-echo "jobs_ui_smoke home_status_opens_sheet=enabled jobs_queue_sheet=enabled progress_and_errors=enabled pause_cancel_controls=enabled empty_state=enabled"
+echo "jobs_ui_smoke bridge_glance=enabled layout=J6_ledger_plus_current_inspector thumbnails=enabled anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop pause_cancel_controls=enabled"

@@ -54,7 +54,7 @@ export function SummaryCard({
   }
 
   return (
-    <>
+    <div className={open ? "speedread-shell is-open" : "speedread-shell"}>
       <div className="speedread speedread-collapsed">
         <div className="speedread-row">
           <span className="summary-ribbon">
@@ -87,7 +87,7 @@ export function SummaryCard({
       </div>
 
       {open ? (
-        <div className="speedread speedread-expanded">
+        <div className="speedread speedread-expanded" role="region" aria-label={t("dt.summary.title")}>
           <div className="speedread-head">
             <span className="summary-ribbon">
               <Sparkles size={13} />
@@ -106,6 +106,6 @@ export function SummaryCard({
           ) : null}
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

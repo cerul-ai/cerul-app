@@ -8,18 +8,21 @@
 
 import {
   Check,
+  Copy,
   Eye,
   FileAudio,
   FileText,
   FileVideo,
-  Gauge,
   Image as ImageIcon,
   Mic,
   Play,
   Sparkles,
 } from "lucide-react";
+import { useState } from "react";
 import { useT, type TFunction } from "../lib/i18n";
-import { formatUsd } from "../lib/formatters";
+import { buildMomentCitation, formatUsd } from "../lib/formatters";
+import { writeClipboardText } from "../lib/clipboard";
+import { timestampDeepLink } from "../lib/detail";
 import {
   itemHasPartialIndex,
   itemHasSpeechSearch,
@@ -172,6 +175,7 @@ export function ResultCard({
   query: string;
 }) {
   const t = useT();
+  const [copied, setCopied] = useState(false);
   const className = [
     "result-card",
     "result-row",
@@ -196,15 +200,41 @@ export function ResultCard({
           ? FileText
           : Sparkles;
 
+  async function copyCitation() {
+    const citation = buildMomentCitation({
+      title: result.title,
+      timestamp: result.timestamp,
+      quote: result.snippet,
+      link: timestampDeepLink(
+        result.itemId,
+        result.timestamp,
+        result.playbackChunkId,
+        "result-detail",
+      ),
+    });
+    try {
+      await writeClipboardText(citation);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
   return (
-    <button
+    <article
       className={className}
-      type="button"
       data-result-index={index}
+      tabIndex={0}
       aria-selected={selected}
       aria-expanded={result.moreMatches.length > 0 ? expanded : undefined}
       onFocus={onFocus}
-      onClick={() => onOpen(result)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onOpen(result);
+        }
+      }}
     >
       <span className={`thumb ${result.thumbnailUrl ? "has-image" : result.color}`}>
         {result.thumbnailUrl ? (
@@ -222,28 +252,35 @@ export function ResultCard({
       </span>
       <span className="result-body">
         <span className="result-meta">
-          <ResultModalityIcon result={result} size={14} />
           <span className="chip neutral result-source-label">
             <span className="dot" />
             {result.source}
           </span>
           <em className={`chip modality-pill ${modality}`}>
-            <span className="dot" />
             <ModalityBadgeIcon size={14} />
             {modalityLabel}
-          </em>
-          <em className={`chip confidence-pill ${result.confidence}`}>
-            <span className="dot" />
-            <Gauge size={14} />
-            {result.confidenceLabel}
           </em>
           <em className="chip score-pill mono" title={result.scoreTitle}>
             {result.scoreLabel}
           </em>
         </span>
-        <strong className="clamp1">{result.title}</strong>
-        <span className="snippet clamp2">
+        <blockquote className="result-quote clamp3">
           {highlightSnippet(result.snippet, query)}
+        </blockquote>
+        <span className="result-citation-line">
+          <strong className="clamp1">{result.title}</strong>
+          <span className="mono">{result.timestamp}</span>
+          {result.duration ? <span className="muted">/ {result.duration}</span> : null}
+        </span>
+        <span className="result-actions">
+          <button className="btn btn-primary sm" type="button" onClick={() => onOpen(result)}>
+            <Play size={13} fill="currentColor" />
+            {t("results.action.jump")}
+          </button>
+          <button className="btn btn-secondary sm" type="button" onClick={() => void copyCitation()}>
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+            {copied ? t("results.action.copied") : t("results.action.copy")}
+          </button>
         </span>
         {result.moreMatches.length > 0 && !expanded ? (
           <span className="result-more-hint muted">
@@ -255,10 +292,6 @@ export function ResultCard({
             )}
           </span>
         ) : null}
-      </span>
-      <span className="timestamp mono">
-        {result.timestamp}
-        <small>{result.duration}</small>
       </span>
       {expanded && result.moreMatches.length > 0 ? (
         <span
@@ -279,7 +312,7 @@ export function ResultCard({
           ))}
         </span>
       ) : null}
-    </button>
+    </article>
   );
 }
 

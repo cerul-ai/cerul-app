@@ -118,6 +118,7 @@ import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
 import { AccountDialogController } from "./components/account-sidebar";
 import { Bridge } from "./components/bridge";
+import { LaunchSplash } from "./components/launch-splash";
 import type {
   ApiStatus,
   AppData,
@@ -628,6 +629,7 @@ function AppWorkspace() {
   const [jobsSheetFilter, setJobsSheetFilter] = useState<JobsFilter>("all");
   const [jobsSheetJobs, setJobsSheetJobs] = useState<api.JobRecord[]>([]);
   const [jobsSheetLoading, setJobsSheetLoading] = useState(false);
+  const [devFixtureResolved, setDevFixtureResolved] = useState(false);
   const jobsSheetRequestSeq = useRef(0);
   const jobsSheetDisplayedFilterRef = useRef<JobsFilter>("all");
   const [modelDownloadState, setModelDownloadState] = useState<{
@@ -764,6 +766,53 @@ function AppWorkspace() {
     void refreshJobsSheetJobs(jobsSheetFilter);
   }, [showJobsSheet, jobsSheetFilter, refreshJobsSheetJobs]);
   const jobsSheetVisibleJobs = jobsSheetFilter === "all" ? drawerJobs : jobsSheetJobs;
+  // A local-only visual QA state for exercising the complete M3 -> M4 -> A
+  // repair motion without corrupting a developer's real Core database.
+  const devFailedJob = import.meta.env.DEV && hashQueryParam("fakeFailedJob") === "1"
+    ? {
+        id: "__cerul_dev_failed_job__",
+        item_id: visibleItems[0]?.id ?? "__cerul_dev_failed_item__",
+        job_type: "index_video",
+        status: devFixtureResolved ? "queued" : "failed",
+        started_at: Date.now() / 1000 - 94,
+        finished_at: devFixtureResolved ? null : Date.now() / 1000 - 8,
+        error: devFixtureResolved ? null : "来源连接在验证阶段中断",
+        progress: devFixtureResolved ? 0 : 0.62,
+        stage: devFixtureResolved ? null : "embedding_text",
+        stage_message: devFixtureResolved ? null : "验证来源连接",
+        usage: {
+          event_count: 0,
+          request_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          audio_seconds: 0,
+          image_count: 0,
+          video_seconds: 0,
+          estimated_usd: 0,
+          billed_credits: 0,
+          unpriced_events: 0,
+        },
+        error_info: devFixtureResolved
+          ? null
+          : {
+              code: "source_unavailable",
+              capability: "index_video",
+              settings_section: "Sources",
+              message: "来源暂时不可访问；确认连接后即可从此处继续。",
+            },
+      } satisfies api.JobRecord
+    : null;
+  const jobsSheetVisibleJobsWithFixture = devFailedJob
+    ? [devFailedJob, ...jobsSheetVisibleJobs]
+    : jobsSheetVisibleJobs;
+  const jobsSheetSummaryWithFixture = devFailedJob && data.jobSummary
+    ? {
+        ...data.jobSummary,
+        queued_jobs: data.jobSummary.queued_jobs + Number(devFixtureResolved),
+        failed_jobs: data.jobSummary.failed_jobs + Number(!devFixtureResolved),
+        total_jobs: data.jobSummary.total_jobs + 1,
+      }
+    : data.jobSummary;
   const openJobsSheet = useCallback(() => {
     setJobsSheetFilter("all");
     setJobsSheetJobs([]);
@@ -1679,11 +1728,11 @@ function AppWorkspace() {
   ];
   const mobileTitleKey =
     mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
-  const settingsTakeoverActive = view === "settings";
   const onboardingActive = view === "onboarding";
 
   return (
     <div className="app" data-onboarding={onboardingActive ? "true" : undefined}>
+      <LaunchSplash />
       <AccountDialogController />
       <div className="titlebar">
         <div className="titlebar-lead">
@@ -1763,13 +1812,21 @@ function AppWorkspace() {
         </div>
         <div className="titlebar-drag" aria-hidden="true" />
       </div>
-      {!settingsTakeoverActive ? (
-        <>
+      <>
           <Bridge
             activeView={sidebarActiveView}
             onboardingActive={onboardingActive}
             onNavigate={(next) => navigate(next)}
             onOpenJobs={openJobsSheet}
+            jobs={drawerJobs}
+            jobsSummary={apiStatus === "online" ? data.jobSummary : null}
+            items={visibleItems}
+            indexingPaused={indexingPaused}
+            onTogglePause={() => {
+              void api.updateSettings({ indexing_paused: !indexingPaused })
+                .then(() => refreshCoreData())
+                .catch((error) => console.warn("failed to toggle indexing pause", error));
+            }}
             jobsCount={backgroundActivityCount}
             coreLevel={coreLevel}
             coreLabel={
@@ -1779,7 +1836,7 @@ function AppWorkspace() {
                   ? t("shell.coreStarting")
                   : t("shell.coreUnresponsive")
             }
-            searchVisible={view !== "home" && view !== "onboarding" && view !== "results"}
+            searchVisible={view !== "home" && view !== "onboarding"}
             query={query}
             onRunQuery={runQuery}
             rankingPreference={searchRankingPreference}
@@ -1826,8 +1883,7 @@ function AppWorkspace() {
               </span>
             </button>
           </div>
-        </>
-      ) : null}
+      </>
 
       <main className="content">
         {view === "onboarding" ? (
@@ -1867,16 +1923,20 @@ function AppWorkspace() {
         {view === "results" ? (
           <ResultsScreen
             query={query}
-            setQuery={setQuery}
-            onSubmit={submitSearch}
             rankingPreference={searchRankingPreference}
             onRankingPreferenceChange={handleSearchRankingPreferenceChange}
-            onBack={() => navigate("home")}
             onOpen={(result) =>
               navigate("result-detail", {
                 itemId: result.itemId,
                 playbackChunkId: result.playbackChunkId,
                 timestamp: result.timestamp,
+              })
+            }
+            onOpenCitation={(citation) =>
+              navigate("result-detail", {
+                itemId: citation.item_id,
+                playbackChunkId: citation.playback_chunk_id,
+                timestamp: citation.timestamp,
               })
             }
             results={visibleResults}
@@ -2127,8 +2187,8 @@ function AppWorkspace() {
       ) : null}
       {showJobsSheet ? (
         <JobsSheet
-          jobs={jobsSheetVisibleJobs}
-          summary={apiStatus === "online" ? data.jobSummary : null}
+          jobs={jobsSheetVisibleJobsWithFixture}
+          summary={apiStatus === "online" ? jobsSheetSummaryWithFixture : null}
           filter={jobsSheetFilter}
           loading={jobsSheetLoading}
           syncingSources={syncingSources}
@@ -2163,6 +2223,23 @@ function AppWorkspace() {
               console.warn("failed to cancel job", error);
             }
           }}
+          onCancelJobs={async (selectedJobs) => {
+            const confirmed = await requestConfirm({
+              title: t("jobs.confirm.cancelSelected.title", { count: selectedJobs.length }),
+              body: t("jobs.confirm.cancelSelected.body", { count: selectedJobs.length }),
+              confirmLabel: t("jobs.confirm.cancelSelected.confirm"),
+            });
+            if (!confirmed) {
+              return;
+            }
+            try {
+              await Promise.all(selectedJobs.map((job) => api.cancelJob(job.id)));
+              await refreshCoreData();
+              await refreshJobsSheetJobs(jobsSheetFilter);
+            } catch (error) {
+              console.warn("failed to cancel selected jobs", error);
+            }
+          }}
           onCancelQueuedJobs={async () => {
             const confirmed = await requestConfirm({
               title: t("jobs.confirm.clearQueued.title"),
@@ -2182,6 +2259,20 @@ function AppWorkspace() {
             } catch (error) {
               console.warn("failed to cancel queued jobs", error);
             }
+          }}
+          onRetryJob={async (job) => {
+            if (import.meta.env.DEV && job.id === "__cerul_dev_failed_job__") {
+              await new Promise<void>((resolve) => window.setTimeout(resolve, 220));
+              setDevFixtureResolved(true);
+              return;
+            }
+            if (!job.item_id) {
+              throw new Error(t("jobs.repair.missingItem"));
+            }
+            kickActivityPolling();
+            await api.reindexItem(job.item_id);
+            await refreshCoreData();
+            await refreshJobsSheetJobs(jobsSheetFilter);
           }}
           onClose={() => setShowJobsSheet(false)}
           onOpenSettingsFix={(section) => {

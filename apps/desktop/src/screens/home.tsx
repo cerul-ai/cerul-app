@@ -268,6 +268,8 @@ export function HomeScreen({
   const activeJobs = jobs.filter(isActiveJob);
   const runningJobs = activeJobs.filter((job) => job.status === "running");
   const queuedJobs = activeJobs.filter((job) => job.status === "queued");
+  const completedJobs = jobs.filter((job) => job.status === "completed").length;
+  const failedJobs = jobs.filter((job) => job.status === "failed").length;
   const onlyPausedQueuedJobs = indexingPaused && runningJobs.length === 0 && queuedJobs.length > 0;
   const hasSources = sources.length > 0;
   const searchDisabled = hasSources && indexedCount === 0;
@@ -374,22 +376,33 @@ export function HomeScreen({
   }
 
   return (
-    <div className="page home-page" style={{ maxWidth: 920 }}>
+    <div className="page wide home-page home-page-h2">
       {firstRunReady ? (
         <FirstRunReadyHeader globalHotkey={globalHotkey} onDismiss={onResolveFirstRun} />
       ) : null}
       <div className="home-search-stage">
-        <h1>{t("home.heading")}</h1>
-        <p className="muted home-summary">
-          {t("home.summary", {
-            count: indexedCount,
-            runtime:
-              runtimeHours > 0
-                ? t("home.runtime.hm", { hours: runtimeHours, minutes: runtimeRemainder })
-                : t("home.runtime.m", { minutes: runtimeMinutes || 0 }),
-            sources: activeSources,
-          })}
-        </p>
+        <div className="home-h2-intro">
+          <p className="page-eyebrow">{t("home.today")}</p>
+          <h1>{t("home.heading")}</h1>
+          <p className="muted home-summary">
+            {t("home.summary", {
+              count: indexedCount,
+              runtime:
+                runtimeHours > 0
+                  ? t("home.runtime.hm", { hours: runtimeHours, minutes: runtimeRemainder })
+                  : t("home.runtime.m", { minutes: runtimeMinutes || 0 }),
+              sources: activeSources,
+            })}
+          </p>
+        </div>
+        <aside className="home-today-card" aria-label={t("home.today")}>
+          <header><strong>{t("home.today")}</strong><span className="mono">{new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date())}</span></header>
+          <div>
+            <span><b className="mono">{completedJobs}</b>{t("jobs.status.completed")}</span>
+            <span><b className="mono">{activeJobs.length}</b>{t("jobs.groupRunning")}</span>
+            <span><b className="mono">{failedJobs}</b>{t("jobs.status.failed")}</span>
+          </div>
+        </aside>
 
         <form
           className={searchDisabled ? "search-wrap disabled" : "search-wrap"}
@@ -440,22 +453,38 @@ export function HomeScreen({
       </div>
 
       {continueItem ? (
-        <div className="home-continue-block">
-          <div className="home-block-head">
-            <p className="section-label">{t("home.continueWatching")}</p>
-            <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
-              <Plus size={14} />
-              <span>{t("home.addSource")}</span>
-            </button>
+        <div className="home-h2-feature-grid">
+          <div className="home-continue-block">
+            <div className="home-block-head">
+              <p className="section-label">{t("home.continueWatching")}</p>
+              <button className="btn btn-ghost sm" type="button" onClick={onAddSource}>
+                <Plus size={14} />
+                <span>{t("home.addSource")}</span>
+              </button>
+            </div>
+            <ContinueWatchingCard
+              item={continueItem}
+              timestamp={continueTimestamp}
+              onOpen={() => onOpenItem(continueItem, continueTimestamp)}
+            />
           </div>
-          <ContinueWatchingCard
-            item={continueItem}
-            timestamp={continueTimestamp}
-            onOpen={() => onOpenItem(continueItem, continueTimestamp)}
-          />
+          <aside className="home-now-list" aria-label={t("home.recentIndexed")}>
+            <header><strong>{t("home.recentIndexed")}</strong><button type="button" onClick={onOpenLibrary}>{t("home.browseLibrary")}<ChevronRight size={13} /></button></header>
+            <div>
+              {recentIndexed.slice(0, 3).map((item) => (
+                <button key={item.id} type="button" onClick={() => onOpenItem(item)}>
+                  <span className={item.thumbnailUrl ? "home-now-thumb has-image" : "home-now-thumb"}>
+                    {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt="" /> : <Sparkles size={16} />}
+                  </span>
+                  <span><strong className="clamp2">{item.title}</strong><small className="clamp1">{item.source}</small></span>
+                </button>
+              ))}
+            </div>
+          </aside>
         </div>
       ) : null}
 
+      <div className="home-h2-lower">
       <div className="home-recent-block">
         <div className="home-block-head">
           <p className="section-label">{t("home.recentIndexed")}</p>
@@ -521,6 +550,15 @@ export function HomeScreen({
             onAction={onAddSource}
           />
         )}
+      </div>
+      <aside className="home-pulse-card">
+        <header><strong>{t("nav.sources")}</strong><span className="mono">{sources.length}</span></header>
+        <div><span>{t("jobs.summary.live")}<b className="mono">{activeSources}</b></span><span>{t("jobs.status.failed")}<b className="mono">{erroredSources.length}</b></span><span>{t("jobs.localProcessing")}<b className="mono">✓</b></span></div>
+      </aside>
+      <aside className="home-pulse-card">
+        <header><strong>{t("nav.jobs")}</strong><span>{t("jobs.localProcessing")}</span></header>
+        <div><span>{t("jobs.groupRunning")}<b className="mono">{runningJobs.length}</b></span><span>{t("jobs.groupQueued")}<b className="mono">{queuedJobs.length}</b></span><span>{t("jobs.status.failed")}<b className="mono">{failedJobs}</b></span></div>
+      </aside>
       </div>
     </div>
   );

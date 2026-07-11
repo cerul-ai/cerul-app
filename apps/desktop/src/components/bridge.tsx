@@ -3,6 +3,8 @@ import {
   Database,
   Library,
   ListChecks,
+  Pause,
+  Play,
   Search,
   Settings,
   Star,
@@ -10,10 +12,20 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useT } from "../lib/i18n";
-import { useEscapeToClose } from "../lib/use-dismissable";
+import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
 import { useAuthStore } from "../lib/cloud/authStore";
 import { BrandMark } from "./brand";
 import type * as api from "../lib/api";
+import type { Item } from "../lib/types";
+import { isActiveJob } from "../lib/items";
+import {
+  jobBadgeStatus,
+  jobDisplayStatus,
+  jobItemTitle,
+  jobStageMessage,
+  jobStepProgressPercent,
+  jobTypeLabel,
+} from "../lib/jobs";
 
 // 舰桥（Bridge）— 顶部悬浮导航，2026-07-10 主题定稿（cerul-brand I_应用主题）。
 // 恒暗胶囊：mark → 页签 → 搜索（呼吸态）→ 任务 → 头像菜单。
@@ -26,6 +38,11 @@ type BridgeProps = {
   onboardingActive: boolean;
   onNavigate: (view: BridgeView) => void;
   onOpenJobs: () => void;
+  jobs: api.JobRecord[];
+  jobsSummary: api.JobStatusSummary | null;
+  items: Item[];
+  indexingPaused: boolean;
+  onTogglePause: () => void;
   jobsCount: number;
   coreLevel: string;
   coreLabel: string;
@@ -66,6 +83,11 @@ export function Bridge(props: BridgeProps) {
     onboardingActive,
     onNavigate,
     onOpenJobs,
+    jobs,
+    jobsSummary,
+    items,
+    indexingPaused,
+    onTogglePause,
     jobsCount,
     coreLevel,
     coreLabel,
@@ -140,6 +162,21 @@ export function Bridge(props: BridgeProps) {
     window.addEventListener("mousedown", onPointerDown);
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, [menuOpen]);
+
+  /* ---- E1 task glance ---- */
+  const [jobsOpen, setJobsOpen] = useState(false);
+  const jobsRef = useRef<HTMLDivElement | null>(null);
+  useEscapeToClose(() => setJobsOpen(false), jobsOpen);
+  useClickOutside(jobsRef, () => setJobsOpen(false), jobsOpen);
+  const recentJobs = [...jobs]
+    .sort((left, right) => {
+      const activeDelta = Number(isActiveJob(right)) - Number(isActiveJob(left));
+      if (activeDelta !== 0) return activeDelta;
+      return (right.finished_at ?? right.started_at ?? 0) - (left.finished_at ?? left.started_at ?? 0);
+    })
+    .slice(0, 3);
+  const queuedCount = jobsSummary?.queued_jobs ?? jobs.filter((job) => job.status === "queued").length;
+  const totalCount = jobsSummary?.total_jobs ?? jobs.length;
 
   const status = useAuthStore((state) => state.status);
   const user = useAuthStore((state) => state.user);
@@ -253,23 +290,69 @@ export function Bridge(props: BridgeProps) {
           </div>
         ) : null}
 
-        <button
-          className="bridge-tab bridge-jobs"
-          type="button"
-          disabled={onboardingActive}
-          onClick={onOpenJobs}
-          title={t("nav.jobs")}
-        >
-          <span className="bridge-jobs-icon">
-            <ListChecks size={15} aria-hidden="true" />
-            {jobsCount > 0 ? (
-              <span className="badge-count" aria-hidden="true">
-                {jobsCount > 9 ? "9+" : jobsCount}
-              </span>
-            ) : null}
-          </span>
-          <span className="bridge-tab-label">{t("nav.jobs")}</span>
-        </button>
+        <div className="bridge-jobs-shell" ref={jobsRef}>
+          <button
+            className={jobsOpen ? "bridge-tab bridge-jobs active" : "bridge-tab bridge-jobs"}
+            type="button"
+            disabled={onboardingActive}
+            aria-haspopup="dialog"
+            aria-expanded={jobsOpen}
+            onClick={() => {
+              setMenuOpen(false);
+              setJobsOpen((open) => !open);
+            }}
+            title={t("nav.jobs")}
+          >
+            <span className="bridge-jobs-icon">
+              <ListChecks size={15} aria-hidden="true" />
+              {jobsCount > 0 ? (
+                <span className="badge-count" aria-hidden="true">
+                  {jobsCount > 9 ? "9+" : jobsCount}
+                </span>
+              ) : null}
+            </span>
+            <span className="bridge-tab-label">{t("nav.jobs")}</span>
+          </button>
+
+          {jobsOpen ? (
+            <section className="bridge-jobs-popover" role="dialog" aria-label={t("nav.jobs")}>
+              <header className="bridge-jobs-popover-head">
+                <span>
+                  <strong>{t("nav.jobs")}</strong>
+                  <small className="mono">{t("jobs.popover.queue", { count: totalCount })} · {t("jobs.localProcessing")}</small>
+                </span>
+                <button type="button" onClick={onTogglePause}>
+                  {indexingPaused ? <Play size={12} /> : <Pause size={12} />}
+                  {indexingPaused ? t("jobs.resume") : t("jobs.pause")}
+                </button>
+              </header>
+              <div className="bridge-jobs-popover-list">
+                {recentJobs.length > 0 ? recentJobs.map((job) => {
+                  const tone = jobBadgeStatus(job.status);
+                  const progress = jobStepProgressPercent(job);
+                  return (
+                    <article className="bridge-job-glance" key={job.id} data-tone={tone}>
+                      <div>
+                        <strong className="clamp1">{jobItemTitle(job, items, t)}</strong>
+                        <span className="clamp1">{jobTypeLabel(job.job_type, t)} · {jobStageMessage(job, t)}</span>
+                      </div>
+                      <em>{jobDisplayStatus(job, t)}</em>
+                      {job.status === "running" ? (
+                        <span className="bridge-job-progress"><i style={{ width: `${progress}%` }} /></span>
+                      ) : null}
+                    </article>
+                  );
+                }) : <p className="bridge-jobs-empty">{t("jobs.emptyBody")}</p>}
+              </div>
+              <footer className="bridge-jobs-popover-foot">
+                <span>{t("jobs.popover.waiting", { count: queuedCount })}</span>
+                <button type="button" onClick={() => { setJobsOpen(false); onOpenJobs(); }}>
+                  {t("jobs.popover.viewAll")} <span aria-hidden="true">→</span>
+                </button>
+              </footer>
+            </section>
+          ) : null}
+        </div>
 
         {downloadPill ? (
           <button
