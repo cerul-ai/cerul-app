@@ -37,10 +37,15 @@ export function CitationCard({
     if (!draft || status === "working") return;
     setStatus("working");
     try {
-      const sharedLink = onShare ? await onShare() : null;
-      if (onShare && !sharedLink) {
-        setStatus("idle");
-        return;
+      let sharedLink: string | null = null;
+      if (onShare) {
+        try {
+          sharedLink = await onShare();
+        } catch {
+          // Public sharing is an enhancement to citation copy. If Cloud is
+          // unavailable, keep the local/original citation usable.
+          sharedLink = null;
+        }
       }
       const citationText = buildMomentCitation({
         title,

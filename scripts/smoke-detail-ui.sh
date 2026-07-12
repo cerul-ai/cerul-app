@@ -72,7 +72,8 @@ rg -qF 'if (showChapters) setNavigationTab("chapters")' apps/desktop/src/compone
 rg -qF '.page.wide.detail-workbench-page { width:100%; max-width:none; height:100%; margin:0' apps/desktop/src/styles/selected-ui.css
 rg -qF '.detail-workbench-page .transcript .seg-btn { width:100%' apps/desktop/src/styles/selected-ui.css
 rg -qF '.detail-workbench-page .detail-right-stack { min-height:0; height:100%; display:flex; flex-direction:column; overflow:hidden; }' apps/desktop/src/styles/selected-ui.css
-rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'onShare={item.contentType === "video" && cloudAuthStatus === "signedIn" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'Public sharing is an enhancement to citation copy' apps/desktop/src/components/citation-card.tsx
 rg -qF 'recordManagedShare(' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'cloudUserId,' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'share.identity?.itemId === item.id' apps/desktop/src/screens/item-detail.tsx

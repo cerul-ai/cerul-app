@@ -65,12 +65,12 @@ export function MomentsScreen({
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const savedVideoCount = useMemo(() => new Set(moments.map((moment) => moment.item_id)).size, [moments]);
-  const visibleMoments = view === "all" || view === "quotes" ? moments : [];
+  const visibleMoments = view === "videos" ? [] : moments;
   const views: Array<{ id: SavedView; label: string; count: number }> = [
     { id: "all", label: t("moments.p3.all"), count: moments.length },
     { id: "quotes", label: t("moments.p3.quotes"), count: moments.length },
     { id: "videos", label: t("moments.p3.videos"), count: 0 },
-    { id: "review", label: t("moments.p3.review"), count: 0 },
+    { id: "review", label: t("moments.p3.review"), count: moments.length },
   ];
   const collections = [
     { id: "all" as const, eyebrow: "01", title: t("moments.p3.collection.all"), description: t("moments.p3.collection.allDesc", { count: moments.length }), count: moments.length, Icon: Quote },

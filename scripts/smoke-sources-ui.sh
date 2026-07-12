@@ -19,6 +19,8 @@ rg -qF ".source-error-toggle" apps/desktop/src/styles/extensions.css
 rg -qF ".source-error-panel" apps/desktop/src/styles/extensions.css
 rg -qF 'className="page wide p3-page saved-p3-page"' apps/desktop/src/screens/moments.tsx
 rg -qF 'className="saved-collection-grid"' apps/desktop/src/screens/moments.tsx
+rg -qF 'const visibleMoments = view === "videos" ? [] : moments' apps/desktop/src/screens/moments.tsx
+rg -qF '{ id: "review", label: t("moments.p3.review"), count: moments.length }' apps/desktop/src/screens/moments.tsx
 rg -qF 'items={visibleItems}' apps/desktop/src/App.tsx
 rg -qF 'className="page wide p3-page sources-p3-page"' apps/desktop/src/screens/sources.tsx
 rg -qF 'className="connector-grid"' apps/desktop/src/screens/sources.tsx

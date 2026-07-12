@@ -78,7 +78,9 @@ rg -qF 'className="jobs-current-inspector"' apps/desktop/src/dialogs/jobs-sheet.
 rg -qF 'className={item?.thumbnailUrl ? "jobs-ledger-thumb has-image" : "jobs-ledger-thumb"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'const nextIssue = filteredJobs.find' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'if (activeIssueJob && jobGroup(activeIssueJob) === "failed") return;' apps/desktop/src/dialogs/jobs-sheet.tsx
-rg -qF 'const selectedJobs = ledgerJobs.filter' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'const selectedJobs = pageJobs.filter' apps/desktop/src/dialogs/jobs-sheet.tsx
+! rg -qF 'const selectedJobs = ledgerJobs.filter' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'const queuedJobIds = jobsSheetVisibleJobs' apps/desktop/src/App.tsx
 rg -qF 'grid-template-columns:0 minmax(0,1fr) 276px' apps/desktop/src/styles/selected-ui.css
 rg -qF '.jobs-ledger-page {' apps/desktop/src/styles/selected-ui.css
 rg -qF '.jobs-ledger-dialog.jobs-sheet.is-page {' apps/desktop/src/styles/selected-ui.css

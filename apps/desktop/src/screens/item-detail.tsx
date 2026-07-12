@@ -1569,7 +1569,7 @@ export function ItemDetail({
                 title={detailTitle}
                 link={item.originalUrl ?? citationTimestampLink}
                 draft={citationDraft}
-                onShare={item.contentType === "video" ? createPublicShare : undefined}
+                onShare={item.contentType === "video" && cloudAuthStatus === "signedIn" ? createPublicShare : undefined}
               />
             ) : null}
           </div>
