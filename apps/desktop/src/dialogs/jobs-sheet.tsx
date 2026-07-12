@@ -112,7 +112,8 @@ export function JobsSheet({
   const failedCount = summary?.failed_jobs ?? failedJobs.length;
   const doneCount = summary ? summary.completed_jobs + summary.cancelled_jobs : doneJobs.length;
   const totalCount = (summary?.total_jobs ?? sortedJobs.length) + syncingSources.length;
-  const repairJob = repairingJob ?? failedJobs.find((job) => job.id === activeIssueId) ?? null;
+  const activeIssueJob = sortedJobs.find((job) => job.id === activeIssueId) ?? null;
+  const repairJob = repairingJob ?? activeIssueJob;
   const inspectedJob = sortedJobs.find((job) => job.id === selectedJobId) ?? sortedJobs[0] ?? null;
   const inspectedItem = inspectedJob ? itemForJob(inspectedJob) : null;
 
@@ -163,6 +164,17 @@ export function JobsSheet({
     const ids = new Set(jobs.filter(isActiveJob).map((job) => job.id));
     setSelectedIds((current) => new Set([...current].filter((id) => ids.has(id))));
   }, [jobs]);
+
+  useEffect(() => {
+    if (!issueOpen || repairPhase === "repairing" || repairPhase === "resolved" || repairPhase === "returning") return;
+    if (activeIssueJob && jobGroup(activeIssueJob) === "failed") return;
+    setIssueOpen(false);
+    setActiveIssueId(null);
+    setRepairingJob(null);
+    setRepairPhase("idle");
+    setRepairStep(0);
+    setRepairError(null);
+  }, [issueOpen, repairPhase, activeIssueJob?.id, activeIssueJob?.status]);
 
   useEffect(() => {
     if (issueOpen || repairPhase !== "idle") return;

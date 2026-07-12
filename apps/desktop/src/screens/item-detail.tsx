@@ -1282,7 +1282,8 @@ export function ItemDetail({
         share.status === "active" &&
         share.identity?.itemId === item.id &&
         share.identity.chunkId === shareChunkId &&
-        share.identity.timestamp === citationDraft.displayTime,
+        share.identity.timestamp === citationDraft.displayTime &&
+        share.headline === citationDraft.quote,
     );
     if (existingShare) return existingShare.share_url;
     const confirmed = await requestConfirm({

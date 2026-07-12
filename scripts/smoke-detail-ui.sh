@@ -71,10 +71,12 @@ rg -qF 'const [leftWidth, setLeftWidth] = useState(19)' apps/desktop/src/compone
 rg -qF 'if (showChapters) setNavigationTab("chapters")' apps/desktop/src/components/SplitStage.tsx
 rg -qF '.page.wide.detail-workbench-page { width:100%; max-width:none; height:100%; margin:0' apps/desktop/src/styles/selected-ui.css
 rg -qF '.detail-workbench-page .transcript .seg-btn { width:100%' apps/desktop/src/styles/selected-ui.css
+rg -qF '.detail-workbench-page .detail-right-stack { min-height:0; height:100%; display:flex; flex-direction:column; overflow:hidden; }' apps/desktop/src/styles/selected-ui.css
 rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'recordManagedShare(published, {' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'share.identity?.itemId === item.id' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'share.identity.chunkId === shareChunkId' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'share.headline === citationDraft.quote' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'const audioPlaybackUrl =' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'const imagePreviewUrl =' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'ref={handleAudioElement}' apps/desktop/src/screens/item-detail.tsx
@@ -83,4 +85,4 @@ rg -qF 't("understanding.action.reanalyze")' apps/desktop/src/screens/item-detai
 rg -qF 'onBack={() => navigate(detailOrigin)}' apps/desktop/src/App.tsx
 ! rg -qF 'addToBasket' apps/desktop/src/components/citation-card.tsx
 
-echo "detail_ui_smoke layout=fluid_three_pane route=single_item_detail origin_aware_back=enabled media=video_audio_image_document default_navigation=chapters transcript=vertical_only citation_actions=single_copy_public_link share_identity=item_chunk_timestamp analysis=compact_reanalyze copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches matched_marker=enabled item_delete_reindex=enabled"
+echo "detail_ui_smoke layout=fluid_three_pane route=single_item_detail origin_aware_back=enabled media=video_audio_image_document default_navigation=chapters transcript=vertical_only citation_actions=single_copy_public_link share_identity=item_chunk_timestamp_quote analysis=compact_reanalyze copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches matched_marker=enabled item_delete_reindex=enabled"

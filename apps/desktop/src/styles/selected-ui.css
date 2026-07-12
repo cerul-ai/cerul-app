@@ -1651,7 +1651,7 @@
 .detail-center-stack .strip-tip,.detail-center-stack .strip-legend { display:none; }
 .detail-workbench-page .pane-right { height:100%; display:flex; flex-direction:column; overflow:hidden; padding:3px 8px 8px; }
 .detail-workbench-page .pane-right-head { flex:none; min-height:32px; margin:0 0 3px; }
-.detail-workbench-page .detail-right-stack { min-height:0; height:100%; display:flex; overflow:hidden; }
+.detail-workbench-page .detail-right-stack { min-height:0; height:100%; display:flex; flex-direction:column; overflow:hidden; }
 .detail-workbench-page .detail-right-stack > .understanding-panel,.detail-workbench-page .detail-right-stack > .understanding-progress { flex:none; padding:9px; gap:6px; }
 .detail-workbench-page .understanding-compact-completed { min-height:38px; display:flex; align-items:center; padding:6px 9px; overflow:hidden; }
 .detail-workbench-page .understanding-compact-completed .understanding-header { width:100%; min-height:0; margin:0; padding:0; border:0; }

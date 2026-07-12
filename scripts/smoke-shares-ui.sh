@@ -13,6 +13,7 @@ rg -qF '.shares-filter-rail { padding:12px 11px; border-right:1px solid var(--li
 rg -qF '.shares-inspector { align-self:stretch; padding:13px; border-left:1px solid var(--line); }' apps/desktop/src/styles/selected-ui.css
 rg -qF '.shares-inspector { grid-column:2; grid-row:2; height:auto; max-height:none; border-top:1px solid var(--line); }' apps/desktop/src/styles/selected-ui.css
 rg -qF 'onNavigate("shares")' apps/desktop/src/components/bridge.tsx
+rg -qF '{ id: "shares" as View, labelKey: "nav.shares", icon: Share2 }' apps/desktop/src/App.tsx
 rg -qF 'view === "shares"' apps/desktop/src/App.tsx
 rg -qF 'recordManagedShare(published, {' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'cloudClient.revokeShare(accessToken, share.id)' apps/desktop/src/screens/shares.tsx
@@ -23,4 +24,4 @@ rg -qF '.share-ledger-row.active' apps/desktop/src/styles/selected-ui.css
 rg -qF '"nav.shares": "分享管理"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"nav.shares": "Share management"' apps/desktop/src/lib/i18n-catalog.ts
 
-echo "shares_ui_smoke entry=avatar_secondary layout=single_three_pane_workbench ledger=device_local actions=copy_preview_revoke card=S2 external=A2 single_detail_share_action=copy_citation"
+echo "shares_ui_smoke entry=avatar_secondary mobile_entry=enabled layout=single_three_pane_workbench ledger=device_local actions=copy_preview_revoke card=S2 external=A2 single_detail_share_action=copy_citation"

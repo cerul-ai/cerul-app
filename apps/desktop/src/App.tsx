@@ -54,6 +54,7 @@ import {
   ReceiptText,
   Search,
   Settings,
+  Share2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -1730,6 +1731,7 @@ function AppWorkspace() {
   ];
   const mobileNavItems = [
     ...railItems,
+    { id: "shares" as View, labelKey: "nav.shares", icon: Share2 },
     { id: "settings" as View, labelKey: "nav.settings", icon: Settings },
   ];
   const mobileTitleKey =
