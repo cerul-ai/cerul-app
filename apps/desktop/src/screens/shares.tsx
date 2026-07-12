@@ -99,7 +99,7 @@ export function SharesScreen({ requestConfirm }: { requestConfirm: RequestConfir
         <span className="shares-scope-note"><ShieldCheck size={14} />{t("shares.scope")}</span>
       </header>
 
-      <div className="shares-workspace">
+      <div className={selectedShare ? "shares-workspace has-inspector" : "shares-workspace no-inspector"}>
         <aside className="shares-filter-rail" aria-label={t("shares.filter.aria")}>
           <h2>{t("shares.filter.title")}</h2>
           <button className={filter === "active" ? "active" : ""} type="button" onClick={() => chooseFilter("active")}>
@@ -144,15 +144,24 @@ export function SharesScreen({ requestConfirm }: { requestConfirm: RequestConfir
               <span className="share-ledger-open" aria-hidden="true">›</span>
             </article>
           )) : (
-            <EmptyState
-              title={filter === "revoked" ? t("shares.empty.revoked.title") : t("shares.empty.title")}
-              body={filter === "revoked" ? t("shares.empty.revoked.body") : t("shares.empty.body")}
-            />
+            <div className="shares-empty-stage">
+              <EmptyState
+                title={filter === "revoked" ? t("shares.empty.revoked.title") : t("shares.empty.title")}
+                body={filter === "revoked" ? t("shares.empty.revoked.body") : t("shares.empty.body")}
+              />
+              {authStatus === "signedOut" && filter !== "revoked" ? (
+                <div className="shares-empty-signin">
+                  <span><LogIn size={16} aria-hidden="true" /></span>
+                  <div><strong>{t("shares.signIn.title")}</strong><p>{t("shares.signIn.body")}</p></div>
+                  <button className="btn btn-primary" type="button" onClick={() => window.dispatchEvent(new CustomEvent("cerul:open-account"))}>{t("settings.account.signIn")}</button>
+                </div>
+              ) : null}
+            </div>
           )}
         </main>
 
-        <aside className="shares-inspector">
-          {selectedShare ? (
+        {selectedShare ? (
+          <aside className="shares-inspector">
             <>
               <header>
                 <h2>{t("shares.detail.title")}</h2>
@@ -185,18 +194,9 @@ export function SharesScreen({ requestConfirm }: { requestConfirm: RequestConfir
                 </div>
               ) : null}
             </>
-          ) : authStatus === "signedOut" ? (
-            <div className="shares-inspector-empty">
-              <LogIn size={22} />
-              <strong>{t("shares.signIn.title")}</strong>
-              <p>{t("shares.signIn.body")}</p>
-              <button className="btn btn-primary" type="button" onClick={() => window.dispatchEvent(new CustomEvent("cerul:open-account"))}>{t("settings.account.signIn")}</button>
-            </div>
-          ) : (
-            <div className="shares-inspector-empty"><Link2 size={22} /><strong>{t("shares.empty.title")}</strong><p>{t("shares.empty.body")}</p></div>
-          )}
-          {notice ? <p className="shares-notice" role="status">{notice}</p> : null}
-        </aside>
+            {notice ? <p className="shares-notice" role="status">{notice}</p> : null}
+          </aside>
+        ) : null}
       </div>
     </div>
   );

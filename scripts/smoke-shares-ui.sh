@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 rg -qF 'export function SharesScreen' apps/desktop/src/screens/shares.tsx
+rg -qF '"shares-workspace no-inspector"' apps/desktop/src/screens/shares.tsx
+rg -qF 'className="shares-empty-signin"' apps/desktop/src/screens/shares.tsx
+rg -qF '.shares-workspace.has-inspector' apps/desktop/src/styles/selected-ui.css
 rg -qF 'onNavigate("shares")' apps/desktop/src/components/bridge.tsx
 rg -qF 'view === "shares"' apps/desktop/src/App.tsx
 rg -qF 'recordManagedShare(published, {' apps/desktop/src/screens/item-detail.tsx
