@@ -17,6 +17,7 @@ const VIEW_IDS: View[] = [
   "moments",
   "item-detail",
   "sources",
+  "jobs",
   "shares",
   "settings",
   "onboarding",

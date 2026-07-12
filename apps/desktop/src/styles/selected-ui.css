@@ -920,6 +920,654 @@
   }
 }
 
+/* P3 media console: Favorites and Connectors keep the Bridge visible while
+   using the remaining viewport as one fixed, independently scrolling workbench. */
+.content:has(.p3-page) {
+  overflow: hidden;
+}
+
+.p3-page.page.wide {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+  margin: 0;
+  padding: 10px clamp(18px, 2.7vw, 42px) 18px;
+}
+
+.p3-page-head {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 18px 22px;
+  border: 1px solid var(--card-hairline);
+  border-radius: var(--r-xl);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: var(--card-sh);
+}
+
+.p3-page-head > div {
+  min-width: 0;
+}
+
+.p3-page-head .page-eyebrow {
+  color: var(--accent);
+  font-size: 9.5px;
+}
+
+.p3-page-head .page-h1 {
+  margin-top: 4px;
+  font-size: clamp(24px, 2.1vw, 34px);
+}
+
+.p3-page-head .page-sub {
+  max-width: 720px;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.p3-workspace {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.p3-side {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 13px;
+  border-radius: var(--r-xl);
+}
+
+.p3-side h2 {
+  margin: 2px 5px 9px;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.p3-side nav {
+  display: grid;
+  gap: 3px;
+}
+
+.p3-side nav button,
+.p3-side-add {
+  width: 100%;
+  min-height: 37px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  background: transparent;
+  font: 540 11px var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.p3-side nav button:hover,
+.p3-side-add:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.p3-side nav button.active {
+  color: var(--text);
+  border-color: var(--accent-line-soft);
+  background: var(--accent-tint);
+  font-weight: 650;
+  transform: translateX(2px);
+}
+
+.p3-side nav button code {
+  margin-left: auto;
+  color: var(--text-faint);
+  font: 600 9.5px var(--font-mono);
+}
+
+.p3-side nav button.active code,
+.p3-side nav button.active svg {
+  color: var(--accent);
+}
+
+.p3-side-add {
+  margin-top: 7px;
+}
+
+.p3-side-add:disabled {
+  opacity: .48;
+  cursor: default;
+}
+
+.p3-main-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 1px 2px 12px;
+  overscroll-behavior: contain;
+}
+
+.saved-collection-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.saved-collection-card {
+  min-width: 0;
+  min-height: 148px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  overflow: hidden;
+  padding: 15px;
+  border: 1px solid var(--card-hairline);
+  border-radius: var(--r-xl);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--card-sh);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.saved-collection-card:hover,
+.saved-collection-card.active {
+  border-color: var(--accent-line-soft);
+  transform: translateY(-1px);
+  box-shadow: 0 18px 36px -30px var(--accent), var(--card-sh);
+}
+
+.saved-collection-card.active {
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent-tint));
+}
+
+.saved-collection-icon {
+  width: 30px;
+  height: 30px;
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.saved-collection-card .page-eyebrow {
+  margin: 1px 38px 8px 0;
+  color: var(--accent);
+  font-size: 8.5px;
+}
+
+.saved-collection-card > strong {
+  max-width: calc(100% - 26px);
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.saved-collection-card > small {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.saved-collection-foot {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  margin-top: auto;
+  color: var(--text-faint);
+  font-size: 9.5px;
+}
+
+.saved-collection-foot b {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  color: var(--accent);
+  font: 650 10px var(--font-mono);
+}
+
+.saved-p3-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.saved-p3-row {
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--card-hairline);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--card-sh);
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.saved-p3-row:hover {
+  border-color: var(--accent-line-soft);
+  transform: translateY(-1px);
+}
+
+.saved-p3-open {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 42px 9px 9px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.saved-p3-open > svg {
+  color: var(--accent);
+}
+
+.saved-p3-thumb {
+  height: 46px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  color: var(--text-faint);
+  background: var(--surface-3);
+}
+
+.saved-p3-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.saved-p3-thumb code {
+  position: absolute;
+  left: 5px;
+  bottom: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: white;
+  background: rgb(20 18 16 / 72%);
+  font: 8px var(--font-mono);
+}
+
+.saved-p3-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.saved-p3-copy strong {
+  font-size: 11.5px;
+  font-weight: 630;
+}
+
+.saved-p3-copy small {
+  color: var(--text-muted);
+  font-size: 9.5px;
+}
+
+.saved-p3-remove {
+  position: absolute;
+  right: 8px;
+}
+
+.saved-p3-empty {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xl);
+}
+
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.connector-card {
+  min-width: 0;
+  min-height: 82px;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--card-hairline);
+  border-radius: var(--r-xl);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--card-sh);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.connector-card:hover,
+.connector-card.active {
+  border-color: var(--accent-line-soft);
+  transform: translateY(-1px);
+}
+
+.connector-card.active {
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent-tint));
+}
+
+.connector-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #eef0f3;
+  background: #292e36;
+}
+
+.connector-icon small {
+  display: none;
+}
+
+.connector-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.connector-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-copy small {
+  color: var(--text-muted);
+  font-size: 9.5px;
+}
+
+.connector-health {
+  color: var(--success);
+  font: 650 9px var(--font-mono);
+  white-space: nowrap;
+}
+
+.connector-health.syncing {
+  color: var(--accent);
+}
+
+.connector-health.error {
+  color: var(--danger);
+}
+
+.connector-activity,
+.connector-detail {
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+}
+
+.connector-activity > header,
+.connector-detail > header {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.connector-activity > header > span,
+.connector-detail > header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.connector-activity > header strong,
+.connector-detail > header strong {
+  font-size: 11.5px;
+}
+
+.connector-activity > header button {
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: 9.5px;
+  cursor: pointer;
+}
+
+.connector-detail > header small {
+  color: var(--text-faint);
+  font: 9px var(--font-mono);
+}
+
+.connector-timeline {
+  display: grid;
+  padding: 4px 10px 8px;
+}
+
+.connector-timeline > button {
+  min-width: 0;
+  min-height: 47px;
+  display: grid;
+  grid-template-columns: 92px 8px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 5px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.connector-timeline > button:last-child {
+  border-bottom: 0;
+}
+
+.connector-timeline > button:hover {
+  background: var(--surface-2);
+}
+
+.connector-timeline time {
+  overflow: hidden;
+  color: var(--text-faint);
+  font: 9px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-timeline i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.connector-timeline i[data-tone="syncing"] {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.connector-timeline i[data-tone="error"] {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.connector-timeline > button > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.connector-timeline strong,
+.connector-timeline small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-timeline strong {
+  font-size: 10.5px;
+}
+
+.connector-timeline small {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.connector-timeline > button > svg {
+  color: var(--text-faint);
+}
+
+.connector-detail .source-list {
+  padding: 0 10px 8px;
+}
+
+.connector-detail .source-row {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.connector-detail .source-row:last-child {
+  border-bottom: 0;
+}
+
+/* The task ledger is now a route-level page. The card itself deliberately
+   keeps the current inspector-led layout the user approved. */
+.jobs-ledger-page {
+  position: absolute;
+  inset: calc(var(--titlebar-h) + var(--bridge-row-h)) 0 0;
+  z-index: 2;
+  overflow: hidden;
+  padding: 10px clamp(18px, 2.7vw, 42px) 18px;
+}
+
+.jobs-ledger-dialog.jobs-sheet.is-page {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  border-radius: var(--r-xl);
+  box-shadow: var(--card-sh);
+  animation: jobs-page-enter var(--dur-hero) var(--ease);
+}
+
+@keyframes jobs-page-enter {
+  from { opacity: 0; transform: translateY(7px); }
+}
+
+@media (max-width: 980px) {
+  .saved-collection-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .p3-workspace {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .p3-page.page.wide {
+    overflow: auto;
+    padding: 8px 12px 76px;
+  }
+
+  .p3-page-head {
+    min-height: 80px;
+    padding: 14px;
+  }
+
+  .p3-page-head .page-sub,
+  .p3-page-head > .btn {
+    display: none;
+  }
+
+  .p3-workspace {
+    display: block;
+    overflow: visible;
+  }
+
+  .p3-side {
+    margin-bottom: 9px;
+  }
+
+  .p3-side nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .p3-main-scroll {
+    overflow: visible;
+  }
+
+  .connector-grid,
+  .saved-collection-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .saved-collection-card {
+    min-height: 126px;
+  }
+
+  .connector-timeline > button {
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+  }
+
+  .connector-timeline time {
+    display: none;
+  }
+
+  .jobs-ledger-page {
+    inset: 52px 0 58px;
+    padding: 0;
+  }
+
+  .jobs-ledger-dialog.jobs-sheet.is-page {
+    border: 0;
+    border-radius: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jobs-ledger-dialog.jobs-sheet.is-page,
+  .saved-collection-card,
+  .connector-card,
+  .saved-p3-row {
+    animation: none;
+    transition-duration: 0ms;
+  }
+}
+
 /* E1: task glance hangs directly from the Bridge. */
 .bridge-jobs-shell {
   position: relative;

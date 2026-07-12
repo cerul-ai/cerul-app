@@ -306,7 +306,7 @@ export function Bridge(props: BridgeProps) {
 
         <div className="bridge-jobs-shell" ref={jobsRef}>
           <button
-            className={jobsOpen ? "bridge-tab bridge-jobs active" : "bridge-tab bridge-jobs"}
+            className={jobsOpen || activeView === "jobs" ? "bridge-tab bridge-jobs active" : "bridge-tab bridge-jobs"}
             type="button"
             disabled={onboardingActive}
             aria-haspopup="dialog"

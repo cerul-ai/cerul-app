@@ -15,6 +15,7 @@ export type View =
   | "moments"
   | "item-detail"
   | "sources"
+  | "jobs"
   | "shares"
   | "settings";
 

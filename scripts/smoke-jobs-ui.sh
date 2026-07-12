@@ -4,12 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-rg -qF "const [showJobsSheet, setShowJobsSheet]" apps/desktop/src
 rg -qF 'const visibleJobs = apiStatus === "online" ? data.jobs : []' apps/desktop/src
 rg -qF "const drawerJobs = visibleJobs" apps/desktop/src/App.tsx
 rg -qF "jobsSheetJobs" apps/desktop/src
 rg -qF 'summary={apiStatus === "online" ? jobsSheetSummaryWithFixture : null}' apps/desktop/src
-rg -qF "const openJobsSheet = useCallback" apps/desktop/src/App.tsx
+rg -qF "function openJobsSheet()" apps/desktop/src/App.tsx
+rg -qF 'navigate("jobs")' apps/desktop/src/App.tsx
+rg -qF 'view === "jobs"' apps/desktop/src/App.tsx
+rg -qF 'embedded' apps/desktop/src/App.tsx
 rg -qF "onClick={openJobsSheet}" apps/desktop/src
 rg -qF "hasActiveJobs={activeJobCount > 0}" apps/desktop/src
 rg -qF 'apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
@@ -22,7 +24,7 @@ rg -qF "filterChanged" apps/desktop/src/App.tsx
 rg -qF "setJobsSheetJobs(nextJobs)" apps/desktop/src/App.tsx
 rg -qF "export function JobsSheet" apps/desktop/src
 rg -qF "const totalCount = (summary?.total_jobs ?? sortedJobs.length) + syncingSources.length" apps/desktop/src/dialogs/jobs-sheet.tsx
-rg -qF 'className="jobs-ledger-dialog jobs-sheet"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className={embedded ? "jobs-ledger-dialog jobs-sheet is-page" : "jobs-ledger-dialog jobs-sheet"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'className={issueOpen && repairJob ? "jobs-ledger-workspace has-issue" : "jobs-ledger-workspace"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'className={`jobs-repair-cabin phase-${repairPhase}`}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'await onRetryJob(job)' apps/desktop/src/dialogs/jobs-sheet.tsx
@@ -32,7 +34,7 @@ rg -qF 'await Promise.all(selectedJobs.map((job) => api.cancelJob(job.id)))' app
 rg -qF 'await api.reindexItem(job.item_id)' apps/desktop/src/App.tsx
 rg -qF 'className="bridge-jobs-popover"' apps/desktop/src/components/bridge.tsx
 rg -qF 'jobs.popover.viewAll' apps/desktop/src/components/bridge.tsx
-rg -qF "role=\"dialog\"" apps/desktop/src
+rg -qF 'role={embedded ? "region" : "dialog"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF "aria-labelledby=\"jobs-ledger-title\"" apps/desktop/src
 rg -qF "jobStepProgressPercent(job)" apps/desktop/src
 rg -qF "jobDisplayStatus(job, t)" apps/desktop/src
@@ -72,6 +74,8 @@ rg -qF 'const nextIssue = filteredJobs.find' apps/desktop/src/dialogs/jobs-sheet
 rg -qF 'if (activeIssueJob && jobGroup(activeIssueJob) === "failed") return;' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'const selectedJobs = ledgerJobs.filter' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'grid-template-columns:0 minmax(0,1fr) 276px' apps/desktop/src/styles/selected-ui.css
+rg -qF '.jobs-ledger-page {' apps/desktop/src/styles/selected-ui.css
+rg -qF '.jobs-ledger-dialog.jobs-sheet.is-page {' apps/desktop/src/styles/selected-ui.css
 rg -qF "scripts/smoke-jobs-ui.sh" scripts/smoke.sh
 
-echo "jobs_ui_smoke bridge_glance=enabled layout=J6_ledger_plus_current_inspector thumbnails=enabled anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop stale_issue_reset=enabled pause_cancel_controls=enabled"
+echo "jobs_ui_smoke bridge_glance=enabled route_page=enabled modal_removed_from_view_all=true layout=J6_ledger_plus_current_inspector thumbnails=enabled anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop stale_issue_reset=enabled pause_cancel_controls=enabled"

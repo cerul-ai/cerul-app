@@ -51,6 +51,7 @@ export function JobsSheet({
   onClose,
   onOpenSettingsFix,
   onOpenSources,
+  embedded = false,
 }: {
   jobs: api.JobRecord[];
   summary: api.JobStatusSummary | null;
@@ -70,6 +71,7 @@ export function JobsSheet({
   onClose: () => void;
   onOpenSettingsFix: (section: string) => void;
   onOpenSources?: () => void;
+  embedded?: boolean;
 }) {
   const t = useT();
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -77,8 +79,8 @@ export function JobsSheet({
   const cabinCardRef = useRef<HTMLElement | null>(null);
   const returnRowRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  useEscapeToClose(onClose);
-  useDialogFocus(dialogRef);
+  useEscapeToClose(onClose, !embedded);
+  useDialogFocus(dialogRef, !embedded);
 
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -346,15 +348,16 @@ export function JobsSheet({
     );
   }
 
-  return (
-    <div className="scrim sheet-backdrop jobs-ledger-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside
+  const ledger = (
+      <section
         ref={dialogRef}
-        className="jobs-ledger-dialog jobs-sheet"
-        role="dialog"
-        aria-modal="true"
+        className={embedded ? "jobs-ledger-dialog jobs-sheet is-page" : "jobs-ledger-dialog jobs-sheet"}
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : "true"}
         aria-labelledby="jobs-ledger-title"
-        onMouseDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => {
+          if (!embedded) event.stopPropagation();
+        }}
       >
         <header className="jobs-ledger-head">
           <div>
@@ -371,7 +374,9 @@ export function JobsSheet({
                 {paused ? <Play size={13} /> : <Pause size={13} />}{paused ? t("jobs.resume") : t("jobs.pause")}
               </button>
             ) : null}
-            <button type="button" className="btn-icon" aria-label={t("jobs.closeAria")} onClick={onClose}><X size={17} /></button>
+            <button type="button" className="btn-icon" aria-label={t("jobs.closeAria")} onClick={onClose}>
+              {embedded ? <ChevronLeft size={17} /> : <X size={17} />}
+            </button>
           </div>
         </header>
 
@@ -488,7 +493,16 @@ export function JobsSheet({
             </aside>
           ) : null}
         </div>
-      </aside>
+      </section>
+  );
+
+  if (embedded) {
+    return <div className="jobs-ledger-page">{ledger}</div>;
+  }
+
+  return (
+    <div className="scrim sheet-backdrop jobs-ledger-backdrop" role="presentation" onMouseDown={onClose}>
+      {ledger}
     </div>
   );
 }

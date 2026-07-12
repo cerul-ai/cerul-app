@@ -204,6 +204,7 @@ const viewIds: View[] = [
   "moments",
   "item-detail",
   "sources",
+  "jobs",
   "shares",
   "settings",
   "onboarding",
@@ -619,7 +620,6 @@ function AppWorkspace() {
     useState<api.SearchRankingPreference>("smart");
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [showAddSource, setShowAddSource] = useState(false);
-  const [showJobsSheet, setShowJobsSheet] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [updaterState, setUpdaterState] = useState<DesktopUpdaterState>({ phase: "idle" });
   const [updateNotesOpen, setUpdateNotesOpen] = useState(
@@ -754,15 +754,15 @@ function AppWorkspace() {
     [apiStatus, jobsListParamsForFilter, jobsSheetFilter],
   );
   const refreshJobsSheetIfFiltered = useCallback(async () => {
-    if (showJobsSheet && jobsSheetFilter !== "all") {
+    if (view === "jobs" && jobsSheetFilter !== "all") {
       await refreshJobsSheetJobs(jobsSheetFilter);
     }
-  }, [jobsSheetFilter, refreshJobsSheetJobs, showJobsSheet]);
+  }, [jobsSheetFilter, refreshJobsSheetJobs, view]);
 
   useEffect(() => {
-    if (!showJobsSheet) return;
+    if (view !== "jobs") return;
     void refreshJobsSheetJobs(jobsSheetFilter);
-  }, [showJobsSheet, jobsSheetFilter, refreshJobsSheetJobs]);
+  }, [view, jobsSheetFilter, refreshJobsSheetJobs]);
   const jobsSheetVisibleJobs = jobsSheetFilter === "all" ? drawerJobs : jobsSheetJobs;
   // A local-only visual QA state for exercising the complete M3 -> M4 -> A
   // repair motion without corrupting a developer's real Core database.
@@ -811,12 +811,12 @@ function AppWorkspace() {
         total_jobs: data.jobSummary.total_jobs + 1,
       }
     : data.jobSummary;
-  const openJobsSheet = useCallback(() => {
+  function openJobsSheet() {
     setJobsSheetFilter("all");
     setJobsSheetJobs([]);
     setJobsSheetLoading(false);
-    setShowJobsSheet(true);
-  }, []);
+    navigate("jobs");
+  }
 
   // First-run on-device-model consent + download. Fetches capability and shows
   // the dialog once, gated on `local_models_prompted` so it never re-prompts —
@@ -880,7 +880,6 @@ function AppWorkspace() {
       setSelectedItemId(null);
       setSelectedPlaybackChunkId(null);
       setSelectedTimestamp(null);
-      setShowJobsSheet(false);
       setShowAddSource(false);
       setSettingsSection(settingsRoute.settingsSection);
       window.history.replaceState(null, "", `#${routeHash("settings", { settingsSection: "Usage" })}`);
@@ -910,7 +909,6 @@ function AppWorkspace() {
       setSelectedPlaybackChunkId(route.playbackChunkId);
       setSelectedTimestamp(route.timestamp);
       setDetailOrigin(route.origin === "results" ? "results" : "library");
-      setShowJobsSheet(false);
       setShowAddSource(false);
       const normalizedRoute =
         route.view === "settings"
@@ -1355,7 +1353,6 @@ function AppWorkspace() {
       origin?: "results" | "library" | null;
     } = {},
   ) {
-    setShowJobsSheet(false);
     setShowAddSource(false);
     setSelectedItemId(params.itemId ?? null);
     setSelectedPlaybackChunkId(params.playbackChunkId ?? null);
@@ -1996,6 +1993,7 @@ function AppWorkspace() {
         {view === "moments" ? (
           <MomentsScreen
             actionsEnabled={apiStatus === "online"}
+            items={visibleItems}
             onOpenItem={(moment) =>
               navigate("item-detail", {
                 itemId: moment.item_id,
@@ -2143,7 +2141,7 @@ function AppWorkspace() {
           }}
         />
       ) : null}
-      {showJobsSheet ? (
+      {view === "jobs" ? (
         <JobsSheet
           jobs={jobsSheetVisibleJobsWithFixture}
           summary={apiStatus === "online" ? jobsSheetSummaryWithFixture : null}
@@ -2232,15 +2230,14 @@ function AppWorkspace() {
             await refreshCoreData();
             await refreshJobsSheetJobs(jobsSheetFilter);
           }}
-          onClose={() => setShowJobsSheet(false)}
+          onClose={() => navigate("home")}
           onOpenSettingsFix={(section) => {
-            setShowJobsSheet(false);
             navigate("settings", { settingsSection: section });
           }}
           onOpenSources={() => {
-            setShowJobsSheet(false);
             navigate("sources");
           }}
+          embedded
         />
       ) : null}
       <ConfirmDialog
