@@ -35,6 +35,7 @@ export function readRouteState(): RouteState {
     playbackChunkId: params.get("playbackChunkId") ?? params.get("chunkId"),
     timestamp: params.get("t"),
     settingsSection: params.get("section"),
+    origin: id === "result-detail" ? "results" : params.get("origin") === "results" ? "results" : params.get("origin") === "library" ? "library" : null,
     oauthProvider: params.get("provider"),
     oauthCode: params.get("code"),
     oauthState: params.get("state"),
@@ -49,6 +50,7 @@ export function routeHash(
     playbackChunkId?: string | null;
     timestamp?: string | null;
     settingsSection?: string | null;
+    origin?: "results" | "library" | null;
   } = {},
 ) {
   const search = new URLSearchParams();
@@ -63,6 +65,9 @@ export function routeHash(
   }
   if (params.settingsSection) {
     search.set("section", params.settingsSection);
+  }
+  if (params.origin) {
+    search.set("origin", params.origin);
   }
   const query = search.toString();
   return query ? `${view}?${query}` : view;

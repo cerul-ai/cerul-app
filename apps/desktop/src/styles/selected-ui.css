@@ -1656,6 +1656,8 @@
 .detail-workbench-page .understanding-compact-completed { min-height:38px; display:flex; align-items:center; padding:6px 9px; overflow:hidden; }
 .detail-workbench-page .understanding-compact-completed .understanding-header { width:100%; min-height:0; margin:0; padding:0; border:0; }
 .detail-workbench-page .understanding-compact-completed .understanding-header .section-label { margin:0; font-size:9px; }
+.detail-workbench-page .understanding-compact-actions { display:flex; align-items:center; gap:6px; }
+.detail-workbench-page .understanding-compact-actions .btn { min-height:26px; padding:3px 7px; font-size:9px; }
 .detail-workbench-page .understanding-complete-label { flex:none; color:var(--text-muted); font-size:10px; font-weight:600; white-space:nowrap; }
 .detail-video-chat-placeholder { flex:none; min-height:48px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; margin:0 0 5px; padding:7px 8px; border:1px dashed var(--line-strong); border-radius:8px; color:var(--text-faint); background:var(--surface-2); }
 .detail-video-chat-placeholder > span { min-width:0; display:grid; gap:2px; }

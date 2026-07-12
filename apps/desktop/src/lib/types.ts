@@ -191,6 +191,7 @@ export type RouteState = {
   playbackChunkId: string | null;
   timestamp: string | null;
   settingsSection: string | null;
+  origin: "results" | "library" | null;
   oauthProvider: string | null;
   oauthCode: string | null;
   oauthState: string | null;

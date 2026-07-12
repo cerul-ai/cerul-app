@@ -148,7 +148,7 @@ export function JobsSheet({
   const pageCount = Math.max(1, Math.ceil(ledgerJobs.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageJobs = ledgerJobs.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
-  const selectedJobs = sortedJobs.filter((job) => selectedIds.has(job.id) && isActiveJob(job));
+  const selectedJobs = ledgerJobs.filter((job) => selectedIds.has(job.id) && isActiveJob(job));
   const selectablePageJobs = pageJobs.filter(isActiveJob);
   const allPageSelected = selectablePageJobs.length > 0 && selectablePageJobs.every((job) => selectedIds.has(job.id));
   const forceMotion = import.meta.env.DEV && new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("forceMotion") === "1";

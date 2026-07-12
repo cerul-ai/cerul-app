@@ -610,6 +610,9 @@ function AppWorkspace() {
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(
     initialRoute.timestamp,
   );
+  const [detailOrigin, setDetailOrigin] = useState<"results" | "library">(
+    initialRoute.origin === "results" ? "results" : "library",
+  );
   const [query, setQuery] = useState("");
   const [searchRankingPreference, setSearchRankingPreference] =
     useState<api.SearchRankingPreference>("smart");
@@ -905,6 +908,7 @@ function AppWorkspace() {
       setSelectedItemId(route.itemId);
       setSelectedPlaybackChunkId(route.playbackChunkId);
       setSelectedTimestamp(route.timestamp);
+      setDetailOrigin(route.origin === "results" ? "results" : "library");
       setShowJobsSheet(false);
       setShowAddSource(false);
       const normalizedRoute =
@@ -1347,6 +1351,7 @@ function AppWorkspace() {
       playbackChunkId?: string | null;
       timestamp?: string | null;
       settingsSection?: string | null;
+      origin?: "results" | "library" | null;
     } = {},
   ) {
     setShowJobsSheet(false);
@@ -1354,6 +1359,9 @@ function AppWorkspace() {
     setSelectedItemId(params.itemId ?? null);
     setSelectedPlaybackChunkId(params.playbackChunkId ?? null);
     setSelectedTimestamp(params.timestamp ?? null);
+    if (nextView === "item-detail") {
+      setDetailOrigin(params.origin === "results" ? "results" : "library");
+    }
     const routeParams =
       nextView === "settings"
         ? {
@@ -1376,22 +1384,26 @@ function AppWorkspace() {
       playbackChunkId: routeParams.playbackChunkId ?? null,
       timestamp: routeParams.timestamp ?? null,
       settingsSection: routeParams.settingsSection ?? null,
+      origin: routeParams.origin ?? null,
     });
   }
 
   function restorePersistedRoute(route: PersistedRoute) {
-    if (!viewIds.includes(route.view as View)) {
+    const migratedView = route.view === "result-detail" ? "item-detail" : route.view;
+    if (!viewIds.includes(migratedView as View)) {
       return;
     }
 
-    const restoredView = route.view as View;
+    const restoredView = migratedView as View;
+    const restoredOrigin = route.view === "result-detail" ? "results" : route.origin;
     setSelectedItemId(route.itemId ?? null);
     setSelectedPlaybackChunkId(route.playbackChunkId ?? null);
     setSelectedTimestamp(route.timestamp ?? null);
+    setDetailOrigin(restoredOrigin === "results" ? "results" : "library");
     const restoredRoute =
       restoredView === "settings"
         ? { ...route, settingsSection: normalizeSettingsSection(route.settingsSection) }
-        : route;
+        : { ...route, origin: restoredOrigin };
     if (restoredView === "settings") {
       setSettingsSection(restoredRoute.settingsSection ?? "General");
     }
@@ -1926,6 +1938,7 @@ function AppWorkspace() {
                 itemId: result.itemId,
                 playbackChunkId: result.playbackChunkId,
                 timestamp: result.timestamp,
+                origin: "results",
               })
             }
             results={visibleResults}
@@ -1997,7 +2010,7 @@ function AppWorkspace() {
               }
               await refreshCoreData();
             }}
-            onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
+            onOpenItem={(item) => navigate("item-detail", { itemId: item.id, origin: "library" })}
             requestConfirm={requestConfirm}
           />
         ) : null}
@@ -2030,7 +2043,7 @@ function AppWorkspace() {
             actionsEnabled={apiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             startChunkId={selectedPlaybackChunkId}
-            onBack={() => navigate("library")}
+            onBack={() => navigate(detailOrigin)}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
               await refreshCoreData();

@@ -1,5 +1,5 @@
 import { AlertTriangle, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import * as api from "../lib/api";
 import { useT, type TFunction } from "../lib/i18n";
@@ -7,6 +7,15 @@ import { resultModality } from "../lib/results";
 import type { ApiStatus, Result, ResultModalityFilter } from "../lib/types";
 import { EmptyState } from "../components/leaf";
 import { ResultCard } from "../components/cards";
+
+type ResultsUiCache = {
+  query: string;
+  sortMode: "relevance" | "recent";
+  sourceFilter: string;
+  modalityFilter: ResultModalityFilter;
+};
+
+let resultsUiCache: ResultsUiCache | null = null;
 
 export function ResultsScreen({
   query,
@@ -36,11 +45,13 @@ export function ResultsScreen({
   hasActiveJobs: boolean;
 }) {
   const t = useT();
+  const cachedUi = resultsUiCache?.query === query ? resultsUiCache : null;
+  const previousQueryRef = useRef(query);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedResultIds, setExpandedResultIds] = useState<Set<string>>(() => new Set());
-  const [sortMode, setSortMode] = useState<"relevance" | "recent">("relevance");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [modalityFilter, setModalityFilter] = useState<ResultModalityFilter>("all");
+  const [sortMode, setSortMode] = useState<"relevance" | "recent">(cachedUi?.sortMode ?? "relevance");
+  const [sourceFilter, setSourceFilter] = useState(cachedUi?.sourceFilter ?? "all");
+  const [modalityFilter, setModalityFilter] = useState<ResultModalityFilter>(cachedUi?.modalityFilter ?? "all");
   const [mobileQuery, setMobileQuery] = useState(query);
 
   const sourceOptions = useMemo(() => {
@@ -83,6 +94,18 @@ export function ResultsScreen({
   }, [query, results.length, sourceFilter, modalityFilter, sortMode, rankingPreference]);
 
   useEffect(() => setMobileQuery(query), [query]);
+
+  useEffect(() => {
+    if (previousQueryRef.current !== query) {
+      previousQueryRef.current = query;
+      setSortMode("relevance");
+      setSourceFilter("all");
+      setModalityFilter("all");
+      resultsUiCache = { query, sortMode: "relevance", sourceFilter: "all", modalityFilter: "all" };
+      return;
+    }
+    resultsUiCache = { query, sortMode, sourceFilter, modalityFilter };
+  }, [query, sortMode, sourceFilter, modalityFilter]);
 
   function focusResult(index: number) {
     window.requestAnimationFrame(() => {

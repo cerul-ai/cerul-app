@@ -25,6 +25,8 @@ rg -qF 'className="results-card-list results-citation-stream"' apps/desktop/src/
 rg -qF 'onClick={() => onOpen(result)}' apps/desktop/src/components/cards.tsx
 rg -qF 'className="results-mobile-search"' apps/desktop/src/screens/results.tsx
 rg -qF 'onRunQuery(nextQuery)' apps/desktop/src/screens/results.tsx
+rg -qF 'let resultsUiCache: ResultsUiCache | null = null' apps/desktop/src/screens/results.tsx
+rg -qF 'origin: "results"' apps/desktop/src/App.tsx
 rg -qF 'if ((event.metaKey || event.ctrlKey) && event.key === "ArrowDown")' apps/desktop/src
 rg -qF 'event.key === "ArrowDown" || event.key === "ArrowUp"' apps/desktop/src
 rg -qF 'event.key === "Enter" && event.target === event.currentTarget' apps/desktop/src

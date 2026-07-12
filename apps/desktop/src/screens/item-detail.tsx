@@ -117,13 +117,15 @@ function syncVideoToTimestamp(
 function usePlaybackPositionPersistence({
   itemId,
   videoRef,
+  audioRef,
   videoElement,
   chunkId,
   enabled,
 }: {
   itemId: string;
   videoRef: RefObject<HTMLVideoElement | null>;
-  videoElement?: HTMLVideoElement | null;
+  audioRef?: RefObject<HTMLAudioElement | null>;
+  videoElement?: HTMLMediaElement | null;
   chunkId: string | null;
   enabled: boolean;
 }) {
@@ -138,7 +140,7 @@ function usePlaybackPositionPersistence({
     if (!enabled) {
       return;
     }
-    const video = videoElement ?? videoRef.current;
+    const video = videoElement ?? videoRef.current ?? audioRef?.current;
     if (!video) {
       return;
     }
@@ -190,7 +192,7 @@ function usePlaybackPositionPersistence({
       video.removeEventListener("ended", clearSavedPosition);
       window.removeEventListener("pagehide", persistForced);
     };
-  }, [enabled, itemId, videoElement, videoRef]);
+  }, [audioRef, enabled, itemId, videoElement, videoRef]);
 }
 
 async function revealSourcePath(path: string) {
@@ -634,7 +636,13 @@ function VideoUnderstandingPanel({
       <section className="understanding-panel understanding-compact-completed">
         <div className="understanding-header">
           <div><p className="section-label">{t("understanding.title")}</p></div>
-          <span className="understanding-complete-label">{statusLabel}</span>
+          <div className="understanding-compact-actions">
+            <span className="understanding-complete-label">{statusLabel}</span>
+            <button className="btn btn-ghost sm" type="button" disabled={!canAnalyze} onClick={() => void analyze()}>
+              <RefreshCcw size={13} />
+              {t("understanding.action.reanalyze")}
+            </button>
+          </div>
         </div>
       </section>
     );
@@ -795,9 +803,15 @@ export function ItemDetail({
   const cloudAuthStatus = useAuthStore((state) => state.status);
   const cloudAccessToken = useAuthStore((state) => state.accessToken);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const handleVideoElement = useCallback((video: HTMLVideoElement | null) => {
     setVideoElement(video);
+  }, []);
+  const handleAudioElement = useCallback((audio: HTMLAudioElement | null) => {
+    audioRef.current = audio;
+    setAudioElement(audio);
   }, []);
   const [playerChapters, setPlayerChapters] = useState<PlayerChapter[]>([]);
   const handleUnderstandingChapters = useCallback((chapters: api.VideoUnderstandingChapter[]) => {
@@ -883,19 +897,26 @@ export function ItemDetail({
   // Show a real inline video player whenever we have any chunk to point
   // at: prefer the existing thumbnail chunk (so we can use the same chunk
   // id used for the keyframe), otherwise use the first transcript line.
-  const playableChunkId =
-    item.contentType === "video"
-      ? chunkState.status === "loaded"
+  const selectedMediaChunkId =
+    item.contentType === "document"
+      ? null
+      : chunkState.status === "loaded"
         ? selectPlaybackChunkId(
             chunkState.records,
             startTimestamp,
             startChunkId ?? extractChunkIdFromThumbnail(item.thumbnailUrl),
           )
-        : startChunkId
-          ? null
-          : extractChunkIdFromThumbnail(item.thumbnailUrl)
-      : null;
+        : startChunkId ?? extractChunkIdFromThumbnail(item.thumbnailUrl);
+  const playableChunkId = item.contentType === "video" ? selectedMediaChunkId : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
+  const audioPlaybackUrl =
+    item.contentType === "audio" && selectedMediaChunkId
+      ? api.mediaSegmentUrl(selectedMediaChunkId)
+      : null;
+  const imagePreviewUrl =
+    item.contentType === "image" && selectedMediaChunkId
+      ? api.chunkFrameUrl(selectedMediaChunkId)
+      : null;
   const hasKeyframes =
     item.contentType !== "document" &&
     ((activeUnderstandingRecord?.events ?? []).some((event) => event.start_sec !== null) ||
@@ -922,7 +943,7 @@ export function ItemDetail({
       ? documentChunkLabel(selectedDocumentChunk, t)
       : currentTimestamp;
   const detailChunkId =
-    item.contentType === "document" ? selectedDocumentChunk?.id ?? startChunkId : playableChunkId;
+    item.contentType === "document" ? selectedDocumentChunk?.id ?? startChunkId : selectedMediaChunkId;
   const handlePlayerTimeUpdate = useCallback((seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0) {
       return;
@@ -945,9 +966,10 @@ export function ItemDetail({
   usePlaybackPositionPersistence({
     itemId: item.id,
     videoRef,
-    videoElement,
-    chunkId: playableChunkId,
-    enabled: actionsEnabled && Boolean(itemPlaybackUrl),
+    audioRef,
+    videoElement: videoElement ?? audioElement,
+    chunkId: selectedMediaChunkId,
+    enabled: actionsEnabled && Boolean(itemPlaybackUrl || audioPlaybackUrl),
   });
 
   useEffect(() => {
@@ -973,6 +995,23 @@ export function ItemDetail({
   }, [item.id, itemPlaybackUrl, startTimestamp, videoElement]);
 
   useEffect(() => {
+    const audio = audioElement;
+    if (!audio || !audioPlaybackUrl) return;
+    const targetSeconds = parseTimestampSeconds(startTimestamp);
+    if (!Number.isFinite(targetSeconds)) return;
+    const applySeek = () => {
+      const maxTime = Number.isFinite(audio.duration) && audio.duration > 0
+        ? Math.max(audio.duration - 0.1, 0)
+        : targetSeconds;
+      audio.currentTime = Math.min(targetSeconds, maxTime);
+      if (targetSeconds > 0) void audio.play().catch(() => undefined);
+    };
+    if (audio.readyState >= 1) applySeek();
+    else audio.addEventListener("loadedmetadata", applySeek, { once: true });
+    return () => audio.removeEventListener("loadedmetadata", applySeek);
+  }, [audioElement, audioPlaybackUrl, item.id, startTimestamp]);
+
+  useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (hasOpenModalSurface()) {
         return;
@@ -991,12 +1030,13 @@ export function ItemDetail({
           target.tagName === "A" ||
           target.tagName === "SELECT" ||
           target.tagName === "VIDEO" ||
+          target.tagName === "AUDIO" ||
           target.isContentEditable ||
           target.getAttribute("role") === "button")
       ) {
         return;
       }
-      const video = videoRef.current;
+      const video = videoRef.current ?? audioRef.current;
       if (!video) {
         return;
       }
@@ -1240,8 +1280,9 @@ export function ItemDetail({
     const existingShare = readManagedShares().find(
       (share) =>
         share.status === "active" &&
-        share.title === detailTitle &&
-        share.headline === citationDraft.quote,
+        share.identity?.itemId === item.id &&
+        share.identity.chunkId === shareChunkId &&
+        share.identity.timestamp === citationDraft.displayTime,
     );
     if (existingShare) return existingShare.share_url;
     const confirmed = await requestConfirm({
@@ -1272,7 +1313,11 @@ export function ItemDetail({
         cloudClient.uploadShareMedia(cloudAccessToken, draft.poster_upload_url, posterBlob),
       ]);
       const published = await cloudClient.publishShare(cloudAccessToken, draft.id);
-      recordManagedShare(published);
+      recordManagedShare(published, {
+        itemId: item.id,
+        chunkId: shareChunkId,
+        timestamp: citationDraft.displayTime,
+      });
       setItemAction({ status: "idle", message: t("detail.share.success") });
       return published.share_url;
     } catch (error) {
@@ -1295,7 +1340,7 @@ export function ItemDetail({
     }
     setCurrentTimestamp(timestamp);
     setCurrentPlayheadSec(targetSeconds);
-    const video = videoRef.current;
+    const video = videoRef.current ?? audioRef.current;
     if (!video) {
       return;
     }
@@ -1449,7 +1494,34 @@ export function ItemDetail({
               onTimeUpdate={handlePlayerTimeUpdate}
               onVideoElement={handleVideoElement}
             />
-          ) : item.contentType === "document" && chunkState.status !== "loading" ? (
+          ) : audioPlaybackUrl ? (
+            <div className={`video-frame thumb audio-frame ${item.color}`}>
+              <div className="stripes" aria-hidden="true" />
+              <div className="audio-player-card">
+                <p className="section-label">{t("detail.audioPlayer.label")}</p>
+                <strong>{detailTitle}</strong>
+                <audio
+                  ref={handleAudioElement}
+                  controls
+                  src={audioPlaybackUrl}
+                  onTimeUpdate={(event) => handlePlayerTimeUpdate(event.currentTarget.currentTime)}
+                  aria-label={t("itemDetail.player.aria", { title: detailTitle })}
+                />
+              </div>
+            </div>
+          ) : imagePreviewUrl ? (
+            <div className="video-frame image-frame">
+              <img src={imagePreviewUrl} alt={detailTitle} />
+            </div>
+          ) : chunkState.status === "loading" ? (
+            <div className={`video-frame thumb ${item.color}`}>
+              <div className="stripes" aria-hidden="true" />
+              <div className="player-loading" role="status">
+                <Loader2 size={24} className="spin" />
+                <span>{t("detail.player.preparing")}</span>
+              </div>
+            </div>
+          ) : item.contentType === "document" ? (
             <DocumentEvidencePanel
               item={item}
               chunk={selectedDocumentChunk}
@@ -1533,7 +1605,8 @@ export function ItemDetail({
               <TranscriptList
                 lines={transcriptLines}
                 videoRef={videoRef}
-                videoReady={Boolean(itemPlaybackUrl)}
+                audioRef={audioPlaybackUrl ? audioRef : undefined}
+                videoReady={Boolean(itemPlaybackUrl || audioPlaybackUrl)}
                 activeTime={currentTimestamp}
                 matchTime={startTimestamp}
                 onSeek={seekTo}

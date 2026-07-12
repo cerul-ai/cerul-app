@@ -9,6 +9,7 @@ export type PersistedRoute = {
   playbackChunkId?: string | null;
   timestamp?: string | null;
   settingsSection?: string | null;
+  origin?: "results" | "library" | null;
 };
 
 export type PersistedUiState = {

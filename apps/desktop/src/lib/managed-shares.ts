@@ -8,6 +8,13 @@ export type ManagedShare = PublicShare & {
   share_url: string;
   status: ManagedShareStatus;
   revoked_at: string | null;
+  identity?: ManagedShareIdentity;
+};
+
+export type ManagedShareIdentity = {
+  itemId: string;
+  chunkId: string;
+  timestamp: string;
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -57,6 +64,7 @@ function writeManagedShares(shares: ManagedShare[], storage: StorageLike | null)
 
 export function recordManagedShare(
   response: PublishedShareResponse,
+  identity?: ManagedShareIdentity,
   storage: StorageLike | null = browserStorage(),
 ): ManagedShare[] {
   const current = readManagedShares(storage);
@@ -65,6 +73,7 @@ export function recordManagedShare(
     share_url: response.share_url,
     status: "active",
     revoked_at: null,
+    identity,
   };
   const shares = [next, ...current.filter((share) => share.id !== next.id)];
   writeManagedShares(shares, storage);
