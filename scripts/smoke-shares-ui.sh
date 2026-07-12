@@ -20,6 +20,8 @@ rg -qF 'readManagedShares(undefined, cloudUserId)' apps/desktop/src/screens/item
 rg -qF 'cloudClient.revokeShare(accessToken, share.id)' apps/desktop/src/screens/shares.tsx
 rg -qF 'writeClipboardText(share.share_url)' apps/desktop/src/screens/shares.tsx
 rg -qF 'window.open(selectedShare.share_url' apps/desktop/src/screens/shares.tsx
+rg -qF 'https://*.r2.cloudflarestorage.com' apps/electron-shell/src/protocol.ts
+rg -qF 'https://cdn.cerul.ai' apps/electron-shell/src/protocol.ts
 rg -qF '.shares-workspace' apps/desktop/src/styles/selected-ui.css
 rg -qF '.share-ledger-row.active' apps/desktop/src/styles/selected-ui.css
 rg -qF '"nav.shares": "分享管理"' apps/desktop/src/lib/i18n-catalog.ts
