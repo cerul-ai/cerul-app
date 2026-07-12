@@ -616,6 +616,8 @@ function AppWorkspace() {
     initialRoute.origin === "results" ? "results" : "library",
   );
   const [selectedResultContext, setSelectedResultContext] = useState<Result | null>(null);
+  const pendingResultContextRef = useRef<Result | null>(null);
+  const jobsReturnRouteRef = useRef<{ hash: string; resultContext: Result | null } | null>(null);
   const [query, setQuery] = useState("");
   const [searchRankingPreference, setSearchRankingPreference] =
     useState<api.SearchRankingPreference>("smart");
@@ -813,6 +815,12 @@ function AppWorkspace() {
       }
     : data.jobSummary;
   function openJobsSheet() {
+    if (view !== "jobs") {
+      jobsReturnRouteRef.current = {
+        hash: window.location.hash || "#home",
+        resultContext: selectedResultContext,
+      };
+    }
     setJobsSheetFilter("all");
     setJobsSheetJobs([]);
     setJobsSheetLoading(false);
@@ -910,6 +918,13 @@ function AppWorkspace() {
       setSelectedPlaybackChunkId(route.playbackChunkId);
       setSelectedTimestamp(route.timestamp);
       setDetailOrigin(route.origin === "results" ? "results" : "library");
+      const pendingResultContext = pendingResultContextRef.current;
+      const hasFreshResultContext =
+        route.view === "item-detail" &&
+        pendingResultContext?.itemId === route.itemId &&
+        pendingResultContext.playbackChunkId === route.playbackChunkId;
+      setSelectedResultContext(hasFreshResultContext ? pendingResultContext : null);
+      pendingResultContextRef.current = null;
       setShowAddSource(false);
       const normalizedRoute =
         route.view === "settings"
@@ -1362,8 +1377,10 @@ function AppWorkspace() {
     if (nextView === "item-detail") {
       setDetailOrigin(params.origin === "results" ? "results" : "library");
       setSelectedResultContext(params.resultContext ?? null);
+      pendingResultContextRef.current = params.resultContext ?? null;
     } else {
       setSelectedResultContext(null);
+      pendingResultContextRef.current = null;
     }
     const routeParams =
       nextView === "settings"
@@ -2237,7 +2254,17 @@ function AppWorkspace() {
             await refreshCoreData();
             await refreshJobsSheetJobs(jobsSheetFilter);
           }}
-          onClose={() => navigate("home")}
+          onClose={() => {
+            const returnRoute = jobsReturnRouteRef.current;
+            jobsReturnRouteRef.current = null;
+            if (!returnRoute) {
+              navigate("home");
+              return;
+            }
+            pendingResultContextRef.current = returnRoute.resultContext;
+            setSelectedResultContext(returnRoute.resultContext);
+            window.location.hash = returnRoute.hash;
+          }}
           onOpenSettingsFix={(section) => {
             navigate("settings", { settingsSection: section });
           }}

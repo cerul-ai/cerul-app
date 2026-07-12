@@ -17,6 +17,8 @@ rg -qF '{ id: "shares" as View, labelKey: "nav.shares", icon: Share2 }' apps/des
 rg -qF 'view === "shares"' apps/desktop/src/App.tsx
 rg -qF 'readManagedShares(undefined, userId)' apps/desktop/src/screens/shares.tsx
 rg -qF 'readManagedShares(undefined, cloudUserId)' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'role="button"' apps/desktop/src/screens/shares.tsx
+rg -qF '(event.key === "Enter" || event.key === " ") && event.target === event.currentTarget' apps/desktop/src/screens/shares.tsx
 rg -qF 'cloudClient.revokeShare(accessToken, share.id)' apps/desktop/src/screens/shares.tsx
 rg -qF 'writeClipboardText(share.share_url)' apps/desktop/src/screens/shares.tsx
 rg -qF 'window.open(selectedShare.share_url' apps/desktop/src/screens/shares.tsx

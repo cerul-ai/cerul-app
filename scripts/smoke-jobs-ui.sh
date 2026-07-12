@@ -30,6 +30,9 @@ rg -qF 'className={`jobs-repair-cabin phase-${repairPhase}`}' apps/desktop/src/d
 rg -qF 'const repairJobCanRetry = Boolean(repairJob?.item_id)' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'repairJobCanRetry ? <button' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'view === "shares" || view === "jobs"' apps/desktop/src/App.tsx
+rg -qF 'const jobsReturnRouteRef = useRef<' apps/desktop/src/App.tsx
+rg -qF 'hash: window.location.hash || "#home"' apps/desktop/src/App.tsx
+rg -qF 'const returnRoute = jobsReturnRouteRef.current' apps/desktop/src/App.tsx
 rg -qF 'await onRetryJob(job)' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'if (from && returnRowRef.current) await flyTransfer(from, returnRowRef.current, job)' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'onCancelJobs={async (selectedJobs) =>' apps/desktop/src/App.tsx

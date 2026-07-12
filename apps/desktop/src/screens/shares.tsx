@@ -134,10 +134,14 @@ export function SharesScreen({ requestConfirm }: { requestConfirm: RequestConfir
             <article
               key={share.id}
               className={share.id === selectedShare?.id ? "share-ledger-row active" : "share-ledger-row"}
+              role="button"
               tabIndex={0}
               onClick={() => setSelectedId(share.id)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") setSelectedId(share.id);
+                if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
+                  event.preventDefault();
+                  setSelectedId(share.id);
+                }
               }}
             >
               <span className="share-ledger-poster">
