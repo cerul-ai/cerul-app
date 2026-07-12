@@ -2044,6 +2044,7 @@ function AppWorkspace() {
             startTimestamp={selectedTimestamp ?? "0:00"}
             startChunkId={selectedPlaybackChunkId}
             resultContext={selectedResultContext?.itemId === currentItem.id ? selectedResultContext : null}
+            backLabel={t(detailOrigin === "results" ? "detail.backToResults" : "library.heading")}
             onBack={() => navigate(detailOrigin)}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);

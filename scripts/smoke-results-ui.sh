@@ -29,6 +29,8 @@ rg -qF 'let resultsUiCache: ResultsUiCache | null = null' apps/desktop/src/scree
 rg -qF 'origin: "results"' apps/desktop/src/App.tsx
 rg -qF 'resultContext: result' apps/desktop/src/App.tsx
 rg -qF 'matchedSnippet={resultContext?.snippet}' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'resultContext.moreMatches.map' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'setActiveResultChunkId(match.playbackChunkId)' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'const pendingResultContextRef = useRef<Result | null>(null)' apps/desktop/src/App.tsx
 rg -qF 'setSelectedResultContext(hasFreshResultContext ? pendingResultContext : null)' apps/desktop/src/App.tsx
 rg -qF 'if ((event.metaKey || event.ctrlKey) && event.key === "ArrowDown")' apps/desktop/src

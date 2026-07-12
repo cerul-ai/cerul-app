@@ -791,6 +791,7 @@ export function ItemDetail({
   startTimestamp,
   startChunkId,
   resultContext,
+  backLabel,
   onBack,
   onDeleteItem,
   onReindexItem,
@@ -803,6 +804,7 @@ export function ItemDetail({
   startTimestamp: string;
   startChunkId: string | null;
   resultContext?: Result | null;
+  backLabel?: string;
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
@@ -869,6 +871,7 @@ export function ItemDetail({
     activeUnderstandingRecord?.display_title?.trim() || item.title;
   const modalityLabel = itemModalityLabel(item, t);
   const [currentTimestamp, setCurrentTimestamp] = useState(startTimestamp);
+  const [activeResultChunkId, setActiveResultChunkId] = useState(startChunkId);
   const [currentPlayheadSec, setCurrentPlayheadSec] = useState(() =>
     parseTimestampSeconds(startTimestamp),
   );
@@ -908,6 +911,7 @@ export function ItemDetail({
   // Show a real inline video player whenever we have any chunk to point
   // at: prefer the existing thumbnail chunk (so we can use the same chunk
   // id used for the keyframe), otherwise use the first transcript line.
+  const mediaChunkHint = item.contentType === "image" ? activeResultChunkId : startChunkId;
   const selectedMediaChunkId =
     item.contentType === "document"
       ? null
@@ -915,9 +919,9 @@ export function ItemDetail({
         ? selectPlaybackChunkId(
             chunkState.records,
             startTimestamp,
-            startChunkId ?? extractChunkIdFromThumbnail(item.thumbnailUrl),
+            mediaChunkHint ?? extractChunkIdFromThumbnail(item.thumbnailUrl),
           )
-        : startChunkId ?? extractChunkIdFromThumbnail(item.thumbnailUrl);
+        : mediaChunkHint ?? extractChunkIdFromThumbnail(item.thumbnailUrl);
   const playableChunkId = item.contentType === "video" ? selectedMediaChunkId : null;
   const itemPlaybackUrl = playableChunkId ? api.videoSegmentUrl(playableChunkId) : null;
   const audioPlaybackUrl =
@@ -938,7 +942,7 @@ export function ItemDetail({
   );
   const selectedDocumentChunk =
     item.contentType === "document"
-      ? documentChunks.find((record) => record.id === startChunkId) ??
+      ? documentChunks.find((record) => record.id === activeResultChunkId) ??
         documentChunks.find((record) => record.id === currentTimestamp) ??
         documentChunks.find((record) => documentChunkLabel(record, t) === currentTimestamp) ??
         documentChunks[0] ??
@@ -954,7 +958,9 @@ export function ItemDetail({
       ? documentChunkLabel(selectedDocumentChunk, t)
       : currentTimestamp;
   const detailChunkId =
-    item.contentType === "document" ? selectedDocumentChunk?.id ?? startChunkId : selectedMediaChunkId;
+    item.contentType === "document"
+      ? selectedDocumentChunk?.id ?? activeResultChunkId
+      : activeResultChunkId ?? selectedMediaChunkId;
   const handlePlayerTimeUpdate = useCallback((seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0) {
       return;
@@ -992,7 +998,8 @@ export function ItemDetail({
   useEffect(() => {
     setCurrentTimestamp(startTimestamp);
     setCurrentPlayheadSec(parseTimestampSeconds(startTimestamp));
-  }, [item.id, startTimestamp]);
+    setActiveResultChunkId(startChunkId);
+  }, [item.id, startChunkId, startTimestamp]);
 
   useEffect(() => {
     const video = videoElement;
@@ -1280,7 +1287,7 @@ export function ItemDetail({
   }, null)?.id ?? null;
 
   async function createPublicShare(): Promise<string | null> {
-    if (cloudAuthStatus !== "signedIn" || !cloudAccessToken) {
+    if (cloudAuthStatus !== "signedIn" || !cloudAccessToken || !cloudUserId) {
       setItemAction({ status: "error", message: t("detail.share.signIn") });
       window.dispatchEvent(new CustomEvent("cerul:open-account"));
       return null;
@@ -1374,12 +1381,24 @@ export function ItemDetail({
     }
   }
 
+  function jumpToResultMatch(match: Result["moreMatches"][number]) {
+    setActiveResultChunkId(match.playbackChunkId);
+    seekTo(match.timestamp, {
+      id: match.playbackChunkId,
+      time: match.timestamp,
+      displayTime: match.timestamp,
+      text: match.snippet,
+      startSec: match.startSec,
+      endSec: match.endSec,
+    });
+  }
+
   return (
     <div className="page wide detail-workbench-page">
       <div className="page-head">
         <button className="btn btn-ghost sm" type="button" onClick={onBack}>
           <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />
-          <span>{t("library.heading")}</span>
+          <span>{backLabel ?? t("library.heading")}</span>
         </button>
         <div
           className="row"
@@ -1569,7 +1588,7 @@ export function ItemDetail({
                 title={detailTitle}
                 link={item.originalUrl ?? citationTimestampLink}
                 draft={citationDraft}
-                onShare={item.contentType === "video" && cloudAuthStatus === "signedIn" ? createPublicShare : undefined}
+                onShare={item.contentType === "video" && cloudAuthStatus === "signedIn" && cloudUserId ? createPublicShare : undefined}
               />
             ) : null}
           </div>
@@ -1617,6 +1636,24 @@ export function ItemDetail({
             ) : null}
             {item.embeddingIndexMessage ? (
               <InlineNotice tone="muted" message={item.embeddingIndexMessage} />
+            ) : null}
+            {resultContext?.moreMatches.length ? (
+              <section className="detail-result-matches" aria-label={t("result.moreMatchesAriaLabel")}>
+                <strong>{t("detail.otherMatches")}</strong>
+                <div>
+                  {resultContext.moreMatches.map((match) => (
+                    <button
+                      key={match.playbackChunkId}
+                      type="button"
+                      className={activeResultChunkId === match.playbackChunkId ? "active" : ""}
+                      onClick={() => jumpToResultMatch(match)}
+                    >
+                      <span className="mono">{match.timestamp}</span>
+                      <span className="clamp1">{match.snippet}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
             ) : null}
             {chunkState.status !== "loading" && transcriptLines.length > 0 ? (
               <TranscriptList

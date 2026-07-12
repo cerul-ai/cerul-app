@@ -139,6 +139,15 @@
   grid-column: 2;
 }
 
+.detail-result-matches { display:grid; gap:8px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+.detail-result-matches > strong { font-size:var(--fs-caption); color:var(--text-muted); }
+.detail-result-matches > div { display:grid; gap:7px; }
+.detail-result-matches button { width:100%; min-width:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:7px; align-items:center; padding:7px 9px; border:1px solid var(--line); border-radius:9px; background:var(--surface-2); color:var(--text-muted); text-align:left; }
+.detail-result-matches button:hover,
+.detail-result-matches button.active { border-color:var(--accent-line); color:var(--text); background:var(--accent-tint); }
+.detail-result-matches button .mono { color:var(--accent); font-size:var(--fs-caption); }
+.detail-result-matches button span:last-child { font-size:var(--fs-caption); }
+
 @media (max-width: 720px) {
   .results-page-a1 {
     width: 100%;

@@ -24,6 +24,9 @@ rg -qF 'writeClipboardText(share.share_url)' apps/desktop/src/screens/shares.tsx
 rg -qF 'window.open(selectedShare.share_url' apps/desktop/src/screens/shares.tsx
 rg -qF 'https://*.r2.cloudflarestorage.com' apps/electron-shell/src/protocol.ts
 rg -qF 'https://cdn.cerul.ai' apps/electron-shell/src/protocol.ts
+rg -qF '${options.cloudAccountOrigin} ${shareMediaOrigins} data: blob:' apps/electron-shell/src/protocol.ts
+rg -qF '${options.cloudAccountOrigin} ${shareMediaOrigins} blob:' apps/electron-shell/src/protocol.ts
+rg -qF '!cloudAccessToken || !cloudUserId' apps/desktop/src/screens/item-detail.tsx
 rg -qF '.shares-workspace' apps/desktop/src/styles/selected-ui.css
 rg -qF '.share-ledger-row.active' apps/desktop/src/styles/selected-ui.css
 rg -qF '"nav.shares": "分享管理"' apps/desktop/src/lib/i18n-catalog.ts
