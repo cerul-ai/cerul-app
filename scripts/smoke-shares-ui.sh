@@ -27,6 +27,8 @@ rg -qF 'https://cdn.cerul.ai' apps/electron-shell/src/protocol.ts
 rg -qF '${options.cloudAccountOrigin} ${shareMediaOrigins} data: blob:' apps/electron-shell/src/protocol.ts
 rg -qF '${options.cloudAccountOrigin} ${shareMediaOrigins} blob:' apps/electron-shell/src/protocol.ts
 rg -qF '!cloudAccessToken || !cloudUserId' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'const isCloudAccountOrigin = targetUrl.origin === new URL(CLOUD_API_BASE_URL).origin' apps/desktop/src/lib/cloud/client.ts
+rg -qF 'headers: isCloudAccountOrigin' apps/desktop/src/lib/cloud/client.ts
 rg -qF '.shares-workspace' apps/desktop/src/styles/selected-ui.css
 rg -qF '.share-ledger-row.active' apps/desktop/src/styles/selected-ui.css
 rg -qF '"nav.shares": "分享管理"' apps/desktop/src/lib/i18n-catalog.ts
