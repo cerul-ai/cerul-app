@@ -1674,15 +1674,15 @@
 
 /* P1 share ledger — secondary account destination, not a fifth primary tab. */
 .content:has(.shares-page-p1) { overflow:hidden; }
-.shares-page-p1 { width:100%; max-width:none; height:100%; margin:0; display:flex; flex-direction:column; overflow:hidden; padding:0 clamp(10px,1.2vw,20px) 16px; }
-.shares-page-head { min-height:88px; flex:none; display:flex; align-items:center; gap:18px; padding:15px 18px; border:1px solid var(--line); border-radius:var(--r-xl); background:color-mix(in srgb,var(--surface) 94%,transparent); box-shadow:var(--card-sh); }
+.shares-page-p1 { width:100%; max-width:none; height:100%; margin:0; display:flex; flex-direction:column; overflow:hidden; padding:0 clamp(10px,1vw,18px) 14px; }
+.shares-page-head { min-height:76px; flex:none; display:flex; align-items:center; gap:18px; padding:12px 2px 9px; border:0; background:transparent; box-shadow:none; }
 .shares-page-head > div { min-width:0; flex:1; }
 .shares-page-head h1 { margin:4px 0 0; font-size:25px; line-height:1.15; letter-spacing:-.035em; }
 .shares-page-head p:last-child { max-width:720px; margin:5px 0 0; color:var(--text-muted); font-size:11px; line-height:1.55; }
 .shares-scope-note { min-height:31px; display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border:1px solid var(--accent-line-soft); border-radius:9px; color:var(--accent); background:var(--accent-tint); font:9px var(--font-mono); }
-.shares-workspace { min-height:0; flex:1; display:grid; grid-template-columns:clamp(168px,12vw,190px) minmax(0,1fr) clamp(280px,21vw,320px); align-items:start; gap:11px; margin-top:11px; }
-.shares-filter-rail,.shares-inspector { overflow:auto; border:1px solid var(--line); border-radius:var(--r-xl); background:color-mix(in srgb,var(--surface) 94%,transparent); box-shadow:var(--card-sh); }
-.shares-filter-rail { height:100%; padding:11px; }
+.shares-workspace { min-height:0; flex:1; display:grid; grid-template-columns:clamp(168px,12vw,190px) minmax(0,1fr) clamp(280px,21vw,320px); align-items:stretch; gap:0; margin-top:8px; overflow:hidden; border:1px solid var(--line); border-radius:var(--r-xl); background:color-mix(in srgb,var(--surface) 94%,transparent); box-shadow:var(--card-sh); }
+.shares-filter-rail,.shares-inspector { min-height:0; height:100%; overflow:auto; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.shares-filter-rail { padding:12px 11px; border-right:1px solid var(--line); }
 .shares-filter-rail h2 { margin:0 6px 9px; color:var(--text-faint); font:650 9px var(--font-mono); letter-spacing:.06em; }
 .shares-filter-rail > button { width:100%; min-height:34px; position:relative; display:flex; align-items:center; gap:8px; padding:6px 9px 6px 22px; border:0; border-radius:8px; color:var(--text-muted); background:transparent; text-align:left; font-size:10.5px; transition:background var(--motion-fast),color var(--motion-fast),transform var(--motion-fast); }
 .shares-filter-rail > button:hover { color:var(--text); background:var(--surface-2); }
@@ -1694,7 +1694,7 @@
 .shares-ledger-summary b { color:var(--text); font-size:16px; }
 .shares-ledger-summary small { color:var(--text-faint); font-size:8.5px; }
 .shares-filter-rail > p { margin:12px 4px 0; color:var(--text-faint); font-size:8.5px; line-height:1.55; }
-.shares-list { min-height:0; height:100%; overflow:auto; display:grid; align-content:start; gap:8px; padding:1px; overscroll-behavior:contain; }
+.shares-list { min-height:0; height:100%; overflow:auto; display:grid; align-content:start; gap:8px; padding:12px; background:color-mix(in srgb,var(--surface-2) 38%,transparent); overscroll-behavior:contain; }
 .share-ledger-row { min-width:0; min-height:96px; position:relative; display:grid; grid-template-columns:116px minmax(0,1fr) 92px 20px; gap:12px; align-items:center; padding:11px 10px; border:1px solid var(--line); border-radius:13px; color:var(--text); background:var(--surface); box-shadow:var(--card-sh); cursor:pointer; transition:transform var(--motion-fast),border-color var(--motion-fast),background var(--motion-fast); }
 .share-ledger-row:hover { border-color:var(--line-strong); transform:translateY(-1px); }
 .share-ledger-row:focus-visible { outline:2px solid var(--accent-line); outline-offset:2px; }
@@ -1710,8 +1710,8 @@
 .share-ledger-status.revoked { color:var(--text-faint); }
 .share-ledger-status time { color:var(--text-faint); font-size:8px; font-weight:400; }
 .share-ledger-open { color:var(--accent); font:18px var(--font-mono); }
-.shares-inspector { min-height:0; max-height:100%; align-self:start; padding:13px; }
-.shares-inspector--empty { overflow:visible; }
+.shares-inspector { align-self:stretch; padding:13px; border-left:1px solid var(--line); }
+.shares-inspector--empty { overflow:auto; }
 .shares-inspector > header { min-height:30px; display:flex; align-items:center; gap:8px; }
 .shares-inspector > header h2 { margin:0; font-size:12px; }
 .shares-inspector > header .share-ledger-status { margin-left:auto; }
@@ -1730,7 +1730,7 @@
 .shares-actions .btn { min-height:33px; font-size:9.5px; }
 .shares-actions .btn:first-child { grid-column:1/-1; }
 .shares-actions .danger { grid-column:1/-1; color:var(--danger); }
-.shares-inspector-empty { display:grid; place-content:center; justify-items:center; gap:8px; padding:18px 12px; color:var(--text-faint); text-align:center; }
+.shares-inspector-empty { min-height:100%; display:grid; place-content:center; justify-items:center; gap:8px; padding:18px 12px; color:var(--text-faint); text-align:center; }
 .shares-inspector-empty strong { color:var(--text); font-size:12px; }
 .shares-inspector-empty p { max-width:230px; margin:0 0 6px; font-size:9.5px; line-height:1.6; }
 .shares-notice { margin:10px 0 0; padding:8px; border-radius:8px; color:var(--accent); background:var(--accent-tint); font-size:9px; text-align:center; }
@@ -2029,7 +2029,7 @@
   .results-r1-layout { grid-template-columns:1fr; }
   .results-filter-rail { position:static; display:grid; grid-template-columns:1fr 1fr; }
   .shares-workspace { overflow:auto; grid-template-columns:1fr; }
-  .shares-filter-rail { overflow:visible; }
+  .shares-filter-rail { height:auto; overflow:visible; border-right:0; border-bottom:1px solid var(--line); }
   .shares-list { overflow:visible; }
   .share-ledger-row { grid-template-columns:94px minmax(0,1fr) 80px 18px; }
   .share-ledger-poster { width:94px; }
