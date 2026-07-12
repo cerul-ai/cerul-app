@@ -1890,7 +1890,7 @@ export const en: Record<string, string> = {
   "moments.p3.collection.allDesc": "{count} saved quotes",
   "moments.p3.collection.clips": "Video clips",
   "moments.p3.collection.clipsDesc": "From {count} videos",
-  "moments.p3.collection.frames": "Key frames",
+  "moments.p3.collection.frames": "Notable frames",
   "moments.p3.collection.framesDesc": "Saved frames will appear here",
   "moments.p3.collection.manual": "Manual marks",
   "moments.p3.collection.manualDesc": "Content you saved yourself",
