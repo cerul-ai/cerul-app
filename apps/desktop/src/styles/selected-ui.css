@@ -2001,8 +2001,11 @@
   .detail-workbench-page .splitstage.splitstage-three { grid-template-columns:minmax(360px,1fr) 10px minmax(280px,.9fr); }
   .detail-workbench-page .splitstage-three > .chapter-rail,.detail-workbench-page .splitstage-three > .chapter-rail + .splitstage-resizer { display:none; }
   .results-r1-layout { grid-template-columns:140px minmax(0,1fr); }
-  .shares-workspace { grid-template-columns:160px minmax(0,1fr); }
-  .shares-inspector { display:none; }
+  .shares-workspace { grid-template-columns:160px minmax(0,1fr); grid-template-rows:minmax(280px,1fr) auto; overflow:auto; }
+  .shares-filter-rail { grid-row:1 / 3; }
+  .shares-list { height:auto; min-height:280px; }
+  .shares-inspector { grid-column:2; grid-row:2; height:auto; max-height:none; border-top:1px solid var(--line); }
+  .shares-inspector-empty { min-height:180px; }
   .library-l3-layout { grid-template-columns:160px minmax(0,1fr); }
   .library-l3-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .home-page-h2 .home-search-stage { grid-template-columns:1fr; }
@@ -2029,8 +2032,9 @@
   .results-r1-layout { grid-template-columns:1fr; }
   .results-filter-rail { position:static; display:grid; grid-template-columns:1fr 1fr; }
   .shares-workspace { overflow:auto; grid-template-columns:1fr; }
-  .shares-filter-rail { height:auto; overflow:visible; border-right:0; border-bottom:1px solid var(--line); }
-  .shares-list { overflow:visible; }
+  .shares-filter-rail { grid-row:auto; height:auto; overflow:visible; border-right:0; border-bottom:1px solid var(--line); }
+  .shares-list { min-height:280px; overflow:visible; }
+  .shares-inspector { grid-column:1; grid-row:auto; border-left:0; }
   .share-ledger-row { grid-template-columns:94px minmax(0,1fr) 80px 18px; }
   .share-ledger-poster { width:94px; }
   .detail-workbench-page .splitstage.splitstage-three,.detail-workbench-page .splitstage.splitstage-two { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(360px,1fr) minmax(280px,.85fr); overflow-y:auto; align-items:stretch; }

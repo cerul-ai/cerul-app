@@ -11,6 +11,7 @@ rg -qF '.shares-workspace { min-height:0; flex:1; display:grid; grid-template-co
 rg -qF 'align-items:stretch; gap:0;' apps/desktop/src/styles/selected-ui.css
 rg -qF '.shares-filter-rail { padding:12px 11px; border-right:1px solid var(--line); }' apps/desktop/src/styles/selected-ui.css
 rg -qF '.shares-inspector { align-self:stretch; padding:13px; border-left:1px solid var(--line); }' apps/desktop/src/styles/selected-ui.css
+rg -qF '.shares-inspector { grid-column:2; grid-row:2; height:auto; max-height:none; border-top:1px solid var(--line); }' apps/desktop/src/styles/selected-ui.css
 rg -qF 'onNavigate("shares")' apps/desktop/src/components/bridge.tsx
 rg -qF 'view === "shares"' apps/desktop/src/App.tsx
 rg -qF 'recordManagedShare(published, {' apps/desktop/src/screens/item-detail.tsx
