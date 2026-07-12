@@ -615,6 +615,7 @@ function AppWorkspace() {
   const [detailOrigin, setDetailOrigin] = useState<"results" | "library">(
     initialRoute.origin === "results" ? "results" : "library",
   );
+  const [selectedResultContext, setSelectedResultContext] = useState<Result | null>(null);
   const [query, setQuery] = useState("");
   const [searchRankingPreference, setSearchRankingPreference] =
     useState<api.SearchRankingPreference>("smart");
@@ -1351,6 +1352,7 @@ function AppWorkspace() {
       timestamp?: string | null;
       settingsSection?: string | null;
       origin?: "results" | "library" | null;
+      resultContext?: Result | null;
     } = {},
   ) {
     setShowAddSource(false);
@@ -1359,6 +1361,9 @@ function AppWorkspace() {
     setSelectedTimestamp(params.timestamp ?? null);
     if (nextView === "item-detail") {
       setDetailOrigin(params.origin === "results" ? "results" : "library");
+      setSelectedResultContext(params.resultContext ?? null);
+    } else {
+      setSelectedResultContext(null);
     }
     const routeParams =
       nextView === "settings"
@@ -1709,8 +1714,8 @@ function AppWorkspace() {
     { id: "settings" as View, labelKey: "nav.settings", icon: Settings },
   ];
   const mobileTitleKey =
-    view === "shares"
-      ? "nav.shares"
+    view === "shares" || view === "jobs"
+      ? `nav.${view}`
       : mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
   const onboardingActive = view === "onboarding";
 
@@ -1915,6 +1920,7 @@ function AppWorkspace() {
                 playbackChunkId: result.playbackChunkId,
                 timestamp: result.timestamp,
                 origin: "results",
+                resultContext: result,
               })
             }
             results={visibleResults}
@@ -2020,6 +2026,7 @@ function AppWorkspace() {
             actionsEnabled={apiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             startChunkId={selectedPlaybackChunkId}
+            resultContext={selectedResultContext?.itemId === currentItem.id ? selectedResultContext : null}
             onBack={() => navigate(detailOrigin)}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);

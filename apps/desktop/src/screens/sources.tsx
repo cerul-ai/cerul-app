@@ -52,8 +52,10 @@ function connectorDisplayName(source: Source, fallback: string): string {
       return "Bilibili 视频";
     }
     if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") {
-      const videoId = url.searchParams.get("v") || parts.at(-1);
-      return videoId ? `YouTube · ${videoId}` : "YouTube 视频";
+      const channelId = parts.find((part) => part.startsWith("@") || /^UC[\w-]+$/i.test(part));
+      const videoId = url.searchParams.get("v") || (host === "youtu.be" ? parts[0] : null);
+      const label = channelId || videoId;
+      return label ? `YouTube · ${label}` : "YouTube 视频";
     }
     return host;
   } catch {

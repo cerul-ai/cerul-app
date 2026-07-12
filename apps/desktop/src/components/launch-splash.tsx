@@ -7,7 +7,8 @@ export function LaunchSplash() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
-    if (params.get("skipSplash") === "1") {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (params.get("skipSplash") === "1" || reducedMotion) {
       setPhase("hidden");
       return;
     }

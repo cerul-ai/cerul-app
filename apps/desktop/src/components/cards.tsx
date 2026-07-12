@@ -200,13 +200,14 @@ export function ResultCard({
     <article
       className={className}
       data-result-index={index}
+      role="button"
       tabIndex={0}
       aria-selected={selected}
       aria-expanded={result.moreMatches.length > 0 ? expanded : undefined}
       onFocus={onFocus}
       onClick={() => onOpen(result)}
       onKeyDown={(event) => {
-        if (event.key === "Enter" && event.target === event.currentTarget) {
+        if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
           event.preventDefault();
           onOpen(result);
         }

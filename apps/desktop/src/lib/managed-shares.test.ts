@@ -67,4 +67,21 @@ describe("managed shares", () => {
       timestamp: "1:23",
     });
   });
+
+  it("scopes the ledger to the owning account", () => {
+    const storage = memoryStorage();
+    recordManagedShare(published("mine", "2026-07-11T10:00:00.000Z"), undefined, storage, "user-a");
+    recordManagedShare(published("theirs", "2026-07-11T11:00:00.000Z"), undefined, storage, "user-b");
+    recordManagedShare(published("legacy", "2026-07-11T12:00:00.000Z"), undefined, storage);
+
+    expect(readManagedShares(storage, "user-a").map((share) => share.id)).toEqual(["mine"]);
+    expect(readManagedShares(storage, "user-b").map((share) => share.id)).toEqual(["theirs"]);
+    expect(readManagedShares(storage, null)).toEqual([]);
+    // The unscoped maintenance path preserves legacy and all account records.
+    expect(readManagedShares(storage).map((share) => share.id)).toEqual([
+      "legacy",
+      "theirs",
+      "mine",
+    ]);
+  });
 });

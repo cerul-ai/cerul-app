@@ -24,6 +24,7 @@ rg -qF 'className="page wide p3-page sources-p3-page"' apps/desktop/src/screens/
 rg -qF 'className="connector-grid"' apps/desktop/src/screens/sources.tsx
 rg -qF 'className="connector-activity card"' apps/desktop/src/screens/sources.tsx
 rg -qF 'className="connector-detail card"' apps/desktop/src/screens/sources.tsx
+rg -qF 'part.startsWith("@") || /^UC[\w-]+$/i.test(part)' apps/desktop/src/screens/sources.tsx
 rg -qF '.p3-workspace {' apps/desktop/src/styles/selected-ui.css
 rg -qF '.saved-collection-grid {' apps/desktop/src/styles/selected-ui.css
 rg -qF '.connector-grid {' apps/desktop/src/styles/selected-ui.css

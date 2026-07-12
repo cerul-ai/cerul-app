@@ -73,7 +73,8 @@ rg -qF '.page.wide.detail-workbench-page { width:100%; max-width:none; height:10
 rg -qF '.detail-workbench-page .transcript .seg-btn { width:100%' apps/desktop/src/styles/selected-ui.css
 rg -qF '.detail-workbench-page .detail-right-stack { min-height:0; height:100%; display:flex; flex-direction:column; overflow:hidden; }' apps/desktop/src/styles/selected-ui.css
 rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
-rg -qF 'recordManagedShare(published, {' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'recordManagedShare(' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'cloudUserId,' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'share.identity?.itemId === item.id' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'share.identity.chunkId === shareChunkId' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'share.headline === citationDraft.quote' apps/desktop/src/screens/item-detail.tsx
@@ -82,6 +83,7 @@ rg -qF 'const imagePreviewUrl =' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'ref={handleAudioElement}' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'src={imagePreviewUrl}' apps/desktop/src/screens/item-detail.tsx
 rg -qF 't("understanding.action.reanalyze")' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'matchedSnippet={resultContext?.snippet}' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'onBack={() => navigate(detailOrigin)}' apps/desktop/src/App.tsx
 ! rg -qF 'addToBasket' apps/desktop/src/components/citation-card.tsx
 

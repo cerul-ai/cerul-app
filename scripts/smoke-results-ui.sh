@@ -27,9 +27,12 @@ rg -qF 'className="results-mobile-search"' apps/desktop/src/screens/results.tsx
 rg -qF 'onRunQuery(nextQuery)' apps/desktop/src/screens/results.tsx
 rg -qF 'let resultsUiCache: ResultsUiCache | null = null' apps/desktop/src/screens/results.tsx
 rg -qF 'origin: "results"' apps/desktop/src/App.tsx
+rg -qF 'resultContext: result' apps/desktop/src/App.tsx
+rg -qF 'matchedSnippet={resultContext?.snippet}' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'if ((event.metaKey || event.ctrlKey) && event.key === "ArrowDown")' apps/desktop/src
 rg -qF 'event.key === "ArrowDown" || event.key === "ArrowUp"' apps/desktop/src
-rg -qF 'event.key === "Enter" && event.target === event.currentTarget' apps/desktop/src
+rg -qF '(event.key === "Enter" || event.key === " ") && event.target === event.currentTarget' apps/desktop/src/components/cards.tsx
+rg -qF 'role="button"' apps/desktop/src/components/cards.tsx
 rg -qF "focusResult(nextIndex)" apps/desktop/src
 rg -qF "data-result-index={index}" apps/desktop/src
 rg -qF "function ResultsSkeletonList" apps/desktop/src

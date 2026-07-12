@@ -1,5 +1,5 @@
 import { Copy, ExternalLink, Link2, LogIn, ShieldCheck, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { writeClipboardText } from "../lib/clipboard";
 import { cloudClient } from "../lib/cloud/client";
 import { useAuthStore } from "../lib/cloud/authStore";
@@ -19,13 +19,23 @@ export function SharesScreen({ requestConfirm }: { requestConfirm: RequestConfir
   const { lang } = useLang();
   const authStatus = useAuthStore((state) => state.status);
   const accessToken = useAuthStore((state) => state.accessToken);
-  const [shares, setShares] = useState<ManagedShare[]>(() => readManagedShares());
+  const userId = useAuthStore((state) => state.user?.id ?? null);
+  const [shares, setShares] = useState<ManagedShare[]>(() => readManagedShares(undefined, userId));
   const [filter, setFilter] = useState<ShareFilter>("active");
-  const [selectedId, setSelectedId] = useState<string | null>(() =>
-    readManagedShares().find((share) => share.status === "active")?.id ?? readManagedShares()[0]?.id ?? null,
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    const initial = readManagedShares(undefined, userId);
+    return initial.find((share) => share.status === "active")?.id ?? initial[0]?.id ?? null;
+  });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // Account switches re-scope the ledger: re-read so one account never sees
+  // (or revokes) another account's shares from the same desktop profile.
+  useEffect(() => {
+    const next = readManagedShares(undefined, userId);
+    setShares(next);
+    setSelectedId(next.find((share) => share.status === "active")?.id ?? next[0]?.id ?? null);
+  }, [userId]);
 
   const counts = useMemo(
     () => ({
@@ -70,7 +80,8 @@ export function SharesScreen({ requestConfirm }: { requestConfirm: RequestConfir
     setNotice(null);
     try {
       await cloudClient.revokeShare(accessToken, share.id);
-      setShares(markManagedShareRevoked(share.id));
+      markManagedShareRevoked(share.id);
+      setShares(readManagedShares(undefined, userId));
       setFilter("revoked");
       setNotice(t("shares.notice.revoked"));
     } catch {

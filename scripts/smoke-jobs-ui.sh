@@ -27,6 +27,9 @@ rg -qF "const totalCount = (summary?.total_jobs ?? sortedJobs.length) + syncingS
 rg -qF 'className={embedded ? "jobs-ledger-dialog jobs-sheet is-page" : "jobs-ledger-dialog jobs-sheet"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'className={issueOpen && repairJob ? "jobs-ledger-workspace has-issue" : "jobs-ledger-workspace"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'className={`jobs-repair-cabin phase-${repairPhase}`}' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'const repairJobCanRetry = Boolean(repairJob?.item_id)' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'repairJobCanRetry ? <button' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'view === "shares" || view === "jobs"' apps/desktop/src/App.tsx
 rg -qF 'await onRetryJob(job)' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'if (from && returnRowRef.current) await flyTransfer(from, returnRowRef.current, job)' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'onCancelJobs={async (selectedJobs) =>' apps/desktop/src/App.tsx

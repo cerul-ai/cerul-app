@@ -55,7 +55,7 @@ import {
 } from "../lib/results";
 import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
 import { itemModalityLabel } from "../components/cards";
-import type { ApiStatus, Item, RequestConfirm, TranscriptLine } from "../lib/types";
+import type { ApiStatus, Item, RequestConfirm, Result, TranscriptLine } from "../lib/types";
 
 const transcript: TranscriptLine[] = [];
 
@@ -631,7 +631,15 @@ function VideoUnderstandingPanel({
   const canAnalyze = enabled && !isPending;
   const privacyNote = t("understanding.privacyNote");
 
-  if (compactCompleted && hasUnderstandingContent) {
+  // A re-analysis kicked off from the compact header must surface its
+  // progress and errors — fall through to the full panel while it runs or
+  // after it fails, instead of silently snapping back to "Analyzed".
+  if (
+    compactCompleted &&
+    hasUnderstandingContent &&
+    state.status !== "analyzing" &&
+    state.status !== "error"
+  ) {
     return (
       <section className="understanding-panel understanding-compact-completed">
         <div className="understanding-header">
@@ -782,6 +790,7 @@ export function ItemDetail({
   actionsEnabled,
   startTimestamp,
   startChunkId,
+  resultContext,
   onBack,
   onDeleteItem,
   onReindexItem,
@@ -793,6 +802,7 @@ export function ItemDetail({
   actionsEnabled: boolean;
   startTimestamp: string;
   startChunkId: string | null;
+  resultContext?: Result | null;
   onBack: () => void;
   onDeleteItem: (item: Item) => Promise<void>;
   onReindexItem: (item: Item) => Promise<void>;
@@ -802,6 +812,7 @@ export function ItemDetail({
   const t = useT();
   const cloudAuthStatus = useAuthStore((state) => state.status);
   const cloudAccessToken = useAuthStore((state) => state.accessToken);
+  const cloudUserId = useAuthStore((state) => state.user?.id ?? null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
@@ -1277,7 +1288,7 @@ export function ItemDetail({
     if (!shareChunkId) throw new Error(t("detail.share.unavailable"));
     const posterUrl = sharePosterChunkId ? api.chunkFrameUrl(sharePosterChunkId) : item.thumbnailUrl;
     if (!posterUrl || !citationDraft?.quote) throw new Error(t("detail.share.unavailable"));
-    const existingShare = readManagedShares().find(
+    const existingShare = readManagedShares(undefined, cloudUserId).find(
       (share) =>
         share.status === "active" &&
         share.identity?.itemId === item.id &&
@@ -1304,8 +1315,7 @@ export function ItemDetail({
       const draft = await cloudClient.createShare(cloudAccessToken, {
         title: detailTitle,
         headline: citationDraft.quote,
-        summary: activeUnderstandingRecord?.summary?.trim() || citationDraft.quote,
-        source_label: item.source,
+        summary: citationDraft.quote,
         language: appLocaleTag() === "zh-CN" ? "zh" : "en",
       });
       draftId = draft.id;
@@ -1314,11 +1324,16 @@ export function ItemDetail({
         cloudClient.uploadShareMedia(cloudAccessToken, draft.poster_upload_url, posterBlob),
       ]);
       const published = await cloudClient.publishShare(cloudAccessToken, draft.id);
-      recordManagedShare(published, {
-        itemId: item.id,
-        chunkId: shareChunkId,
-        timestamp: citationDraft.displayTime,
-      });
+      recordManagedShare(
+        published,
+        {
+          itemId: item.id,
+          chunkId: shareChunkId,
+          timestamp: citationDraft.displayTime,
+        },
+        undefined,
+        cloudUserId,
+      );
       setItemAction({ status: "idle", message: t("detail.share.success") });
       return published.share_url;
     } catch (error) {
@@ -1527,6 +1542,7 @@ export function ItemDetail({
               item={item}
               chunk={selectedDocumentChunk}
               chunkCount={documentChunks.length}
+              matchedSnippet={resultContext?.snippet}
               onOpenOriginal={() => void openOriginalSource()}
             />
           ) : (
@@ -1548,7 +1564,7 @@ export function ItemDetail({
         }
         under={
           <div className="detail-center-stack">
-            {item.contentType !== "document" && transcriptLines.length > 0 ? (
+            {transcriptLines.length > 0 ? (
               <CitationCard
                 title={detailTitle}
                 link={item.originalUrl ?? citationTimestampLink}

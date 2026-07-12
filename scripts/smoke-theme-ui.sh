@@ -39,6 +39,7 @@ rg -qF "[data-theme=\"dark\"] .segmented button.active" apps/desktop/src/styles/
 rg -qF "scripts/smoke-theme-ui.sh" scripts/smoke.sh
 rg -qF 'className={`cerul-launch splash-playing' apps/desktop/src/components/launch-splash.tsx
 rg -qF 'Where video becomes citable' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'window.matchMedia("(prefers-reduced-motion: reduce)").matches' apps/desktop/src/components/launch-splash.tsx
 rg -qF '/brand/svg/cerul-icon-paper.svg' apps/desktop/src/components/launch-splash.tsx
 rg -qF '.cerul-launch__tagline' apps/desktop/src/styles/selected-ui.css
 

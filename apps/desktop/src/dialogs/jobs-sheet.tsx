@@ -116,6 +116,7 @@ export function JobsSheet({
   const totalCount = (summary?.total_jobs ?? sortedJobs.length) + syncingSources.length;
   const activeIssueJob = sortedJobs.find((job) => job.id === activeIssueId) ?? null;
   const repairJob = repairingJob ?? activeIssueJob;
+  const repairJobCanRetry = Boolean(repairJob?.item_id);
   const inspectedJob = sortedJobs.find((job) => job.id === selectedJobId) ?? sortedJobs[0] ?? null;
   const inspectedItem = inspectedJob ? itemForJob(inspectedJob) : null;
 
@@ -407,7 +408,7 @@ export function JobsSheet({
                   <p>{repairJob.error_info?.message || repairJob.error || t("jobs.repair.body")}</p>
                   {repairPhase === "idle" || repairPhase === "error" ? (
                     <div className="jobs-repair-actions">
-                      <button type="button" className="btn btn-primary sm" disabled={!controlsEnabled} onClick={() => void retryIssue(repairJob)}>{t("jobs.repair.retry")}</button>
+                      {repairJobCanRetry ? <button type="button" className="btn btn-primary sm" disabled={!controlsEnabled} onClick={() => void retryIssue(repairJob)}>{t("jobs.repair.retry")}</button> : null}
                       {repairJob.error_info?.code === "source_unavailable" && onOpenSources ? <button type="button" className="btn btn-secondary sm" onClick={onOpenSources}>{t("jobs.viewSources")}</button> : null}
                       {repairJob.error_info?.code !== "source_unavailable" && repairJob.error_info?.settings_section ? <button type="button" className="btn btn-secondary sm" onClick={() => onOpenSettingsFix(repairJob.error_info?.settings_section ?? "General")}>{t("jobs.fixSettings")}</button> : null}
                       <button type="button" className="btn btn-ghost sm" onClick={() => dismissIssue(repairJob)}>{t("jobs.repair.later")}</button>

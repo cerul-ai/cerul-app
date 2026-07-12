@@ -9,6 +9,9 @@ export type ManagedShare = PublicShare & {
   status: ManagedShareStatus;
   revoked_at: string | null;
   identity?: ManagedShareIdentity;
+  // Cloud account that created the share. Legacy entries without an owner are
+  // retained in storage but never exposed inside an authenticated account.
+  owner_id?: string | null;
 };
 
 export type ManagedShareIdentity = {
@@ -39,7 +42,10 @@ function isManagedShare(value: unknown): value is ManagedShare {
   );
 }
 
-export function readManagedShares(storage: StorageLike | null = browserStorage()): ManagedShare[] {
+export function readManagedShares(
+  storage: StorageLike | null = browserStorage(),
+  ownerId?: string | null,
+): ManagedShare[] {
   if (!storage) return [];
   try {
     const raw = storage.getItem(managedSharesStorageKey);
@@ -47,6 +53,10 @@ export function readManagedShares(storage: StorageLike | null = browserStorage()
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(isManagedShare)
+      // `undefined` is the unscoped storage-maintenance path. UI callers pass
+      // a concrete owner (or null while signed out), so tokens and URLs can
+      // never leak across accounts or into the signed-out screen.
+      .filter((share) => ownerId === undefined || (ownerId !== null && share.owner_id === ownerId))
       .sort((left, right) => Date.parse(right.published_at) - Date.parse(left.published_at));
   } catch {
     return [];
@@ -66,6 +76,7 @@ export function recordManagedShare(
   response: PublishedShareResponse,
   identity?: ManagedShareIdentity,
   storage: StorageLike | null = browserStorage(),
+  ownerId?: string | null,
 ): ManagedShare[] {
   const current = readManagedShares(storage);
   const next: ManagedShare = {
@@ -74,6 +85,7 @@ export function recordManagedShare(
     status: "active",
     revoked_at: null,
     identity,
+    owner_id: ownerId ?? null,
   };
   const shares = [next, ...current.filter((share) => share.id !== next.id)];
   writeManagedShares(shares, storage);
