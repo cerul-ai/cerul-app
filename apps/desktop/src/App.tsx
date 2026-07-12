@@ -1920,6 +1920,7 @@ function AppWorkspace() {
             query={query}
             rankingPreference={searchRankingPreference}
             onRankingPreferenceChange={handleSearchRankingPreferenceChange}
+            onRunQuery={runQuery}
             onOpen={(result) =>
               navigate("item-detail", {
                 itemId: result.itemId,

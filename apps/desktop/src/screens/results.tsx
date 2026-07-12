@@ -1,4 +1,4 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import * as api from "../lib/api";
@@ -12,6 +12,7 @@ export function ResultsScreen({
   query,
   rankingPreference,
   onRankingPreferenceChange,
+  onRunQuery,
   onOpen,
   results,
   diagnostics,
@@ -24,6 +25,7 @@ export function ResultsScreen({
   query: string;
   rankingPreference: api.SearchRankingPreference;
   onRankingPreferenceChange: (value: api.SearchRankingPreference) => void;
+  onRunQuery: (query: string) => void;
   onOpen: (result: Result) => void;
   results: Result[];
   diagnostics: api.SearchDiagnostics | null;
@@ -39,6 +41,7 @@ export function ResultsScreen({
   const [sortMode, setSortMode] = useState<"relevance" | "recent">("relevance");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [modalityFilter, setModalityFilter] = useState<ResultModalityFilter>("all");
+  const [mobileQuery, setMobileQuery] = useState(query);
 
   const sourceOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -78,6 +81,8 @@ export function ResultsScreen({
     setSelectedIndex(0);
     setExpandedResultIds(new Set());
   }, [query, results.length, sourceFilter, modalityFilter, sortMode, rankingPreference]);
+
+  useEffect(() => setMobileQuery(query), [query]);
 
   function focusResult(index: number) {
     window.requestAnimationFrame(() => {
@@ -135,6 +140,25 @@ export function ResultsScreen({
           {filtersActive ? <button type="button" onClick={clearResultFilters}>{t("common.clearFilters")}</button> : null}
         </div>
       </header>
+
+      <form
+        className="results-mobile-search"
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const nextQuery = mobileQuery.trim();
+          if (nextQuery) onRunQuery(nextQuery);
+        }}
+      >
+        <Search size={17} aria-hidden="true" />
+        <input
+          value={mobileQuery}
+          onChange={(event) => setMobileQuery(event.target.value)}
+          placeholder={t("results.searchPlaceholder")}
+          aria-label={t("results.searchAria")}
+        />
+        <button type="submit" disabled={!mobileQuery.trim()}>{t("home.searchSubmit")}</button>
+      </form>
 
       {error ? (
         <div className="state danger results-r1-error" role="alert">

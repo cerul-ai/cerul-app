@@ -166,11 +166,13 @@ export function JobsSheet({
 
   useEffect(() => {
     if (issueOpen || repairPhase !== "idle") return;
-    const nextIssue = failedJobs.find((job) => !dismissedIssueIds.has(job.id));
+    const nextIssue = filteredJobs.find(
+      (job) => jobGroup(job) === "failed" && !dismissedIssueIds.has(job.id),
+    );
     if (!nextIssue) return;
     const timer = window.setTimeout(() => openIssue(nextIssue), reduceMotion ? 0 : 360);
     return () => window.clearTimeout(timer);
-  }, [failedJobs.map((job) => job.id).join("|"), issueOpen, repairPhase, dismissedIssueIds]);
+  }, [filteredJobs.map((job) => job.id).join("|"), issueOpen, repairPhase, dismissedIssueIds]);
 
   function flyTransfer(from: DOMRect, to: HTMLElement, job: api.JobRecord) {
     if (reduceMotion || !workspaceRef.current) return Promise.resolve();

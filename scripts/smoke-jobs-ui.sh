@@ -68,6 +68,7 @@ rg -qF ".jobs-ledger-workspace.has-issue" apps/desktop/src/styles/selected-ui.cs
 rg -qF ".jobs-transfer-ghost" apps/desktop/src/styles/selected-ui.css
 rg -qF 'className="jobs-current-inspector"' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'className={item?.thumbnailUrl ? "jobs-ledger-thumb has-image" : "jobs-ledger-thumb"}' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'const nextIssue = filteredJobs.find' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'grid-template-columns:0 minmax(0,1fr) 276px' apps/desktop/src/styles/selected-ui.css
 rg -qF "scripts/smoke-jobs-ui.sh" scripts/smoke.sh
 
