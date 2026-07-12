@@ -48,7 +48,7 @@ export function classifyWebVideoUrl(value: string, t: TFunction) {
     if (!first) {
       return { ok: false as const, message: t("addSource.webVideo.unsupported") };
     }
-    return webVideoOk(parsed.toString(), result.hostname, "youtube", "single");
+    return webVideoOk(`https://youtu.be/${first}`, result.hostname, "youtube", "single");
   }
 
   if (hostname === "youtube.com" || hostname.endsWith(".youtube.com")) {
@@ -57,8 +57,18 @@ export function classifyWebVideoUrl(value: string, t: TFunction) {
     if (hasPlaylist && !hasVideoId) {
       return { ok: false as const, message: t("addSource.webVideo.playlistUnsupported") };
     }
-    if ((first === "watch" && hasVideoId) || (["shorts", "live"].includes(first) && parts.length >= 2)) {
-      return webVideoOk(parsed.toString(), result.hostname, "youtube", "single");
+    if (first === "watch" && hasVideoId) {
+      // Canonical watch URL: drop share/tracking params (si, feature, t, …) so
+      // the same video pasted from different places dedupes to one source.
+      return webVideoOk(
+        `https://www.youtube.com/watch?v=${parsed.searchParams.get("v")!.trim()}`,
+        result.hostname,
+        "youtube",
+        "single",
+      );
+    }
+    if (["shorts", "live"].includes(first) && parts.length >= 2) {
+      return webVideoOk(`https://www.youtube.com/${first}/${parts[1]}`, result.hostname, "youtube", "single");
     }
     if (first.startsWith("@") || ["channel", "c", "user"].includes(first)) {
       return webVideoOk(ensureUrlPathSuffix(parsed, "videos"), result.hostname, "youtube", "author");
@@ -67,12 +77,22 @@ export function classifyWebVideoUrl(value: string, t: TFunction) {
   }
 
   if (hostname === "b23.tv") {
-    return webVideoOk(parsed.toString(), result.hostname, "bilibili", "single");
+    return webVideoOk(`https://b23.tv${parsed.pathname}`, result.hostname, "bilibili", "single");
   }
 
   if (hostname === "bilibili.com" || hostname.endsWith(".bilibili.com")) {
     if (first === "video" && parts.length >= 2) {
-      return webVideoOk(parsed.toString(), result.hostname, "bilibili", "single");
+      // Canonical video URL: keep only the id and the part selector (?p=N);
+      // spm_id_from / vd_source and friends are share-tracking noise that
+      // otherwise makes the same video look like a new source every time.
+      const part = parsed.searchParams.get("p");
+      const partQuery = part && /^\d+$/.test(part) && part !== "1" ? `?p=${part}` : "";
+      return webVideoOk(
+        `https://www.bilibili.com/video/${parts[1]}/${partQuery}`,
+        result.hostname,
+        "bilibili",
+        "single",
+      );
     }
     if (hostname === "space.bilibili.com" && first) {
       return webVideoOk(ensureUrlPathSuffix(parsed, "video"), result.hostname, "bilibili", "author");
@@ -81,6 +101,56 @@ export function classifyWebVideoUrl(value: string, t: TFunction) {
   }
 
   return { ok: false as const, message: t("addSource.webVideo.unsupported") };
+}
+
+// Identity key for a web-video source, ignoring protocol, www, share/tracking
+// params and author-page suffixes — so "the same video pasted twice" can be
+// detected no matter how the URL was shared. Returns null for non-web-video
+// values (paths, feeds) which never participate in this dedup.
+export function canonicalWebVideoKey(value: string): string | null {
+  const raw = value.trim();
+  if (!raw) {
+    return null;
+  }
+  let url: URL;
+  try {
+    url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (host === "youtu.be") {
+    return parts[0] ? `youtube:${parts[0]}` : null;
+  }
+  if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+    const videoId = url.searchParams.get("v")?.trim();
+    if (videoId) {
+      return `youtube:${videoId}`;
+    }
+    if (["shorts", "live"].includes(parts[0] ?? "") && parts[1]) {
+      return `youtube:${parts[1]}`;
+    }
+    if (parts[0]) {
+      const author = parts[0] === "channel" || parts[0] === "c" || parts[0] === "user" ? parts[1] : parts[0];
+      return author ? `youtube-author:${author.toLowerCase()}` : null;
+    }
+    return null;
+  }
+  if (host === "b23.tv") {
+    return parts[0] ? `bilibili-short:${parts[0]}` : null;
+  }
+  if (host === "space.bilibili.com") {
+    return parts[0] ? `bilibili-author:${parts[0]}` : null;
+  }
+  if (host === "bilibili.com" || host.endsWith(".bilibili.com")) {
+    if (parts[0] === "video" && parts[1]) {
+      const part = url.searchParams.get("p");
+      return `bilibili:${parts[1]}${part && part !== "1" ? `#p${part}` : ""}`;
+    }
+    return null;
+  }
+  return null;
 }
 
 function webVideoOk(

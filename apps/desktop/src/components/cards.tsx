@@ -362,6 +362,7 @@ export function ItemCard({
       <button
         className={viewMode === "list" ? "item-card list" : "item-card"}
         type="button"
+        aria-label={item.title}
         onClick={onOpen}
       >
         {viewMode === "list" ? (

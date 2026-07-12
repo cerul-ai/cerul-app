@@ -285,8 +285,11 @@ export function HomeScreen({
     .slice(0, 4);
   const [weeklyReview, setWeeklyReview] = useState<api.WeeklyReview | null>(null);
   const [showWeekly, setShowWeekly] = useState(false);
+  // Only playable media belongs in "continue watching" — a viewed image has
+  // no resume position, so it would render as a fake player with a play CTA.
+  const isResumable = (item: Item) => item.contentType !== "image";
   const serverContinueItem = items
-    .filter((item) => item.status === "indexed" && item.playbackPosition?.updated_at)
+    .filter((item) => item.status === "indexed" && isResumable(item) && item.playbackPosition?.updated_at)
     .sort(
       (left, right) =>
         (right.playbackPosition?.updated_at ?? 0) - (left.playbackPosition?.updated_at ?? 0),
@@ -294,7 +297,7 @@ export function HomeScreen({
   const lastOpened = readLastOpened();
   const fallbackContinueItem =
     lastOpened
-      ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed")
+      ? items.find((item) => item.id === lastOpened.itemId && item.status === "indexed" && isResumable(item))
       : undefined;
   const fallbackTimestampSec =
     fallbackContinueItem && lastOpened?.timestamp
@@ -391,7 +394,10 @@ export function HomeScreen({
                 runtimeHours > 0
                   ? t("home.runtime.hm", { hours: runtimeHours, minutes: runtimeRemainder })
                   : t("home.runtime.m", { minutes: runtimeMinutes || 0 }),
-              sources: activeSources,
+              // Total, not active-only — the sources screen and the sources
+              // card both count every source, and mismatched numbers on the
+              // same screen read as a bug.
+              sources: sources.length,
             })}
           </p>
         </div>

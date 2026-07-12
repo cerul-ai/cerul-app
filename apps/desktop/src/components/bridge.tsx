@@ -172,6 +172,13 @@ export function Bridge(props: BridgeProps) {
   const jobsRef = useRef<HTMLDivElement | null>(null);
   useEscapeToClose(() => setJobsOpen(false), jobsOpen);
   useClickOutside(jobsRef, () => setJobsOpen(false), jobsOpen);
+  // The bridge outlives page navigation, so an open glance would float over
+  // whatever screen comes next — collapse it whenever the route changes.
+  useEffect(() => {
+    const close = () => setJobsOpen(false);
+    window.addEventListener("hashchange", close);
+    return () => window.removeEventListener("hashchange", close);
+  }, []);
   const recentJobs = [...jobs]
     .sort((left, right) => {
       const activeDelta = Number(isActiveJob(right)) - Number(isActiveJob(left));
@@ -180,7 +187,6 @@ export function Bridge(props: BridgeProps) {
     })
     .slice(0, 3);
   const queuedCount = jobsSummary?.queued_jobs ?? jobs.filter((job) => job.status === "queued").length;
-  const totalCount = jobsSummary?.total_jobs ?? jobs.length;
 
   const status = useAuthStore((state) => state.status);
   const user = useAuthStore((state) => state.user);
@@ -327,7 +333,10 @@ export function Bridge(props: BridgeProps) {
               <header className="bridge-jobs-popover-head">
                 <span>
                   <strong>{t("nav.jobs")}</strong>
-                  <small className="mono">{t("jobs.popover.queue", { count: totalCount })} · {t("jobs.localProcessing")}</small>
+                  {/* Queued count, not the all-time job total — the footer and
+                      the library banner count waiting work, and a third number
+                      here read like a bug. */}
+                  <small className="mono">{t("jobs.popover.queue", { count: queuedCount })} · {t("jobs.localProcessing")}</small>
                 </span>
                 <button type="button" onClick={onTogglePause}>
                   {indexingPaused ? <Play size={12} /> : <Pause size={12} />}

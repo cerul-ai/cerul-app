@@ -82,7 +82,9 @@
 .bridge-tab:disabled { cursor: default; opacity: 0.6; }
 .bridge-jobs { margin-left: 2px; }
 .bridge-jobs-icon { position: relative; display: inline-flex; }
-.bridge-jobs-icon .badge-count { top: -6px; right: -8px; }
+/* The 15px nav icon needs a corner bubble, not the full-size badge — shrink it
+   so the icon stays legible underneath. */
+.bridge-jobs-icon .badge-count { top: -7px; right: -9px; min-width: 13px; height: 13px; padding: 0 3px; font-size: 8px; }
 
 /* ---- search 呼吸态 ---- */
 .bridge-search {

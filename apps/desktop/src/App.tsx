@@ -97,6 +97,7 @@ import {
 } from "./components/onboarding-pickers";
 import {
   addSourceDisabled,
+  canonicalWebVideoKey,
   uniqueYoutubeChannels,
   validateHttpUrl,
   waitForValidationFrame,
@@ -169,7 +170,6 @@ import {
   persistOnboardingCompleted,
   persistFirstRunActive,
 } from "./lib/uiStore";
-import type { PersistedRoute } from "./lib/uiStore";
 import {
   checkForDesktopUpdate,
   downloadDesktopUpdate,
@@ -952,9 +952,9 @@ function AppWorkspace() {
           return;
         }
 
-        if (!window.location.hash && state.lastRoute) {
-          restorePersistedRoute(state.lastRoute);
-        }
+        // Cold launches always open on home; the persisted route only marks
+        // that the user has navigated before (for the onboarding gate above).
+        // In-window reloads still restore their exact page via the URL hash.
       })
       .catch(() => undefined);
 
@@ -1387,29 +1387,6 @@ function AppWorkspace() {
       settingsSection: routeParams.settingsSection ?? null,
       origin: routeParams.origin ?? null,
     });
-  }
-
-  function restorePersistedRoute(route: PersistedRoute) {
-    const migratedView = route.view === "result-detail" ? "item-detail" : route.view;
-    if (!viewIds.includes(migratedView as View)) {
-      return;
-    }
-
-    const restoredView = migratedView as View;
-    const restoredOrigin = route.view === "result-detail" ? "results" : route.origin;
-    setSelectedItemId(route.itemId ?? null);
-    setSelectedPlaybackChunkId(route.playbackChunkId ?? null);
-    setSelectedTimestamp(route.timestamp ?? null);
-    setDetailOrigin(restoredOrigin === "results" ? "results" : "library");
-    const restoredRoute =
-      restoredView === "settings"
-        ? { ...route, settingsSection: normalizeSettingsSection(route.settingsSection) }
-        : { ...route, origin: restoredOrigin };
-    if (restoredView === "settings") {
-      setSettingsSection(restoredRoute.settingsSection ?? "General");
-    }
-    setViewState(restoredView);
-    window.location.hash = routeHash(restoredView, restoredRoute);
   }
 
   function requestConfirm(options: ConfirmOptions) {
@@ -2147,6 +2124,18 @@ function AppWorkspace() {
           onClose={() => setShowAddSource(false)}
           requestConfirm={requestConfirm}
           onAddSource={async (type, config) => {
+            if (type === "web_video") {
+              const key = canonicalWebVideoKey(String(config.url ?? ""));
+              const isDuplicate =
+                key !== null &&
+                data.sources.some(
+                  (source) =>
+                    source.type === "web_video" && canonicalWebVideoKey(source.name) === key,
+                );
+              if (isDuplicate) {
+                throw new Error(t("addSource.webVideo.duplicate"));
+              }
+            }
             kickActivityPolling();
             await api.addSource(type, config);
             kickActivityPolling();

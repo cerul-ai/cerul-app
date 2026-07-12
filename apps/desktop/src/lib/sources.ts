@@ -42,7 +42,31 @@ export function sourceName(record: api.SourceRecord) {
   ) {
     return compactPathDisplay(configValue, 2) ?? configValue;
   }
-  return configValue;
+  return displayUrl(configValue);
+}
+
+// URLs shown as source names drop the protocol, www and share/tracking query
+// (spm_id_from, vd_source, si, …). Identity params survive: the YouTube video
+// id (?v=) and the bilibili part selector (?p=N). Non-URL values pass through.
+function displayUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./, "");
+    const path = url.pathname.replace(/\/$/, "");
+    const kept = new URLSearchParams();
+    const videoId = url.searchParams.get("v");
+    if (videoId) {
+      kept.set("v", videoId);
+    }
+    const part = url.searchParams.get("p");
+    if (part && part !== "1") {
+      kept.set("p", part);
+    }
+    const query = kept.toString();
+    return `${host}${path}${query ? `?${query}` : ""}`;
+  } catch {
+    return value;
+  }
 }
 
 export function sourceStatus(status: string): SourceStatus {
