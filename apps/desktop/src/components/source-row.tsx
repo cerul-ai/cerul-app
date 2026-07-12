@@ -119,7 +119,7 @@ export function SourceRow({
         <button
           className="btn-icon"
           type="button"
-          aria-label={t("sourceRow.moreActionsAria")}
+          aria-label={`${source.name} · ${t("sourceRow.moreActionsAria")}`}
           aria-expanded={menuOpen}
           disabled={isPending}
           onClick={() => setMenuOpen((open) => !open)}

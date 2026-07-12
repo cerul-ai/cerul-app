@@ -108,14 +108,19 @@ function withAppSecurityHeaders(
 
 function contentSecurityPolicy(options: AppProtocolOptions) {
   const apiBaseUrl = options.apiBaseUrl();
+  // Public shares are uploaded through the Cloud account origin today. Keep
+  // the two Cerul-owned media surfaces available as well so a future direct
+  // R2 upload or CDN-backed poster does not get blocked by the packaged app's
+  // CSP, without opening the renderer to arbitrary HTTPS destinations.
+  const shareMediaOrigins = "https://cdn.cerul.ai https://*.r2.cloudflarestorage.com";
   return [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self' data:",
-    `img-src 'self' ${appScheme}: ${apiBaseUrl} data: blob:`,
-    `media-src 'self' ${apiBaseUrl} blob:`,
-    `connect-src 'self' ${apiBaseUrl} ${options.cloudAccountOrigin}`,
+    `img-src 'self' ${appScheme}: ${apiBaseUrl} ${options.cloudAccountOrigin} ${shareMediaOrigins} data: blob:`,
+    `media-src 'self' ${apiBaseUrl} ${options.cloudAccountOrigin} ${shareMediaOrigins} blob:`,
+    `connect-src 'self' ${apiBaseUrl} ${options.cloudAccountOrigin} ${shareMediaOrigins}`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'none'",

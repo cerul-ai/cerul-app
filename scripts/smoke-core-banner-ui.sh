@@ -13,8 +13,8 @@ rg -qF "elapsedMs >= UNRESPONSIVE_MS" apps/desktop/src
 rg -qF 't("coreBanner.unresponsive")' apps/desktop/src/components/core-banner.tsx
 rg -qF 't("coreBanner.retrying")' apps/desktop/src/components/core-banner.tsx
 rg -qF 't("coreBanner.retry")' apps/desktop/src/components/core-banner.tsx
-rg -qF 't("shell.coreStarting")' apps/desktop/src/App.tsx
-rg -qF 't("shell.coreUnresponsive")' apps/desktop/src/App.tsx
+rg -qF 't("settings.coreStatus.starting")' apps/desktop/src/App.tsx
+rg -qF 't("settings.coreStatus.offline")' apps/desktop/src/App.tsx
 rg -qF "CoreStatusToast" apps/desktop/src/App.tsx
 rg -qF 'show={view !== "settings" && coreLevel === "unresponsive"}' apps/desktop/src/App.tsx
 rg -qF '"coreBanner.starting": "Core starting"' apps/desktop/src/lib/i18n-catalog.ts

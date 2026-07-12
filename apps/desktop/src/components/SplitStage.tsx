@@ -1,34 +1,22 @@
-// Draggable two-pane split for the ItemDetail redesign.
-//
-// Left pane (60% by default): the CerulPlayer + chapter seek list (only
-// shown when video understanding produced chapters). Right pane: the right
-// rail's existing children — VideoUnderstandingPanel + transcript / notices.
-// A thin splitter in the middle (a dot handle, col-resize cursor) is an
-// explicit affordance so users discover they can resize; drag range is
-// clamped so the right pane never collapses and the left pane stays
-// comfortably large.
+// P1 detail workbench: independently scrollable chapters and transcript with
+// two draggable separators around a stable player/citation stage.
 
-import { useCallback, useRef, useState } from "react";
-import { Mic } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { GripVertical, Mic } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { formatTimestamp } from "../lib/formatters";
 import type * as api from "../lib/api";
 
 type SplitStageProps = {
-  // seconds for the chapter seek highlight
   currentSec: number;
   chapters: api.VideoUnderstandingChapter[];
   onSeek: (timestamp: string) => void;
   understood: boolean;
-  // left pane: rendered by parent so it can pass its existing CerulPlayer props
-  // (videoRef, src, markers, chapters, fallbackDurationSec, onSeekMarker,
-  // onVideoElement) without re-declaring them here.
   left: React.ReactNode;
-  // right pane: anything the parent puts in the existing detail-transcript
-  // column (VideoUnderstandingPanel + transcript + notices + skeleton).
   right: React.ReactNode;
-  // optional slot under the player in the left pane (citation card).
   under?: React.ReactNode;
+  frames?: React.ReactNode;
 };
 
 export function SplitStage({
@@ -39,109 +27,156 @@ export function SplitStage({
   left,
   right,
   under,
+  frames,
 }: SplitStageProps) {
   const t = useT();
-  const ref = useRef<HTMLDivElement | null>(null);
-  // 0.6 = left starts big (60%) per the design round-4 default.
-  const [leftPct, setLeftPct] = useState(0.6);
-  const [dragging, setDragging] = useState(false);
+  const showChapters = understood && chapters.length > 0;
+  const showFrames = Boolean(frames);
+  const showNavigation = showChapters || showFrames;
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  // Percentages let all three panes grow naturally with the window. Dragging
+  // adjusts the proportions instead of freezing either rail to a pixel width.
+  const [leftWidth, setLeftWidth] = useState(19);
+  const [rightWidth, setRightWidth] = useState(28);
+  const [navigationTab, setNavigationTab] = useState<"chapters" | "frames">(
+    showChapters ? "chapters" : "frames",
+  );
 
-  const startDrag = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+  useEffect(() => {
+    if (showChapters) setNavigationTab("chapters");
+    else if (showFrames) setNavigationTab("frames");
+  }, [showChapters, showFrames]);
+
+  function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
+    const stage = stageRef.current;
+    if (!stage) return;
     event.preventDefault();
-    setDragging(true);
-
-    const onMove = (ev: MouseEvent) => {
-      const el = ref.current;
-      if (!el) {
-        return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startLeft = leftWidth;
+    const startRight = rightWidth;
+    const bounds = stage.getBoundingClientRect();
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX;
+      if (side === "left") {
+        const next = startLeft + (delta / bounds.width) * 100;
+        setLeftWidth(Math.min(28, Math.max(15, Math.min(next, 64 - rightWidth))));
+      } else {
+        const next = startRight - (delta / bounds.width) * 100;
+        setRightWidth(Math.min(36, Math.max(22, Math.min(next, 64 - (showNavigation ? leftWidth : 0)))));
       }
-      const rect = el.getBoundingClientRect();
-      // The splitter occupies grid column 2 (6px wide); place the cursor
-      // measured against the parent's total width.
-      let pct = (ev.clientX - rect.left) / rect.width;
-      const minRightPx = 280;
-      const maxLeftPct = rect.width > minRightPx * 2
-        ? 1 - minRightPx / rect.width
-        : 0.58;
-      pct = Math.max(0.34, Math.min(Math.min(0.76, maxLeftPct), pct));
-      setLeftPct(pct);
     };
     const onUp = () => {
-      setDragging(false);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, []);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }
+
+  function nudge(side: "left" | "right", delta: number) {
+    const step = delta < 0 ? -1 : 1;
+    if (side === "left") {
+      setLeftWidth((value) => Math.min(28, Math.max(15, value + step)));
+    } else {
+      setRightWidth((value) => Math.min(36, Math.max(22, value + step)));
+    }
+  }
+
+  const stageStyle = {
+    "--split-left": leftWidth,
+    "--split-right": rightWidth,
+  } as CSSProperties;
 
   return (
     <div
-      ref={ref}
-      className="splitstage"
-      style={{
-        gridTemplateColumns: `minmax(0, calc(${leftPct * 100}% - 3px)) 6px minmax(280px, calc(${
-          (1 - leftPct) * 100
-        }% - 3px))`,
-      }}
+      ref={stageRef}
+      className={showNavigation ? "splitstage splitstage-three" : "splitstage splitstage-two"}
+      style={stageStyle}
     >
-      {/* Left pane: caller-provided player chrome + (optional) chapter seek */}
-      <div className="pane pane-left">
+      {showNavigation ? (
+        <aside className="pane chapter-rail" aria-label={t("dt.navigation.title")}>
+          <div className="chapter-rail-head">
+            <span className="strip-label">{t("dt.navigation.title")}</span>
+            <span className="independent-scroll-label">{t("dt.split.independentScroll")}</span>
+          </div>
+          <div className="detail-navigation-tabs" role="tablist" aria-label={t("dt.navigation.title")}>
+            {showChapters ? <button type="button" role="tab" aria-selected={navigationTab === "chapters"} className={navigationTab === "chapters" ? "active" : ""} onClick={() => setNavigationTab("chapters")}>{t("dt.navigation.chapters")}</button> : null}
+            {showFrames ? <button type="button" role="tab" aria-selected={navigationTab === "frames"} className={navigationTab === "frames" ? "active" : ""} onClick={() => setNavigationTab("frames")}>{t("dt.navigation.frames")}</button> : null}
+          </div>
+          <div className="detail-navigation-content">
+            {navigationTab === "frames" && showFrames ? frames : (
+              <div className="split-chapters-list">
+                {chapters.map((chapter, index) => {
+                  const next = chapters[index + 1];
+                  const isCurrent = currentSec >= (chapter.start_sec ?? 0) && (!next || currentSec < (next.start_sec ?? 0));
+                  return (
+                    <button key={`${chapter.start_sec ?? "unknown"}:${chapter.title}:${index}`} type="button" className={`chap-btn${isCurrent ? " active" : ""}`} onClick={() => chapter.start_sec !== null ? onSeek(formatTimestamp(chapter.start_sec)) : undefined}>
+                      <span className="ts mono">{chapter.start_sec !== null ? formatTimestamp(chapter.start_sec) : "--:--"}</span>
+                      <span className="chap-body"><b>{chapter.title}</b>{chapter.summary ? <span className="chap-sum">{chapter.summary}</span> : null}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </aside>
+      ) : null}
+
+      {showNavigation ? (
+        <ResizeHandle
+          label={t("dt.split.resize")}
+          onPointerDown={(event) => beginResize("left", event)}
+          onNudge={(delta) => nudge("left", delta)}
+        />
+      ) : null}
+
+      <div className="pane pane-center">
         {left}
         {under}
-        {understood && chapters.length > 0 ? (
-          <div className="card split-chapters">
-            <div className="split-chapters-head">
-              <span className="strip-label">{t("dt.chapters.direct")}</span>
-            </div>
-            <div className="split-chapters-list">
-              {chapters.map((c, i) => {
-                const next = chapters[i + 1];
-                const isCurrent =
-                  currentSec >= (c.start_sec ?? 0) &&
-                  (!next || currentSec < (next.start_sec ?? 0));
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    className={`chap-btn${isCurrent ? " active" : ""}`}
-                    onClick={() =>
-                      c.start_sec !== null
-                        ? onSeek(formatTimestamp(c.start_sec))
-                        : undefined
-                    }
-                  >
-                    <span className="ts mono">
-                      {c.start_sec !== null ? formatTimestamp(c.start_sec) : "--:--"}
-                    </span>
-                    <span className="chap-body">
-                      <b>{c.title}</b>
-                      {c.summary ? <span className="chap-sum">{c.summary}</span> : null}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
       </div>
 
-      {/* splitter — a thin line with a dot handle, explicit col-resize affordance */}
-      <div
-        className={`splitter${dragging ? " active" : ""}`}
-        onMouseDown={startDrag}
-        title={t("dt.split.resize")}
-        aria-hidden="true"
+      <ResizeHandle
+        label={t("dt.split.resize")}
+        onPointerDown={(event) => beginResize("right", event)}
+        onNudge={(delta) => nudge("right", -delta)}
       />
 
-      {/* Right pane: caller-provided right rail (transcript + panel + notices) */}
       <div className="pane pane-right">
         <div className="pane-right-head">
           <Mic size={13} />
           <span className="strip-label">{t("dt.split.transcript")}</span>
+          <span className="independent-scroll-label">{t("dt.split.independentScroll")}</span>
         </div>
         {right}
       </div>
+    </div>
+  );
+}
+
+function ResizeHandle({
+  label,
+  onPointerDown,
+  onNudge,
+}: {
+  label: string;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onNudge: (delta: number) => void;
+}) {
+  return (
+    <div
+      className="splitstage-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") onNudge(-12);
+        if (event.key === "ArrowRight") onNudge(12);
+      }}
+    >
+      <GripVertical size={13} />
     </div>
   );
 }

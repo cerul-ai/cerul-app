@@ -12,7 +12,7 @@
 //     ItemCard, ItemModalityIcon, DetailIssuePanel, SettingsQuietNotice.
 //   Phase C — extract screens into ./screens/
 //     Done: Onboarding, SourcesScreen, MomentsScreen, ResultsScreen,
-//     HomeScreen, LibraryScreen, ResultDetail, ItemDetail, SettingsScreen.
+//     HomeScreen, LibraryScreen, ItemDetail, SharesScreen, SettingsScreen.
 //     Remaining: none for Phase C.
 //   Phase D — done: dialogs live in ./dialogs/
 //     ConfirmDialog, JobsSheet, AddSourceDialog (+ tabs).
@@ -54,6 +54,7 @@ import {
   ReceiptText,
   Search,
   Settings,
+  Share2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -96,6 +97,7 @@ import {
 } from "./components/onboarding-pickers";
 import {
   addSourceDisabled,
+  canonicalWebVideoKey,
   uniqueYoutubeChannels,
   validateHttpUrl,
   waitForValidationFrame,
@@ -106,7 +108,6 @@ import { JobsSheet, type JobsFilter } from "./dialogs/jobs-sheet";
 import { HomeScreen } from "./screens/home";
 import { LibraryScreen } from "./screens/library";
 import { MomentsScreen } from "./screens/moments";
-import { ResultDetail } from "./screens/result-detail";
 import { ItemDetail } from "./screens/item-detail";
 import { SettingsScreen } from "./screens/settings";
 import { ResultsScreen } from "./screens/results";
@@ -114,10 +115,12 @@ import { LocalModelConsent } from "./components/local-model-consent";
 import { useLocalModelConsent } from "./lib/use-local-model-consent";
 import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
+import { SharesScreen } from "./screens/shares";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
 import { AccountDialogController } from "./components/account-sidebar";
 import { Bridge } from "./components/bridge";
+import { LaunchSplash } from "./components/launch-splash";
 import type {
   ApiStatus,
   AppData,
@@ -167,7 +170,6 @@ import {
   persistOnboardingCompleted,
   persistFirstRunActive,
 } from "./lib/uiStore";
-import type { PersistedRoute } from "./lib/uiStore";
 import {
   checkForDesktopUpdate,
   downloadDesktopUpdate,
@@ -188,21 +190,22 @@ import type { DesktopReleaseNotes, DesktopUpdate, DesktopUpdaterState } from "./
 
 type VisibleDesktopUpdaterState = Exclude<DesktopUpdaterState, { phase: "idle" }>;
 
-// Top-level navigation. Sub-pages (`result-detail`, `item-detail`) are reached
+// Top-level navigation. The single `item-detail` sub-page is reached
 // by clicking a search result or library item, not from the sidebar.
 // `onboarding` auto-opens on a fresh/cleared install (no completed-onboarding
 // flag) and can be re-run later via Settings → "Re-run onboarding"; it is not a
 // permanent destination.
 // All valid View ids — broader than the sidebar so persisted routes for
-// sub-pages (result-detail, item-detail) and onboarding still rehydrate.
+// sub-pages (item-detail and shares) and onboarding still rehydrate.
 const viewIds: View[] = [
   "home",
   "results",
-  "result-detail",
   "library",
   "moments",
   "item-detail",
   "sources",
+  "jobs",
+  "shares",
   "settings",
   "onboarding",
 ];
@@ -211,7 +214,6 @@ const viewIds: View[] = [
 // highlights the right top-level item when a sub-page is active.
 const sidebarParentFor: Partial<Record<View, View>> = {
   "results": "home",
-  "result-detail": "home",
   "item-detail": "library",
 };
 const NEW_SOURCE_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
@@ -610,12 +612,17 @@ function AppWorkspace() {
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(
     initialRoute.timestamp,
   );
+  const [detailOrigin, setDetailOrigin] = useState<"results" | "library">(
+    initialRoute.origin === "results" ? "results" : "library",
+  );
+  const [selectedResultContext, setSelectedResultContext] = useState<Result | null>(null);
+  const pendingResultContextRef = useRef<Result | null>(null);
+  const jobsReturnRouteRef = useRef<{ hash: string; resultContext: Result | null } | null>(null);
   const [query, setQuery] = useState("");
   const [searchRankingPreference, setSearchRankingPreference] =
     useState<api.SearchRankingPreference>("smart");
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [showAddSource, setShowAddSource] = useState(false);
-  const [showJobsSheet, setShowJobsSheet] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [updaterState, setUpdaterState] = useState<DesktopUpdaterState>({ phase: "idle" });
   const [updateNotesOpen, setUpdateNotesOpen] = useState(
@@ -628,6 +635,7 @@ function AppWorkspace() {
   const [jobsSheetFilter, setJobsSheetFilter] = useState<JobsFilter>("all");
   const [jobsSheetJobs, setJobsSheetJobs] = useState<api.JobRecord[]>([]);
   const [jobsSheetLoading, setJobsSheetLoading] = useState(false);
+  const [devFixtureResolved, setDevFixtureResolved] = useState(false);
   const jobsSheetRequestSeq = useRef(0);
   const jobsSheetDisplayedFilterRef = useRef<JobsFilter>("all");
   const [modelDownloadState, setModelDownloadState] = useState<{
@@ -684,11 +692,6 @@ function AppWorkspace() {
   // render its page directly so jobs for items outside the current item page stay visible.
   const drawerJobs = visibleJobs;
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
-  const selectedResult = visibleResults.find(
-    (result) =>
-      (selectedPlaybackChunkId && result.playbackChunkId === selectedPlaybackChunkId) ||
-      (result.itemId === selectedItemId && result.timestamp === selectedTimestamp),
-  );
   const activeJobCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
     : visibleJobs.filter(isActiveJob).length;
@@ -754,22 +757,75 @@ function AppWorkspace() {
     [apiStatus, jobsListParamsForFilter, jobsSheetFilter],
   );
   const refreshJobsSheetIfFiltered = useCallback(async () => {
-    if (showJobsSheet && jobsSheetFilter !== "all") {
+    if (view === "jobs" && jobsSheetFilter !== "all") {
       await refreshJobsSheetJobs(jobsSheetFilter);
     }
-  }, [jobsSheetFilter, refreshJobsSheetJobs, showJobsSheet]);
+  }, [jobsSheetFilter, refreshJobsSheetJobs, view]);
 
   useEffect(() => {
-    if (!showJobsSheet) return;
+    if (view !== "jobs") return;
     void refreshJobsSheetJobs(jobsSheetFilter);
-  }, [showJobsSheet, jobsSheetFilter, refreshJobsSheetJobs]);
+  }, [view, jobsSheetFilter, refreshJobsSheetJobs]);
   const jobsSheetVisibleJobs = jobsSheetFilter === "all" ? drawerJobs : jobsSheetJobs;
-  const openJobsSheet = useCallback(() => {
+  // A local-only visual QA state for exercising the complete M3 -> M4 -> A
+  // repair motion without corrupting a developer's real Core database.
+  const devFailedJob = import.meta.env.DEV && hashQueryParam("fakeFailedJob") === "1"
+    ? {
+        id: "__cerul_dev_failed_job__",
+        item_id: visibleItems[0]?.id ?? "__cerul_dev_failed_item__",
+        job_type: "index_video",
+        status: devFixtureResolved ? "queued" : "failed",
+        started_at: Date.now() / 1000 - 94,
+        finished_at: devFixtureResolved ? null : Date.now() / 1000 - 8,
+        error: devFixtureResolved ? null : "来源连接在验证阶段中断",
+        progress: devFixtureResolved ? 0 : 0.62,
+        stage: devFixtureResolved ? null : "embedding_text",
+        stage_message: devFixtureResolved ? null : "验证来源连接",
+        usage: {
+          event_count: 0,
+          request_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          audio_seconds: 0,
+          image_count: 0,
+          video_seconds: 0,
+          estimated_usd: 0,
+          billed_credits: 0,
+          unpriced_events: 0,
+        },
+        error_info: devFixtureResolved
+          ? null
+          : {
+              code: "source_unavailable",
+              capability: "index_video",
+              settings_section: "Sources",
+              message: "来源暂时不可访问；确认连接后即可从此处继续。",
+            },
+      } satisfies api.JobRecord
+    : null;
+  const jobsSheetVisibleJobsWithFixture = devFailedJob
+    ? [devFailedJob, ...jobsSheetVisibleJobs]
+    : jobsSheetVisibleJobs;
+  const jobsSheetSummaryWithFixture = devFailedJob && data.jobSummary
+    ? {
+        ...data.jobSummary,
+        queued_jobs: data.jobSummary.queued_jobs + Number(devFixtureResolved),
+        failed_jobs: data.jobSummary.failed_jobs + Number(!devFixtureResolved),
+        total_jobs: data.jobSummary.total_jobs + 1,
+      }
+    : data.jobSummary;
+  function openJobsSheet() {
+    if (view !== "jobs") {
+      jobsReturnRouteRef.current = {
+        hash: window.location.hash || "#home",
+        resultContext: selectedResultContext,
+      };
+    }
     setJobsSheetFilter("all");
     setJobsSheetJobs([]);
     setJobsSheetLoading(false);
-    setShowJobsSheet(true);
-  }, []);
+    navigate("jobs");
+  }
 
   // First-run on-device-model consent + download. Fetches capability and shows
   // the dialog once, gated on `local_models_prompted` so it never re-prompts —
@@ -833,7 +889,6 @@ function AppWorkspace() {
       setSelectedItemId(null);
       setSelectedPlaybackChunkId(null);
       setSelectedTimestamp(null);
-      setShowJobsSheet(false);
       setShowAddSource(false);
       setSettingsSection(settingsRoute.settingsSection);
       window.history.replaceState(null, "", `#${routeHash("settings", { settingsSection: "Usage" })}`);
@@ -862,7 +917,14 @@ function AppWorkspace() {
       setSelectedItemId(route.itemId);
       setSelectedPlaybackChunkId(route.playbackChunkId);
       setSelectedTimestamp(route.timestamp);
-      setShowJobsSheet(false);
+      setDetailOrigin(route.origin === "results" ? "results" : "library");
+      const pendingResultContext = pendingResultContextRef.current;
+      const hasFreshResultContext =
+        route.view === "item-detail" &&
+        pendingResultContext?.itemId === route.itemId &&
+        pendingResultContext.playbackChunkId === route.playbackChunkId;
+      setSelectedResultContext(hasFreshResultContext ? pendingResultContext : null);
+      pendingResultContextRef.current = null;
       setShowAddSource(false);
       const normalizedRoute =
         route.view === "settings"
@@ -904,9 +966,9 @@ function AppWorkspace() {
           return;
         }
 
-        if (!window.location.hash && state.lastRoute) {
-          restorePersistedRoute(state.lastRoute);
-        }
+        // Cold launches always open on home; the persisted route only marks
+        // that the user has navigated before (for the onboarding gate above).
+        // In-window reloads still restore their exact page via the URL hash.
       })
       .catch(() => undefined);
 
@@ -1304,13 +1366,22 @@ function AppWorkspace() {
       playbackChunkId?: string | null;
       timestamp?: string | null;
       settingsSection?: string | null;
+      origin?: "results" | "library" | null;
+      resultContext?: Result | null;
     } = {},
   ) {
-    setShowJobsSheet(false);
     setShowAddSource(false);
     setSelectedItemId(params.itemId ?? null);
     setSelectedPlaybackChunkId(params.playbackChunkId ?? null);
     setSelectedTimestamp(params.timestamp ?? null);
+    if (nextView === "item-detail") {
+      setDetailOrigin(params.origin === "results" ? "results" : "library");
+      setSelectedResultContext(params.resultContext ?? null);
+      pendingResultContextRef.current = params.resultContext ?? null;
+    } else {
+      setSelectedResultContext(null);
+      pendingResultContextRef.current = null;
+    }
     const routeParams =
       nextView === "settings"
         ? {
@@ -1324,7 +1395,7 @@ function AppWorkspace() {
     setViewState(nextView);
     const hash = routeHash(nextView, routeParams);
     window.location.hash = hash;
-    if ((nextView === "item-detail" || nextView === "result-detail") && routeParams.itemId) {
+    if (nextView === "item-detail" && routeParams.itemId) {
       recordLastOpened(routeParams.itemId, routeParams.timestamp ?? null);
     }
     void persistLastRoute({
@@ -1333,27 +1404,8 @@ function AppWorkspace() {
       playbackChunkId: routeParams.playbackChunkId ?? null,
       timestamp: routeParams.timestamp ?? null,
       settingsSection: routeParams.settingsSection ?? null,
+      origin: routeParams.origin ?? null,
     });
-  }
-
-  function restorePersistedRoute(route: PersistedRoute) {
-    if (!viewIds.includes(route.view as View)) {
-      return;
-    }
-
-    const restoredView = route.view as View;
-    setSelectedItemId(route.itemId ?? null);
-    setSelectedPlaybackChunkId(route.playbackChunkId ?? null);
-    setSelectedTimestamp(route.timestamp ?? null);
-    const restoredRoute =
-      restoredView === "settings"
-        ? { ...route, settingsSection: normalizeSettingsSection(route.settingsSection) }
-        : route;
-    if (restoredView === "settings") {
-      setSettingsSection(restoredRoute.settingsSection ?? "General");
-    }
-    setViewState(restoredView);
-    window.location.hash = routeHash(restoredView, restoredRoute);
   }
 
   function requestConfirm(options: ConfirmOptions) {
@@ -1675,15 +1727,18 @@ function AppWorkspace() {
   ];
   const mobileNavItems = [
     ...railItems,
+    { id: "shares" as View, labelKey: "nav.shares", icon: Share2 },
     { id: "settings" as View, labelKey: "nav.settings", icon: Settings },
   ];
   const mobileTitleKey =
-    mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
-  const settingsTakeoverActive = view === "settings";
+    view === "shares" || view === "jobs"
+      ? `nav.${view}`
+      : mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
   const onboardingActive = view === "onboarding";
 
   return (
     <div className="app" data-onboarding={onboardingActive ? "true" : undefined}>
+      <LaunchSplash />
       <AccountDialogController />
       <div className="titlebar">
         <div className="titlebar-lead">
@@ -1763,23 +1818,30 @@ function AppWorkspace() {
         </div>
         <div className="titlebar-drag" aria-hidden="true" />
       </div>
-      {!settingsTakeoverActive ? (
-        <>
+      <>
           <Bridge
             activeView={sidebarActiveView}
             onboardingActive={onboardingActive}
             onNavigate={(next) => navigate(next)}
             onOpenJobs={openJobsSheet}
+            jobs={drawerJobs}
+            jobsSummary={apiStatus === "online" ? data.jobSummary : null}
+            items={visibleItems}
+            indexingPaused={indexingPaused}
+            onTogglePause={() => {
+              void api.updateSettings({ indexing_paused: !indexingPaused })
+                .then(() => refreshCoreData())
+                .catch((error) => console.warn("failed to toggle indexing pause", error));
+            }}
             jobsCount={backgroundActivityCount}
-            coreLevel={coreLevel}
             coreLabel={
               coreLevel === "ok" || coreLevel === "grace"
-                ? t("shell.coreLocal")
+                ? `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.ready")}`
                 : coreLevel === "starting"
-                  ? t("shell.coreStarting")
-                  : t("shell.coreUnresponsive")
+                  ? `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.starting")}`
+                  : `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.offline")}`
             }
-            searchVisible={view !== "home" && view !== "onboarding" && view !== "results"}
+            searchVisible={view !== "home" && view !== "onboarding"}
             query={query}
             onRunQuery={runQuery}
             rankingPreference={searchRankingPreference}
@@ -1826,8 +1888,7 @@ function AppWorkspace() {
               </span>
             </button>
           </div>
-        </>
-      ) : null}
+      </>
 
       <main className="content">
         {view === "onboarding" ? (
@@ -1867,16 +1928,16 @@ function AppWorkspace() {
         {view === "results" ? (
           <ResultsScreen
             query={query}
-            setQuery={setQuery}
-            onSubmit={submitSearch}
             rankingPreference={searchRankingPreference}
             onRankingPreferenceChange={handleSearchRankingPreferenceChange}
-            onBack={() => navigate("home")}
+            onRunQuery={runQuery}
             onOpen={(result) =>
-              navigate("result-detail", {
+              navigate("item-detail", {
                 itemId: result.itemId,
                 playbackChunkId: result.playbackChunkId,
                 timestamp: result.timestamp,
+                origin: "results",
+                resultContext: result,
               })
             }
             results={visibleResults}
@@ -1886,42 +1947,6 @@ function AppWorkspace() {
             apiStatus={apiStatus}
             hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
             hasActiveJobs={activeJobCount > 0}
-          />
-        ) : null}
-        {view === "result-detail" && !currentItem ? (
-          <div className="screen">
-            <EmptyState
-              title={t("detail.notFound.title")}
-              body={t("detail.notFound.body")}
-              actionLabel={t("detail.notFound.back")}
-              onAction={() => navigate("library")}
-            />
-          </div>
-        ) : null}
-        {view === "result-detail" && currentItem ? (
-          <ResultDetail
-            item={currentItem}
-            startChunkId={selectedPlaybackChunkId}
-            matchedSnippet={selectedResult?.snippet}
-            moreMatches={selectedResult?.moreMatches}
-            startTimestamp={selectedTimestamp ?? "00:00"}
-            actionsEnabled={apiStatus === "online"}
-            onLibrary={() => navigate("results")}
-            onDeleteItem={async (itemToDelete) => {
-              await api.deleteItem(itemToDelete.id);
-              await refreshCoreData();
-              navigate("library");
-            }}
-            onReindexItem={async (itemToReindex) => {
-              kickActivityPolling();
-              await api.reindexItem(itemToReindex.id);
-              kickActivityPolling();
-              await refreshCoreData();
-            }}
-            onItemUpdated={async () => {
-              await refreshCoreData();
-            }}
-            requestConfirm={requestConfirm}
           />
         ) : null}
         {view === "library" ? (
@@ -1984,13 +2009,14 @@ function AppWorkspace() {
               }
               await refreshCoreData();
             }}
-            onOpenItem={(item) => navigate("item-detail", { itemId: item.id })}
+            onOpenItem={(item) => navigate("item-detail", { itemId: item.id, origin: "library" })}
             requestConfirm={requestConfirm}
           />
         ) : null}
         {view === "moments" ? (
           <MomentsScreen
             actionsEnabled={apiStatus === "online"}
+            items={visibleItems}
             onOpenItem={(moment) =>
               navigate("item-detail", {
                 itemId: moment.item_id,
@@ -2012,12 +2038,15 @@ function AppWorkspace() {
         ) : null}
         {view === "item-detail" && currentItem ? (
           <ItemDetail
+            key={`${currentItem.id}:${selectedPlaybackChunkId ?? ""}:${selectedTimestamp ?? ""}`}
             item={currentItem}
             apiStatus={apiStatus}
             actionsEnabled={apiStatus === "online"}
             startTimestamp={selectedTimestamp ?? "0:00"}
             startChunkId={selectedPlaybackChunkId}
-            onBack={() => navigate("library")}
+            resultContext={selectedResultContext?.itemId === currentItem.id ? selectedResultContext : null}
+            backLabel={t(detailOrigin === "results" ? "detail.backToResults" : "library.heading")}
+            onBack={() => navigate(detailOrigin)}
             onDeleteItem={async (itemToDelete) => {
               await api.deleteItem(itemToDelete.id);
               await refreshCoreData();
@@ -2069,6 +2098,7 @@ function AppWorkspace() {
             requestConfirm={requestConfirm}
           />
         ) : null}
+        {view === "shares" ? <SharesScreen requestConfirm={requestConfirm} /> : null}
         {view === "settings" ? (
           <SettingsScreen
             onBack={() => navigate("home")}
@@ -2118,6 +2148,18 @@ function AppWorkspace() {
           onClose={() => setShowAddSource(false)}
           requestConfirm={requestConfirm}
           onAddSource={async (type, config) => {
+            if (type === "web_video") {
+              const key = canonicalWebVideoKey(String(config.url ?? ""));
+              const isDuplicate =
+                key !== null &&
+                data.sources.some(
+                  (source) =>
+                    source.type === "web_video" && canonicalWebVideoKey(source.name) === key,
+                );
+              if (isDuplicate) {
+                throw new Error(t("addSource.webVideo.duplicate"));
+              }
+            }
             kickActivityPolling();
             await api.addSource(type, config);
             kickActivityPolling();
@@ -2125,10 +2167,10 @@ function AppWorkspace() {
           }}
         />
       ) : null}
-      {showJobsSheet ? (
+      {view === "jobs" ? (
         <JobsSheet
-          jobs={jobsSheetVisibleJobs}
-          summary={apiStatus === "online" ? data.jobSummary : null}
+          jobs={jobsSheetVisibleJobsWithFixture}
+          summary={apiStatus === "online" ? jobsSheetSummaryWithFixture : null}
           filter={jobsSheetFilter}
           loading={jobsSheetLoading}
           syncingSources={syncingSources}
@@ -2163,6 +2205,23 @@ function AppWorkspace() {
               console.warn("failed to cancel job", error);
             }
           }}
+          onCancelJobs={async (selectedJobs) => {
+            const confirmed = await requestConfirm({
+              title: t("jobs.confirm.cancelSelected.title", { count: selectedJobs.length }),
+              body: t("jobs.confirm.cancelSelected.body", { count: selectedJobs.length }),
+              confirmLabel: t("jobs.confirm.cancelSelected.confirm"),
+            });
+            if (!confirmed) {
+              return;
+            }
+            try {
+              await Promise.all(selectedJobs.map((job) => api.cancelJob(job.id)));
+              await refreshCoreData();
+              await refreshJobsSheetJobs(jobsSheetFilter);
+            } catch (error) {
+              console.warn("failed to cancel selected jobs", error);
+            }
+          }}
           onCancelQueuedJobs={async () => {
             const confirmed = await requestConfirm({
               title: t("jobs.confirm.clearQueued.title"),
@@ -2183,15 +2242,38 @@ function AppWorkspace() {
               console.warn("failed to cancel queued jobs", error);
             }
           }}
-          onClose={() => setShowJobsSheet(false)}
+          onRetryJob={async (job) => {
+            if (import.meta.env.DEV && job.id === "__cerul_dev_failed_job__") {
+              await new Promise<void>((resolve) => window.setTimeout(resolve, 220));
+              setDevFixtureResolved(true);
+              return;
+            }
+            if (!job.item_id) {
+              throw new Error(t("jobs.repair.missingItem"));
+            }
+            kickActivityPolling();
+            await api.reindexItem(job.item_id);
+            await refreshCoreData();
+            await refreshJobsSheetJobs(jobsSheetFilter);
+          }}
+          onClose={() => {
+            const returnRoute = jobsReturnRouteRef.current;
+            jobsReturnRouteRef.current = null;
+            if (!returnRoute) {
+              navigate("home");
+              return;
+            }
+            pendingResultContextRef.current = returnRoute.resultContext;
+            setSelectedResultContext(returnRoute.resultContext);
+            window.location.hash = returnRoute.hash;
+          }}
           onOpenSettingsFix={(section) => {
-            setShowJobsSheet(false);
             navigate("settings", { settingsSection: section });
           }}
           onOpenSources={() => {
-            setShowJobsSheet(false);
             navigate("sources");
           }}
+          embedded
         />
       ) : null}
       <ConfirmDialog

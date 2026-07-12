@@ -19,6 +19,11 @@ rg -qF "DetailIssuePanel" apps/desktop/src
 rg -qF "if (hasOpenModalSurface())" apps/desktop/src
 rg -qF "const citationTimestampLink = timestampDeepLink(" apps/desktop/src/screens/item-detail.tsx
 rg -qF "link={item.originalUrl ?? citationTimestampLink}" apps/desktop/src/screens/item-detail.tsx
+rg -qF 'matchedSnippet={resultContext?.snippet}' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'summary: citationDraft.quote' apps/desktop/src/screens/item-detail.tsx
+! rg -qF 'source_label: item.source' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'state.status !== "analyzing"' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'state.status !== "error"' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'document.addEventListener("selectionchange", captureCiteSelection)' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'if (!lineId) return;' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'if (!text) {' apps/desktop/src/screens/item-detail.tsx

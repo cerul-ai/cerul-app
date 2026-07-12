@@ -9,15 +9,16 @@ import type { KeyboardEvent } from "react";
 import type { RouteState, View } from "./types";
 
 // All valid View ids — broader than the sidebar so persisted routes for
-// sub-pages (result-detail, item-detail) and onboarding rehydrate.
+// sub-pages (item-detail, shares) and onboarding rehydrate.
 const VIEW_IDS: View[] = [
   "home",
   "results",
-  "result-detail",
   "library",
   "moments",
   "item-detail",
   "sources",
+  "jobs",
+  "shares",
   "settings",
   "onboarding",
 ];
@@ -28,11 +29,14 @@ export function readRouteState(): RouteState {
   const params = new URLSearchParams(queryString);
 
   return {
-    view: VIEW_IDS.includes(id as View) ? (id as View) : "home",
+    // Old builds used a separate result-detail route. Keep existing deep links
+    // working while routing them into the single maintained detail workspace.
+    view: id === "result-detail" ? "item-detail" : VIEW_IDS.includes(id as View) ? (id as View) : "home",
     itemId: params.get("itemId"),
     playbackChunkId: params.get("playbackChunkId") ?? params.get("chunkId"),
     timestamp: params.get("t"),
     settingsSection: params.get("section"),
+    origin: id === "result-detail" ? "results" : params.get("origin") === "results" ? "results" : params.get("origin") === "library" ? "library" : null,
     oauthProvider: params.get("provider"),
     oauthCode: params.get("code"),
     oauthState: params.get("state"),
@@ -47,6 +51,7 @@ export function routeHash(
     playbackChunkId?: string | null;
     timestamp?: string | null;
     settingsSection?: string | null;
+    origin?: "results" | "library" | null;
   } = {},
 ) {
   const search = new URLSearchParams();
@@ -61,6 +66,9 @@ export function routeHash(
   }
   if (params.settingsSection) {
     search.set("section", params.settingsSection);
+  }
+  if (params.origin) {
+    search.set("origin", params.origin);
   }
   const query = search.toString();
   return query ? `${view}?${query}` : view;

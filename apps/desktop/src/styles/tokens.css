@@ -57,6 +57,8 @@
   --dur-fast: 120ms;  /* micro: hover, press */
   --dur: 240ms;       /* panels, transitions */
   --dur-hero: 420ms;  /* signature: jump-to-the-second scrub */
+  --selection-sweep-duration: var(--dur-hero);
+  --selection-cue-size: 7px;
 
   /* ---- App-icon container gradients (graphite on light, paper on dark) ---- */
   --icon-grad-graphite: linear-gradient(155deg, #3a3f49, #15171c);

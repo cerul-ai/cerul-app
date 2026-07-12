@@ -2,12 +2,9 @@ import {
   AlertTriangle,
   Check,
   Copy,
-  Eye,
-  FileText,
-  Library,
-  ListFilter,
   Loader2,
-  Mic,
+  LayoutGrid,
+  List,
   Plus,
   RefreshCcw,
   Search,
@@ -34,6 +31,7 @@ import { useT } from "../lib/i18n";
 import type { Item, RequestConfirm, Source } from "../lib/types";
 
 type LibraryCapabilityCounts = {
+  total: number;
   document: number;
   speechOnly: number;
   visual: number;
@@ -58,6 +56,7 @@ function libraryCapabilityItemFromRecord(record: api.ItemRecord): LibraryCapabil
 function countLibraryCapabilities(items: LibraryCapabilityItem[]): LibraryCapabilityCounts {
   const indexedItems = items.filter((item) => item.status === "indexed");
   return {
+    total: items.length,
     document: indexedItems.filter((item) => item.contentType === "document").length,
     speechOnly: indexedItems.filter((item) => itemHasSpeechSearch(item) && !itemHasVisualSearch(item))
       .length,
@@ -113,6 +112,16 @@ export function LibraryScreen({
   const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
     a.localeCompare(b),
   );
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
+    return counts;
+  }, [items]);
+  const statusCounts = useMemo(() => ({
+    indexed: items.filter((item) => item.status === "indexed").length,
+    indexing: items.filter((item) => item.status === "indexing").length,
+    failed: items.filter((item) => item.status === "failed").length,
+  }), [items]);
   const itemStatusSignature = useMemo(
     () => items.map((item) => `${item.id}:${item.status}`).join("|"),
     [items],
@@ -426,41 +435,52 @@ export function LibraryScreen({
   }
 
   return (
-    <div className="page wide">
-      <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
-        <div>
-          <h1 className="page-h1">{t("library.heading")}</h1>
-          <p className="page-sub" style={{ maxWidth: 520 }}>{t("library.sub")}</p>
-        </div>
-        <div className="row gap-2" style={{ alignItems: "center" }}>
-          <div className="segmented" aria-label={t("library.view.aria")}>
-            <button
-              className={viewMode === "grid" ? "active" : ""}
-              type="button"
-              aria-label={t("library.view.grid")}
-              aria-pressed={viewMode === "grid"}
-              onClick={() => setViewMode("grid")}
-            >
-              <Library size={15} />
-              <span>{t("library.view.gridShort")}</span>
-            </button>
-            <button
-              className={viewMode === "list" ? "active" : ""}
-              type="button"
-              aria-label={t("library.view.list")}
-              aria-pressed={viewMode === "list"}
-              onClick={() => setViewMode("list")}
-            >
-              <ListFilter size={15} />
-              <span>{t("library.view.listShort")}</span>
-            </button>
+    <div className="page wide library-retrieval-page">
+      <section className="library-retrieval-hero" aria-labelledby="library-retrieval-title">
+        <div className="library-retrieval-head">
+          <div>
+            <p className="page-eyebrow">{t("library.retrieval.eyebrow")}</p>
+            <h1 className="page-h1" id="library-retrieval-title">{t("library.retrieval.title")}</h1>
+            <p className="page-sub">{t("library.retrieval.body")}</p>
           </div>
           <button className="btn btn-primary" type="button" onClick={onAddSource}>
             <Plus size={16} />
             <span>{t("home.addSource")}</span>
           </button>
         </div>
-      </div>
+        <div className="library-overview" aria-label={t("library.capability.summary.aria")}>
+          <span><small>{t("library.retrieval.total")}</small><strong className="mono">{capabilityCounts.total}</strong></span>
+          <span><small>{t("library.retrieval.visual")}</small><strong className="mono">{capabilityCounts.visual}</strong></span>
+          <span><small>{t("library.retrieval.speech")}</small><strong className="mono">{capabilityCounts.speechOnly}</strong></span>
+          <span><small>{t("library.retrieval.documents")}</small><strong className="mono">{capabilityCounts.document}</strong></span>
+        </div>
+        <div className="library-retrieval-controls">
+          <label className="library-retrieval-search">
+            <Search size={18} aria-hidden="true" />
+            <input
+              value={libraryQuery}
+              placeholder={t("library.searchPlaceholder")}
+              aria-label={t("library.searchPlaceholder")}
+              onChange={(event) => setLibraryQuery(event.currentTarget.value)}
+            />
+          </label>
+          <select
+            className="select"
+            aria-label={t("library.sort.aria")}
+            value={sortKey}
+            onChange={(event) => setSortKey(event.currentTarget.value as "recent" | "longest" | "shortest" | "title")}
+          >
+            <option value="recent">{t("library.sort.recent")}</option>
+            <option value="longest">{t("library.sort.longest")}</option>
+            <option value="shortest">{t("library.sort.shortest")}</option>
+            <option value="title">{t("library.sort.title")}</option>
+          </select>
+          <div className="library-view-switch" role="group" aria-label={t("library.view.aria")}>
+            <button type="button" className={viewMode === "grid" ? "active" : ""} aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}><LayoutGrid size={14} />{t("library.view.gridShort")}</button>
+            <button type="button" className={viewMode === "list" ? "active" : ""} aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}><List size={14} />{t("library.view.listShort")}</button>
+          </div>
+        </div>
+      </section>
       <IndexingStrip
         jobs={jobs}
         items={items}
@@ -469,74 +489,23 @@ export function LibraryScreen({
         paused={indexingPaused}
         onOpen={onOpenJobs}
       />
-      <div className="row gap-2 library-filter-row" style={{ flexWrap: "wrap", alignItems: "center" }}>
-        <div className="search-wrap" style={{ flex: "1 1 240px" }}>
-          <Search size={17} />
-          <input
-            className="search-input"
-            value={libraryQuery}
-            placeholder={t("library.searchPlaceholder")}
-            onChange={(event) => setLibraryQuery(event.currentTarget.value)}
-          />
-        </div>
-        <select
-          className="select"
-          aria-label={t("library.filter.sourceAria")}
-          value={sourceFilter}
-          onChange={(event) => setSourceFilter(event.currentTarget.value)}
-        >
-          <option value="all">{t("library.filter.allSources")}</option>
-          {sourceOptions.map((source) => (
-            <option key={source} value={source}>
-              {source}
-            </option>
-          ))}
-        </select>
-        <select
-          className="select"
-          aria-label={t("library.filter.statusAria")}
-          value={statusFilter}
-          onChange={(event) => setStatusFilter(event.currentTarget.value)}
-        >
-          <option value="all">{t("library.filter.allStatuses")}</option>
-          <option value="indexed">{t("library.status.indexed")}</option>
-          <option value="indexing">{t("library.status.indexing")}</option>
-          <option value="failed">{t("library.status.failed")}</option>
-        </select>
-        <select
-          className="select"
-          aria-label={t("library.sort.aria")}
-          value={sortKey}
-          onChange={(event) =>
-            setSortKey(event.currentTarget.value as "recent" | "longest" | "shortest" | "title")
-          }
-        >
-          <option value="recent">{t("library.sort.recent")}</option>
-          <option value="longest">{t("library.sort.longest")}</option>
-          <option value="shortest">{t("library.sort.shortest")}</option>
-          <option value="title">{t("library.sort.title")}</option>
-        </select>
-      </div>
-      {items.length > 0 ? (
+      <div className="library-l3-layout">
+        <aside className="library-source-rail" aria-label={t("library.filter.sourceAria")}>
+          <section>
+            <h2>{t("library.filter.sourceAria")}</h2>
+            <button type="button" className={sourceFilter === "all" ? "active" : ""} onClick={() => setSourceFilter("all")}><span>{t("library.filter.allSources")}</span><code>{items.length}</code></button>
+            {sourceOptions.map((source) => <button type="button" key={source} className={sourceFilter === source ? "active" : ""} onClick={() => setSourceFilter(source)}><span className="clamp1">{source}</span><code>{sourceCounts.get(source) ?? 0}</code></button>)}
+          </section>
+          <section>
+            <h2>{t("library.filter.statusAria")}</h2>
+            <button type="button" className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}><span>{t("library.filter.allStatuses")}</span><code>{items.length}</code></button>
+            {(["indexed", "indexing", "failed"] as const).map((status) => <button type="button" key={status} className={statusFilter === status ? "active" : ""} onClick={() => setStatusFilter(status)}><span>{t(`library.status.${status}`)}</span><code>{statusCounts[status]}</code></button>)}
+          </section>
+        </aside>
+        <main className="library-l3-main">
+      {capabilityCounts.partial > 0 ? (
         <div className="library-capability-summary" aria-label={t("library.capability.summary.aria")}>
-          <span className="library-capability-pill warn">
-            <Mic size={13} />
-            {t("library.capability.speechOnly", { count: capabilityCounts.speechOnly })}
-          </span>
-          <span className="library-capability-pill accent">
-            <Eye size={13} />
-            {t("library.capability.visual", { count: capabilityCounts.visual })}
-          </span>
-          <span className="library-capability-pill accent">
-            <FileText size={13} />
-            {t("library.capability.document", { count: capabilityCounts.document })}
-          </span>
-          {capabilityCounts.partial > 0 ? (
-            <span className="library-capability-pill warn">
-              <AlertTriangle size={13} />
-              {t("library.capability.partial", { count: capabilityCounts.partial })}
-            </span>
-          ) : null}
+          <span className="library-capability-pill warn"><AlertTriangle size={13} />{t("library.capability.partial", { count: capabilityCounts.partial })}</span>
         </div>
       ) : null}
       <div className="row" style={{ alignItems: "center", gap: 10, marginTop: 12 }}>
@@ -630,16 +599,8 @@ export function LibraryScreen({
         </div>
       ) : null}
       {items.length > 0 && filteredItems.length > 0 ? (
-        <div className={viewMode === "grid" ? "lib-grid" : "tbl lib-table"}>
-          {viewMode === "list" ? (
-            <div className="lib-table-head" aria-hidden="true">
-              <span>{t("library.col.title")}</span>
-              <span>{t("library.col.source")}</span>
-              <span>{t("library.col.duration")}</span>
-              <span>{t("library.col.indexed")}</span>
-              <span>{t("library.col.searchability")}</span>
-            </div>
-          ) : null}
+        <div className={viewMode === "grid" ? "lib-grid library-l3-grid" : "tbl lib-table library-retrieval-table"}>
+          {viewMode === "list" ? <div className="lib-table-head" aria-hidden="true"><span>{t("library.col.title")}</span><span>{t("library.col.source")}</span><span>{t("library.col.duration")}</span><span>{t("library.col.indexed")}</span><span>{t("library.col.searchability")}</span></div> : null}
           {filteredItems.map((item) => (
             <ItemCard
               key={item.id}
@@ -667,6 +628,8 @@ export function LibraryScreen({
           onAction={clearLibraryFilters}
         />
       )}
+        </main>
+      </div>
     </div>
   );
 }

@@ -17,6 +17,7 @@ bash scripts/smoke-add-source-ui.sh
 bash scripts/smoke-audio-image-sources.sh
 bash scripts/smoke-sources-ui.sh
 bash scripts/smoke-detail-ui.sh
+bash scripts/smoke-shares-ui.sh
 bash scripts/smoke-library-ui.sh
 bash scripts/smoke-item-detail-ui.sh
 bash scripts/smoke-confirm-dialog-ui.sh

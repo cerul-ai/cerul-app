@@ -42,7 +42,7 @@ import { BrandMark } from "../components/brand";
 import { EmptyState, InlineNotice } from "../components/leaf";
 import { LocalModelConsent } from "../components/local-model-consent";
 import { SettingsQuietNotice } from "../components/settings-quiet-notice";
-import { useClickOutside, useEscapeToClose, useDialogFocus } from "../lib/use-dismissable";
+import { useClickOutside, useDialogFocus, useEscapeToClose } from "../lib/use-dismissable";
 import { type CoreLevel } from "../components/core-banner";
 import {
   errorMessage,
@@ -112,6 +112,15 @@ const settingsSections = [
 ] as const;
 type SettingsSection = (typeof settingsSections)[number];
 const settingsDefaultSection: SettingsSection = "General";
+const settingsCommandAliases: Record<SettingsSection, string> = {
+  General: "general theme language startup 通用 主题 语言 启动",
+  Shortcuts: "shortcuts keyboard hotkey 快捷键 键盘 热键",
+  Models: "models providers processing ai 模型 供应商 处理方式",
+  Library: "library storage cache index 资料库 存储 缓存 索引",
+  Usage: "account usage billing cost 账户 用量 账单 费用",
+  Advanced: "advanced logs reset network 高级 日志 重置 网络",
+  About: "about version update license 关于 版本 更新 许可",
+};
 
 type ShortcutCommandDefinition = {
   id: string;
@@ -365,6 +374,21 @@ export function SettingsScreen({
     status: SaveStatus;
     message: string;
   }>({ status: "idle", message: t("settings.save.idle") });
+  const [commandQuery, setCommandQuery] = useState("");
+  const normalizedCommandQuery = commandQuery.trim().toLocaleLowerCase();
+  const filteredSettingsSections = settingsSections.filter((item) =>
+    !normalizedCommandQuery ||
+    [sectionLabels[item], sectionEyebrows[item], settingsCommandAliases[item]]
+      .some((value) => value.toLocaleLowerCase().includes(normalizedCommandQuery)),
+  );
+
+  useEffect(() => {
+    const onBridgeCommand = (event: Event) => {
+      setCommandQuery(String((event as CustomEvent).detail ?? ""));
+    };
+    window.addEventListener("cerul:settings-command", onBridgeCommand);
+    return () => window.removeEventListener("cerul:settings-command", onBridgeCommand);
+  }, []);
 
   useEffect(() => {
     if (saveState.status !== "saved") {
@@ -467,20 +491,21 @@ export function SettingsScreen({
           : "chip neutral";
 
   return (
-    <div className="page settings-page settings-shell">
-      <aside className="settings-shell-side">
+    <section
+      className="page settings-page settings-shell settings-p1-page"
+      aria-labelledby="settings-shell-title"
+    >
+      <aside className="settings-shell-side settings-command-side">
         <button type="button" className="settings-back" onClick={onBack}>
           <ArrowLeft size={16} />
           <span>{t("settings.back")}</span>
         </button>
-        <div className="settings-shell-brand settings-shell-brand-minimal" aria-label={t("settings.shell.title")}>
-          <BrandMark className="settings-shell-brand-mark" />
-          <div>
-            <strong>{t("settings.shell.title")}</strong>
-          </div>
-        </div>
-        <nav className="settings-nav" aria-label={t("settings.nav.aria")}>
-          {settingsSections.map((item) => {
+        <label className="settings-command-search">
+          <Search size={15} />
+          <input value={commandQuery} onChange={(event) => setCommandQuery(event.currentTarget.value)} placeholder={t("settings.command.placeholder")} />
+        </label>
+        <nav className="settings-nav settings-command-nav" aria-label={t("settings.nav.aria")}>
+          {filteredSettingsSections.map((item) => {
             const Icon = sectionIcons[item];
             return (
               <button
@@ -490,10 +515,11 @@ export function SettingsScreen({
                 onClick={() => setSection(item)}
               >
                 {Icon ? <Icon size={16} /> : null}
-                <span>{sectionLabels[item] ?? item}</span>
+                <span><strong>{sectionLabels[item] ?? item}</strong><small>{sectionEyebrows[item]}</small></span>
               </button>
             );
           })}
+          {filteredSettingsSections.length === 0 ? <p className="settings-command-empty">{t("settings.command.empty")}</p> : null}
         </nav>
         <div
           className="settings-core-status"
@@ -503,7 +529,6 @@ export function SettingsScreen({
           aria-label={settingsCoreStatus.label}
           title={settingsCoreStatus.label}
         >
-          <span className="settings-core-status-dot" aria-hidden="true" />
           <span className="settings-core-status-name">{t("settings.coreStatus.name")}</span>
           <span className="settings-core-status-state">{settingsCoreStatus.state}</span>
         </div>
@@ -511,9 +536,6 @@ export function SettingsScreen({
       <section className="settings-shell-main" aria-labelledby="settings-shell-title">
         <div className="page-head row" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
           <div className="settings-head-lead">
-            <span className="settings-num" aria-hidden="true">
-              {String(settingsSections.indexOf(activeSection) + 1).padStart(2, "0")}
-            </span>
             <div>
               <p className="page-eyebrow">{sectionEyebrows[activeSection] ?? t("settings.eyebrow")}</p>
               <h1 id="settings-shell-title" className="page-h1">
@@ -572,7 +594,7 @@ export function SettingsScreen({
         </div>
         </div>
       </section>
-    </div>
+    </section>
   );
 }
 
@@ -3337,9 +3359,6 @@ function AdvancedSettings({
       <section className="settings-group settings-danger-group">
         <p className="settings-group-title">{t("settings.advanced.maintenance.title")}</p>
         <div className="settings-danger-card settings-danger-card--standard">
-          <span className="settings-danger-ic" aria-hidden="true">
-            <AlertTriangle size={18} />
-          </span>
           <div className="settings-danger-main">
             <strong>{t("settings.storage.resetLocalData")}</strong>
             <p>{t("settings.storage.resetLocalData.desc")}</p>
@@ -3355,9 +3374,6 @@ function AdvancedSettings({
           </button>
         </div>
         <div className="settings-danger-card settings-danger-card--critical">
-          <span className="settings-danger-ic" aria-hidden="true">
-            <AlertTriangle size={18} />
-          </span>
           <div className="settings-danger-main">
             <strong>{t("settings.storage.factoryReset")}</strong>
             <p>{t("settings.storage.factoryReset.desc")}</p>

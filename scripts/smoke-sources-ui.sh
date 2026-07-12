@@ -17,5 +17,18 @@ rg -qF 't("sourceRow.remove")' apps/desktop/src
 rg -qF "/retry-discovery" apps/desktop/src/lib/api.ts
 rg -qF ".source-error-toggle" apps/desktop/src/styles/extensions.css
 rg -qF ".source-error-panel" apps/desktop/src/styles/extensions.css
+rg -qF 'className="page wide p3-page saved-p3-page"' apps/desktop/src/screens/moments.tsx
+rg -qF 'className="saved-collection-grid"' apps/desktop/src/screens/moments.tsx
+rg -qF 'const visibleMoments = view === "videos" ? [] : moments' apps/desktop/src/screens/moments.tsx
+rg -qF '{ id: "review", label: t("moments.p3.review"), count: moments.length }' apps/desktop/src/screens/moments.tsx
+rg -qF 'items={visibleItems}' apps/desktop/src/App.tsx
+rg -qF 'className="page wide p3-page sources-p3-page"' apps/desktop/src/screens/sources.tsx
+rg -qF 'className="connector-grid"' apps/desktop/src/screens/sources.tsx
+rg -qF 'className="connector-activity card"' apps/desktop/src/screens/sources.tsx
+rg -qF 'className="connector-detail card"' apps/desktop/src/screens/sources.tsx
+rg -qF 'part.startsWith("@") || /^UC[\w-]+$/i.test(part)' apps/desktop/src/screens/sources.tsx
+rg -qF '.p3-workspace {' apps/desktop/src/styles/selected-ui.css
+rg -qF '.saved-collection-grid {' apps/desktop/src/styles/selected-ui.css
+rg -qF '.connector-grid {' apps/desktop/src/styles/selected-ui.css
 
-echo "sources_ui_smoke empty_state=enabled source_error_expandable=enabled fix_remove_actions=enabled"
+echo "sources_ui_smoke p3_saved_console=enabled p3_connectors=enabled activity_timeline=enabled empty_state=enabled source_error_expandable=enabled fix_remove_actions=enabled"

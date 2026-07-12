@@ -11,11 +11,12 @@ export type View =
   | "onboarding"
   | "home"
   | "results"
-  | "result-detail"
   | "library"
   | "moments"
   | "item-detail"
   | "sources"
+  | "jobs"
+  | "shares"
   | "settings";
 
 export type SourceStatus = "active" | "syncing" | "paused" | "error";
@@ -191,6 +192,7 @@ export type RouteState = {
   playbackChunkId: string | null;
   timestamp: string | null;
   settingsSection: string | null;
+  origin: "results" | "library" | null;
   oauthProvider: string | null;
   oauthCode: string | null;
   oauthState: string | null;

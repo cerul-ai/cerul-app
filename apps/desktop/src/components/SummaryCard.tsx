@@ -1,16 +1,11 @@
-// Collapsible "视频摘要" card for the ItemDetail redesign.
-//
-// Default (collapsed): a single slim row — summary badge + one-line
-// lead (`summary` trimmed to one sentence) + inline keyword chips + a
-// right-aligned "完整摘要 ▾" affordance. Clicking it inline-expands to
-// the full summary card below (paragraph `summary` + keyword chips)
-// without leaving the page.
+// Unified compact summary for the selected D4 detail direction. There is only
+// one summary state: no short/full split and no expansion that can move the
+// player while somebody is watching.
 //
 // When the understanding record is missing / has no summary, the whole
 // card is not rendered (returns null) so the layout never shows an empty
 // placeholder.
 
-import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import { useT } from "../lib/i18n";
 
@@ -40,7 +35,6 @@ export function SummaryCard({
   oneLiner,
 }: SummaryCardProps) {
   const t = useT();
-  const [open, setOpen] = useState(false);
   const cleanSummary = summary?.trim() ?? "";
   const lead = (oneLiner?.trim() || firstSentence(cleanSummary)).slice(0, 140);
 
@@ -54,7 +48,7 @@ export function SummaryCard({
   }
 
   return (
-    <>
+    <div className="speedread-shell">
       <div className="speedread speedread-collapsed">
         <div className="speedread-row">
           <span className="summary-ribbon">
@@ -64,48 +58,18 @@ export function SummaryCard({
           <span className="speedread-lead">{lead}</span>
           {topics.length > 0 ? (
             <span className="speedread-keys">
-              {topics.slice(0, open ? 0 : 5).map((topic) => (
+              {topics.slice(0, 5).map((topic) => (
                 <span key={topic} className="chip neutral keychip">
                   #{topic}
                 </span>
               ))}
-              {!open && topics.length > 5 ? (
+              {topics.length > 5 ? (
                 <span className="chip neutral keychip">+{topics.length - 5}</span>
               ) : null}
             </span>
           ) : null}
-          <button
-            type="button"
-            className="btn btn-ghost sm speedread-toggle"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            title={open ? t("dt.summary.fullCollapse") : t("dt.summary.full")}
-          >
-            {open ? t("dt.summary.fullCollapse") : t("dt.summary.full")}
-          </button>
         </div>
       </div>
-
-      {open ? (
-        <div className="speedread speedread-expanded">
-          <div className="speedread-head">
-            <span className="summary-ribbon">
-              <Sparkles size={13} />
-              {t("dt.summary.title")}
-            </span>
-          </div>
-          <p className="speedread-summary">{cleanSummary}</p>
-          {topics.length > 0 ? (
-            <div className="speedread-topics">
-              {topics.map((topic) => (
-                <span key={topic} className="chip neutral keychip">
-                  #{topic}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </>
+    </div>
   );
 }

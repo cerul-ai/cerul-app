@@ -2,18 +2,46 @@ import {
   CloudApiError,
   type AuthResponse,
   type CloudUser,
+  type CreateShareInput,
   type LoginInput,
   type OAuthExchangeInput,
   type RegisterInput,
+  type PublishedShareResponse,
+  type ShareDraftResponse,
 } from "./types";
 
 // Cerul Cloud account API. Distinct from the local core (lib/api.ts).
 export const CLOUD_API_BASE_URL = "https://accounts.cerul.ai";
 
 interface RequestOptions {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "DELETE";
   token?: string;
   body?: unknown;
+}
+
+async function upload(path: string, token: string, body: Blob) {
+  const targetUrl = new URL(path, CLOUD_API_BASE_URL);
+  const target = targetUrl.toString();
+  const isCloudAccountOrigin = targetUrl.origin === new URL(CLOUD_API_BASE_URL).origin;
+  let response: Response;
+  try {
+    response = await fetch(target, {
+      method: "PUT",
+      headers: isCloudAccountOrigin
+        ? {
+            authorization: `Bearer ${token}`,
+            "content-type": body.type || "application/octet-stream",
+          }
+        : { "content-type": body.type || "application/octet-stream" },
+      body,
+    });
+  } catch {
+    throw new CloudApiError("network_error", "could not reach Cerul Cloud", 0);
+  }
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+    throw new CloudApiError(data?.error?.code ?? "upload_failed", data?.error?.message ?? `upload failed (${response.status})`, response.status);
+  }
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -78,5 +106,17 @@ export const cloudClient = {
   },
   verifyEmail(token: string, code: string) {
     return request<{ user: CloudUser }>("/v1/auth/email/verify", { method: "POST", token, body: { code } });
+  },
+  createShare(token: string, input: CreateShareInput) {
+    return request<ShareDraftResponse>("/v1/shares", { method: "POST", token, body: input });
+  },
+  uploadShareMedia(token: string, path: string, body: Blob) {
+    return upload(path, token, body);
+  },
+  publishShare(token: string, shareId: string) {
+    return request<PublishedShareResponse>(`/v1/shares/${encodeURIComponent(shareId)}/publish`, { method: "POST", token });
+  },
+  revokeShare(token: string, shareId: string) {
+    return request<void>(`/v1/shares/${encodeURIComponent(shareId)}`, { method: "DELETE", token });
   },
 };

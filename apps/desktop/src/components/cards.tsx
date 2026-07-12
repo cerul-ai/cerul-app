@@ -12,12 +12,12 @@ import {
   FileAudio,
   FileText,
   FileVideo,
-  Gauge,
   Image as ImageIcon,
   Mic,
   Play,
   Sparkles,
 } from "lucide-react";
+import { useState } from "react";
 import { useT, type TFunction } from "../lib/i18n";
 import { formatUsd } from "../lib/formatters";
 import {
@@ -197,14 +197,21 @@ export function ResultCard({
           : Sparkles;
 
   return (
-    <button
+    <article
       className={className}
-      type="button"
       data-result-index={index}
+      role="button"
+      tabIndex={0}
       aria-selected={selected}
       aria-expanded={result.moreMatches.length > 0 ? expanded : undefined}
       onFocus={onFocus}
       onClick={() => onOpen(result)}
+      onKeyDown={(event) => {
+        if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
+          event.preventDefault();
+          onOpen(result);
+        }
+      }}
     >
       <span className={`thumb ${result.thumbnailUrl ? "has-image" : result.color}`}>
         {result.thumbnailUrl ? (
@@ -222,28 +229,25 @@ export function ResultCard({
       </span>
       <span className="result-body">
         <span className="result-meta">
-          <ResultModalityIcon result={result} size={14} />
           <span className="chip neutral result-source-label">
             <span className="dot" />
             {result.source}
           </span>
           <em className={`chip modality-pill ${modality}`}>
-            <span className="dot" />
             <ModalityBadgeIcon size={14} />
             {modalityLabel}
-          </em>
-          <em className={`chip confidence-pill ${result.confidence}`}>
-            <span className="dot" />
-            <Gauge size={14} />
-            {result.confidenceLabel}
           </em>
           <em className="chip score-pill mono" title={result.scoreTitle}>
             {result.scoreLabel}
           </em>
         </span>
-        <strong className="clamp1">{result.title}</strong>
-        <span className="snippet clamp2">
+        <blockquote className="result-quote clamp3">
           {highlightSnippet(result.snippet, query)}
+        </blockquote>
+        <span className="result-citation-line">
+          <strong className="clamp1">{result.title}</strong>
+          <span className="mono">{result.timestamp}</span>
+          {result.duration ? <span className="muted">/ {result.duration}</span> : null}
         </span>
         {result.moreMatches.length > 0 && !expanded ? (
           <span className="result-more-hint muted">
@@ -255,10 +259,6 @@ export function ResultCard({
             )}
           </span>
         ) : null}
-      </span>
-      <span className="timestamp mono">
-        {result.timestamp}
-        <small>{result.duration}</small>
       </span>
       {expanded && result.moreMatches.length > 0 ? (
         <span
@@ -279,7 +279,7 @@ export function ResultCard({
           ))}
         </span>
       ) : null}
-    </button>
+    </article>
   );
 }
 
@@ -363,6 +363,7 @@ export function ItemCard({
       <button
         className={viewMode === "list" ? "item-card list" : "item-card"}
         type="button"
+        aria-label={item.title}
         onClick={onOpen}
       >
         {viewMode === "list" ? (
