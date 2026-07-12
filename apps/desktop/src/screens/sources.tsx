@@ -31,6 +31,10 @@ function connectorKind(source: Source): ConnectorKind {
   return "local";
 }
 
+function isHostOrSubdomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
 function connectorDisplayName(source: Source, fallback: string): string {
   if (source.type === "folder" || source.type === "file") {
     const clean = source.name.replace(/[\\/]+$/, "");
@@ -40,14 +44,14 @@ function connectorDisplayName(source: Source, fallback: string): string {
     const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
     const host = url.hostname.replace(/^www\./, "");
     const parts = url.pathname.split("/").filter(Boolean);
-    if (host.includes("bilibili.com")) {
+    if (isHostOrSubdomain(host, "bilibili.com")) {
       const authorId = host === "space.bilibili.com" ? parts[0] : null;
       const videoId = parts.find((part) => /^BV/i.test(part));
       if (authorId) return `Bilibili · ${authorId}`;
       if (videoId) return `Bilibili · ${videoId}`;
       return "Bilibili 视频";
     }
-    if (host.includes("youtube.com") || host === "youtu.be") {
+    if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") {
       const videoId = url.searchParams.get("v") || parts.at(-1);
       return videoId ? `YouTube · ${videoId}` : "YouTube 视频";
     }
