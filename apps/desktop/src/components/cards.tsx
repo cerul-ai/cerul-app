@@ -8,7 +8,6 @@
 
 import {
   Check,
-  Copy,
   Eye,
   FileAudio,
   FileText,
@@ -20,9 +19,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useT, type TFunction } from "../lib/i18n";
-import { buildMomentCitation, formatUsd } from "../lib/formatters";
-import { writeClipboardText } from "../lib/clipboard";
-import { timestampDeepLink } from "../lib/detail";
+import { formatUsd } from "../lib/formatters";
 import {
   itemHasPartialIndex,
   itemHasSpeechSearch,
@@ -175,7 +172,6 @@ export function ResultCard({
   query: string;
 }) {
   const t = useT();
-  const [copied, setCopied] = useState(false);
   const className = [
     "result-card",
     "result-row",
@@ -200,27 +196,6 @@ export function ResultCard({
           ? FileText
           : Sparkles;
 
-  async function copyCitation() {
-    const citation = buildMomentCitation({
-      title: result.title,
-      timestamp: result.timestamp,
-      quote: result.snippet,
-      link: timestampDeepLink(
-        result.itemId,
-        result.timestamp,
-        result.playbackChunkId,
-        "result-detail",
-      ),
-    });
-    try {
-      await writeClipboardText(citation);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }
-
   return (
     <article
       className={className}
@@ -229,6 +204,7 @@ export function ResultCard({
       aria-selected={selected}
       aria-expanded={result.moreMatches.length > 0 ? expanded : undefined}
       onFocus={onFocus}
+      onClick={() => onOpen(result)}
       onKeyDown={(event) => {
         if (event.key === "Enter" && event.target === event.currentTarget) {
           event.preventDefault();
@@ -271,16 +247,6 @@ export function ResultCard({
           <strong className="clamp1">{result.title}</strong>
           <span className="mono">{result.timestamp}</span>
           {result.duration ? <span className="muted">/ {result.duration}</span> : null}
-        </span>
-        <span className="result-actions">
-          <button className="btn btn-primary sm" type="button" onClick={() => onOpen(result)}>
-            <Play size={13} fill="currentColor" />
-            {t("results.action.jump")}
-          </button>
-          <button className="btn btn-secondary sm" type="button" onClick={() => void copyCitation()}>
-            {copied ? <Check size={13} /> : <Copy size={13} />}
-            {copied ? t("results.action.copied") : t("results.action.copy")}
-          </button>
         </span>
         {result.moreMatches.length > 0 && !expanded ? (
           <span className="result-more-hint muted">

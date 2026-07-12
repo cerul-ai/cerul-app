@@ -4,7 +4,7 @@
 // 无选区时跟随当前播放句。
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { AlertCircle, Check, Copy, Loader2 } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { buildMomentCitation } from "../lib/formatters";
 import { writeClipboardText } from "../lib/clipboard";
@@ -19,37 +19,43 @@ export function CitationCard({
   title,
   link,
   draft,
+  onShare,
 }: {
   title: string;
   link: string;
   draft: CitationDraft | null;
+  onShare?: () => Promise<string | null>;
 }) {
   const t = useT();
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "working" | "copied" | "error">("idle");
 
   useEffect(() => {
-    setCopied(false);
+    setStatus("idle");
   }, [draft?.quote, draft?.displayTime]);
 
-  const citationText = draft
-    ? buildMomentCitation({
+  const copy = useCallback(async () => {
+    if (!draft || status === "working") return;
+    setStatus("working");
+    try {
+      const sharedLink = onShare ? await onShare() : null;
+      if (onShare && !sharedLink) {
+        setStatus("idle");
+        return;
+      }
+      const citationText = buildMomentCitation({
         title,
         timestamp: draft.displayTime,
         quote: draft.quote,
-        link,
-      })
-    : null;
-
-  const copy = useCallback(async () => {
-    if (!citationText) return;
-    try {
+        link: sharedLink ?? link,
+      });
       await writeClipboardText(citationText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      setStatus("copied");
+      setTimeout(() => setStatus("idle"), 1600);
     } catch {
-      // clipboard errors surface via the header copy path; keep the card quiet
+      setStatus("error");
+      setTimeout(() => setStatus("idle"), 2200);
     }
-  }, [citationText]);
+  }, [draft, link, onShare, status, title]);
 
   if (!draft) return null;
 
@@ -66,9 +72,9 @@ export function CitationCard({
           — {title} · {draft.displayTime}
         </div>
         <div className="cite-actions">
-          <button className="cite-btn pri" type="button" onClick={() => void copy()}>
-            {copied ? <Check size={13} /> : <Copy size={13} />}
-            {copied ? t("detail.copy.copied") : t("detail.copy.label")}
+          <button className="cite-btn pri" type="button" disabled={status === "working"} onClick={() => void copy()}>
+            {status === "working" ? <Loader2 size={13} className="spin" /> : status === "copied" ? <Check size={13} /> : status === "error" ? <AlertCircle size={13} /> : <Copy size={13} />}
+            {status === "working" ? t("detail.share.creating") : status === "copied" ? t("detail.copy.copied") : status === "error" ? t("detail.share.failedShort") : t("detail.copy.label")}
           </button>
         </div>
       </div>

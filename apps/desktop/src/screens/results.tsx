@@ -1,22 +1,18 @@
-import { AlertTriangle, Loader2, RefreshCcw, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, ReactNode } from "react";
+import { AlertTriangle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import * as api from "../lib/api";
-import { errorMessage } from "../lib/formatters";
-import { useLang, useT, type TFunction } from "../lib/i18n";
-import { buildFollowupQuestion, buildGroundedAnswerQuestion, resultModality } from "../lib/results";
+import { useT, type TFunction } from "../lib/i18n";
+import { resultModality } from "../lib/results";
 import type { ApiStatus, Result, ResultModalityFilter } from "../lib/types";
 import { EmptyState } from "../components/leaf";
 import { ResultCard } from "../components/cards";
-
-type AnswerState = "idle" | "loading" | "ready" | "error";
 
 export function ResultsScreen({
   query,
   rankingPreference,
   onRankingPreferenceChange,
   onOpen,
-  onOpenCitation,
   results,
   diagnostics,
   isSearching,
@@ -29,7 +25,6 @@ export function ResultsScreen({
   rankingPreference: api.SearchRankingPreference;
   onRankingPreferenceChange: (value: api.SearchRankingPreference) => void;
   onOpen: (result: Result) => void;
-  onOpenCitation: (citation: api.AskCitation) => void;
   results: Result[];
   diagnostics: api.SearchDiagnostics | null;
   isSearching: boolean;
@@ -39,17 +34,11 @@ export function ResultsScreen({
   hasActiveJobs: boolean;
 }) {
   const t = useT();
-  const { lang } = useLang();
-  const answerRequest = useRef(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedResultIds, setExpandedResultIds] = useState<Set<string>>(() => new Set());
   const [sortMode, setSortMode] = useState<"relevance" | "recent">("relevance");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [modalityFilter, setModalityFilter] = useState<ResultModalityFilter>("all");
-  const [answerState, setAnswerState] = useState<AnswerState>("idle");
-  const [answer, setAnswer] = useState<api.AskResponse | null>(null);
-  const [answerError, setAnswerError] = useState<string | null>(null);
-  const [followup, setFollowup] = useState("");
 
   const sourceOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -85,43 +74,10 @@ export function ResultsScreen({
   const diagnosticsText = diagnostics ? searchDiagnosticsSummary(diagnostics, t) : null;
   const diagnosticsTitle = diagnostics ? searchDiagnosticsTitle(diagnostics) : undefined;
 
-  async function requestAnswer(question: string) {
-    const normalized = question.trim();
-    if (!normalized || apiStatus !== "online") return;
-    const requestId = ++answerRequest.current;
-    setAnswerState("loading");
-    setAnswerError(null);
-    try {
-      const ask = api.isAgentExperienceEnabled() ? api.askAgentLibrary : api.askLibrary;
-      const next = await ask(normalized, 6, lang);
-      if (answerRequest.current !== requestId) return;
-      setAnswer(next);
-      setAnswerState("ready");
-    } catch (askError) {
-      if (answerRequest.current !== requestId) return;
-      setAnswer(null);
-      setAnswerError(errorMessage(askError));
-      setAnswerState("error");
-    }
-  }
-
   useEffect(() => {
     setSelectedIndex(0);
     setExpandedResultIds(new Set());
   }, [query, results.length, sourceFilter, modalityFilter, sortMode, rankingPreference]);
-
-  useEffect(() => {
-    if (!query.trim() || results.length === 0 || isSearching || apiStatus !== "online") {
-      answerRequest.current += 1;
-      setAnswer(null);
-      setAnswerState("idle");
-      setAnswerError(null);
-      return;
-    }
-    const groundedQuestion = buildGroundedAnswerQuestion(query, displayedResults);
-    const timer = window.setTimeout(() => void requestAnswer(groundedQuestion), 220);
-    return () => window.clearTimeout(timer);
-  }, [query, results.length, isSearching, apiStatus, lang, sourceFilter, modalityFilter, sortMode, rankingPreference]);
 
   function focusResult(index: number) {
     window.requestAnimationFrame(() => {
@@ -162,14 +118,6 @@ export function ResultsScreen({
       event.preventDefault();
       onOpen(displayedResults[Math.min(selectedIndex, displayedResults.length - 1)]);
     }
-  }
-
-  function submitFollowup(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!followup.trim()) return;
-    const contextualQuestion = buildFollowupQuestion(query, followup, displayedResults, answer);
-    setFollowup("");
-    void requestAnswer(contextualQuestion);
   }
 
   return (
@@ -267,34 +215,6 @@ export function ResultsScreen({
           ) : null}
         </main>
 
-        <aside className="results-answer-rail" aria-label={t("results.answer.title")}>
-          <header>
-            <span><Sparkles size={13} />{t("results.answer.title")}</span>
-            <button type="button" aria-label={t("results.answer.retry")} disabled={!query.trim() || answerState === "loading"} onClick={() => void requestAnswer(buildGroundedAnswerQuestion(query, displayedResults))}><RefreshCcw size={13} /></button>
-          </header>
-          <p className="results-answer-grounding">{t("results.answer.grounding", { count: results.length })}</p>
-          {answerState === "loading" ? <div className="results-answer-loading"><Loader2 size={18} className="spin" /><span>{t("results.answer.loading")}</span></div> : null}
-          {answerState === "error" ? <div className="results-answer-error"><strong>{t("overlay.error.title")}</strong><span>{answerError}</span></div> : null}
-          {answerState === "idle" ? <div className="results-answer-empty"><strong>{t("overlay.ask.emptyTitle")}</strong><span>{t("overlay.ask.emptyBody")}</span></div> : null}
-          {answerState === "ready" && answer ? (
-            <div className="results-answer-content">
-              <p>{answer.answer}</p>
-              <div className="results-answer-citations">
-                {answer.citations.map((citation, index) => (
-                  <button key={citation.playback_chunk_id} type="button" onClick={() => onOpenCitation(citation)}>
-                    <code>{index + 1} · {citation.timestamp}</code>
-                    <strong className="clamp1">{citation.title}</strong>
-                    <span className="clamp2">{citation.snippet}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          <form className="results-followup" onSubmit={submitFollowup}>
-            <input value={followup} onChange={(event) => setFollowup(event.currentTarget.value)} placeholder={t("results.answer.followup")} />
-            <button type="submit" disabled={!followup.trim() || answerState === "loading"}>{t("results.answer.ask")}</button>
-          </form>
-        </aside>
       </div>
     </div>
   );

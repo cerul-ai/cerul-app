@@ -9,15 +9,15 @@ import type { KeyboardEvent } from "react";
 import type { RouteState, View } from "./types";
 
 // All valid View ids — broader than the sidebar so persisted routes for
-// sub-pages (result-detail, item-detail) and onboarding rehydrate.
+// sub-pages (item-detail, shares) and onboarding rehydrate.
 const VIEW_IDS: View[] = [
   "home",
   "results",
-  "result-detail",
   "library",
   "moments",
   "item-detail",
   "sources",
+  "shares",
   "settings",
   "onboarding",
 ];
@@ -28,7 +28,9 @@ export function readRouteState(): RouteState {
   const params = new URLSearchParams(queryString);
 
   return {
-    view: VIEW_IDS.includes(id as View) ? (id as View) : "home",
+    // Old builds used a separate result-detail route. Keep existing deep links
+    // working while routing them into the single maintained detail workspace.
+    view: id === "result-detail" ? "item-detail" : VIEW_IDS.includes(id as View) ? (id as View) : "home",
     itemId: params.get("itemId"),
     playbackChunkId: params.get("playbackChunkId") ?? params.get("chunkId"),
     timestamp: params.get("t"),

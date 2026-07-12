@@ -6,7 +6,7 @@ export function timestampDeepLink(
   itemId: string,
   timestamp: string,
   playbackChunkId?: string | null,
-  view?: "item-detail" | "result-detail",
+  view?: "item-detail",
 ) {
   const params = new URLSearchParams({ t: timestamp });
   if (playbackChunkId) {

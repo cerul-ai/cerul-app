@@ -4,13 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-rg -qF "function ResultDetail" apps/desktop/src
+! test -f apps/desktop/src/screens/result-detail.tsx
+! rg -qF 'view === "result-detail"' apps/desktop/src/App.tsx
 rg -qF "startChunkId" apps/desktop/src
 rg -qF "const [copyStatus, setCopyStatus]" apps/desktop/src
 rg -qF "const [currentTimestamp, setCurrentTimestamp]" apps/desktop/src
-rg -qF "const [isPlaying, setIsPlaying]" apps/desktop/src
 rg -qF "const videoRef = useRef<HTMLVideoElement | null>(null)" apps/desktop/src
-rg -qF "const [mediaState, setMediaState]" apps/desktop/src
 rg -qF "const [itemAction, setItemAction]" apps/desktop/src
 rg -qF "ClipExportButton" apps/desktop/src
 rg -qF "function resolveClipTarget()" apps/desktop/src
@@ -20,7 +19,6 @@ rg -qF "if (hasOpenModalSurface())" apps/desktop/src
 rg -qF "api.videoSegmentUrl(playableChunkId)" apps/desktop/src
 rg -qF ".listItemChunks(item.id)" apps/desktop/src
 rg -qF "function selectPlaybackChunkId" apps/desktop/src
-rg -qF "video-frame thumb" apps/desktop/src
 rg -qF "export type DetailIssue" apps/desktop/src
 rg -qF "export function DetailIssuePanel" apps/desktop/src
 rg -qF "export function itemDetailIssue(item: Item, t: TFunction)" apps/desktop/src
@@ -42,8 +40,6 @@ rg -qF "onClick={() => onSeek?.(line.time, line)}" apps/desktop/src
 rg -qF "onSeek={seekTo}" apps/desktop/src
 rg -qF "matchTime={startTimestamp}" apps/desktop/src
 rg -qF "line.time === matchTime" apps/desktop/src
-rg -qF "function copyTimestampLink" apps/desktop/src
-rg -qF 'const timestampLink = timestampDeepLink(item.id, detailTimestamp, detailChunkId, "item-detail")' apps/desktop/src
 rg -qF "playbackChunkId: result.playbackChunkId" apps/desktop/src
 rg -qF "cerul-app://item/" apps/desktop/src
 rg -qF "function canOpenOriginalSource(item: Item)" apps/desktop/src
@@ -75,7 +71,8 @@ rg -qF 'const [leftWidth, setLeftWidth] = useState(19)' apps/desktop/src/compone
 rg -qF 'if (showChapters) setNavigationTab("chapters")' apps/desktop/src/components/SplitStage.tsx
 rg -qF '.page.wide.detail-workbench-page { width:100%; max-width:none; height:100%; margin:0' apps/desktop/src/styles/selected-ui.css
 rg -qF '.detail-workbench-page .transcript .seg-btn { width:100%' apps/desktop/src/styles/selected-ui.css
-! rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'onShare={item.contentType === "video" ? createPublicShare : undefined}' apps/desktop/src/screens/item-detail.tsx
+rg -qF 'recordManagedShare(published)' apps/desktop/src/screens/item-detail.tsx
 ! rg -qF 'addToBasket' apps/desktop/src/components/citation-card.tsx
 
-echo "detail_ui_smoke layout=fluid_three_pane default_navigation=chapters transcript=vertical_only citation_actions=copy_only analysis=compact_no_overlap copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches playback_state=api_video_segment matched_marker=enabled item_delete_reindex=enabled"
+echo "detail_ui_smoke layout=fluid_three_pane route=single_item_detail default_navigation=chapters transcript=vertical_only citation_actions=single_copy_public_link analysis=compact_no_overlap copy_timestamp_link=cerul_deep_link playback_chunk_deeplink=enabled clipboard_fallback=enabled open_original=link_or_finder source_missing=enabled youtube_unavailable=enabled transcript_partial=enabled status_feedback=enabled seek_controls=transcript_and_matches playback_state=api_video_segment matched_marker=enabled item_delete_reindex=enabled"

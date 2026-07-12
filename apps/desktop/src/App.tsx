@@ -12,7 +12,7 @@
 //     ItemCard, ItemModalityIcon, DetailIssuePanel, SettingsQuietNotice.
 //   Phase C — extract screens into ./screens/
 //     Done: Onboarding, SourcesScreen, MomentsScreen, ResultsScreen,
-//     HomeScreen, LibraryScreen, ResultDetail, ItemDetail, SettingsScreen.
+//     HomeScreen, LibraryScreen, ItemDetail, SharesScreen, SettingsScreen.
 //     Remaining: none for Phase C.
 //   Phase D — done: dialogs live in ./dialogs/
 //     ConfirmDialog, JobsSheet, AddSourceDialog (+ tabs).
@@ -106,7 +106,6 @@ import { JobsSheet, type JobsFilter } from "./dialogs/jobs-sheet";
 import { HomeScreen } from "./screens/home";
 import { LibraryScreen } from "./screens/library";
 import { MomentsScreen } from "./screens/moments";
-import { ResultDetail } from "./screens/result-detail";
 import { ItemDetail } from "./screens/item-detail";
 import { SettingsScreen } from "./screens/settings";
 import { ResultsScreen } from "./screens/results";
@@ -114,6 +113,7 @@ import { LocalModelConsent } from "./components/local-model-consent";
 import { useLocalModelConsent } from "./lib/use-local-model-consent";
 import { AddSourceDialog } from "./dialogs/add-source-dialog";
 import { SourcesScreen } from "./screens/sources";
+import { SharesScreen } from "./screens/shares";
 import { Onboarding } from "./screens/onboarding";
 import { BrandLogo, BrandMark } from "./components/brand";
 import { AccountDialogController } from "./components/account-sidebar";
@@ -189,21 +189,21 @@ import type { DesktopReleaseNotes, DesktopUpdate, DesktopUpdaterState } from "./
 
 type VisibleDesktopUpdaterState = Exclude<DesktopUpdaterState, { phase: "idle" }>;
 
-// Top-level navigation. Sub-pages (`result-detail`, `item-detail`) are reached
+// Top-level navigation. The single `item-detail` sub-page is reached
 // by clicking a search result or library item, not from the sidebar.
 // `onboarding` auto-opens on a fresh/cleared install (no completed-onboarding
 // flag) and can be re-run later via Settings → "Re-run onboarding"; it is not a
 // permanent destination.
 // All valid View ids — broader than the sidebar so persisted routes for
-// sub-pages (result-detail, item-detail) and onboarding still rehydrate.
+// sub-pages (item-detail and shares) and onboarding still rehydrate.
 const viewIds: View[] = [
   "home",
   "results",
-  "result-detail",
   "library",
   "moments",
   "item-detail",
   "sources",
+  "shares",
   "settings",
   "onboarding",
 ];
@@ -212,7 +212,6 @@ const viewIds: View[] = [
 // highlights the right top-level item when a sub-page is active.
 const sidebarParentFor: Partial<Record<View, View>> = {
   "results": "home",
-  "result-detail": "home",
   "item-detail": "library",
 };
 const NEW_SOURCE_DEFAULT_HOTKEY = /mac/i.test(typeof navigator !== "undefined" ? navigator.platform : "")
@@ -686,11 +685,6 @@ function AppWorkspace() {
   // render its page directly so jobs for items outside the current item page stay visible.
   const drawerJobs = visibleJobs;
   const currentItem = visibleItems.find((item) => item.id === selectedItemId) ?? null;
-  const selectedResult = visibleResults.find(
-    (result) =>
-      (selectedPlaybackChunkId && result.playbackChunkId === selectedPlaybackChunkId) ||
-      (result.itemId === selectedItemId && result.timestamp === selectedTimestamp),
-  );
   const activeJobCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
     : visibleJobs.filter(isActiveJob).length;
@@ -1373,7 +1367,7 @@ function AppWorkspace() {
     setViewState(nextView);
     const hash = routeHash(nextView, routeParams);
     window.location.hash = hash;
-    if ((nextView === "item-detail" || nextView === "result-detail") && routeParams.itemId) {
+    if (nextView === "item-detail" && routeParams.itemId) {
       recordLastOpened(routeParams.itemId, routeParams.timestamp ?? null);
     }
     void persistLastRoute({
@@ -1727,7 +1721,9 @@ function AppWorkspace() {
     { id: "settings" as View, labelKey: "nav.settings", icon: Settings },
   ];
   const mobileTitleKey =
-    mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
+    view === "shares"
+      ? "nav.shares"
+      : mobileNavItems.find((item) => item.id === sidebarActiveView)?.labelKey ?? "nav.home";
   const onboardingActive = view === "onboarding";
 
   return (
@@ -1828,13 +1824,12 @@ function AppWorkspace() {
                 .catch((error) => console.warn("failed to toggle indexing pause", error));
             }}
             jobsCount={backgroundActivityCount}
-            coreLevel={coreLevel}
             coreLabel={
               coreLevel === "ok" || coreLevel === "grace"
-                ? t("shell.coreLocal")
+                ? `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.ready")}`
                 : coreLevel === "starting"
-                  ? t("shell.coreStarting")
-                  : t("shell.coreUnresponsive")
+                  ? `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.starting")}`
+                  : `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.offline")}`
             }
             searchVisible={view !== "home" && view !== "onboarding"}
             query={query}
@@ -1926,17 +1921,10 @@ function AppWorkspace() {
             rankingPreference={searchRankingPreference}
             onRankingPreferenceChange={handleSearchRankingPreferenceChange}
             onOpen={(result) =>
-              navigate("result-detail", {
+              navigate("item-detail", {
                 itemId: result.itemId,
                 playbackChunkId: result.playbackChunkId,
                 timestamp: result.timestamp,
-              })
-            }
-            onOpenCitation={(citation) =>
-              navigate("result-detail", {
-                itemId: citation.item_id,
-                playbackChunkId: citation.playback_chunk_id,
-                timestamp: citation.timestamp,
               })
             }
             results={visibleResults}
@@ -1946,42 +1934,6 @@ function AppWorkspace() {
             apiStatus={apiStatus}
             hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
             hasActiveJobs={activeJobCount > 0}
-          />
-        ) : null}
-        {view === "result-detail" && !currentItem ? (
-          <div className="screen">
-            <EmptyState
-              title={t("detail.notFound.title")}
-              body={t("detail.notFound.body")}
-              actionLabel={t("detail.notFound.back")}
-              onAction={() => navigate("library")}
-            />
-          </div>
-        ) : null}
-        {view === "result-detail" && currentItem ? (
-          <ResultDetail
-            item={currentItem}
-            startChunkId={selectedPlaybackChunkId}
-            matchedSnippet={selectedResult?.snippet}
-            moreMatches={selectedResult?.moreMatches}
-            startTimestamp={selectedTimestamp ?? "00:00"}
-            actionsEnabled={apiStatus === "online"}
-            onLibrary={() => navigate("results")}
-            onDeleteItem={async (itemToDelete) => {
-              await api.deleteItem(itemToDelete.id);
-              await refreshCoreData();
-              navigate("library");
-            }}
-            onReindexItem={async (itemToReindex) => {
-              kickActivityPolling();
-              await api.reindexItem(itemToReindex.id);
-              kickActivityPolling();
-              await refreshCoreData();
-            }}
-            onItemUpdated={async () => {
-              await refreshCoreData();
-            }}
-            requestConfirm={requestConfirm}
           />
         ) : null}
         {view === "library" ? (
@@ -2129,6 +2081,7 @@ function AppWorkspace() {
             requestConfirm={requestConfirm}
           />
         ) : null}
+        {view === "shares" ? <SharesScreen requestConfirm={requestConfirm} /> : null}
         {view === "settings" ? (
           <SettingsScreen
             onBack={() => navigate("home")}

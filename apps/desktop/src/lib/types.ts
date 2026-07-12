@@ -11,11 +11,11 @@ export type View =
   | "onboarding"
   | "home"
   | "results"
-  | "result-detail"
   | "library"
   | "moments"
   | "item-detail"
   | "sources"
+  | "shares"
   | "settings";
 
 export type SourceStatus = "active" | "syncing" | "paused" | "error";

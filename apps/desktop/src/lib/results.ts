@@ -14,36 +14,6 @@ import type {
 const RESULT_GROUP_WINDOW_SEC = 12;
 const TIMESTAMP_PATTERN = /^\d+(?::\d{1,2}){1,2}$/;
 
-export function buildFollowupQuestion(
-  originalQuery: string,
-  followup: string,
-  results: Result[],
-  previousAnswer: api.AskResponse | null,
-) {
-  const evidence = formatAnswerEvidence(results);
-  const context = [
-    `Original search: ${originalQuery.trim()}`,
-    previousAnswer?.answer ? `Previous answer: ${previousAnswer.answer}` : null,
-    evidence.length ? `Current search evidence:\n${evidence.join("\n")}` : null,
-    `Follow-up question: ${followup.trim()}`,
-  ].filter((entry): entry is string => Boolean(entry));
-  return context.join("\n\n");
-}
-
-export function buildGroundedAnswerQuestion(originalQuery: string, results: Result[]) {
-  const evidence = formatAnswerEvidence(results);
-  return [
-    `Search question: ${originalQuery.trim()}`,
-    evidence.length ? `Answer only from these currently displayed results:\n${evidence.join("\n")}` : null,
-  ].filter((entry): entry is string => Boolean(entry)).join("\n\n");
-}
-
-function formatAnswerEvidence(results: Result[]) {
-  return results.slice(0, 6).map((result, index) =>
-    `${index + 1}. [${result.playbackChunkId}] ${result.title} (${result.timestamp}) — ${result.snippet}`,
-  );
-}
-
 export function mapResultMatch(
   record: api.SearchResultRecord,
   bestScore: number,

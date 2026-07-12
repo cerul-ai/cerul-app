@@ -40,6 +40,7 @@ import {
   parseTimestampSeconds,
 } from "../lib/formatters";
 import { appLocaleTag, useT, type TFunction } from "../lib/i18n";
+import { readManagedShares, recordManagedShare } from "../lib/managed-shares";
 import {
   isNearEndPosition,
   itemDetailIssue,
@@ -922,7 +923,6 @@ export function ItemDetail({
       : currentTimestamp;
   const detailChunkId =
     item.contentType === "document" ? selectedDocumentChunk?.id ?? startChunkId : playableChunkId;
-  const timestampLink = timestampDeepLink(item.id, detailTimestamp, detailChunkId, "item-detail");
   const handlePlayerTimeUpdate = useCallback((seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0) {
       return;
@@ -1237,6 +1237,13 @@ export function ItemDetail({
     if (!shareChunkId) throw new Error(t("detail.share.unavailable"));
     const posterUrl = sharePosterChunkId ? api.chunkFrameUrl(sharePosterChunkId) : item.thumbnailUrl;
     if (!posterUrl || !citationDraft?.quote) throw new Error(t("detail.share.unavailable"));
+    const existingShare = readManagedShares().find(
+      (share) =>
+        share.status === "active" &&
+        share.title === detailTitle &&
+        share.headline === citationDraft.quote,
+    );
+    if (existingShare) return existingShare.share_url;
     const confirmed = await requestConfirm({
       title: t("detail.share.confirm.title"),
       body: t("detail.share.confirm.body"),
@@ -1265,6 +1272,7 @@ export function ItemDetail({
         cloudClient.uploadShareMedia(cloudAccessToken, draft.poster_upload_url, posterBlob),
       ]);
       const published = await cloudClient.publishShare(cloudAccessToken, draft.id);
+      recordManagedShare(published);
       setItemAction({ status: "idle", message: t("detail.share.success") });
       return published.share_url;
     } catch (error) {
@@ -1472,6 +1480,7 @@ export function ItemDetail({
                 title={detailTitle}
                 link={item.originalUrl ?? citationTimestampLink}
                 draft={citationDraft}
+                onShare={item.contentType === "video" ? createPublicShare : undefined}
               />
             ) : null}
           </div>
@@ -1526,6 +1535,7 @@ export function ItemDetail({
                 videoRef={videoRef}
                 videoReady={Boolean(itemPlaybackUrl)}
                 activeTime={currentTimestamp}
+                matchTime={startTimestamp}
                 onSeek={seekTo}
                 renderAction={(line) => {
                   const saved = Boolean(momentActions.momentForLine(line));

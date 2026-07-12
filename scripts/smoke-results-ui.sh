@@ -22,9 +22,7 @@ rg -qF "chunkFrameUrl" apps/desktop/src/lib/api.ts
 rg -qF 'className="page wide results-page-r1"' apps/desktop/src/screens/results.tsx
 rg -qF 'className="results-r1-head"' apps/desktop/src/screens/results.tsx
 rg -qF 'className="results-card-list results-citation-stream"' apps/desktop/src/screens/results.tsx
-rg -qF 'const citation = buildMomentCitation' apps/desktop/src/components/cards.tsx
-rg -qF 'await writeClipboardText(citation)' apps/desktop/src/components/cards.tsx
-rg -qF 'timestampDeepLink(' apps/desktop/src/components/cards.tsx
+rg -qF 'onClick={() => onOpen(result)}' apps/desktop/src/components/cards.tsx
 rg -qF 'if ((event.metaKey || event.ctrlKey) && event.key === "ArrowDown")' apps/desktop/src
 rg -qF 'event.key === "ArrowDown" || event.key === "ArrowUp"' apps/desktop/src
 rg -qF 'event.key === "Enter" && event.target === event.currentTarget' apps/desktop/src
@@ -44,12 +42,12 @@ rg -qF ".thumb.has-image img" apps/desktop/src/styles/extensions.css
 rg -qF ".result-more-matches" apps/desktop/src/styles/extensions.css
 rg -qF ".results-citation-stream" apps/desktop/src/styles/selected-ui.css
 rg -qF 'className="results-filter-rail"' apps/desktop/src/screens/results.tsx
-rg -qF 'className="results-answer-rail"' apps/desktop/src/screens/results.tsx
-rg -qF 'api.askLibrary' apps/desktop/src/screens/results.tsx
-rg -qF 'api.askAgentLibrary' apps/desktop/src/screens/results.tsx
-rg -qF 'onOpenCitation' apps/desktop/src/screens/results.tsx
+! rg -qF 'className="results-answer-rail"' apps/desktop/src/screens/results.tsx
+! rg -qF 'api.askLibrary' apps/desktop/src/screens/results.tsx
+! rg -qF 'api.askAgentLibrary' apps/desktop/src/screens/results.tsx
+! rg -qF 'results.action.jump' apps/desktop/src/screens/results.tsx apps/desktop/src/components/cards.tsx
 rg -qF '.results-filter-group button.active' apps/desktop/src/styles/selected-ui.css
 rg -qF 'selection-pointer-sweep' apps/desktop/src/styles/selected-ui.css
-rg -qF 'buildGroundedAnswerQuestion(query, displayedResults)' apps/desktop/src/screens/results.tsx
+rg -qF 'navigate("item-detail", {' apps/desktop/src/App.tsx
 
-echo "results_ui_smoke layout=R1_three_column_evidence_stream selection=A4_pointer_sweep answer=comprehensive_grounded_qa bridge_search=single_owner sort=relevance_recent ranking=smart_literal citation_actions=jump_copy keyboard_nav=enabled thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image"
+echo "results_ui_smoke layout=two_column_evidence_stream selection=A4_pointer_sweep answer=deferred result_action=whole_card_single_detail bridge_search=single_owner sort=relevance_recent ranking=smart_literal keyboard_nav=enabled thumbnails=keyframe_or_nearest_frame_url modality_icons=video_audio_image"

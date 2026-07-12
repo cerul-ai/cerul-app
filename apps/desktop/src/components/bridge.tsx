@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Database,
   Library,
+  Link2,
   ListChecks,
   Pause,
   Play,
@@ -31,7 +32,7 @@ import {
 // 恒暗胶囊：mark → 页签 → 搜索（呼吸态）→ 任务 → 头像菜单。
 // 纯展示层重组：导航/任务/设置/账户/主题全部复用 App 既有状态与动作。
 
-export type BridgeView = "home" | "library" | "moments" | "sources" | "settings";
+export type BridgeView = "home" | "library" | "moments" | "sources" | "shares" | "settings";
 
 type BridgeProps = {
   activeView: string;
@@ -44,7 +45,6 @@ type BridgeProps = {
   indexingPaused: boolean;
   onTogglePause: () => void;
   jobsCount: number;
-  coreLevel: string;
   coreLabel: string;
   /* search (呼吸态) — hidden on home, whose hero stage is the search surface */
   searchVisible: boolean;
@@ -89,7 +89,6 @@ export function Bridge(props: BridgeProps) {
     indexingPaused,
     onTogglePause,
     jobsCount,
-    coreLevel,
     coreLabel,
     searchVisible,
     query,
@@ -389,11 +388,6 @@ export function Bridge(props: BridgeProps) {
             ) : (
               <User size={14} aria-hidden="true" />
             )}
-            <span
-              className="bridge-core-dot"
-              data-level={coreLevel === "grace" ? "ok" : coreLevel}
-              aria-hidden="true"
-            />
           </button>
 
           {menuOpen ? (
@@ -433,6 +427,18 @@ export function Bridge(props: BridgeProps) {
                 role="menuitem"
                 onClick={() => {
                   setMenuOpen(false);
+                  onNavigate("shares");
+                }}
+              >
+                <Link2 size={14} aria-hidden="true" />
+                {t("nav.shares")}
+              </button>
+              <button
+                className="bridge-menu-row"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
                   onOpenJobs();
                 }}
               >
@@ -446,11 +452,6 @@ export function Bridge(props: BridgeProps) {
                 <em>{themeLabel}</em>
               </button>
               <div className="bridge-menu-foot mono">
-                <span
-                  className="bridge-core-dot static"
-                  data-level={coreLevel === "grace" ? "ok" : coreLevel}
-                  aria-hidden="true"
-                />
                 {coreLabel}
               </div>
             </div>
