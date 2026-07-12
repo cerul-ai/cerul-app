@@ -65,6 +65,8 @@ rg -qF '.route("/items/:id/reindex", post(reindex_item))' crates/cerul-api/src/r
 rg -qF "async fn remove_item" crates/cerul-api/src/routes/library.rs
 rg -qF "async fn reindex_item" crates/cerul-api/src/routes/library.rs
 rg -qF "item_delete_and_reindex_update_storage" crates/cerul-api/src/lib.rs
+rg -qF 'total: items.length' apps/desktop/src/screens/library.tsx
+rg -qF '{capabilityCounts.total}' apps/desktop/src/screens/library.tsx
 rg -qF "list_items_includes_first_frame_thumbnail_chunk" crates/cerul-api/src/lib.rs
 rg -qF ".library-filter-row .select" apps/desktop/src/styles/extensions.css
 rg -qF ".segmented" apps/desktop/src/styles/ui.css

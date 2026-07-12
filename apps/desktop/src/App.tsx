@@ -2038,6 +2038,7 @@ function AppWorkspace() {
         ) : null}
         {view === "item-detail" && currentItem ? (
           <ItemDetail
+            key={`${currentItem.id}:${selectedPlaybackChunkId ?? ""}:${selectedTimestamp ?? ""}`}
             item={currentItem}
             apiStatus={apiStatus}
             actionsEnabled={apiStatus === "online"}

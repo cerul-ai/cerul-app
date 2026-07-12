@@ -87,6 +87,7 @@ rg -qF 't("understanding.action.reanalyze")' apps/desktop/src/screens/item-detai
 rg -qF 'matchedSnippet={resultContext?.snippet}' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'onBack={() => navigate(detailOrigin)}' apps/desktop/src/App.tsx
 rg -qF 'backLabel={t(detailOrigin === "results" ? "detail.backToResults" : "library.heading")}' apps/desktop/src/App.tsx
+rg -qF 'key={`${currentItem.id}:${selectedPlaybackChunkId ?? ""}:${selectedTimestamp ?? ""}`}' apps/desktop/src/App.tsx
 rg -qF 'function jumpToResultMatch' apps/desktop/src/screens/item-detail.tsx
 rg -qF 'resultContext.moreMatches.map' apps/desktop/src/screens/item-detail.tsx
 ! rg -qF 'addToBasket' apps/desktop/src/components/citation-card.tsx

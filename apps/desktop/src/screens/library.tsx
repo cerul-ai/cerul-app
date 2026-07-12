@@ -31,6 +31,7 @@ import { useT } from "../lib/i18n";
 import type { Item, RequestConfirm, Source } from "../lib/types";
 
 type LibraryCapabilityCounts = {
+  total: number;
   document: number;
   speechOnly: number;
   visual: number;
@@ -55,6 +56,7 @@ function libraryCapabilityItemFromRecord(record: api.ItemRecord): LibraryCapabil
 function countLibraryCapabilities(items: LibraryCapabilityItem[]): LibraryCapabilityCounts {
   const indexedItems = items.filter((item) => item.status === "indexed");
   return {
+    total: items.length,
     document: indexedItems.filter((item) => item.contentType === "document").length,
     speechOnly: indexedItems.filter((item) => itemHasSpeechSearch(item) && !itemHasVisualSearch(item))
       .length,
@@ -447,7 +449,7 @@ export function LibraryScreen({
           </button>
         </div>
         <div className="library-overview" aria-label={t("library.capability.summary.aria")}>
-          <span><small>{t("library.retrieval.total")}</small><strong className="mono">{items.length}</strong></span>
+          <span><small>{t("library.retrieval.total")}</small><strong className="mono">{capabilityCounts.total}</strong></span>
           <span><small>{t("library.retrieval.visual")}</small><strong className="mono">{capabilityCounts.visual}</strong></span>
           <span><small>{t("library.retrieval.speech")}</small><strong className="mono">{capabilityCounts.speechOnly}</strong></span>
           <span><small>{t("library.retrieval.documents")}</small><strong className="mono">{capabilityCounts.document}</strong></span>
