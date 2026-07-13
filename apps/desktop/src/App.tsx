@@ -701,9 +701,12 @@ function AppWorkspace() {
   // T1: background work is not a notification. Only failed jobs that require
   // a decision from the user earn a count in the global task entry.
   const taskAttentionCount = apiStatus === "online" && data.jobSummary
-    ? data.jobSummary.failed_jobs
-    : visibleJobs.filter((job) => job.status === "failed" || job.status === "error").length;
-  const failedJobsRevision = `${taskAttentionCount}:${visibleJobs
+    ? data.jobSummary.attention_jobs
+    : new Set(visibleItems.filter((item) => item.status === "failed").map((item) => item.id)).size +
+      visibleJobs.filter((job) => !job.item_id && (job.status === "failed" || job.status === "error")).length;
+  const indexedItemCount = data.jobSummary?.indexed_items ??
+    visibleItems.filter((item) => item.status === "indexed" || item.indexedAtEpoch !== null).length;
+  const failedJobsRevision = `${data.jobSummary?.failed_jobs ?? taskAttentionCount}:${visibleJobs
     .filter((job) => job.status === "failed" || job.status === "error")
     .map((job) => `${job.id}:${job.finished_at ?? 0}`)
     .join("|")}`;
@@ -820,6 +823,7 @@ function AppWorkspace() {
         ...data.jobSummary,
         queued_jobs: data.jobSummary.queued_jobs + Number(devFixtureResolved),
         failed_jobs: data.jobSummary.failed_jobs + Number(!devFixtureResolved),
+        attention_jobs: data.jobSummary.attention_jobs + Number(!devFixtureResolved),
         total_jobs: data.jobSummary.total_jobs + 1,
       }
     : data.jobSummary;
@@ -1926,6 +1930,7 @@ function AppWorkspace() {
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}
+            indexedItemCount={indexedItemCount}
             indexingPaused={indexingPaused}
             apiStatus={apiStatus}
             globalHotkey={globalHotkey}
@@ -1954,7 +1959,7 @@ function AppWorkspace() {
             isSearching={isSearching}
             error={searchError}
             apiStatus={apiStatus}
-            hasIndexedItems={visibleItems.some((item) => item.status === "indexed")}
+            hasIndexedItems={indexedItemCount > 0}
             hasActiveJobs={activeJobCount > 0}
           />
         ) : null}

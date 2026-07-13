@@ -66,6 +66,8 @@ export type JobStatusSummary = {
   queued_jobs: number;
   running_jobs: number;
   failed_jobs: number;
+  attention_jobs: number;
+  indexed_items: number;
   completed_jobs: number;
   cancelled_jobs: number;
   total_jobs: number;

@@ -238,6 +238,7 @@ export function HomeScreen({
   items,
   sources,
   jobs,
+  indexedItemCount,
   indexingPaused,
   apiStatus,
   globalHotkey,
@@ -254,6 +255,7 @@ export function HomeScreen({
   items: Item[];
   sources: Source[];
   jobs: api.JobRecord[];
+  indexedItemCount: number;
   indexingPaused: boolean;
   apiStatus: ApiStatus;
   globalHotkey: string;
@@ -262,7 +264,7 @@ export function HomeScreen({
   onRunQuery: (query: string) => void;
 }) {
   const t = useT();
-  const indexedCount = items.filter((item) => item.status === "indexed").length;
+  const indexedCount = indexedItemCount;
   const activeSources = sources.filter((source) => source.status === "active").length;
   const erroredSources = sources.filter((source) => source.status === "error");
   const activeJobs = jobs.filter(isActiveJob);

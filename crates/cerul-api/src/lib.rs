@@ -9062,6 +9062,8 @@ mod tests {
         assert_eq!(summary["queued_jobs"], 1);
         assert_eq!(summary["running_jobs"], 1);
         assert_eq!(summary["failed_jobs"], 1);
+        assert_eq!(summary["attention_jobs"], 1);
+        assert_eq!(summary["indexed_items"], 0);
         assert_eq!(summary["completed_jobs"], 1);
         assert_eq!(summary["cancelled_jobs"], 1);
         assert_eq!(summary["total_jobs"], 5);
