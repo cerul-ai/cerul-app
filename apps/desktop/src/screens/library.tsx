@@ -36,7 +36,11 @@ function librarySourceCategory(item: Item): Exclude<LibrarySourceFilter, "all"> 
 
 function itemDuration(item: Item): number | null {
   if (item.contentType !== "video" && item.contentType !== "audio") return null;
-  if (typeof item.durationSec === "number") return item.durationSec / 60;
+  if (typeof item.durationSec === "number" && Number.isFinite(item.durationSec)) return item.durationSec / 60;
+  const formattedDuration = item.duration.trim();
+  const hasColonDuration = /^\d+(?::\d+){1,2}$/.test(formattedDuration);
+  const hasLegacyDurationUnit = /\d+\s*[hm]\b/i.test(formattedDuration);
+  if (!hasColonDuration && !hasLegacyDurationUnit) return null;
   const minutes = durationMinutes(item.duration);
   return Number.isFinite(minutes) ? minutes : null;
 }
@@ -56,7 +60,7 @@ function matchesDate(item: Item, filter: LibraryDateFilter): boolean {
   if (item.indexedAtEpoch === null) return false;
   const ageDays = (Date.now() / 1000 - item.indexedAtEpoch) / 86400;
   if (filter === "week") return ageDays <= 7;
-  if (filter === "month") return ageDays > 7 && ageDays <= 30;
+  if (filter === "month") return ageDays <= 30;
   return ageDays > 30;
 }
 

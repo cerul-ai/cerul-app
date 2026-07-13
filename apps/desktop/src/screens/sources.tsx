@@ -3,6 +3,7 @@
 // workspace instead of leading with raw URLs.
 
 import {
+  Activity,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   Globe2,
   Plus,
   Podcast,
+  RefreshCcw,
   Youtube,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -30,7 +32,7 @@ function connectorKind(source: Source): ConnectorKind {
   try {
     const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
     const host = url.hostname.replace(/^www\./, "");
-    if (isHostOrSubdomain(host, "bilibili.com")) return "bilibili";
+    if (isBilibiliHost(host)) return "bilibili";
     if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") return "youtube";
   } catch {
     // Non-URL web sources stay in the generic web-video group.
@@ -42,6 +44,10 @@ function isHostOrSubdomain(host: string, domain: string): boolean {
   return host === domain || host.endsWith(`.${domain}`);
 }
 
+function isBilibiliHost(host: string): boolean {
+  return isHostOrSubdomain(host, "bilibili.com") || isHostOrSubdomain(host, "b23.tv");
+}
+
 function connectorDisplayName(source: Source, fallback: string): string {
   if (source.type === "folder" || source.type === "file") {
     const clean = source.name.replace(/[\\/]+$/, "");
@@ -51,7 +57,7 @@ function connectorDisplayName(source: Source, fallback: string): string {
     const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
     const host = url.hostname.replace(/^www\./, "");
     const parts = url.pathname.split("/").filter(Boolean);
-    if (isHostOrSubdomain(host, "bilibili.com")) {
+    if (isBilibiliHost(host)) {
       const authorId = host === "space.bilibili.com" ? parts[0] : null;
       const videoId = parts.find((part) => /^BV/i.test(part));
       if (authorId) return `Bilibili · ${authorId}`;
@@ -174,7 +180,7 @@ export function SourcesScreen({
           return bAttention - aAttention;
         }),
     }))
-    .filter((group) => view === "all" || view === "history" || group.sources.length > 0);
+    .filter((group) => sources.length > 0 && (view === "all" || group.sources.length > 0));
 
   const attentionKindSignature = useMemo(
     () => Array.from(new Set(
@@ -275,7 +281,35 @@ export function SourcesScreen({
         </aside>
 
         <main className="p3-main-scroll source-groups" aria-label={t("sources.p3.connectorsAria")}>
-          {connectorGroupsWithSources.length > 0 ? connectorGroupsWithSources.map(({ id, title, short, Icon, sources: groupSources }) => {
+          {view === "history" ? (
+            <section className="connector-activity card">
+              <header>
+                <span><Activity size={15} /><strong>{t("sources.p3.history")}</strong></span>
+              </header>
+              {sources.length > 0 ? (
+                <div className="connector-timeline">
+                  {sources.slice(0, 8).map((source) => (
+                    <button type="button" key={source.id} onClick={() => onViewItems(source)}>
+                      <time>{source.lastPolled || "—"}</time>
+                      <i data-tone={source.status} />
+                      <span>
+                        <strong>{connectorDisplayName(source, t("sources.p3.unnamed"))}</strong>
+                        <small>{source.status === "error" ? source.error || t("sources.p3.needsAction") : t("sources.p3.activityMeta", { items: source.items })}</small>
+                      </span>
+                      {source.status === "error" ? <AlertTriangle size={14} /> : source.status === "syncing" ? <RefreshCcw size={14} className="spin" /> : <ChevronRight size={14} />}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  title={t("sources.empty.title")}
+                  body={t("sources.empty.body")}
+                  actionLabel={t("sources.addSource")}
+                  onAction={onAddSource}
+                />
+              )}
+            </section>
+          ) : connectorGroupsWithSources.length > 0 ? connectorGroupsWithSources.map(({ id, title, short, Icon, sources: groupSources }) => {
             const expanded = expandedKinds.has(id);
             const groupItems = groupSources.reduce((sum, source) => sum + source.items, 0);
             const hasError = groupSources.some((source) => source.status === "error" || source.failedItems > 0);
