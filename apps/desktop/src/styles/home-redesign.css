@@ -168,7 +168,7 @@
 .fr-example:hover { border-color: var(--accent-line); box-shadow: var(--shadow-2); transform: translateY(-1px); }
 .fr-example:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .fr-example-icon { color: var(--accent); flex: none; }
-.fr-example-tag { font-size: 10.5px; font-weight: 650; color: var(--accent-2); background: var(--copper-soft); padding: 2px 7px; border-radius: 999px; }
+.fr-example-tag { font-size: 11.5px; font-weight: 650; color: var(--accent-2); background: var(--copper-soft); padding: 2px 7px; border-radius: 999px; }
 
 @media (max-width: 720px) {
   .fr-feat-grid { grid-template-columns: 1fr; }
