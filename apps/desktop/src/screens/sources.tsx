@@ -18,6 +18,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../lib/formatters";
 import { useT } from "../lib/i18n";
+import { sourceConnectorDisplayName } from "../lib/sources";
 import type { RequestConfirm, Source } from "../lib/types";
 import { EmptyState, InlineNotice } from "../components/leaf";
 import { SourceRow } from "../components/source-row";
@@ -46,34 +47,6 @@ function isHostOrSubdomain(host: string, domain: string): boolean {
 
 function isBilibiliHost(host: string): boolean {
   return isHostOrSubdomain(host, "bilibili.com") || isHostOrSubdomain(host, "b23.tv");
-}
-
-function connectorDisplayName(source: Source, fallback: string): string {
-  if (source.type === "folder" || source.type === "file") {
-    const clean = source.name.replace(/[\\/]+$/, "");
-    return clean.split(/[\\/]/).pop() || fallback;
-  }
-  try {
-    const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
-    const host = url.hostname.replace(/^www\./, "");
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (isBilibiliHost(host)) {
-      const authorId = host === "space.bilibili.com" ? parts[0] : null;
-      const videoId = parts.find((part) => /^BV/i.test(part));
-      if (authorId) return `Bilibili · ${authorId}`;
-      if (videoId) return `Bilibili · ${videoId}`;
-      return "Bilibili 视频";
-    }
-    if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") {
-      const channelId = parts.find((part) => part.startsWith("@") || /^UC[\w-]+$/i.test(part));
-      const videoId = url.searchParams.get("v") || (host === "youtu.be" ? parts[0] : null);
-      const label = channelId || videoId;
-      return label ? `YouTube · ${label}` : "YouTube 视频";
-    }
-    return host;
-  } catch {
-    return source.name || fallback;
-  }
 }
 
 export function SourcesScreen({
@@ -226,7 +199,7 @@ export function SourcesScreen({
   function renderRow(source: Source) {
     const displaySource = {
       ...source,
-      name: connectorDisplayName(source, t("sources.p3.unnamed")),
+      name: sourceConnectorDisplayName(source, t("sources.p3.unnamed")),
     };
     return (
       <SourceRow
@@ -300,7 +273,7 @@ export function SourcesScreen({
                       <time>{source.lastPolled || "—"}</time>
                       <i data-tone={source.status} />
                       <span>
-                        <strong>{connectorDisplayName(source, t("sources.p3.unnamed"))}</strong>
+                        <strong>{sourceConnectorDisplayName(source, t("sources.p3.unnamed"))}</strong>
                         <small>{source.status === "error" ? source.error || t("sources.p3.needsAction") : t("sources.p3.activityMeta", { items: source.items })}</small>
                       </span>
                       {source.status === "error" ? <AlertTriangle size={14} /> : source.status === "syncing" ? <RefreshCcw size={14} className="spin" /> : <ChevronRight size={14} />}
