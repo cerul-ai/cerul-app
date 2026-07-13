@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   Check,
   Copy,
   Loader2,
@@ -11,79 +10,66 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { IndexingStrip } from "../components/indexing-strip";
 import { ItemCard } from "../components/cards";
 import { EmptyState, InlineNotice } from "../components/leaf";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/formatters";
-import {
-  itemEmbeddingIndexStatus,
-  itemHasAudio,
-  itemHasPartialIndex,
-  itemHasSpeechSearch,
-  itemHasVisualSearch,
-  itemStatus,
-  itemVisualIndexStatus,
-} from "../lib/items";
-import { sortLibraryItems } from "../lib/library";
+import { itemStatus } from "../lib/items";
+import { durationMinutes, sortLibraryItems } from "../lib/library";
 import { writeClipboardText } from "../lib/clipboard";
 import { useT } from "../lib/i18n";
-import type { Item, RequestConfirm, Source } from "../lib/types";
+import type { Item, RequestConfirm } from "../lib/types";
 
-type LibraryCapabilityCounts = {
-  total: number;
-  document: number;
-  speechOnly: number;
-  visual: number;
-  partial: number;
-};
+type LibrarySourceFilter = "all" | "local" | "bilibili" | "youtube" | "podcast" | "web";
+type LibraryDurationFilter = "all" | "short" | "mid" | "long" | "xl";
+type LibraryDateFilter = "all" | "week" | "month" | "older";
+type LibraryContentFilter = "all" | "video" | "audio" | "document" | "image";
 
-type LibraryCapabilityItem = Pick<
-  Item,
-  "contentType" | "embeddingIndexStatus" | "hasAudio" | "status" | "visualIndexStatus"
->;
-
-function libraryCapabilityItemFromRecord(record: api.ItemRecord): LibraryCapabilityItem {
-  return {
-    contentType: record.content_type,
-    embeddingIndexStatus: itemEmbeddingIndexStatus(record),
-    hasAudio: itemHasAudio(record),
-    status: itemStatus(record),
-    visualIndexStatus: itemVisualIndexStatus(record),
-  };
+function librarySourceCategory(item: Item): Exclude<LibrarySourceFilter, "all"> {
+  if (item.sourceKind === "folder") return "local";
+  if (item.sourceKind === "youtube") return "youtube";
+  if (item.sourceKind === "podcast") return "podcast";
+  if (/bilibili/i.test(item.source) || /bilibili\.com/i.test(item.originalUrl ?? "")) return "bilibili";
+  if (/youtube|youtu\.be/i.test(item.source) || /youtube\.com|youtu\.be/i.test(item.originalUrl ?? "")) return "youtube";
+  return "web";
 }
 
-function countLibraryCapabilities(items: LibraryCapabilityItem[]): LibraryCapabilityCounts {
-  const indexedItems = items.filter((item) => item.status === "indexed");
-  return {
-    total: items.length,
-    document: indexedItems.filter((item) => item.contentType === "document").length,
-    speechOnly: indexedItems.filter((item) => itemHasSpeechSearch(item) && !itemHasVisualSearch(item))
-      .length,
-    visual: indexedItems.filter(itemHasVisualSearch).length,
-    partial: indexedItems.filter(itemHasPartialIndex).length,
-  };
+function itemDuration(item: Item): number | null {
+  if (item.contentType !== "video" && item.contentType !== "audio") return null;
+  if (typeof item.durationSec === "number") return item.durationSec / 60;
+  const minutes = durationMinutes(item.duration);
+  return Number.isFinite(minutes) ? minutes : null;
+}
+
+function matchesDuration(item: Item, filter: LibraryDurationFilter): boolean {
+  if (filter === "all") return true;
+  const minutes = itemDuration(item);
+  if (minutes === null) return false;
+  if (filter === "short") return minutes < 5;
+  if (filter === "mid") return minutes >= 5 && minutes < 20;
+  if (filter === "long") return minutes >= 20 && minutes < 60;
+  return minutes >= 60;
+}
+
+function matchesDate(item: Item, filter: LibraryDateFilter): boolean {
+  if (filter === "all") return true;
+  if (item.indexedAtEpoch === null) return false;
+  const ageDays = (Date.now() / 1000 - item.indexedAtEpoch) / 86400;
+  if (filter === "week") return ageDays <= 7;
+  if (filter === "month") return ageDays > 7 && ageDays <= 30;
+  return ageDays > 30;
 }
 
 export function LibraryScreen({
   items,
-  jobs,
-  syncingSources,
-  stepStarts,
-  indexingPaused,
   actionsEnabled,
   onAddSource,
   onDeleteItems,
   onReindexItems,
   onOpenItem,
-  onOpenJobs,
   requestConfirm,
 }: {
   items: Item[];
-  jobs: api.JobRecord[];
-  syncingSources: Source[];
-  stepStarts: Record<string, number>;
-  indexingPaused: boolean;
   actionsEnabled: boolean;
   onAddSource: () => void;
   onDeleteItems: (
@@ -93,13 +79,15 @@ export function LibraryScreen({
   ) => Promise<void>;
   onReindexItems: (itemIds: string[]) => Promise<void>;
   onOpenItem: (item: Item) => void;
-  onOpenJobs: () => void;
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
   const [libraryQuery, setLibraryQuery] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState<LibrarySourceFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | Item["status"]>("all");
+  const [durationFilter, setDurationFilter] = useState<LibraryDurationFilter>("all");
+  const [dateFilter, setDateFilter] = useState<LibraryDateFilter>("all");
+  const [contentFilter, setContentFilter] = useState<LibraryContentFilter>("all");
   const [sortKey, setSortKey] = useState<"recent" | "longest" | "shortest" | "title">("recent");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -108,13 +96,12 @@ export function LibraryScreen({
     message: string | null;
   }>({ status: "idle", message: null });
   const [failedCleanupIds, setFailedCleanupIds] = useState<string[]>([]);
-  const [allCapabilityCounts, setAllCapabilityCounts] = useState<LibraryCapabilityCounts | null>(null);
-  const sourceOptions = Array.from(new Set(items.map((item) => item.source))).sort((a, b) =>
-    a.localeCompare(b),
-  );
   const sourceCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of items) counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
+    const counts = new Map<Exclude<LibrarySourceFilter, "all">, number>();
+    for (const item of items) {
+      const category = librarySourceCategory(item);
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
     return counts;
   }, [items]);
   const statusCounts = useMemo(() => ({
@@ -126,25 +113,14 @@ export function LibraryScreen({
     () => items.map((item) => `${item.id}:${item.status}`).join("|"),
     [items],
   );
-  const itemCapabilitySignature = useMemo(
-    () =>
-      items
-        .map(
-          (item) =>
-            `${item.id}:${item.status}:${item.contentType}:${item.embeddingIndexStatus ?? ""}:${item.visualIndexStatus ?? ""}:${String(item.hasAudio)}`,
-        )
-        .join("|"),
-    [items],
-  );
-  const jobStatusSignature = useMemo(
-    () => jobs.map((job) => `${job.id}:${job.item_id ?? ""}:${job.status}`).join("|"),
-    [jobs],
-  );
   const normalizedQuery = libraryQuery.trim().toLowerCase();
   const filtersActive =
     normalizedQuery !== "" ||
     sourceFilter !== "all" ||
     statusFilter !== "all" ||
+    durationFilter !== "all" ||
+    dateFilter !== "all" ||
+    contentFilter !== "all" ||
     sortKey !== "recent";
   const filteredItems = items
     .filter((item) => {
@@ -152,9 +128,10 @@ export function LibraryScreen({
         normalizedQuery === "" ||
         item.title.toLowerCase().includes(normalizedQuery) ||
         item.source.toLowerCase().includes(normalizedQuery);
-      const matchesSource = sourceFilter === "all" || item.source === sourceFilter;
+      const matchesSource = sourceFilter === "all" || librarySourceCategory(item) === sourceFilter;
       const matchesStatus = statusFilter === "all" || item.status === statusFilter;
-      return matchesQuery && matchesSource && matchesStatus;
+      const matchesContent = contentFilter === "all" || item.contentType === contentFilter;
+      return matchesQuery && matchesSource && matchesStatus && matchesContent && matchesDuration(item, durationFilter) && matchesDate(item, dateFilter);
     })
     .sort((a, b) => sortLibraryItems(a, b, sortKey));
   const selectedCount = selectedItemIds.size;
@@ -164,8 +141,6 @@ export function LibraryScreen({
   const allFilteredSelected = filteredItemIds.length > 0 && visibleSelectedCount === filteredItemIds.length;
   const batchPending = batchState.status === "reindexing" || batchState.status === "deleting";
   const failedCleanupCount = failedCleanupIds.length;
-  const loadedCapabilityCounts = useMemo(() => countLibraryCapabilities(items), [items]);
-  const capabilityCounts = allCapabilityCounts ?? loadedCapabilityCounts;
 
   useEffect(() => {
     const itemIds = new Set(items.map((item) => item.id));
@@ -179,6 +154,9 @@ export function LibraryScreen({
     setLibraryQuery("");
     setSourceFilter("all");
     setStatusFilter("all");
+    setDurationFilter("all");
+    setDateFilter("all");
+    setContentFilter("all");
     setSortKey("recent");
   }
 
@@ -321,45 +299,6 @@ export function LibraryScreen({
     return ids;
   }
 
-  async function collectAllCapabilityCounts(): Promise<LibraryCapabilityCounts> {
-    const pageSize = 1000;
-    const allItems: LibraryCapabilityItem[] = [];
-    for (let cursor = 0; ; cursor += pageSize) {
-      const page = await api.listItems({
-        limit: pageSize,
-        cursor,
-        includeUsage: false,
-      });
-      allItems.push(...page.map(libraryCapabilityItemFromRecord));
-      if (page.length < pageSize) {
-        break;
-      }
-    }
-    return countLibraryCapabilities(allItems);
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!actionsEnabled || items.length === 0) {
-      setAllCapabilityCounts(null);
-      return;
-    }
-    collectAllCapabilityCounts()
-      .then((counts) => {
-        if (!cancelled) {
-          setAllCapabilityCounts(counts);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAllCapabilityCounts(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [actionsEnabled, itemCapabilitySignature, jobStatusSignature]);
-
   useEffect(() => {
     let cancelled = false;
     if (!actionsEnabled) {
@@ -380,7 +319,7 @@ export function LibraryScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, itemStatusSignature, jobStatusSignature]);
+  }, [actionsEnabled, itemStatusSignature]);
 
   async function clearFailedItems() {
     if (!actionsEnabled) {
@@ -434,200 +373,134 @@ export function LibraryScreen({
     }
   }
 
+  const activeFilterCount = [sourceFilter, statusFilter, durationFilter, dateFilter, contentFilter]
+    .filter((value) => value !== "all").length;
+  const sourceFilterOptions: Array<{ value: Exclude<LibrarySourceFilter, "all">; label: string }> = [
+    { value: "local", label: t("library.filter.source.local") },
+    { value: "bilibili", label: "Bilibili" },
+    { value: "youtube", label: "YouTube" },
+    { value: "podcast", label: t("library.filter.source.podcast") },
+    { value: "web", label: t("library.filter.source.web") },
+  ];
+  const durationFilterOptions: Array<{ value: Exclude<LibraryDurationFilter, "all">; label: string }> = [
+    { value: "short", label: t("library.filter.duration.short") },
+    { value: "mid", label: t("library.filter.duration.mid") },
+    { value: "long", label: t("library.filter.duration.long") },
+    { value: "xl", label: t("library.filter.duration.xl") },
+  ];
+  const dateFilterOptions: Array<{ value: Exclude<LibraryDateFilter, "all">; label: string }> = [
+    { value: "week", label: t("library.filter.date.week") },
+    { value: "month", label: t("library.filter.date.month") },
+    { value: "older", label: t("library.filter.date.older") },
+  ];
+  const contentFilterOptions: Array<{ value: Exclude<LibraryContentFilter, "all">; label: string }> = [
+    { value: "video", label: t("library.filter.content.video") },
+    { value: "audio", label: t("library.filter.content.audio") },
+    { value: "document", label: t("library.filter.content.document") },
+    { value: "image", label: t("library.filter.content.image") },
+  ];
+
+  function switchLibraryView(nextView: "grid" | "list") {
+    if (viewMode === nextView) return;
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => unknown;
+    };
+    if (transitionDocument.startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      transitionDocument.startViewTransition(() => setViewMode(nextView));
+      return;
+    }
+    setViewMode(nextView);
+  }
+
   return (
-    <div className="page wide library-retrieval-page">
-      <section className="library-retrieval-hero" aria-labelledby="library-retrieval-title">
-        <div className="library-retrieval-head">
-          <div>
-            <p className="page-eyebrow">{t("library.retrieval.eyebrow")}</p>
-            <h1 className="page-h1" id="library-retrieval-title">{t("library.retrieval.title")}</h1>
-            <p className="page-sub">{t("library.retrieval.body")}</p>
-          </div>
-          <button className="btn btn-primary" type="button" onClick={onAddSource}>
-            <Plus size={16} />
-            <span>{t("home.addSource")}</span>
-          </button>
+    <div className="page wide library-retrieval-page library-final-page">
+      <header className="library-final-head" aria-labelledby="library-retrieval-title">
+        <div>
+          <p className="page-eyebrow">{t("library.retrieval.eyebrow")}</p>
+          <h1 className="page-h1" id="library-retrieval-title">{t("library.final.title")}</h1>
+          <p className="page-sub">{t("library.final.body")}</p>
         </div>
-        <div className="library-overview" aria-label={t("library.capability.summary.aria")}>
-          <span><small>{t("library.retrieval.total")}</small><strong className="mono">{capabilityCounts.total}</strong></span>
-          <span><small>{t("library.retrieval.visual")}</small><strong className="mono">{capabilityCounts.visual}</strong></span>
-          <span><small>{t("library.retrieval.speech")}</small><strong className="mono">{capabilityCounts.speechOnly}</strong></span>
-          <span><small>{t("library.retrieval.documents")}</small><strong className="mono">{capabilityCounts.document}</strong></span>
+        <div className="library-view-switch" role="group" aria-label={t("library.view.aria")}>
+          <button type="button" className={viewMode === "grid" ? "active" : ""} aria-pressed={viewMode === "grid"} onClick={() => switchLibraryView("grid")}><LayoutGrid size={14} />{t("library.view.gridShort")}</button>
+          <button type="button" className={viewMode === "list" ? "active" : ""} aria-pressed={viewMode === "list"} onClick={() => switchLibraryView("list")}><List size={14} />{t("library.view.listShort")}</button>
         </div>
-        <div className="library-retrieval-controls">
-          <label className="library-retrieval-search">
-            <Search size={18} aria-hidden="true" />
-            <input
-              value={libraryQuery}
-              placeholder={t("library.searchPlaceholder")}
-              aria-label={t("library.searchPlaceholder")}
-              onChange={(event) => setLibraryQuery(event.currentTarget.value)}
-            />
-          </label>
-          <select
-            className="select"
-            aria-label={t("library.sort.aria")}
-            value={sortKey}
-            onChange={(event) => setSortKey(event.currentTarget.value as "recent" | "longest" | "shortest" | "title")}
-          >
-            <option value="recent">{t("library.sort.recent")}</option>
-            <option value="longest">{t("library.sort.longest")}</option>
-            <option value="shortest">{t("library.sort.shortest")}</option>
-            <option value="title">{t("library.sort.title")}</option>
-          </select>
-          <div className="library-view-switch" role="group" aria-label={t("library.view.aria")}>
-            <button type="button" className={viewMode === "grid" ? "active" : ""} aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}><LayoutGrid size={14} />{t("library.view.gridShort")}</button>
-            <button type="button" className={viewMode === "list" ? "active" : ""} aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}><List size={14} />{t("library.view.listShort")}</button>
-          </div>
-        </div>
-      </section>
-      <IndexingStrip
-        jobs={jobs}
-        items={items}
-        syncingSources={syncingSources}
-        stepStarts={stepStarts}
-        paused={indexingPaused}
-        onOpen={onOpenJobs}
-      />
-      <div className="library-l3-layout">
-        <aside className="library-source-rail" aria-label={t("library.filter.sourceAria")}>
+      </header>
+
+      <div className="library-final-layout">
+        <aside className="library-filter-rail" aria-label={t("library.filter.aria")}>
+          <header><h2>{t("library.filter.title")}</h2>{activeFilterCount > 0 ? <span className="mono">{t("library.filter.active", { count: activeFilterCount })}</span> : null}</header>
           <section>
-            <h2>{t("library.filter.sourceAria")}</h2>
-            <button type="button" className={sourceFilter === "all" ? "active" : ""} onClick={() => setSourceFilter("all")}><span>{t("library.filter.allSources")}</span><code>{items.length}</code></button>
-            {sourceOptions.map((source) => <button type="button" key={source} className={sourceFilter === source ? "active" : ""} onClick={() => setSourceFilter(source)}><span className="clamp1">{source}</span><code>{sourceCounts.get(source) ?? 0}</code></button>)}
+            <h3>{t("library.filter.duration")}</h3>
+            <button type="button" className={durationFilter === "all" ? "active" : ""} onClick={() => setDurationFilter("all")}>{t("library.filter.all")}</button>
+            {durationFilterOptions.map((option) => <button type="button" className={durationFilter === option.value ? "active" : ""} key={option.value} onClick={() => setDurationFilter(option.value)}>{option.label}</button>)}
           </section>
           <section>
-            <h2>{t("library.filter.statusAria")}</h2>
+            <h3>{t("library.filter.date")}</h3>
+            <button type="button" className={dateFilter === "all" ? "active" : ""} onClick={() => setDateFilter("all")}>{t("library.filter.all")}</button>
+            {dateFilterOptions.map((option) => <button type="button" className={dateFilter === option.value ? "active" : ""} key={option.value} onClick={() => setDateFilter(option.value)}>{option.label}</button>)}
+          </section>
+          <section>
+            <h3>{t("library.filter.sourceAria")}</h3>
+            <button type="button" className={sourceFilter === "all" ? "active" : ""} onClick={() => setSourceFilter("all")}><span>{t("library.filter.allSources")}</span><code>{items.length}</code></button>
+            {sourceFilterOptions.map((option) => <button type="button" className={sourceFilter === option.value ? "active" : ""} key={option.value} onClick={() => setSourceFilter(option.value)}><span>{option.label}</span><code>{sourceCounts.get(option.value) ?? 0}</code></button>)}
+          </section>
+          <section>
+            <h3>{t("library.filter.content")}</h3>
+            <button type="button" className={contentFilter === "all" ? "active" : ""} onClick={() => setContentFilter("all")}>{t("library.filter.all")}</button>
+            {contentFilterOptions.map((option) => <button type="button" className={contentFilter === option.value ? "active" : ""} key={option.value} onClick={() => setContentFilter(option.value)}>{option.label}</button>)}
+          </section>
+          <section>
+            <h3>{t("library.filter.statusAria")}</h3>
             <button type="button" className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}><span>{t("library.filter.allStatuses")}</span><code>{items.length}</code></button>
             {(["indexed", "indexing", "failed"] as const).map((status) => <button type="button" key={status} className={statusFilter === status ? "active" : ""} onClick={() => setStatusFilter(status)}><span>{t(`library.status.${status}`)}</span><code>{statusCounts[status]}</code></button>)}
           </section>
         </aside>
-        <main className="library-l3-main">
-      {capabilityCounts.partial > 0 ? (
-        <div className="library-capability-summary" aria-label={t("library.capability.summary.aria")}>
-          <span className="library-capability-pill warn"><AlertTriangle size={13} />{t("library.capability.partial", { count: capabilityCounts.partial })}</span>
-        </div>
-      ) : null}
-      <div className="row" style={{ alignItems: "center", gap: 10, marginTop: 12 }}>
-        <span className="muted">
-          {t("library.summary.count", { count: filteredItems.length, total: items.length })}
-        </span>
-        {filtersActive ? (
-          <button type="button" className="btn btn-ghost sm" onClick={clearLibraryFilters}>
-            {t("common.clearFilters")}
-          </button>
-        ) : null}
-        {filteredItems.length > 0 ? (
-          <button
-            type="button"
-            className="btn btn-ghost sm library-select-all"
-            disabled={batchPending}
-            onClick={toggleAllFilteredItems}
-          >
-            <Check size={14} />
-            <span>
-              {allFilteredSelected
-                ? t("library.batch.selectNone")
-                : t("library.batch.selectAll")}
-            </span>
-          </button>
-        ) : null}
-        {failedCleanupCount > 0 ? (
-          <button
-            type="button"
-            className="btn btn-ghost sm"
-            disabled={batchPending || !actionsEnabled}
-            onClick={() => void clearFailedItems()}
-            title={t("library.clearFailed.hint")}
-          >
-            <Trash2 size={14} />
-            <span>{t("library.clearFailed.button", { count: failedCleanupCount })}</span>
-          </button>
-        ) : null}
-      </div>
-      {batchState.message ? (
-        <InlineNotice
-          tone={batchState.status === "error" ? "error" : "muted"}
-          message={batchState.message}
-        />
-      ) : null}
-      {selectedCount > 0 ? (
-        <div
-          className="library-batch-toolbar"
-          aria-label={t("library.batch.aria")}
-        >
-          <span className="chip accent">
-            <span className="dot" />
-            {t("library.batch.selected", { count: selectedCount })}
-          </span>
-          <span className="grow" />
-          <button
-            type="button"
-            className="btn btn-secondary sm"
-            disabled={batchPending}
-            onClick={() => void copySelectedDiagnostics()}
-          >
-            <Copy size={15} />
-            <span>{t("library.batch.copyDiagnostics")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary sm"
-            disabled={batchPending || !actionsEnabled}
-            onClick={() => void runBatchAction("reindex")}
-          >
-            {batchState.status === "reindexing" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
-            <span>{batchState.status === "reindexing" ? t("common.reindexing") : t("common.reindex")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger sm"
-            disabled={batchPending || !actionsEnabled}
-            onClick={() => void runBatchAction("delete")}
-          >
-            {batchState.status === "deleting" ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
-            <span>{batchState.status === "deleting" ? t("common.deleting") : t("common.delete")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost sm"
-            disabled={batchPending}
-            onClick={() => setSelectedItemIds(new Set())}
-          >
-            {t("library.batch.clear")}
-          </button>
-        </div>
-      ) : null}
-      {items.length > 0 && filteredItems.length > 0 ? (
-        <div className={viewMode === "grid" ? "lib-grid library-l3-grid" : "tbl lib-table library-retrieval-table"}>
-          {viewMode === "list" ? <div className="lib-table-head" aria-hidden="true"><span>{t("library.col.title")}</span><span>{t("library.col.source")}</span><span>{t("library.col.duration")}</span><span>{t("library.col.indexed")}</span><span>{t("library.col.searchability")}</span></div> : null}
-          {filteredItems.map((item) => (
-            <ItemCard
-              key={item.id}
-              item={item}
-              viewMode={viewMode}
-              selectable
-              selected={selectedItemIds.has(item.id)}
-              onSelect={(selected) => toggleItemSelection(item.id, selected)}
-              onOpen={() => onOpenItem(item)}
-            />
-          ))}
-        </div>
-      ) : items.length === 0 ? (
-        <EmptyState
-          title={t("library.empty.none.title")}
-          body={t("library.empty.none.body")}
-          actionLabel={t("library.empty.addSource")}
-          onAction={onAddSource}
-        />
-      ) : (
-        <EmptyState
-          title={t("library.empty.filtered.title")}
-          body={t("library.empty.filtered.body")}
-          actionLabel={t("common.clearFilters")}
-          onAction={clearLibraryFilters}
-        />
-      )}
+
+        <main className="library-final-panel card" data-view={viewMode}>
+          <div className="library-final-toolbar">
+            <label className="library-retrieval-search">
+              <Search size={17} aria-hidden="true" />
+              <input value={libraryQuery} placeholder={t("library.searchPlaceholder")} aria-label={t("library.searchPlaceholder")} onChange={(event) => setLibraryQuery(event.currentTarget.value)} />
+            </label>
+            <span className="library-result-count mono">{t("library.final.items", { count: filteredItems.length })}</span>
+            <select className="select" aria-label={t("library.sort.aria")} value={sortKey} onChange={(event) => setSortKey(event.currentTarget.value as "recent" | "longest" | "shortest" | "title")}>
+              <option value="recent">{t("library.sort.recent")}</option>
+              <option value="longest">{t("library.sort.longest")}</option>
+              <option value="shortest">{t("library.sort.shortest")}</option>
+              <option value="title">{t("library.sort.title")}</option>
+            </select>
+            <button className="btn btn-secondary sm" type="button" onClick={onAddSource}><Plus size={14} />{t("home.addSource")}</button>
+          </div>
+          <div className="library-view-context">
+            <span><strong>{t(viewMode === "grid" ? "library.view.grid" : "library.view.list")}</strong> · {t(viewMode === "grid" ? "library.view.gridHint" : "library.view.listHint")}</span>
+            <span className="mono">{t("library.view.motionHint")}</span>
+          </div>
+          <div className="library-final-actions">
+            <span>{t("library.summary.count", { count: filteredItems.length, total: items.length })}</span>
+            {filtersActive ? <button type="button" className="btn btn-ghost sm" onClick={clearLibraryFilters}>{t("common.clearFilters")}</button> : null}
+            {filteredItems.length > 0 ? <button type="button" className="btn btn-ghost sm library-select-all" disabled={batchPending} onClick={toggleAllFilteredItems}><Check size={14} />{allFilteredSelected ? t("library.batch.selectNone") : t("library.batch.selectAll")}</button> : null}
+            {failedCleanupCount > 0 ? <button type="button" className="btn btn-ghost sm danger-text" disabled={batchPending || !actionsEnabled} onClick={() => void clearFailedItems()} title={t("library.clearFailed.hint")}><Trash2 size={14} />{t("library.clearFailed.button", { count: failedCleanupCount })}</button> : null}
+          </div>
+          {batchState.message ? <InlineNotice tone={batchState.status === "error" ? "error" : "muted"} message={batchState.message} /> : null}
+          {selectedCount > 0 ? (
+            <div className="library-batch-toolbar" aria-label={t("library.batch.aria")}>
+              <span className="chip accent"><span className="dot" />{t("library.batch.selected", { count: selectedCount })}</span><span className="grow" />
+              <button type="button" className="btn btn-secondary sm" disabled={batchPending} onClick={() => void copySelectedDiagnostics()}><Copy size={15} />{t("library.batch.copyDiagnostics")}</button>
+              <button type="button" className="btn btn-secondary sm" disabled={batchPending || !actionsEnabled} onClick={() => void runBatchAction("reindex")}>{batchState.status === "reindexing" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{batchState.status === "reindexing" ? t("common.reindexing") : t("common.reindex")}</button>
+              <button type="button" className="btn btn-danger sm" disabled={batchPending || !actionsEnabled} onClick={() => void runBatchAction("delete")}>{batchState.status === "deleting" ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}{batchState.status === "deleting" ? t("common.deleting") : t("common.delete")}</button>
+              <button type="button" className="btn btn-ghost sm" disabled={batchPending} onClick={() => setSelectedItemIds(new Set())}>{t("library.batch.clear")}</button>
+            </div>
+          ) : null}
+          {items.length > 0 && filteredItems.length > 0 ? (
+            <div className={viewMode === "grid" ? "lib-grid library-l3-grid library-view-collection" : "tbl lib-table library-retrieval-table library-view-collection"}>
+              {viewMode === "list" ? <div className="lib-table-head" aria-hidden="true"><span>{t("library.col.title")}</span><span>{t("library.col.source")}</span><span>{t("library.col.duration")}</span><span>{t("library.col.indexed")}</span><span>{t("library.col.status")}</span></div> : null}
+              {filteredItems.map((item, index) => <ItemCard key={item.id} item={item} viewMode={viewMode} transitionName={`library-item-${index}`} selectable selected={selectedItemIds.has(item.id)} onSelect={(selected) => toggleItemSelection(item.id, selected)} onOpen={() => onOpenItem(item)} />)}
+            </div>
+          ) : items.length === 0 ? (
+            <EmptyState title={t("library.empty.none.title")} body={t("library.empty.none.body")} actionLabel={t("library.empty.addSource")} onAction={onAddSource} />
+          ) : (
+            <EmptyState title={t("library.empty.filtered.title")} body={t("library.empty.filtered.body")} actionLabel={t("common.clearFilters")} onAction={clearLibraryFilters} />
+          )}
         </main>
       </div>
     </div>

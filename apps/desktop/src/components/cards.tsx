@@ -19,11 +19,8 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useT, type TFunction } from "../lib/i18n";
-import { formatUsd } from "../lib/formatters";
 import {
   itemHasPartialIndex,
-  itemHasSpeechSearch,
-  itemHasVisualSearch,
   itemKindLabel,
 } from "../lib/items";
 import { resultModality } from "../lib/results";
@@ -51,87 +48,6 @@ export function itemModalityLabel(item: Item, t: TFunction): string {
     return t("library.itemCard.searchVisualOnly");
   }
   return t("library.itemCard.searchSpeechOnly");
-}
-
-function itemSearchability(
-  item: Item,
-  t: TFunction,
-): { label: string; tone: "accent" | "warn" | "danger" } {
-  if (item.status === "failed") {
-    return { label: t("library.itemCard.failedClick"), tone: "danger" };
-  }
-  if (item.status === "indexing") {
-    const pct =
-      item.progressLabel ??
-      (item.progress !== null ? `${Math.round(item.progress * 100)}%` : null);
-    return {
-      label: pct ? t("library.itemCard.indexingPct", { pct }) : t("library.status.indexing"),
-      tone: "warn",
-    };
-  }
-  // Partial index failures leave at least one search path incomplete, so keep
-  // the card in a warning state instead of advertising a full modality.
-  if (itemHasPartialIndex(item)) {
-    return { label: t("library.itemCard.partialIndex"), tone: "warn" };
-  }
-  if (item.contentType === "document") {
-    return { label: t("library.itemCard.searchDocument"), tone: "accent" };
-  }
-  // Visual search is real only once the visual index is actually indexed
-  // (pending/null is not searchable yet); images are inherently visual.
-  const hasVisual =
-    item.contentType === "image" ||
-    (item.contentType === "video" && item.visualIndexStatus === "indexed");
-  const hasSpeech =
-    (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
-  if (hasVisual && hasSpeech) {
-    return { label: t("library.itemCard.searchSpeechVisual"), tone: "accent" };
-  }
-  if (hasVisual) {
-    return { label: t("library.itemCard.searchVisualOnly"), tone: "accent" };
-  }
-  return { label: t("library.itemCard.searchSpeechOnly"), tone: "warn" };
-}
-
-function itemCapabilityChips(
-  item: Item,
-  t: TFunction,
-): { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] {
-  const hasVisual = itemHasVisualSearch(item);
-  const hasSpeech = itemHasSpeechSearch(item);
-
-  if (item.status === "failed") {
-    return [{ key: "failed", label: t("library.status.failed"), tone: "danger" }];
-  }
-  if (item.status === "indexing") {
-    const pct =
-      item.progressLabel ??
-      (item.progress !== null ? `${Math.round(item.progress * 100)}%` : null);
-    return [
-      {
-        key: "indexing",
-        label: pct ? t("library.itemCard.indexingPct", { pct }) : t("library.status.indexing"),
-        tone: "warn",
-      },
-    ];
-  }
-
-  const chips: { key: string; label: string; tone: "neutral" | "accent" | "warn" | "danger" }[] = [
-    { key: "indexed", label: t("library.status.indexed"), tone: "accent" },
-  ];
-  if (hasSpeech) {
-    chips.push({ key: "speech", label: t("library.itemCard.capability.speech"), tone: "neutral" });
-  }
-  if (hasVisual) {
-    chips.push({ key: "visual", label: t("library.itemCard.capability.visual"), tone: "neutral" });
-  }
-  if (item.contentType === "document") {
-    chips.push({ key: "document", label: t("library.itemCard.capability.document"), tone: "neutral" });
-  }
-  if (itemHasPartialIndex(item)) {
-    chips.push({ key: "partial", label: t("library.itemCard.partialIndexShort"), tone: "warn" });
-  }
-  return chips;
 }
 
 export function ResultModalityIcon({
@@ -301,6 +217,7 @@ export function ItemCard({
   viewMode = "grid",
   selectable = false,
   selected = false,
+  transitionName,
   onSelect,
   onOpen,
 }: {
@@ -308,12 +225,11 @@ export function ItemCard({
   viewMode?: "grid" | "list";
   selectable?: boolean;
   selected?: boolean;
+  transitionName?: string;
   onSelect?: (selected: boolean) => void;
   onOpen: () => void;
 }) {
   const t = useT();
-  const searchability = itemSearchability(item, t);
-  const capabilityChips = itemCapabilityChips(item, t);
   const metaLine = [
     item.source,
     item.indexedAtEpoch === null
@@ -329,20 +245,19 @@ export function ItemCard({
       : item.indexedAtEpoch === null
         ? "—"
         : item.indexedAt;
-  const capabilityRow = (
-    <span className="item-capability-row" title={searchability.label}>
-      {capabilityChips.map((chip) => (
-        <span className={`item-capability ${chip.tone}`} key={chip.key}>
-          <span className="dot" />
-          {chip.label}
-        </span>
-      ))}
-    </span>
-  );
+  const statusLabel = item.status === "failed"
+    ? t("library.status.failed")
+    : item.status === "indexing"
+      ? (item.progressLabel ?? t("library.status.indexing"))
+      : itemHasPartialIndex(item)
+        ? t("library.itemCard.partialIndexShort")
+        : null;
+  const statusTone = item.status === "failed" ? "danger" : "warn";
   return (
     <article
       className={selected ? "item-card-shell lib-card selected" : "item-card-shell lib-card"}
       data-view={viewMode}
+      style={transitionName ? { viewTransitionName: transitionName } : undefined}
     >
       {selectable ? (
         <label
@@ -381,7 +296,9 @@ export function ItemCard({
             <span className="item-list-cell item-list-source clamp1">{sourceLabel}</span>
             <span className="item-list-cell item-list-duration mono">{item.duration}</span>
             <span className="item-list-cell item-list-indexed">{indexedCell}</span>
-            <span className="item-list-cell item-list-search">{capabilityRow}</span>
+            <span className={`item-list-cell item-list-status ${statusTone}`}>
+              {statusLabel ? <><span className="dot" />{statusLabel}</> : null}
+            </span>
           </>
         ) : (
           <>
@@ -414,6 +331,11 @@ export function ItemCard({
               {item.contentType !== "image" && item.duration && item.status !== "indexing" ? (
                 <small className="thumb-duration mono">{item.duration}</small>
               ) : null}
+              {item.status === "failed" ? (
+                <span className="item-state-pill danger"><span className="dot" />{t("library.status.failed")}</span>
+              ) : itemHasPartialIndex(item) ? (
+                <span className="item-state-pill warn"><span className="dot" />{t("library.itemCard.partialIndexShort")}</span>
+              ) : null}
               {item.status === "indexing" && item.progress !== null ? (
                 <span
                   className="item-progress-overlay"
@@ -433,18 +355,6 @@ export function ItemCard({
             <span className="item-copy body">
               <strong className="clamp2">{item.title}</strong>
               <span className="item-card-meta muted clamp1">{metaLine}</span>
-              {item.usage.event_count > 0 ? (
-                <span className="item-usage mono muted">
-                  {formatUsd(item.usage.estimated_usd)} ·{" "}
-                  {t(
-                    item.usage.event_count === 1
-                      ? "library.itemCard.usageEventOne"
-                      : "library.itemCard.usageEventOther",
-                    { count: item.usage.event_count },
-                  )}
-                </span>
-              ) : null}
-              {capabilityRow}
             </span>
           </>
         )}

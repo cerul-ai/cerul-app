@@ -698,6 +698,11 @@ function AppWorkspace() {
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
   const syncingSourceCount = syncingSources.length;
   const backgroundActivityCount = activeJobCount + syncingSourceCount;
+  // T1: background work is not a notification. Only failed jobs that require
+  // a decision from the user earn a count in the global task entry.
+  const taskAttentionCount = apiStatus === "online" && data.jobSummary
+    ? data.jobSummary.failed_jobs
+    : visibleJobs.filter((job) => job.status === "failed" || job.status === "error").length;
   const stepStarts = useStepStarts(visibleJobs);
   const kickActivityPolling = useCallback((durationMs = 120_000) => {
     const until = Date.now() + durationMs;
@@ -1833,7 +1838,7 @@ function AppWorkspace() {
                 .then(() => refreshCoreData())
                 .catch((error) => console.warn("failed to toggle indexing pause", error));
             }}
-            jobsCount={backgroundActivityCount}
+            taskAttentionCount={taskAttentionCount}
             coreLabel={
               coreLevel === "ok" || coreLevel === "grace"
                 ? `${t("settings.coreStatus.name")} · ${t("settings.coreStatus.ready")}`
@@ -1880,9 +1885,9 @@ function AppWorkspace() {
             >
               <span style={{ position: "relative", display: "inline-flex" }}>
                 <ListChecks size={17} />
-                {backgroundActivityCount > 0 ? (
-                  <span className="badge-count" aria-hidden="true">
-                    {backgroundActivityCount > 9 ? "9+" : backgroundActivityCount}
+                {taskAttentionCount > 0 ? (
+                  <span className="badge-count task-attention-count" aria-hidden="true">
+                    {taskAttentionCount > 9 ? "9+" : taskAttentionCount}
                   </span>
                 ) : null}
               </span>
@@ -1952,13 +1957,8 @@ function AppWorkspace() {
         {view === "library" ? (
           <LibraryScreen
             items={visibleItems}
-            jobs={visibleJobs}
-            syncingSources={syncingSources}
-            stepStarts={stepStarts}
-            indexingPaused={indexingPaused}
             actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
-            onOpenJobs={openJobsSheet}
             onDeleteItems={async (itemIds, onProgress, options) => {
               const deletingIds = new Set(itemIds);
               setData((current) => ({

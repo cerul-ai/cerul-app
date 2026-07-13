@@ -7,18 +7,18 @@ cd "$ROOT"
 rg -qF "const [libraryQuery, setLibraryQuery]" apps/desktop/src
 rg -qF "const [sourceFilter, setSourceFilter]" apps/desktop/src
 rg -qF "const [statusFilter, setStatusFilter]" apps/desktop/src
+rg -qF "const [durationFilter, setDurationFilter]" apps/desktop/src
+rg -qF "const [dateFilter, setDateFilter]" apps/desktop/src
+rg -qF "const [contentFilter, setContentFilter]" apps/desktop/src
 rg -qF "const [sortKey, setSortKey]" apps/desktop/src
 rg -qF "const [selectedItemIds, setSelectedItemIds]" apps/desktop/src
 rg -qF "async function runBatchAction" apps/desktop/src
 rg -qF 'const activeJobCount = apiStatus === "online" && data.jobSummary' apps/desktop/src
 rg -qF "data.jobSummary.queued_jobs + data.jobSummary.running_jobs" apps/desktop/src
 rg -qF ": [];" apps/desktop/src/App.tsx
-rg -qF "<IndexingStrip" apps/desktop/src/screens/library.tsx
-rg -qF "jobs={jobs}" apps/desktop/src/screens/library.tsx
-rg -qF "items={items}" apps/desktop/src/screens/library.tsx
-rg -qF "stepStarts={stepStarts}" apps/desktop/src/screens/library.tsx
-rg -qF "paused={indexingPaused}" apps/desktop/src/screens/library.tsx
-rg -qF "onOpen={onOpenJobs}" apps/desktop/src/screens/library.tsx
+! rg -qF "<IndexingStrip" apps/desktop/src/screens/library.tsx
+! rg -qF "item.usage.event_count" apps/desktop/src/components/cards.tsx
+! rg -qF "itemCapabilityChips" apps/desktop/src/components/cards.tsx
 rg -qF "active.reduce(" apps/desktop/src/components/indexing-strip.tsx
 rg -qF "/ active.length" apps/desktop/src/components/indexing-strip.tsx
 rg -qF 'rep.job_type !== "index_audio"' apps/desktop/src/components/indexing-strip.tsx
@@ -43,13 +43,15 @@ rg -qF "const filteredItems = items" apps/desktop/src
 rg -qF "sortLibraryItems(a, b, sortKey)" apps/desktop/src
 rg -qF "function durationMinutes(duration: string)" apps/desktop/src
 rg -qF 'viewMode === "list" ? "item-card list" : "item-card"' apps/desktop/src
-rg -qF 'className="page wide library-retrieval-page"' apps/desktop/src/screens/library.tsx
-rg -qF 'className="library-retrieval-hero"' apps/desktop/src/screens/library.tsx
-rg -qF 'viewMode === "grid" ? "lib-grid library-l3-grid" : "tbl lib-table library-retrieval-table"' apps/desktop/src/screens/library.tsx
+rg -qF 'library-final-page' apps/desktop/src/screens/library.tsx
+rg -qF 'className="library-final-layout"' apps/desktop/src/screens/library.tsx
+rg -qF 'viewMode === "grid" ? "lib-grid library-l3-grid library-view-collection"' apps/desktop/src/screens/library.tsx
 rg -qF 'viewMode={viewMode}' apps/desktop/src/screens/library.tsx
 rg -qF 'useState<"grid" | "list">("grid")' apps/desktop/src/screens/library.tsx
-rg -qF 'className="library-source-rail"' apps/desktop/src/screens/library.tsx
+rg -qF 'className="library-filter-rail"' apps/desktop/src/screens/library.tsx
 rg -qF 'className="library-view-switch"' apps/desktop/src/screens/library.tsx
+rg -qF 'startViewTransition' apps/desktop/src/screens/library.tsx
+rg -qF 'transitionName={`library-item-${index}`}' apps/desktop/src/screens/library.tsx
 rg -qF '"library.empty.filtered.title": "No matching items"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"library.batch.aria": "Selected library item actions"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"library.itemCard.selectAria": "Select item"' apps/desktop/src/lib/i18n-catalog.ts
@@ -66,7 +68,6 @@ rg -qF "async fn remove_item" crates/cerul-api/src/routes/library.rs
 rg -qF "async fn reindex_item" crates/cerul-api/src/routes/library.rs
 rg -qF "item_delete_and_reindex_update_storage" crates/cerul-api/src/lib.rs
 rg -qF 'total: items.length' apps/desktop/src/screens/library.tsx
-rg -qF '{capabilityCounts.total}' apps/desktop/src/screens/library.tsx
 rg -qF "list_items_includes_first_frame_thumbnail_chunk" crates/cerul-api/src/lib.rs
 rg -qF ".library-filter-row .select" apps/desktop/src/styles/extensions.css
 rg -qF ".segmented" apps/desktop/src/styles/ui.css
@@ -77,7 +78,7 @@ rg -qF ".item-card-shell.selected" apps/desktop/src/styles/extensions.css
 rg -qF ".item-thumb.has-image img" apps/desktop/src/styles/extensions.css
 rg -qF ".item-progress-overlay" apps/desktop/src/styles/extensions.css
 rg -qF ".library-retrieval-controls" apps/desktop/src/styles/selected-ui.css
-rg -qF ".library-source-rail button.active" apps/desktop/src/styles/selected-ui.css
+rg -qF ".library-filter-rail button.active" apps/desktop/src/styles/selected-ui.css
 rg -qF "selection-pointer-sweep" apps/desktop/src/styles/selected-ui.css
 
-echo "library_ui_smoke layout=L3_source_rail selection=A4_pointer_sweep search_filter_sort=enabled views=grid_default_and_list thumbnails=first_frame_chunk batch_delete_reindex=enabled indexing_progress_overlay=enabled active_job_polling=enabled"
+echo "library_ui_smoke layout=F2_persistent_filter_rail status=L3_abnormal_only selection=A4_pointer_sweep filters=duration_date_source_content_status views=grid_default_and_list motion=360ms_spatial_reflow usage_metadata=hidden"
