@@ -44,6 +44,11 @@ rg -qF "sortLibraryItems(a, b, sortKey)" apps/desktop/src
 rg -qF "function durationMinutes(duration: string)" apps/desktop/src
 rg -qF 'if (!hasColonDuration && !hasLegacyDurationUnit) return null' apps/desktop/src/screens/library.tsx
 rg -qF 'if (filter === "month") return ageDays <= 30' apps/desktop/src/screens/library.tsx
+rg -qF 'const addedAtEpoch = item.addedAtEpoch ?? item.indexedAtEpoch' apps/desktop/src/screens/library.tsx
+rg -qF 'bilibili|b23\.tv' apps/desktop/src/screens/library.tsx
+rg -qF 'failedJobsRevision={failedJobsRevision}' apps/desktop/src/App.tsx
+rg -qF '[actionsEnabled, failedJobsRevision, itemStatusSignature]' apps/desktop/src/screens/library.tsx
+rg -qF 'V0015__item_discovered_at.sql' < <(find crates/cerul-storage/migrations -maxdepth 1 -type f)
 rg -qF 'viewMode === "list" ? "item-card list" : "item-card"' apps/desktop/src
 rg -qF 'library-final-page' apps/desktop/src/screens/library.tsx
 rg -qF 'className="library-final-layout"' apps/desktop/src/screens/library.tsx
@@ -83,4 +88,4 @@ rg -qF ".library-retrieval-controls" apps/desktop/src/styles/selected-ui.css
 rg -qF ".library-filter-rail button.active" apps/desktop/src/styles/selected-ui.css
 rg -qF "selection-pointer-sweep" apps/desktop/src/styles/selected-ui.css
 
-echo "library_ui_smoke layout=F2_persistent_filter_rail status=L3_abnormal_only selection=A4_pointer_sweep filters=duration_date_source_content_status date_month=inclusive unknown_duration=excluded views=grid_default_and_list motion=360ms_spatial_reflow usage_metadata=hidden"
+echo "library_ui_smoke layout=F2_persistent_filter_rail status=L3_abnormal_only selection=A4_pointer_sweep filters=duration_date_source_content_status date_month=inclusive date_basis=discovered_at unknown_duration=excluded bilibili_short_link=b23.tv failed_cleanup=global_jobs_revision views=grid_default_and_list motion=360ms_spatial_reflow usage_metadata=hidden"

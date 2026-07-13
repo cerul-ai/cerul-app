@@ -29,7 +29,7 @@ function librarySourceCategory(item: Item): Exclude<LibrarySourceFilter, "all"> 
   if (item.sourceKind === "folder") return "local";
   if (item.sourceKind === "youtube") return "youtube";
   if (item.sourceKind === "podcast") return "podcast";
-  if (/bilibili/i.test(item.source) || /bilibili\.com/i.test(item.originalUrl ?? "")) return "bilibili";
+  if (/bilibili|b23\.tv/i.test(item.source) || /bilibili\.com|b23\.tv/i.test(item.originalUrl ?? "")) return "bilibili";
   if (/youtube|youtu\.be/i.test(item.source) || /youtube\.com|youtu\.be/i.test(item.originalUrl ?? "")) return "youtube";
   return "web";
 }
@@ -57,8 +57,9 @@ function matchesDuration(item: Item, filter: LibraryDurationFilter): boolean {
 
 function matchesDate(item: Item, filter: LibraryDateFilter): boolean {
   if (filter === "all") return true;
-  if (item.indexedAtEpoch === null) return false;
-  const ageDays = (Date.now() / 1000 - item.indexedAtEpoch) / 86400;
+  const addedAtEpoch = item.addedAtEpoch ?? item.indexedAtEpoch;
+  if (addedAtEpoch === null) return false;
+  const ageDays = (Date.now() / 1000 - addedAtEpoch) / 86400;
   if (filter === "week") return ageDays <= 7;
   if (filter === "month") return ageDays <= 30;
   return ageDays > 30;
@@ -66,6 +67,7 @@ function matchesDate(item: Item, filter: LibraryDateFilter): boolean {
 
 export function LibraryScreen({
   items,
+  failedJobsRevision,
   actionsEnabled,
   onAddSource,
   onDeleteItems,
@@ -74,6 +76,7 @@ export function LibraryScreen({
   requestConfirm,
 }: {
   items: Item[];
+  failedJobsRevision: string;
   actionsEnabled: boolean;
   onAddSource: () => void;
   onDeleteItems: (
@@ -323,7 +326,7 @@ export function LibraryScreen({
     return () => {
       cancelled = true;
     };
-  }, [actionsEnabled, itemStatusSignature]);
+  }, [actionsEnabled, failedJobsRevision, itemStatusSignature]);
 
   async function clearFailedItems() {
     if (!actionsEnabled) {

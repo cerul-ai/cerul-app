@@ -38,6 +38,7 @@ export type ItemRecord = {
   duration_sec: number | null;
   raw_path: string | null;
   raw_path_exists: boolean | null;
+  discovered_at?: number | null;
   indexed_at: number | null;
   status: string;
   error: string | null;

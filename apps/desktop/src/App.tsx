@@ -703,6 +703,10 @@ function AppWorkspace() {
   const taskAttentionCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.failed_jobs
     : visibleJobs.filter((job) => job.status === "failed" || job.status === "error").length;
+  const failedJobsRevision = `${taskAttentionCount}:${visibleJobs
+    .filter((job) => job.status === "failed" || job.status === "error")
+    .map((job) => `${job.id}:${job.finished_at ?? 0}`)
+    .join("|")}`;
   const stepStarts = useStepStarts(visibleJobs);
   const kickActivityPolling = useCallback((durationMs = 120_000) => {
     const until = Date.now() + durationMs;
@@ -1957,6 +1961,7 @@ function AppWorkspace() {
         {view === "library" ? (
           <LibraryScreen
             items={visibleItems}
+            failedJobsRevision={failedJobsRevision}
             actionsEnabled={apiStatus === "online"}
             onAddSource={() => setShowAddSource(true)}
             onDeleteItems={async (itemIds, onProgress, options) => {

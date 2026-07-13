@@ -120,6 +120,7 @@ export type Item = {
   durationSec?: number | null;
   indexedAt: string;
   indexedAtEpoch: number | null;
+  addedAtEpoch?: number | null;
   status: ItemStatus;
   error: string | null;
   rawPath: string | null;
@@ -161,6 +162,7 @@ export type Source = {
   items: number;
   failedItems: number;
   lastPolled: string;
+  lastPolledEpoch?: number | null;
   error: string | null;
   fixSettingsSection: string | null;
 };

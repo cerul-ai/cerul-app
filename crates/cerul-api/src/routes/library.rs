@@ -96,7 +96,7 @@ async fn list_items(
                    FROM chunks c2
                    WHERE c2.item_id = i.id
                )) AS duration_sec,
-               i.raw_path, i.indexed_at, i.status, i.error, {metadata_expr} AS metadata,
+               i.raw_path, i.discovered_at, i.indexed_at, i.status, i.error, {metadata_expr} AS metadata,
                (
                    SELECT c.id
                    FROM chunks c
@@ -266,7 +266,7 @@ async fn get_item(
                    FROM chunks c2
                    WHERE c2.item_id = i.id
                )) AS duration_sec,
-               i.raw_path, i.indexed_at, i.status, i.error, i.metadata,
+               i.raw_path, i.discovered_at, i.indexed_at, i.status, i.error, i.metadata,
                (
                    SELECT c.id
                    FROM chunks c

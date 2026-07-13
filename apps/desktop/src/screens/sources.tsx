@@ -216,6 +216,13 @@ export function SourcesScreen({
     { id: "history", label: t("sources.p3.history") },
   ];
 
+  const syncHistory = useMemo(
+    () => [...sources].sort(
+      (a, b) => (b.lastPolledEpoch ?? 0) - (a.lastPolledEpoch ?? 0),
+    ).slice(0, 8),
+    [sources],
+  );
+
   function renderRow(source: Source) {
     const displaySource = {
       ...source,
@@ -288,7 +295,7 @@ export function SourcesScreen({
               </header>
               {sources.length > 0 ? (
                 <div className="connector-timeline">
-                  {sources.slice(0, 8).map((source) => (
+                  {syncHistory.map((source) => (
                     <button type="button" key={source.id} onClick={() => onViewItems(source)}>
                       <time>{source.lastPolled || "—"}</time>
                       <i data-tone={source.status} />

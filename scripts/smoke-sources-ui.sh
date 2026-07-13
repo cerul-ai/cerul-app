@@ -32,6 +32,7 @@ rg -qF 'isHostOrSubdomain(host, "b23.tv")' apps/desktop/src/screens/sources.tsx
 rg -qF 'sources.length > 0 && (view === "all" || group.sources.length > 0)' apps/desktop/src/screens/sources.tsx
 rg -qF 'view === "history" ? (' apps/desktop/src/screens/sources.tsx
 rg -qF 'className="connector-timeline"' apps/desktop/src/screens/sources.tsx
+rg -qF '(b.lastPolledEpoch ?? 0) - (a.lastPolledEpoch ?? 0)' apps/desktop/src/screens/sources.tsx
 rg -qF 'part.startsWith("@") || /^UC[\w-]+$/i.test(part)' apps/desktop/src/screens/sources.tsx
 rg -qF '.p3-workspace {' apps/desktop/src/styles/selected-ui.css
 rg -qF '.saved-collection-grid {' apps/desktop/src/styles/selected-ui.css

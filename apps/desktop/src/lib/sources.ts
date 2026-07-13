@@ -130,6 +130,7 @@ export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: T
     items: itemsForSource.length,
     failedItems: itemsForSource.filter((item) => item.status === "failed").length,
     lastPolled: formatUnixTime(record.last_poll_at, t),
+    lastPolledEpoch: record.last_poll_at,
     error: sourceError(record, status, t),
     fixSettingsSection: sourceFixSettingsSection(record, status),
   };
