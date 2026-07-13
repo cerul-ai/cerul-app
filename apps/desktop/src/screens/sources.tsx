@@ -1,66 +1,52 @@
-// P3 connector console — groups real source records by connector type, keeps
+// C4 connector console — groups real source records by connector type, keeps
 // actions available in the detail list, and turns sync health into a scanable
 // workspace instead of leading with raw URLs.
 
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
   Clapperboard,
-  FileVideo,
   Folder,
+  Globe2,
   Plus,
   Podcast,
   RefreshCcw,
   Youtube,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../lib/formatters";
 import { useT } from "../lib/i18n";
+import { sourceConnectorDisplayName } from "../lib/sources";
 import type { RequestConfirm, Source } from "../lib/types";
 import { EmptyState, InlineNotice } from "../components/leaf";
 import { SourceRow } from "../components/source-row";
 
 type SourceView = "all" | "syncing" | "attention" | "history";
-type ConnectorKind = "youtube" | "local" | "podcast" | "web";
+type ConnectorKind = "bilibili" | "youtube" | "local" | "podcast" | "web";
 
 function connectorKind(source: Source): ConnectorKind {
   if (source.type === "youtube") return "youtube";
   if (source.type === "podcast") return "podcast";
-  if (source.type === "web_video") return "web";
-  return "local";
+  if (source.type === "folder" || source.type === "file") return "local";
+  try {
+    const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
+    const host = url.hostname.replace(/^www\./, "");
+    if (isBilibiliHost(host)) return "bilibili";
+    if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") return "youtube";
+  } catch {
+    // Non-URL web sources stay in the generic web-video group.
+  }
+  return "web";
 }
 
 function isHostOrSubdomain(host: string, domain: string): boolean {
   return host === domain || host.endsWith(`.${domain}`);
 }
 
-function connectorDisplayName(source: Source, fallback: string): string {
-  if (source.type === "folder" || source.type === "file") {
-    const clean = source.name.replace(/[\\/]+$/, "");
-    return clean.split(/[\\/]/).pop() || fallback;
-  }
-  try {
-    const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
-    const host = url.hostname.replace(/^www\./, "");
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (isHostOrSubdomain(host, "bilibili.com")) {
-      const authorId = host === "space.bilibili.com" ? parts[0] : null;
-      const videoId = parts.find((part) => /^BV/i.test(part));
-      if (authorId) return `Bilibili · ${authorId}`;
-      if (videoId) return `Bilibili · ${videoId}`;
-      return "Bilibili 视频";
-    }
-    if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") {
-      const channelId = parts.find((part) => part.startsWith("@") || /^UC[\w-]+$/i.test(part));
-      const videoId = url.searchParams.get("v") || (host === "youtu.be" ? parts[0] : null);
-      const label = channelId || videoId;
-      return label ? `YouTube · ${label}` : "YouTube 视频";
-    }
-    return host;
-  } catch {
-    return source.name || fallback;
-  }
+function isBilibiliHost(host: string): boolean {
+  return isHostOrSubdomain(host, "bilibili.com") || isHostOrSubdomain(host, "b23.tv");
 }
 
 export function SourcesScreen({
@@ -90,7 +76,9 @@ export function SourcesScreen({
 }) {
   const t = useT();
   const [view, setView] = useState<SourceView>("all");
-  const [kind, setKind] = useState<ConnectorKind | null>(null);
+  const [expandedKinds, setExpandedKinds] = useState<Set<ConnectorKind>>(
+    () => new Set(["bilibili"]),
+  );
   const [pendingSourceId, setPendingSourceId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -138,9 +126,8 @@ export function SourcesScreen({
   const viewSources = useMemo(() => sources.filter((source) => {
     if (view === "syncing" && source.status !== "syncing") return false;
     if (view === "attention" && source.status !== "error" && source.failedItems === 0) return false;
-    if (kind && connectorKind(source) !== kind) return false;
     return true;
-  }), [kind, sources, view]);
+  }), [sources, view]);
 
   const connectorGroups: Array<{
     id: ConnectorKind;
@@ -148,11 +135,52 @@ export function SourcesScreen({
     short: string;
     Icon: typeof Youtube;
   }> = [
+    { id: "bilibili", title: t("sources.p3.bilibili"), short: "BILI", Icon: Clapperboard },
     { id: "youtube", title: t("sources.p3.youtube"), short: "YT", Icon: Youtube },
     { id: "local", title: t("sources.p3.local"), short: "LOCAL", Icon: Folder },
     { id: "podcast", title: t("sources.p3.podcast"), short: "RSS", Icon: Podcast },
-    { id: "web", title: t("sources.p3.web"), short: "WEB", Icon: Clapperboard },
+    { id: "web", title: t("sources.p3.web"), short: "WEB", Icon: Globe2 },
   ];
+
+  const connectorGroupsWithSources = connectorGroups
+    .map((group) => ({
+      ...group,
+      sources: viewSources
+        .filter((source) => connectorKind(source) === group.id)
+        .sort((a, b) => {
+          const aAttention = a.status === "error" || a.failedItems > 0 ? 1 : 0;
+          const bAttention = b.status === "error" || b.failedItems > 0 ? 1 : 0;
+          return bAttention - aAttention;
+        }),
+    }))
+    .filter((group) => sources.length > 0 && (view === "all" || group.sources.length > 0));
+
+  const attentionKindSignature = useMemo(
+    () => Array.from(new Set(
+      sources
+        .filter((source) => source.status === "error" || source.failedItems > 0)
+        .map(connectorKind),
+    )).sort().join("|"),
+    [sources],
+  );
+
+  useEffect(() => {
+    if (!attentionKindSignature) return;
+    setExpandedKinds((current) => {
+      const next = new Set(current);
+      attentionKindSignature.split("|").forEach((kind) => next.add(kind as ConnectorKind));
+      return next;
+    });
+  }, [attentionKindSignature]);
+
+  function toggleConnectorGroup(kind: ConnectorKind) {
+    setExpandedKinds((current) => {
+      const next = new Set(current);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      return next;
+    });
+  }
 
   const sourceViews: Array<{ id: SourceView; label: string; count?: number }> = [
     { id: "all", label: t("sources.p3.all"), count: sources.length },
@@ -161,10 +189,17 @@ export function SourcesScreen({
     { id: "history", label: t("sources.p3.history") },
   ];
 
+  const syncHistory = useMemo(
+    () => [...sources].sort(
+      (a, b) => (b.lastPolledEpoch ?? 0) - (a.lastPolledEpoch ?? 0),
+    ).slice(0, 8),
+    [sources],
+  );
+
   function renderRow(source: Source) {
     const displaySource = {
       ...source,
-      name: connectorDisplayName(source, t("sources.p3.unnamed")),
+      name: sourceConnectorDisplayName(source, t("sources.p3.unnamed")),
     };
     return (
       <SourceRow
@@ -190,7 +225,7 @@ export function SourcesScreen({
     <div className="page wide p3-page sources-p3-page">
       <header className="p3-page-head">
         <div>
-          <p className="page-eyebrow">P3 · {t("sources.p3.eyebrow")}</p>
+          <p className="page-eyebrow">{t("sources.p3.eyebrow")}</p>
           <h1 className="page-h1">{t("sources.p3.title")}</h1>
           <p className="page-sub">{t("sources.p3.sub", { count: sources.length, items: totalItems })}</p>
         </div>
@@ -225,71 +260,71 @@ export function SourcesScreen({
           </button>
         </aside>
 
-        <main className="p3-main-scroll">
-          <section className="connector-grid" aria-label={t("sources.p3.connectorsAria")}>
-            {connectorGroups.map(({ id, title, short, Icon }) => {
-              const groupSources = sources.filter((source) => connectorKind(source) === id);
-              const groupItems = groupSources.reduce((sum, source) => sum + source.items, 0);
-              const hasError = groupSources.some((source) => source.status === "error" || source.failedItems > 0);
-              const isSyncing = groupSources.some((source) => source.status === "syncing");
-              return (
+        <main className="p3-main-scroll source-groups" aria-label={t("sources.p3.connectorsAria")}>
+          {view === "history" ? (
+            <section className="connector-activity card">
+              <header>
+                <span><Activity size={15} /><strong>{t("sources.p3.history")}</strong></span>
+              </header>
+              {sources.length > 0 ? (
+                <div className="connector-timeline">
+                  {syncHistory.map((source) => (
+                    <button type="button" key={source.id} onClick={() => onViewItems(source)}>
+                      <time>{source.lastPolled || "—"}</time>
+                      <i data-tone={source.status} />
+                      <span>
+                        <strong>{sourceConnectorDisplayName(source, t("sources.p3.unnamed"))}</strong>
+                        <small>{source.status === "error" ? source.error || t("sources.p3.needsAction") : t("sources.p3.activityMeta", { items: source.items })}</small>
+                      </span>
+                      {source.status === "error" ? <AlertTriangle size={14} /> : source.status === "syncing" ? <RefreshCcw size={14} className="spin" /> : <ChevronRight size={14} />}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  title={t("sources.empty.title")}
+                  body={t("sources.empty.body")}
+                  actionLabel={t("sources.addSource")}
+                  onAction={onAddSource}
+                />
+              )}
+            </section>
+          ) : connectorGroupsWithSources.length > 0 ? connectorGroupsWithSources.map(({ id, title, short, Icon, sources: groupSources }) => {
+            const expanded = expandedKinds.has(id);
+            const groupItems = groupSources.reduce((sum, source) => sum + source.items, 0);
+            const hasError = groupSources.some((source) => source.status === "error" || source.failedItems > 0);
+            const isSyncing = groupSources.some((source) => source.status === "syncing");
+            return (
+              <section className={expanded ? "source-group card expanded" : "source-group card"} key={id}>
                 <button
                   type="button"
-                  className={kind === id ? "connector-card active" : "connector-card"}
-                  key={id}
-                  onClick={() => setKind((current) => current === id ? null : id)}
+                  className="source-group-toggle"
+                  aria-expanded={expanded}
+                  onClick={() => toggleConnectorGroup(id)}
                 >
-                  <span className="connector-icon" aria-hidden="true"><Icon size={18} /><small>{short}</small></span>
-                  <span className="connector-copy">
-                    <strong>{title} · {groupSources.length}</strong>
-                    <small>{t("sources.p3.connectorMeta", { items: groupItems })}</small>
+                  <span className="source-group-icon" aria-hidden="true"><Icon size={17} /><small>{short}</small></span>
+                  <span className="source-group-copy">
+                    <strong>{title} · {t("sources.p3.detailsCount", { count: groupSources.length })}</strong>
+                    <small>{groupSources.length > 0 ? t("sources.p3.connectorMeta", { items: groupItems }) : t("sources.p3.notConfigured")}</small>
                   </span>
-                  <span className={hasError ? "connector-health error" : isSyncing ? "connector-health syncing" : "connector-health"}>
-                    {hasError ? t("sources.p3.needsAction") : isSyncing ? t("sources.p3.syncingNow") : groupSources.length > 0 ? t("sources.p3.connected") : t("sources.p3.notConfigured")}
-                  </span>
+                  {hasError ? <span className="source-group-state error"><AlertTriangle size={13} />{t("sources.p3.needsAction")}</span> : isSyncing ? <span className="source-group-state syncing">{t("sources.p3.syncingNow")}</span> : null}
+                  <span className="source-group-action">{expanded ? t("sources.p3.collapse") : t("sources.p3.expand")}{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
                 </button>
-              );
-            })}
-          </section>
-
-          <section className="connector-activity card">
-            <header>
-              <span><Activity size={15} /><strong>{view === "history" ? t("sources.p3.history") : t("sources.p3.activity")}</strong></span>
-              {kind ? <button type="button" onClick={() => setKind(null)}>{t("sources.p3.clearType")}</button> : null}
-            </header>
-            {viewSources.length > 0 ? (
-              <div className="connector-timeline">
-                {viewSources.slice(0, 8).map((source) => (
-                  <button type="button" key={source.id} onClick={() => onViewItems(source)}>
-                    <time>{source.lastPolled || "—"}</time>
-                    <i data-tone={source.status} />
-                    <span>
-                      <strong>{connectorDisplayName(source, t("sources.p3.unnamed"))}</strong>
-                      <small>{source.status === "error" ? source.error || t("sources.p3.needsAction") : t("sources.p3.activityMeta", { items: source.items })}</small>
-                    </span>
-                    {source.status === "error" ? <AlertTriangle size={14} /> : source.status === "syncing" ? <RefreshCcw size={14} className="spin" /> : <ChevronRight size={14} />}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <EmptyState
-                title={sources.length === 0 ? t("sources.empty.title") : t("sources.p3.noMatch")}
-                body={sources.length === 0 ? t("sources.empty.body") : t("sources.p3.noMatchBody")}
-                actionLabel={sources.length === 0 ? t("sources.addSource") : undefined}
-                onAction={sources.length === 0 ? onAddSource : undefined}
-              />
-            )}
-          </section>
-
-          {view !== "history" && viewSources.length > 0 ? (
-            <section className="connector-detail card">
-              <header>
-                <span><FileVideo size={15} /><strong>{t("sources.p3.details")}</strong></span>
-                <small>{t("sources.p3.detailsCount", { count: viewSources.length })}</small>
-              </header>
-              <div className="source-list">{viewSources.map(renderRow)}</div>
-            </section>
-          ) : null}
+                {expanded ? (
+                  groupSources.length > 0 ? <div className="source-group-list">{groupSources.map(renderRow)}</div> : (
+                    <div className="source-group-empty"><span>{t("sources.p3.notConfigured")}</span><button type="button" onClick={onAddSource}>{t("sources.addSource")}</button></div>
+                  )
+                ) : null}
+              </section>
+            );
+          }) : (
+            <EmptyState
+              title={sources.length === 0 ? t("sources.empty.title") : t("sources.p3.noMatch")}
+              body={sources.length === 0 ? t("sources.empty.body") : t("sources.p3.noMatchBody")}
+              actionLabel={sources.length === 0 ? t("sources.addSource") : undefined}
+              onAction={sources.length === 0 ? onAddSource : undefined}
+            />
+          )}
         </main>
       </div>
     </div>

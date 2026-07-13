@@ -111,6 +111,8 @@ pub struct ItemRecord {
     pub duration_sec: Option<f64>,
     pub raw_path: Option<String>,
     pub raw_path_exists: Option<bool>,
+    #[serde(default)]
+    pub discovered_at: Option<i64>,
     pub indexed_at: Option<i64>,
     pub status: String,
     pub error: Option<String>,
@@ -3977,7 +3979,7 @@ fn index_job_type(content_type: ContentType) -> &'static str {
 }
 
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
-    let metadata: Option<String> = row.get(10)?;
+    let metadata: Option<String> = row.get(11)?;
     let raw_path: Option<String> = row.get(6)?;
 
     Ok(ItemRecord {
@@ -3989,14 +3991,15 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRecord> {
         duration_sec: row.get(5)?,
         raw_path,
         raw_path_exists: None,
-        indexed_at: row.get(7)?,
-        status: row.get(8)?,
-        error: row.get(9)?,
+        discovered_at: row.get(7)?,
+        indexed_at: row.get(8)?,
+        status: row.get(9)?,
+        error: row.get(10)?,
         metadata: metadata
             .as_deref()
             .map(parse_json)
             .unwrap_or_else(|| json!({})),
-        thumbnail_chunk_id: row.get(11)?,
+        thumbnail_chunk_id: row.get(12)?,
         usage: cerul_storage::UsageTotals::default(),
     })
 }
@@ -8716,6 +8719,7 @@ mod tests {
         let items = items.as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], "item-old");
+        assert!(items[0]["discovered_at"].as_i64().is_some());
         assert_eq!(items[0]["metadata"], json!({}));
         assert!(items[0]["raw_path_exists"].is_null());
         assert_eq!(items[0]["usage"]["event_count"], 0);
@@ -9058,6 +9062,8 @@ mod tests {
         assert_eq!(summary["queued_jobs"], 1);
         assert_eq!(summary["running_jobs"], 1);
         assert_eq!(summary["failed_jobs"], 1);
+        assert_eq!(summary["attention_jobs"], 1);
+        assert_eq!(summary["indexed_items"], 0);
         assert_eq!(summary["completed_jobs"], 1);
         assert_eq!(summary["cancelled_jobs"], 1);
         assert_eq!(summary["total_jobs"], 5);

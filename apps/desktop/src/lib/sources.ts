@@ -82,6 +82,73 @@ export function sourceStatus(status: string): SourceStatus {
   return "active";
 }
 
+function decodedPathParts(pathname: string): string[] {
+  return pathname
+    .split("/")
+    .filter(Boolean)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
+}
+
+function isHostOrSubdomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+/**
+ * Turns a stored source URL into a short but distinct connection label.
+ * Path identity matters here: two feeds on the same host, or two YouTube
+ * Shorts/channel URLs, must not collapse to the same generic row name.
+ */
+export function sourceConnectorDisplayName(source: Source, fallback: string): string {
+  if (source.type === "folder" || source.type === "file") {
+    const clean = source.name.replace(/[\\/]+$/, "");
+    return clean.split(/[\\/]/).pop() || fallback;
+  }
+
+  try {
+    const url = new URL(source.name.includes("://") ? source.name : `https://${source.name}`);
+    const host = url.hostname.replace(/^www\./, "");
+    const parts = decodedPathParts(url.pathname);
+    const isBilibili =
+      isHostOrSubdomain(host, "bilibili.com") || isHostOrSubdomain(host, "b23.tv");
+    if (isBilibili) {
+      const authorId = host === "space.bilibili.com" ? parts[0] : null;
+      const videoId = parts.find((part) => /^BV/i.test(part));
+      const shortId = isHostOrSubdomain(host, "b23.tv") ? parts[0] : null;
+      const label = authorId || videoId || shortId;
+      return label ? `Bilibili · ${label}` : source.name || fallback;
+    }
+
+    if (isHostOrSubdomain(host, "youtube.com") || host === "youtu.be") {
+      const keyedPathIndex = parts.findIndex((part) =>
+        ["shorts", "live", "embed", "c", "user", "channel"].includes(part.toLowerCase()),
+      );
+      const keyedPathId = keyedPathIndex >= 0 ? parts[keyedPathIndex + 1] : null;
+      const channelId = parts.find((part) => part.startsWith("@") || /^UC[\w-]+$/i.test(part));
+      const videoId =
+        url.searchParams.get("v") || (host === "youtu.be" ? parts[0] : null);
+      const label = channelId || videoId || keyedPathId;
+      return label ? `YouTube · ${label}` : source.name || fallback;
+    }
+
+    if (source.type === "podcast" && parts.length > 0) {
+      return `${host} · ${parts.join("/")}`;
+    }
+
+    if (parts.length > 0) {
+      return `${host} · ${parts.join("/")}`;
+    }
+    return source.name || host || fallback;
+  } catch {
+    return source.name || fallback;
+  }
+}
+
 export function sourceError(record: api.SourceRecord, status: SourceStatus, t: TFunction) {
   if (status !== "error") {
     return null;
@@ -130,6 +197,7 @@ export function mapSourceRecord(record: api.SourceRecord, allItems: Item[], t: T
     items: itemsForSource.length,
     failedItems: itemsForSource.filter((item) => item.status === "failed").length,
     lastPolled: formatUnixTime(record.last_poll_at, t),
+    lastPolledEpoch: record.last_poll_at,
     error: sourceError(record, status, t),
     fixSettingsSection: sourceFixSettingsSection(record, status),
   };

@@ -15,6 +15,13 @@ rg -qF 'embedded' apps/desktop/src/App.tsx
 rg -qF "onClick={openJobsSheet}" apps/desktop/src
 rg -qF "hasActiveJobs={activeJobCount > 0}" apps/desktop/src
 rg -qF 'apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
+rg -qF 'const taskAttentionCount = apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
+rg -qF 'data.jobSummary.attention_jobs' apps/desktop/src/App.tsx
+rg -qF 'attention_jobs: attention_job_count(&conn)?' crates/cerul-api/src/jobs.rs
+rg -qF "active.status IN ('queued', 'running')" crates/cerul-api/src/jobs.rs
+rg -qF 'indexedItemCount={indexedItemCount}' apps/desktop/src/App.tsx
+rg -qF 'taskAttentionCount={taskAttentionCount}' apps/desktop/src/App.tsx
+rg -qF 'className="badge-count task-attention-count"' apps/desktop/src/components/bridge.tsx
 rg -qF 'status: "completed,cancelled"' apps/desktop/src/App.tsx
 rg -qF "refreshJobsSheetIfFiltered" apps/desktop/src/App.tsx
 rg -qF "failed to load job summary" apps/desktop/src/App.tsx
@@ -86,4 +93,4 @@ rg -qF '.jobs-ledger-page {' apps/desktop/src/styles/selected-ui.css
 rg -qF '.jobs-ledger-dialog.jobs-sheet.is-page {' apps/desktop/src/styles/selected-ui.css
 rg -qF "scripts/smoke-jobs-ui.sh" scripts/smoke.sh
 
-echo "jobs_ui_smoke bridge_glance=enabled route_page=enabled modal_removed_from_view_all=true layout=J6_ledger_plus_current_inspector thumbnails=enabled anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop stale_issue_reset=enabled pause_cancel_controls=enabled"
+echo "jobs_ui_smoke bridge_glance=T1_unresolved_attention_only route_page=enabled modal_removed_from_view_all=true layout=J6_ledger_plus_current_inspector thumbnails=enabled anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop recovered_failures=quiet indexed_availability=summary_backed stale_issue_reset=enabled pause_cancel_controls=enabled"

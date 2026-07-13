@@ -10,6 +10,7 @@ use rusqlite::Connection;
 use crate::paths::AppPaths;
 
 mod embedded {
+    // Latest embedded schema change: V0015__item_discovered_at.sql.
     use refinery::embed_migrations;
 
     embed_migrations!("migrations");

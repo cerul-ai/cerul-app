@@ -52,6 +52,8 @@ pub struct JobStatusSummary {
     pub queued_jobs: u64,
     pub running_jobs: u64,
     pub failed_jobs: u64,
+    pub attention_jobs: u64,
+    pub indexed_items: u64,
     pub completed_jobs: u64,
     pub cancelled_jobs: u64,
     pub total_jobs: u64,
@@ -618,6 +620,11 @@ pub fn job_status_summary(paths: &AppPaths) -> anyhow::Result<JobStatusSummary> 
         queued_jobs: visible_job_count(&conn, Some("queued"))?,
         running_jobs: visible_job_count(&conn, Some("running"))?,
         failed_jobs: visible_job_count(&conn, Some("failed"))?,
+        attention_jobs: attention_job_count(&conn)?,
+        indexed_items: count_rows(
+            &conn,
+            "SELECT COUNT(*) FROM items WHERE status = 'indexed' OR indexed_at IS NOT NULL",
+        )?,
         completed_jobs: visible_job_count(&conn, Some("completed"))?,
         cancelled_jobs: visible_job_count(&conn, Some("cancelled"))?,
         total_jobs: visible_job_count(&conn, None)?,
@@ -989,6 +996,39 @@ fn visible_job_count(
         sql.push('\'');
     }
     count_rows(conn, &sql)
+}
+
+fn attention_job_count(conn: &rusqlite::Connection) -> anyhow::Result<u64> {
+    count_rows(
+        conn,
+        r#"
+        SELECT COUNT(*)
+        FROM (
+            SELECT COALESCE(j.item_id, j.id) AS attention_key
+            FROM jobs j
+            WHERE j.status = 'failed'
+              AND (
+                  j.item_id IS NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM items i
+                      WHERE i.id = j.item_id
+                        AND i.status = 'failed'
+                  )
+              )
+              AND (
+                  j.item_id IS NULL
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM jobs active
+                      WHERE active.item_id = j.item_id
+                        AND active.status IN ('queued', 'running')
+                  )
+              )
+            GROUP BY COALESCE(j.item_id, j.id)
+        ) unresolved
+        "#,
+    )
 }
 
 fn job_stage_counts(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexingStageCount>> {
@@ -2117,6 +2157,62 @@ mod tests {
         assert_eq!(snapshot.running_jobs, 1);
         assert_eq!(snapshot.failed_jobs, 1);
         assert!(snapshot.has_pending_work());
+    }
+
+    #[test]
+    fn job_summary_counts_only_current_failure_attention() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-failed-1",
+            "item-1",
+            "index_video",
+            "failed",
+            "failed",
+        );
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES ('job-failed-2', 'item-1', 'index_video', 'failed', 1)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let failed = job_status_summary(&paths).unwrap();
+        assert_eq!(failed.failed_jobs, 2);
+        assert_eq!(failed.attention_jobs, 1);
+        assert_eq!(failed.indexed_items, 0);
+
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                "UPDATE items SET status = 'discovered', error = NULL WHERE id = 'item-1'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES ('job-retry', 'item-1', 'index_video', 'queued', 0)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        let retried = job_status_summary(&paths).unwrap();
+        assert_eq!(retried.failed_jobs, 2);
+        assert_eq!(retried.attention_jobs, 0);
+
+        cerul_storage::mark_indexed(&paths, "item-1").unwrap();
+        let recovered = job_status_summary(&paths).unwrap();
+        assert_eq!(recovered.attention_jobs, 0);
+        assert_eq!(recovered.indexed_items, 1);
     }
 
     #[test]

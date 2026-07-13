@@ -539,6 +539,7 @@ export function mapItemRecord(
     durationSec: record.duration_sec,
     indexedAt: formatUnixTime(record.indexed_at, t),
     indexedAtEpoch: record.indexed_at,
+    addedAtEpoch: record.discovered_at ?? record.indexed_at,
     status,
     error: record.error ? sanitizeErrorText(record.error) : null,
     rawPath,

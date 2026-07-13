@@ -44,7 +44,7 @@ type BridgeProps = {
   items: Item[];
   indexingPaused: boolean;
   onTogglePause: () => void;
-  jobsCount: number;
+  taskAttentionCount: number;
   coreLabel: string;
   /* search (呼吸态) — hidden on home, whose hero stage is the search surface */
   searchVisible: boolean;
@@ -88,7 +88,7 @@ export function Bridge(props: BridgeProps) {
     items,
     indexingPaused,
     onTogglePause,
-    jobsCount,
+    taskAttentionCount,
     coreLabel,
     searchVisible,
     query,
@@ -319,9 +319,9 @@ export function Bridge(props: BridgeProps) {
           >
             <span className="bridge-jobs-icon">
               <ListChecks size={15} aria-hidden="true" />
-              {jobsCount > 0 ? (
-                <span className="badge-count" aria-hidden="true">
-                  {jobsCount > 9 ? "9+" : jobsCount}
+              {taskAttentionCount > 0 ? (
+                <span className="badge-count task-attention-count" aria-hidden="true">
+                  {taskAttentionCount > 9 ? "9+" : taskAttentionCount}
                 </span>
               ) : null}
             </span>
@@ -453,7 +453,7 @@ export function Bridge(props: BridgeProps) {
               >
                 <ListChecks size={14} aria-hidden="true" />
                 {t("nav.jobs")}
-                {jobsCount > 0 ? <em>{jobsCount}</em> : null}
+                {taskAttentionCount > 0 ? <em>{taskAttentionCount}</em> : null}
               </button>
               <button className="bridge-menu-row" type="button" role="menuitem" onClick={onCycleTheme}>
                 <span className="bridge-menu-swatch" aria-hidden="true" />
