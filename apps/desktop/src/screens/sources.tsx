@@ -216,7 +216,6 @@ export function SourcesScreen({
               >
                 <span>{entry.label}</span>
                 {entry.count !== undefined ? <code>{entry.count}</code> : null}
-                {view === entry.id ? <ChevronRight size={15} /> : null}
               </button>
             ))}
           </nav>

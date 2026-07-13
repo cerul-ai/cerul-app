@@ -84,7 +84,7 @@
 .bridge-jobs-icon { position: relative; display: inline-flex; }
 /* The 15px nav icon needs a corner bubble, not the full-size badge — shrink it
    so the icon stays legible underneath. */
-.bridge-jobs-icon .badge-count { top: -7px; right: -9px; min-width: 13px; height: 13px; padding: 0 3px; font-size: 8px; }
+.bridge-jobs-icon .badge-count { top: -8px; right: -10px; min-width: 16px; height: 16px; padding: 0 4px; font-size: 10px; font-weight: 650; } /* px-ok: badge bubble */
 
 /* ---- search 呼吸态 ---- */
 .bridge-search {
@@ -119,7 +119,7 @@
 .bridge-search input::placeholder { color: var(--bridge-faint); }
 .bridge-kbd {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10px; /* px-ok: shortcut nameplate */
   color: var(--bridge-faint);
   border: 1px solid var(--bridge-line);
   border-radius: 4px;
@@ -146,7 +146,7 @@
   .bridge-scope { animation: none; }
 }
 .bridge-scope-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.1em;
   color: var(--bridge-faint);
   margin-right: 2px;
@@ -167,7 +167,7 @@
   color: var(--bridge-active-text);
   font-weight: 500;
 }
-.bridge-scope-hint { margin-left: auto; font-size: 10px; color: var(--bridge-faint); }
+.bridge-scope-hint { margin-left: auto; font-size: 11px; color: var(--bridge-faint); }
 
 /* ---- download pill (minimized local-model download) ---- */
 .bridge-dl-pill {
@@ -312,7 +312,7 @@
   border-top: 1px solid var(--line);
   background: var(--accent-tint);
   color: var(--accent);
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 /* ---- responsive ---- */
@@ -338,7 +338,7 @@
 }
 [data-theme="dark"] .cite-card { box-shadow: 0 20px 44px -16px rgba(0, 0, 0, 0.6); }
 .cite-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   color: var(--cite-muted);
   margin-bottom: 8px;
@@ -397,7 +397,7 @@
   background: rgba(217, 154, 98, 0.16);
   color: #e8b483;
   font-family: var(--font-sans);
-  font-size: 10.5px;
+  font-size: 11.5px;
   padding: 2.5px 10px;
   border-radius: var(--r-pill);
   cursor: pointer;

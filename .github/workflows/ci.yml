@@ -91,6 +91,8 @@ jobs:
           corepack prepare pnpm@9.15.9 --activate
       - name: Check release metadata
         run: node scripts/sync-release-metadata.mjs --check
+      - name: Check CSS tokens and type floor
+        run: node scripts/check-css-tokens.mjs
       - name: Validate bundled yt-dlp pin
         env:
           GITHUB_TOKEN: ${{ github.token }}

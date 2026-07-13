@@ -118,6 +118,31 @@ export function JobsSheet({
   const repairJob = repairingJob ?? activeIssueJob;
   const repairJobCanRetry = Boolean(repairJob?.item_id);
   const inspectedJob = sortedJobs.find((job) => job.id === selectedJobId) ?? sortedJobs[0] ?? null;
+
+  // Stage-change ledger backing the inspector's activity feed. JobRecord only
+  // carries the *current* stage, so transitions are recorded app-side as polls
+  // land. Keyed dedupe makes the render-time mutation idempotent (safe under
+  // StrictMode double-render); jobs seen mid-flight seed from started_at.
+  const activityLog = useRef(new Map<string, { key: string; events: Array<{ label: string; at: number | null }> }>());
+  for (const job of jobs) {
+    const key = `${job.status}:${job.stage ?? ""}:${job.error ? "error" : ""}`;
+    const entry = activityLog.current.get(job.id);
+    if (!entry) {
+      activityLog.current.set(job.id, {
+        key,
+        events: isActiveJob(job)
+          ? [{ label: jobDisplayStatus(job, t), at: job.started_at !== null ? job.started_at * 1000 : null }]
+          : [],
+      });
+    } else if (entry.key !== key) {
+      entry.key = key;
+      entry.events.unshift({ label: jobDisplayStatus(job, t), at: Date.now() });
+      if (entry.events.length > 6) entry.events.length = 6;
+    }
+  }
+  const inspectedActivity = inspectedJob ? activityLog.current.get(inspectedJob.id)?.events ?? [] : [];
+  const activityTime = (at: number | null) =>
+    at === null ? "—" : new Date(at).toTimeString().slice(0, 5);
   const inspectedItem = inspectedJob ? itemForJob(inspectedJob) : null;
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -488,7 +513,15 @@ export function JobsSheet({
                     <div><dt>{t("jobs.ledger.col.stage")}</dt><dd>{jobStageMessage(inspectedJob, t)}</dd></div>
                     <div><dt>{t("jobs.inspector.media")}</dt><dd>{inspectedItem?.duration || "—"}</dd></div>
                   </dl>
-                  <div className="jobs-inspector-log"><strong>{t("jobs.inspector.activity")}</strong><p>{jobStageMessage(inspectedJob, t)}</p>{inspectedJob.error ? <p className="danger">{inspectedJob.error}</p> : <p>{t("jobs.inspector.healthy")}</p>}</div>
+                  <div className="jobs-inspector-log">
+                    <strong>{t("jobs.inspector.activity")}</strong>
+                    {inspectedJob.error ? <p className="danger">{inspectedJob.error}</p> : null}
+                    {inspectedActivity.length > 0
+                      ? inspectedActivity.map((event, index) => (
+                          <p key={`${event.label}:${event.at ?? index}`}><time>{activityTime(event.at)}</time>{event.label}</p>
+                        ))
+                      : <p>{jobStageMessage(inspectedJob, t)}</p>}
+                  </div>
                 </>
               ) : <EmptyState title={t("jobs.focus.empty")} body={t("jobs.emptyBody")} />}
             </aside>
