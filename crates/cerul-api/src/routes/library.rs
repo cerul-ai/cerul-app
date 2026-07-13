@@ -125,7 +125,7 @@ async fn list_items(
     }
     sql.push_str(
         r#"
-        ORDER BY COALESCE(i.indexed_at, 0) DESC, i.id ASC
+        ORDER BY COALESCE(i.discovered_at, i.indexed_at, 0) DESC, i.id ASC
         LIMIT ? OFFSET ?
         "#,
     );

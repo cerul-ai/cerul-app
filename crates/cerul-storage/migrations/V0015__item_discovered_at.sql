@@ -9,7 +9,7 @@ AFTER INSERT ON items
 WHEN NEW.discovered_at IS NULL
 BEGIN
     UPDATE items
-    SET discovered_at = CAST(strftime('%s','now') AS INTEGER)
+    SET discovered_at = COALESCE(NEW.indexed_at, CAST(strftime('%s','now') AS INTEGER))
     WHERE id = NEW.id;
 END;
 

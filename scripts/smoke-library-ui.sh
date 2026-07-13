@@ -49,6 +49,7 @@ rg -qF 'bilibili|b23\.tv' apps/desktop/src/screens/library.tsx
 rg -qF 'failedJobsRevision={failedJobsRevision}' apps/desktop/src/App.tsx
 rg -qF '[actionsEnabled, failedJobsRevision, itemStatusSignature]' apps/desktop/src/screens/library.tsx
 rg -qF 'V0015__item_discovered_at.sql' < <(find crates/cerul-storage/migrations -maxdepth 1 -type f)
+rg -qF 'ORDER BY COALESCE(i.discovered_at, i.indexed_at, 0) DESC' crates/cerul-api/src/routes/library.rs
 rg -qF 'viewMode === "list" ? "item-card list" : "item-card"' apps/desktop/src
 rg -qF 'library-final-page' apps/desktop/src/screens/library.tsx
 rg -qF 'className="library-final-layout"' apps/desktop/src/screens/library.tsx
