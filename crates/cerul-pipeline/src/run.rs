@@ -2,7 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -37,6 +37,16 @@ use crate::{
 const DEFAULT_PIPELINE_TEMP_CACHE_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PIPELINE_TEMP_CACHE_BUDGET_MB_ENV: &str = "CERUL_PIPELINE_TEMP_CACHE_BUDGET_MB";
 const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
+static RETRIEVAL_GENERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_retrieval_generation() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = RETRIEVAL_GENERATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{timestamp:x}{sequence:x}")
+}
 
 pub trait Transcriber: Send + Sync {
     fn prepare_transcription(&self) -> anyhow::Result<()> {
@@ -1410,10 +1420,10 @@ impl VideoPipeline {
                 let (previous_status, previous_error, unit_count, vector_count) =
                     previous_search_state;
                 // Understanding updates mark the item pending before this job
-                // starts. A non-zero prior vector count proves that pending is
-                // an in-place refresh of an indexed item, not a first build.
+                // starts. Existing SQL units are a valid FTS-only generation
+                // even when embedding previously produced no vectors.
                 let preserve_searchable_index = previous_status == "indexed"
-                    || (previous_status == "pending" && vector_count > 0);
+                    || (previous_status == "pending" && (unit_count > 0 || vector_count > 0));
                 cerul_storage::set_item_search_index_status(
                     &self.paths,
                     item_id,
@@ -1475,6 +1485,7 @@ impl VideoPipeline {
             item_id,
             &profile.id,
             include_image_embeddings,
+            &next_retrieval_generation(),
         )?;
         self.log_pipeline_event(
             item_id,
@@ -1590,14 +1601,12 @@ impl VideoPipeline {
             }
         };
 
-        let index_write = match write_unified_retrieval_vectors(
+        let mut index_write = match write_unified_retrieval_vectors(
             &self.paths,
-            item_id,
             &plan,
             &text_vectors,
             &image_vectors,
             &profile,
-            replace_existing_vectors,
         )
         .await
         {
@@ -1609,18 +1618,48 @@ impl VideoPipeline {
                 return Err(error);
             }
         };
-        // Commit the SQL generation only after the corresponding vectors are
-        // durable. Until this point searches continue hydrating the previous
-        // units against the previous vector generation.
-        cerul_storage::replace_item_retrieval_units(&self.paths, item_id, plan.units())?;
-        cerul_storage::set_item_search_index_status(
+        // Commit the SQL rows and their vector count in one transaction only
+        // after the candidate vectors are durable. Fresh generation ids keep
+        // both sides coherent until this boundary succeeds.
+        if let Err(error) = cerul_storage::commit_item_retrieval_generation(
             &self.paths,
             item_id,
-            "indexed",
-            None,
-            plan.unit_count(),
+            plan.units(),
             index_write.vector_count,
-        )?;
+        ) {
+            if let Err(cleanup_error) =
+                cerul_storage::vectors::delete_unified_embedding_records_for_profile(
+                    &self.paths,
+                    &index_write.records,
+                    &profile,
+                    cerul_storage::SEARCH_INDEX_VERSION,
+                )
+                .await
+            {
+                tracing::warn!(
+                    item_id,
+                    %cleanup_error,
+                    "failed to remove uncommitted retrieval vector generation"
+                );
+            }
+            return Err(error);
+        }
+        match cerul_storage::vectors::delete_stale_item_unified_embeddings_for_profile(
+            &self.paths,
+            item_id,
+            &index_write.records,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await
+        {
+            Ok(deleted) => index_write.stale_vectors_deleted = deleted,
+            Err(error) => tracing::warn!(
+                item_id,
+                %error,
+                "retrieval generation committed; stale vector cleanup will retry on a future refresh"
+            ),
+        }
         self.log_pipeline_event(
             item_id,
             "retrieval_index_written",
@@ -1650,15 +1689,7 @@ impl VideoPipeline {
         // index when embedding is unavailable. In-place understanding refreshes
         // pass `replace_existing_vectors = false`, so they never replace the
         // last coherent SQL/vector generation on failure.
-        cerul_storage::replace_item_retrieval_units(&self.paths, item_id, plan.units())?;
-        cerul_storage::set_item_search_index_status(
-            &self.paths,
-            item_id,
-            "indexed",
-            None,
-            plan.unit_count(),
-            0,
-        )?;
+        cerul_storage::commit_item_retrieval_generation(&self.paths, item_id, plan.units(), 0)?;
         Ok(())
     }
 
@@ -3733,6 +3764,41 @@ mod tests {
         assert_eq!(transcript, "existing transcript remains unchanged");
         assert_eq!(status, "indexed");
         assert_eq!(search_status, "indexed");
+        let first_unit_id: String = conn
+            .query_row(
+                "SELECT id FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let second = pipeline.refresh_item_search_index("item-1").await.unwrap();
+        let second_unit_id: String = sqlite::open(&paths)
+            .unwrap()
+            .query_row(
+                "SELECT id FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(first_unit_id, second_unit_id);
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let collection = cerul_storage::vectors::unified_collection_name(
+            &paths,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        );
+        assert_eq!(
+            cerul_storage::vectors::collection_point_count_for_profile(
+                &paths,
+                &collection,
+                &profile,
+            )
+            .await
+            .unwrap(),
+            second.text_vectors + second.image_vectors
+        );
     }
 
     #[tokio::test]
@@ -3875,6 +3941,83 @@ mod tests {
             &paths,
             cerul_search::SearchRequest {
                 q: "existing transcript".to_string(),
+                limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
+    }
+
+    #[tokio::test]
+    async fn refresh_item_search_index_preserves_fts_only_generation_on_embedding_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let media_dir = temp.path().join("videos");
+        std::fs::create_dir(&media_dir).unwrap();
+        let missing_video = media_dir.join("missing.mp4");
+        insert_source_and_item(&paths, &media_dir, &missing_video);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "fts only evidence remains searchable".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        sqlite::open(&paths)
+            .unwrap()
+            .execute(
+                "UPDATE items SET status = 'indexed', indexed_at = strftime('%s','now') WHERE id = 'item-1'",
+                [],
+            )
+            .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let live_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "pending",
+            None,
+            live_units.len(),
+            0,
+        )
+        .unwrap();
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FailingTextEmbedder),
+        );
+        let error = pipeline
+            .refresh_item_search_index("item-1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("quota exceeded"));
+
+        let state: (String, i64, i64) = sqlite::open(&paths)
+            .unwrap()
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("indexed".to_string(), live_units.len() as i64, 0));
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "fts only evidence".to_string(),
                 limit: 3,
                 ranking_preference: cerul_search::SearchRankingPreference::Smart,
             },

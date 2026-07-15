@@ -273,6 +273,19 @@ pub async fn delete_stale_item_unified_embeddings_for_profile(
     delete_stale_collection_item_embeddings(paths, &collection, item_id, keep_records).await
 }
 
+pub async fn delete_unified_embedding_records_for_profile(
+    paths: &AppPaths,
+    records: &[VectorRecord],
+    profile: &EmbeddingProfile,
+    index_version: i32,
+) -> anyhow::Result<usize> {
+    let collection = unified_collection_name(paths, profile, index_version);
+    if !collection_exists(paths, &collection).await? {
+        return Ok(0);
+    }
+    delete_collection_embedding_records(paths, &collection, records).await
+}
+
 pub async fn delete_item_embeddings(paths: &AppPaths, item_id: &str) -> anyhow::Result<()> {
     let profiles = list_embedding_profiles(paths)?;
 
@@ -513,6 +526,46 @@ async fn delete_collection_item_embeddings(
         guard.delete_by_filter(&filter)?;
         guard.flush()?;
         Ok(())
+    })
+    .await
+}
+
+async fn delete_collection_embedding_records(
+    paths: &AppPaths,
+    collection: &str,
+    records: &[VectorRecord],
+) -> anyhow::Result<usize> {
+    let Some(handle) = collection_handle_existing(paths, collection)? else {
+        return Ok(0);
+    };
+    let mut point_ids = records
+        .iter()
+        .map(|record| point_id(&record.point_key))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    point_ids.sort_unstable();
+    if point_ids.is_empty() {
+        return Ok(0);
+    }
+    let collection = collection.to_string();
+    zvec_blocking("delete exact zvec collection vectors", move || {
+        let guard = handle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("zvec collection mutex poisoned"))?;
+        let existing = existing_point_ids(&guard, &point_ids)?;
+        if existing.is_empty() {
+            return Ok(0);
+        }
+        let refs = existing.iter().map(String::as_str).collect::<Vec<_>>();
+        let summary = guard.delete(&refs)?;
+        anyhow::ensure!(
+            summary.error == 0,
+            "zvec exact delete for collection {collection} failed for {} records",
+            summary.error
+        );
+        guard.flush()?;
+        Ok(existing.len())
     })
     .await
 }
@@ -1435,6 +1488,63 @@ mod tests {
         .unwrap();
         assert!(!vectors.contains_key("chunk-stale"));
         assert_eq!(vectors.get("chunk-keep").map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn exact_unified_delete_removes_only_candidate_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        let profile = test_profile("cosine");
+        let live = test_record(
+            "item-1:unit:v2:live:000000",
+            "item-1:unit:v2:live:000000",
+            "item-1",
+            [1.0, 0.0, 0.0],
+        );
+        let candidate = test_record(
+            "item-1:unit:v2:candidate:000000",
+            "item-1:unit:v2:candidate:000000",
+            "item-1",
+            [0.0, 1.0, 0.0],
+        );
+        replace_item_unified_embeddings_for_profile(
+            &paths,
+            "item-1",
+            std::slice::from_ref(&live),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        upsert_item_unified_embeddings_for_profile(
+            &paths,
+            std::slice::from_ref(&candidate),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_unified_embedding_records_for_profile(
+            &paths,
+            std::slice::from_ref(&candidate),
+            &profile,
+            crate::SEARCH_INDEX_VERSION,
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted, 1);
+
+        let collection = unified_collection_name(&paths, &profile, crate::SEARCH_INDEX_VERSION);
+        let vectors = retrieve_collection_vectors(
+            &paths,
+            &collection,
+            &[live.chunk_id.clone(), candidate.chunk_id.clone()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(vectors.get(&live.chunk_id).map(Vec::len), Some(1));
+        assert!(!vectors.contains_key(&candidate.chunk_id));
     }
 
     #[tokio::test]

@@ -27,10 +27,11 @@ pub use logs::{append_jsonl_event, log_file_path};
 pub use paths::AppPaths;
 pub use retrieval::{
     best_sub_unit_for_query, best_visual_sub_unit_for_query, build_item_retrieval_units,
-    clear_item_search_index, indexed_item_count, item_has_retrieval_units,
-    item_retrieval_unit_count, items_needing_rebuild_count, rebuild_item_retrieval_units,
-    replace_item_retrieval_units, retrieval_unit_count, searchable_retrieval_unit_fts_row_count,
-    set_item_search_index_status, StorageRetrievalUnit, SEARCH_INDEX_VERSION,
+    clear_item_search_index, commit_item_retrieval_generation, indexed_item_count,
+    item_has_retrieval_units, item_retrieval_unit_count, items_needing_rebuild_count,
+    rebuild_item_retrieval_units, replace_item_retrieval_units, retrieval_unit_count,
+    searchable_retrieval_unit_fts_row_count, set_item_search_index_status, StorageRetrievalUnit,
+    SEARCH_INDEX_VERSION,
 };
 pub use settings::read_string_setting;
 pub use usage::{

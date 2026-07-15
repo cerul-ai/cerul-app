@@ -126,6 +126,39 @@ pub fn replace_item_retrieval_units(
     Ok(())
 }
 
+/// Atomically makes a prepared retrieval-unit generation searchable and
+/// records the vector count that belongs to that same generation.
+pub fn commit_item_retrieval_generation(
+    paths: &AppPaths,
+    item_id: &str,
+    units: &[StorageRetrievalUnit],
+    vector_count: usize,
+) -> anyhow::Result<()> {
+    let mut conn = sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+    replace_item_retrieval_units_with_tx(&tx, item_id, SEARCH_INDEX_VERSION, units)?;
+    let updated = tx.execute(
+        r#"
+        UPDATE items
+        SET search_index_version = ?2,
+            search_index_status = 'indexed',
+            search_index_error = NULL,
+            search_index_unit_count = ?3,
+            search_index_vector_count = ?4
+        WHERE id = ?1
+        "#,
+        params![
+            item_id,
+            SEARCH_INDEX_VERSION,
+            units.len() as i64,
+            vector_count as i64
+        ],
+    )?;
+    anyhow::ensure!(updated == 1, "item not found: {item_id}");
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn set_item_search_index_status(
     paths: &AppPaths,
     item_id: &str,
@@ -1501,6 +1534,58 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn commit_generation_rolls_back_units_when_status_update_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "live searchable generation".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let live = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+        let live_id = live[0].id.clone();
+        let mut candidate = live[0].clone();
+        candidate.id = "item-1:unit:v2:candidate:000000".to_string();
+        candidate.content_text = "candidate generation".to_string();
+
+        sqlite::open(&paths)
+            .unwrap()
+            .execute_batch(
+                r#"
+                CREATE TRIGGER fail_search_status_update
+                BEFORE UPDATE OF search_index_status ON items
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced status failure');
+                END;
+                "#,
+            )
+            .unwrap();
+
+        let error =
+            commit_item_retrieval_generation(&paths, "item-1", &[candidate], 1).unwrap_err();
+        assert!(error.to_string().contains("forced status failure"));
+        let conn = sqlite::open(&paths).unwrap();
+        let preserved: (String, String) = conn
+            .query_row(
+                "SELECT id, content_text FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved.0, live_id);
+        assert!(preserved.1.contains("live searchable generation"));
     }
 
     #[test]

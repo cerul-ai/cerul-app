@@ -71,10 +71,16 @@ jobs:
         shell: bash
         run: |
           # pnpm 9 still calls npm's retired legacy audit endpoint. Run the
-          # current bulk-advisory client against the committed lockfile in an
-          # isolated directory, without changing the repository package manager.
+          # current bulk-advisory client in an isolated copy of the complete
+          # workspace manifest graph, without changing the repository package manager.
           audit_dir="$(mktemp -d)"
-          cp pnpm-lock.yaml "$audit_dir/pnpm-lock.yaml"
+          jq '.packageManager = "pnpm@11.13.0" | .engines.pnpm = ">=11.13.0"' \
+            package.json > "$audit_dir/package.json"
+          cp pnpm-lock.yaml pnpm-workspace.yaml "$audit_dir/"
+          for manifest in apps/*/package.json; do
+            mkdir -p "$audit_dir/$(dirname "$manifest")"
+            cp "$manifest" "$audit_dir/$manifest"
+          done
           cd "$audit_dir"
           corepack pnpm@11.13.0 audit --prod --audit-level high
 

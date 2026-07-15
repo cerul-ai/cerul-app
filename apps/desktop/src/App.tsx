@@ -162,6 +162,7 @@ import {
 import {
   mapSearchResults,
 } from "./lib/results";
+import { searchIndexIsSettling } from "./lib/search-index";
 import { readRouteState, routeHash } from "./lib/route";
 import { recordLastOpened } from "./lib/last-opened";
 import {
@@ -456,19 +457,6 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function searchIndexIsSettling(data: AppData) {
-  return (
-    data.sources.some((source) => source.status === "syncing") ||
-    data.jobs.some(isActiveJob) ||
-    (data.jobSummary?.search_refresh_jobs ?? 0) > 0 ||
-    data.items.some(
-      (item) =>
-        item.embeddingIndexStatus === "pending" ||
-        item.visualIndexStatus === "pending",
-    )
-  );
-}
-
 const settingsSections = [
   "General",
   "Shortcuts",
@@ -696,7 +684,7 @@ function AppWorkspace() {
   const activeJobCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
     : visibleJobs.filter(isActiveJob).length;
-  const searchRefreshJobCount = apiStatus === "online"
+  const searchRefreshJobCount = apiStatus === "online" && !indexingPaused
     ? data.jobSummary?.search_refresh_jobs ?? 0
     : 0;
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
@@ -1354,7 +1342,6 @@ function AppWorkspace() {
           readDaemonStatus(),
         ]);
       const mappedItems = itemRecords.map((record) => mapItemRecord(record, jobRecords, t));
-      const hasSyncingSources = sourceRecords.some((source) => source.status === "syncing");
       const nextData: AppData = {
         sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
@@ -1370,9 +1357,7 @@ function AppWorkspace() {
       const pendingRetry = lastSearchRef.current;
       if (
         pendingRetry?.retryWhenIdle &&
-        !hasSyncingSources &&
-        !jobRecords.some(isActiveJob) &&
-        (jobSummary?.search_refresh_jobs ?? 0) === 0
+        !searchIndexIsSettling(nextData)
       ) {
         lastSearchRef.current = {
           query: pendingRetry.query,
