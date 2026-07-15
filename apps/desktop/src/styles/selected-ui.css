@@ -2884,8 +2884,8 @@
 .jobs-inspector-progress > i { height:4px; overflow:hidden; border-radius:999px; background:var(--surface-3); }
 .jobs-inspector-progress > i b { height:100%; display:block; background:var(--accent); }
 .jobs-inspector-stages { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; padding:2px 0; }
-.jobs-inspector-stages > span { min-width:0; min-height:54px; position:relative; display:grid; grid-template-rows:18px minmax(0,1fr); justify-items:center; gap:5px; padding:2px; border-radius:7px; color:var(--text-faint); font-size:10.5px; line-height:1.2; text-align:center; }
-.jobs-inspector-stages i { width:16px; height:16px; display:grid; place-items:center; border:1px solid var(--line-strong); border-radius:50%; font-style:normal; font:9px var(--font-mono); }
+.jobs-inspector-stages > span { min-width:0; min-height:54px; position:relative; display:grid; grid-template-rows:18px minmax(0,1fr); justify-items:center; gap:5px; padding:2px; border-radius:7px; color:var(--text-faint); font-size:11px; line-height:1.2; text-align:center; }
+.jobs-inspector-stages i { width:16px; height:16px; display:grid; place-items:center; border:1px solid var(--line-strong); border-radius:50%; font-style:normal; font:11px var(--font-mono); }
 .jobs-inspector-stages > span:not(:last-child)::after { content:""; position:absolute; z-index:0; left:calc(50% + 9px); top:10px; width:calc(100% - 18px); height:2px; border-radius:999px; background:var(--line); }
 .jobs-inspector-stages > span.done:not(:last-child)::after { background:linear-gradient(90deg,var(--success),var(--accent)); animation:copper-relay-line 560ms var(--ease) both; }
 .jobs-inspector-stages b { font-weight:520; }
