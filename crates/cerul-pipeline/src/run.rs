@@ -1409,13 +1409,16 @@ impl VideoPipeline {
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
                 let (previous_status, previous_error, unit_count, vector_count) =
                     previous_search_state;
-                let preserve_searchable_index =
-                    matches!(previous_status.as_str(), "indexed" | "pending");
+                // Understanding updates mark the item pending before this job
+                // starts. A non-zero prior vector count proves that pending is
+                // an in-place refresh of an indexed item, not a first build.
+                let preserve_searchable_index = previous_status == "indexed"
+                    || (previous_status == "pending" && vector_count > 0);
                 cerul_storage::set_item_search_index_status(
                     &self.paths,
                     item_id,
                     if preserve_searchable_index {
-                        previous_status.as_str()
+                        "indexed"
                     } else {
                         "failed"
                     },
@@ -1560,6 +1563,13 @@ impl VideoPipeline {
                             "error": error.to_string()
                         }),
                     );
+                }
+                if !replace_existing_vectors {
+                    // Refreshes preserve the previous multimodal index as one
+                    // atomic fallback. Do not write a text-only replacement,
+                    // whose stale cleanup would remove the last good image
+                    // points after a transient visual embedding failure.
+                    return Err(error);
                 }
                 if !plan.image_paths().is_empty() && !text_vectors.is_empty() {
                     tracing::warn!(
@@ -3707,6 +3717,10 @@ mod tests {
         drop(conn);
         cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 3)
             .unwrap();
+        // Match the state written when understanding has rebuilt the SQLite
+        // units and queued an embedding refresh for an existing index.
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "pending", None, 1, 3)
+            .unwrap();
 
         let pipeline = VideoPipeline::new(
             paths.clone(),
@@ -3761,6 +3775,104 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
+    }
+
+    #[tokio::test]
+    async fn refresh_item_search_index_preserves_image_vectors_on_image_embedding_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let media_dir = temp.path().join("videos");
+        std::fs::create_dir(&media_dir).unwrap();
+        let missing_video = media_dir.join("missing.mp4");
+        let frame_path = media_dir.join("existing-frame.jpg");
+        insert_source_and_item(&paths, &media_dir, &missing_video);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "existing multimodal moment".to_string(),
+            }],
+            &[],
+            &[],
+            &[cerul_storage::StorageImageChunk::keyframe_at(
+                frame_path, 0.0, 8.0,
+            )],
+        )
+        .unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "UPDATE items SET status = 'indexed', indexed_at = strftime('%s','now') WHERE id = 'item-1'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let initial_pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        let initial = initial_pipeline
+            .refresh_item_search_index("item-1")
+            .await
+            .unwrap();
+        assert!(initial.text_vectors > 0);
+        assert!(initial.image_vectors > 0);
+
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let collection = cerul_storage::vectors::unified_collection_name(
+            &paths,
+            &profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        );
+        let points_before = cerul_storage::vectors::collection_point_count_for_profile(
+            &paths,
+            &collection,
+            &profile,
+        )
+        .await
+        .unwrap();
+        assert_eq!(points_before, initial.text_vectors + initial.image_vectors);
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "pending",
+            None,
+            initial.transcript_chunks,
+            points_before,
+        )
+        .unwrap();
+
+        let refresh_pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FailingImageEmbedder),
+        );
+        let error = refresh_pipeline
+            .refresh_item_search_index("item-1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Image token span mismatch"));
+
+        let points_after = cerul_storage::vectors::collection_point_count_for_profile(
+            &paths,
+            &collection,
+            &profile,
+        )
+        .await
+        .unwrap();
+        assert_eq!(points_after, points_before);
+        let search_status: String = sqlite::open(&paths)
+            .unwrap()
+            .query_row(
+                "SELECT search_index_status FROM items WHERE id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(search_status, "indexed");
     }
 
     async fn create_sample_video(path: &Path) -> anyhow::Result<()> {

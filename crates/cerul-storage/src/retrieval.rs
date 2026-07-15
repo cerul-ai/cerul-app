@@ -358,10 +358,19 @@ fn build_timed_units(
     let mut units = Vec::new();
 
     for (index, window) in windows.into_iter().enumerate() {
-        let transcript_text =
+        let summary_only =
+            window.summary_text.is_some() && window.start_sec.is_none() && window.end_sec.is_none();
+        let transcript_text = if summary_only {
+            None
+        } else {
             collect_text_in_window(&transcript_chunks, &window, TRANSCRIPT_BUDGET)
-                .or_else(|| collect_text_in_window(&transcript_lines, &window, TRANSCRIPT_BUDGET));
-        let ocr_text = collect_ocr_text_in_window(&ocr_chunks, &window, &frame_times, OCR_BUDGET);
+                .or_else(|| collect_text_in_window(&transcript_lines, &window, TRANSCRIPT_BUDGET))
+        };
+        let ocr_text = if summary_only {
+            None
+        } else {
+            collect_ocr_text_in_window(&ocr_chunks, &window, &frame_times, OCR_BUDGET)
+        };
         let visual_text = window
             .visual_text
             .as_deref()
@@ -381,17 +390,27 @@ fn build_timed_units(
             continue;
         }
 
-        let representative_chunk = representative_chunk(
-            &transcript_lines,
-            &transcript_chunks,
-            &understanding_chunks,
-            &ocr_chunks,
-            &window,
-            &frame_times,
-        )
-        .or_else(|| nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone()));
-        let representative_frame = nearest_frame(&frame_chunks, window.start_sec)
-            .and_then(|chunk| chunk.frame_path.clone());
+        let representative_chunk = (!summary_only)
+            .then(|| {
+                representative_chunk(
+                    &transcript_lines,
+                    &transcript_chunks,
+                    &understanding_chunks,
+                    &ocr_chunks,
+                    &window,
+                    &frame_times,
+                )
+                .or_else(|| {
+                    nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone())
+                })
+            })
+            .flatten();
+        let representative_frame = (!summary_only)
+            .then(|| {
+                nearest_frame(&frame_chunks, window.start_sec)
+                    .and_then(|chunk| chunk.frame_path.clone())
+            })
+            .flatten();
         let content_text = content_text(ContentTextParts {
             item,
             source_label: source_label.as_deref(),
@@ -407,7 +426,7 @@ fn build_timed_units(
             id: retrieval_unit_id(&item.id, index),
             item_id: item.id.clone(),
             unit_index: index as i64,
-            unit_kind: "moment".to_string(),
+            unit_kind: if summary_only { "summary" } else { "moment" }.to_string(),
             start_sec: window.start_sec,
             end_sec: window.end_sec,
             content_text,
@@ -419,7 +438,9 @@ fn build_timed_units(
             representative_frame_path: representative_frame,
             embedding_profile_id: embedding_profile_id.to_string(),
             index_version: SEARCH_INDEX_VERSION,
-            metadata: serde_json::json!({ "window": "timed" }),
+            metadata: serde_json::json!({
+                "window": if summary_only { "summary" } else { "timed" }
+            }),
         });
     }
 
@@ -432,10 +453,11 @@ fn build_timed_units(
         let covered_by_timed_unit = units
             .iter()
             .filter(|unit| {
-                unit.transcript_text.is_some()
-                    || unit.ocr_text.is_some()
-                    || unit.visual_text.is_some()
-                    || unit.summary_text.is_some()
+                unit.unit_kind != "summary"
+                    && (unit.transcript_text.is_some()
+                        || unit.ocr_text.is_some()
+                        || unit.visual_text.is_some()
+                        || unit.summary_text.is_some())
             })
             .any(|unit| {
                 overlaps(
@@ -1625,6 +1647,72 @@ mod tests {
             Some("暴雨中可见树林间的白色人影")
         );
         assert!(!units[0].content_text.contains("雨夜的诡秘身影"));
+    }
+
+    #[test]
+    fn build_units_keeps_untimed_summary_separate_from_timed_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let frame_path = temp.path().join("summary-frame.jpg");
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 10.0,
+                end: 20.0,
+                text: "spoken evidence with a precise timestamp".to_string(),
+            }],
+            &[],
+            &[StorageOcrChunk::frame(
+                frame_path.clone(),
+                "visible slide label XR-42",
+            )],
+            &[StorageImageChunk::keyframe_at(frame_path, 10.0, 20.0)],
+        )
+        .unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES (
+                'item-1:understanding:summary',
+                'item-1',
+                'understanding',
+                NULL,
+                NULL,
+                'objective whole-video summary',
+                '{"kind":"summary"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+        let summary = units
+            .iter()
+            .find(|unit| unit.unit_kind == "summary")
+            .expect("summary unit should be built separately");
+
+        assert_eq!(
+            summary.summary_text.as_deref(),
+            Some("objective whole-video summary")
+        );
+        assert_eq!(summary.start_sec, None);
+        assert_eq!(summary.end_sec, None);
+        assert_eq!(summary.transcript_text, None);
+        assert_eq!(summary.ocr_text, None);
+        assert_eq!(summary.representative_chunk_id, None);
+        assert_eq!(summary.representative_frame_path, None);
+        assert!(!summary.content_text.contains("spoken evidence"));
+        assert!(!summary.content_text.contains("XR-42"));
+        assert!(units.iter().any(|unit| {
+            unit.unit_kind == "moment"
+                && unit.start_sec.is_some()
+                && unit.transcript_text.is_some()
+                && unit.ocr_text.is_some()
+        }));
     }
 
     #[test]
