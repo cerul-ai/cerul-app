@@ -1386,7 +1386,10 @@ impl VideoPipeline {
         set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
 
         let result = self
-            .embed_and_write_retrieval_units(item_id, 0.10, 0.85, true, true)
+            // Refreshes must upsert the replacement first and delete only
+            // stale siblings afterwards. A transient write failure must not
+            // remove the last good semantic vectors.
+            .embed_and_write_retrieval_units(item_id, 0.10, 0.85, true, false)
             .await;
         match result {
             Ok(summary) => {

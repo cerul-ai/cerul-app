@@ -460,6 +460,7 @@ function searchIndexIsSettling(data: AppData) {
   return (
     data.sources.some((source) => source.status === "syncing") ||
     data.jobs.some(isActiveJob) ||
+    (data.jobSummary?.search_refresh_jobs ?? 0) > 0 ||
     data.items.some(
       (item) =>
         item.embeddingIndexStatus === "pending" ||
@@ -695,9 +696,12 @@ function AppWorkspace() {
   const activeJobCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
     : visibleJobs.filter(isActiveJob).length;
+  const searchRefreshJobCount = apiStatus === "online"
+    ? data.jobSummary?.search_refresh_jobs ?? 0
+    : 0;
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
   const syncingSourceCount = syncingSources.length;
-  const backgroundActivityCount = activeJobCount + syncingSourceCount;
+  const backgroundActivityCount = activeJobCount + syncingSourceCount + searchRefreshJobCount;
   // T1: background work is not a notification. Only failed jobs that require
   // a decision from the user earn a count in the global task entry.
   const taskAttentionCount = apiStatus === "online" && data.jobSummary
@@ -1364,7 +1368,12 @@ function AppWorkspace() {
       setData(nextData);
       setApiStatus("online");
       const pendingRetry = lastSearchRef.current;
-      if (pendingRetry?.retryWhenIdle && !hasSyncingSources && !jobRecords.some(isActiveJob)) {
+      if (
+        pendingRetry?.retryWhenIdle &&
+        !hasSyncingSources &&
+        !jobRecords.some(isActiveJob) &&
+        (jobSummary?.search_refresh_jobs ?? 0) === 0
+      ) {
         lastSearchRef.current = {
           query: pendingRetry.query,
           retryWhenIdle: false,

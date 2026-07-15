@@ -52,6 +52,9 @@ pub struct CancelledJob {
 pub struct JobStatusSummary {
     pub queued_jobs: u64,
     pub running_jobs: u64,
+    /// Internal search-index refreshes are excluded from user task counts but
+    /// still exposed as a non-UI settling signal for immediate search retries.
+    pub search_refresh_jobs: u64,
     pub failed_jobs: u64,
     pub attention_jobs: u64,
     pub indexed_items: u64,
@@ -632,6 +635,21 @@ pub fn job_status_summary(paths: &AppPaths) -> anyhow::Result<JobStatusSummary> 
     Ok(JobStatusSummary {
         queued_jobs: visible_job_count(&conn, Some("queued"))?,
         running_jobs: visible_job_count(&conn, Some("running"))?,
+        search_refresh_jobs: count_rows(
+            &conn,
+            r#"
+            SELECT COUNT(*)
+            FROM jobs j
+            WHERE j.job_type = 'refresh_search_index'
+              AND j.status IN ('queued', 'running')
+              AND EXISTS (
+                  SELECT 1
+                  FROM items i
+                  WHERE i.id = j.item_id
+                    AND i.status != 'deleting'
+              )
+            "#,
+        )?,
         failed_jobs: visible_job_count(&conn, Some("failed"))?,
         attention_jobs: attention_job_count(&conn)?,
         indexed_items: count_rows(

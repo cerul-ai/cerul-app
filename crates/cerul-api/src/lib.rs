@@ -9149,6 +9149,7 @@ mod tests {
         let summary = response_json(response).await;
         assert_eq!(summary["queued_jobs"], 1);
         assert_eq!(summary["running_jobs"], 1);
+        assert_eq!(summary["search_refresh_jobs"], 1);
         assert_eq!(summary["failed_jobs"], 1);
         assert_eq!(summary["attention_jobs"], 1);
         assert_eq!(summary["indexed_items"], 1);

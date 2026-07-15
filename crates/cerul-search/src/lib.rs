@@ -1459,9 +1459,13 @@ fn best_snippet(
     }
 
     let fallback_fields = match ranking_preference {
-        SearchRankingPreference::Smart
-        | SearchRankingPreference::Video
-        | SearchRankingPreference::Image => [
+        SearchRankingPreference::Smart => [
+            (SnippetField::Transcript, unit.transcript_text.as_deref()),
+            (SnippetField::Ocr, unit.ocr_text.as_deref()),
+            (SnippetField::Visual, unit.visual_text.as_deref()),
+            (SnippetField::Summary, unit.summary_text.as_deref()),
+        ],
+        SearchRankingPreference::Video | SearchRankingPreference::Image => [
             (SnippetField::Visual, unit.visual_text.as_deref()),
             (SnippetField::Ocr, unit.ocr_text.as_deref()),
             (SnippetField::Summary, unit.summary_text.as_deref()),
@@ -2619,7 +2623,7 @@ mod tests {
     }
 
     #[test]
-    fn hydrate_smart_semantic_visual_fallback_uses_following_frame_on_tie() {
+    fn hydrate_explicit_visual_semantic_fallback_uses_following_frame_on_tie() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_item(&paths);
@@ -2656,7 +2660,7 @@ mod tests {
         cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
         mark_item_search_indexed(&paths, "item-1", 1);
 
-        let results = hydrate(
+        let results = hydrate_with_preference(
             &paths,
             &[RawHit {
                 chunk_id: "item-1:unit:v2:000000".to_string(),
@@ -2666,6 +2670,7 @@ mod tests {
                 source_mask: SOURCE_TEXT_VECTOR,
             }],
             "下雨天的夜晚",
+            SearchRankingPreference::Video,
         )
         .unwrap();
 
@@ -2680,6 +2685,57 @@ mod tests {
             results[0].nearest_frame_chunk_id.as_deref(),
             Some("item-1:keyframe:000210")
         );
+    }
+
+    #[test]
+    fn hydrate_smart_semantic_fallback_keeps_transcript_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES
+              ('item-1:transcript:000000', 'item-1', 'transcript', 20, 30, '定价策略在第二季度发生了变化。', '{}'),
+              ('item-1:understanding:event:000000', 'item-1', 'understanding', 20, 30, '雨夜街道上有车辆经过。', '{}');
+            "#,
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let mut unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(20.0),
+            Some(30.0),
+            "定价策略在第二季度发生了变化。",
+            Some("item-1:transcript:000000"),
+            &profile,
+        );
+        unit.visual_text = Some("雨夜街道上有车辆经过。".to_string());
+        unit.content_text =
+            "Transcript: 定价策略在第二季度发生了变化。\nVisual: 雨夜街道上有车辆经过。"
+                .to_string();
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
+
+        let results = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 0.82,
+                similarity_score: Some(0.82),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            }],
+            "他们如何调整商业方案",
+        )
+        .unwrap();
+
+        assert_eq!(results[0].snippet, "定价策略在第二季度发生了变化。");
+        assert_eq!(results[0].playback_chunk_id, "item-1:transcript:000000");
+        assert_eq!(results[0].chunk_type, "transcript");
     }
 
     #[tokio::test]
