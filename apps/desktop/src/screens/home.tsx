@@ -482,7 +482,12 @@ export function HomeScreen({
     return <FirstRunIndexing statusLabel={statusLabel} job={runningJobs[0] ?? activeJobs[0] ?? null} />;
   }
 
-  if (searchDisabled && !blockedBySourceErrors && (apiStatus === "online" || pendingHomeFixture)) {
+  if (
+    searchDisabled &&
+    !blockedBySourceErrors &&
+    activeJobs.length > 0 &&
+    (apiStatus === "online" || pendingHomeFixture)
+  ) {
     return (
       <SearchFirstPendingState
         activeJob={runningJobs[0] ?? activeJobs[0] ?? null}

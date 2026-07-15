@@ -88,6 +88,8 @@ rg -qF 'className="jobs-activity-event is-current"' apps/desktop/src/dialogs/job
 rg -qF 'className={`jobs-ledger-row${inspectedJob?.id === job.id ? " is-inspected" : ""}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'target.closest("button, a[href]' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'entry.events[0].progress = jobStepProgressPercent(job)' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'selectedIndex < 0' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF '(event.key === "ArrowDown" ? 0 : pageJobs.length - 1)' apps/desktop/src/dialogs/jobs-sheet.tsx
 ! rg -qF 't("jobs.inspector.location")' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF '.jobs-ledger-row.is-inspected::before' apps/desktop/src/styles/selected-ui.css
 rg -qF '.jobs-activity-event' apps/desktop/src/styles/selected-ui.css

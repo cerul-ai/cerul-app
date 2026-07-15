@@ -12,6 +12,7 @@ rg -qF '"cerul:focus-home-search"' apps/desktop/src/App.tsx
 rg -qF '"cerul:focus-library-search"' apps/desktop/src/App.tsx
 rg -qF '"cerul:focus-jobs-search"' apps/desktop/src/App.tsx
 rg -qF '"cerul:focus-bridge-search"' apps/desktop/src/App.tsx
+rg -qF 'event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey' apps/desktop/src/App.tsx
 rg -qF 'window.addEventListener("cerul:focus-bridge-search", focusSearch)' apps/desktop/src/components/bridge.tsx
 rg -qF 'window.addEventListener("cerul:focus-home-search", focusSearch)' apps/desktop/src/screens/home.tsx
 rg -qF 'window.addEventListener("cerul:focus-library-search", focusSearch)' apps/desktop/src/screens/library.tsx

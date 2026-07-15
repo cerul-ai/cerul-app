@@ -16,7 +16,8 @@ rg -qF '"home.emptyHero.followYoutube": "Follow a YouTube channel"' apps/desktop
 rg -qF '"home.searchPlaceholder": "Search any sentence from meetings, podcasts, or interviews..."' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF "const searchDisabled = hasSources && indexedCount === 0" apps/desktop/src
 rg -qF "function SearchFirstPendingState(" apps/desktop/src/screens/home.tsx
-rg -qF 'if (searchDisabled && !blockedBySourceErrors && (apiStatus === "online" || pendingHomeFixture))' apps/desktop/src/screens/home.tsx
+rg -qF 'activeJobs.length > 0 &&' apps/desktop/src/screens/home.tsx
+rg -qF '(apiStatus === "online" || pendingHomeFixture)' apps/desktop/src/screens/home.tsx
 rg -qF 'className="search-first-examples"' apps/desktop/src/screens/home.tsx
 rg -qF '.home-search-first-pending' apps/desktop/src/styles/selected-ui.css
 rg -qF '"home.searchLockedPlaceholder": "Search unlocks after the first item is indexed"' apps/desktop/src/lib/i18n-catalog.ts

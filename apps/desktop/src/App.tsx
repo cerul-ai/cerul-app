@@ -1192,7 +1192,10 @@ function AppWorkspace() {
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLocaleLowerCase() === "f") {
+      if (
+        event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
+        event.key.toLocaleLowerCase() === "f"
+      ) {
         if (hasOpenModalSurface() || view === "item-detail" || view === "onboarding") {
           return;
         }

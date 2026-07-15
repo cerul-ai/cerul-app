@@ -231,9 +231,11 @@ export function JobsSheet({
       }
       if ((event.key === "ArrowDown" || event.key === "ArrowUp") && pageJobs.length > 0) {
         event.preventDefault();
-        const selectedIndex = Math.max(0, pageJobs.findIndex((job) => job.id === inspectedJob?.id));
+        const selectedIndex = pageJobs.findIndex((job) => job.id === inspectedJob?.id);
         const delta = event.key === "ArrowDown" ? 1 : -1;
-        const nextIndex = (selectedIndex + delta + pageJobs.length) % pageJobs.length;
+        const nextIndex = selectedIndex < 0
+          ? (event.key === "ArrowDown" ? 0 : pageJobs.length - 1)
+          : (selectedIndex + delta + pageJobs.length) % pageJobs.length;
         const nextJob = pageJobs[nextIndex];
         setSelectedJobId(nextJob.id);
         window.requestAnimationFrame(() => {
