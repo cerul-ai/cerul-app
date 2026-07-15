@@ -146,7 +146,7 @@ function firstRunStageIndex(job: api.JobRecord | null) {
   const stage = job.stage ?? "";
   if (/writing_index|completed|partial/.test(stage)) return 4;
   if (/embedding_text|ocr_frames/.test(stage)) return 3;
-  if (/sampling_frames|embedding_frames|visual/.test(stage)) return 2;
+  if (/embedding_frames|visual/.test(stage)) return 2;
   if (/transcrib|chunking_transcript|writing_transcript/.test(stage)) return 1;
   return 0;
 }
@@ -482,7 +482,7 @@ export function HomeScreen({
     return <FirstRunIndexing statusLabel={statusLabel} job={runningJobs[0] ?? activeJobs[0] ?? null} />;
   }
 
-  if (searchDisabled && (apiStatus === "online" || pendingHomeFixture)) {
+  if (searchDisabled && !blockedBySourceErrors && (apiStatus === "online" || pendingHomeFixture)) {
     return (
       <SearchFirstPendingState
         activeJob={runningJobs[0] ?? activeJobs[0] ?? null}

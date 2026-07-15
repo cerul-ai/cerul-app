@@ -152,6 +152,10 @@ export function JobsSheet({
         at: Date.now(),
       });
       if (entry.events.length > 6) entry.events.length = 6;
+    } else if (isActiveJob(job) && entry.events[0]) {
+      entry.events[0].label = jobStageMessage(job, t) ?? jobDisplayStatus(job, t);
+      entry.events[0].status = jobDisplayStatus(job, t);
+      entry.events[0].progress = jobStepProgressPercent(job);
     }
   }
   const inspectedActivity = inspectedJob ? activityLog.current.get(inspectedJob.id)?.events ?? [] : [];
@@ -238,6 +242,12 @@ export function JobsSheet({
         return;
       }
       if (event.key === " " && inspectedJob) {
+        if (
+          target instanceof Element &&
+          target.closest("button, a[href], input, textarea, select, summary, [role='button'], [role='tab']")
+        ) {
+          return;
+        }
         event.preventDefault();
         setSelectedJobId(inspectedJob.id);
         document.querySelector<HTMLElement>(`[data-job-id="${CSS.escape(inspectedJob.id)}"] .jobs-ledger-title-button`)?.focus();

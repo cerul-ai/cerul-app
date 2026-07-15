@@ -34,6 +34,8 @@ rg -qF "if (firstRunIndexing)" apps/desktop/src
 rg -qF "function FirstRunIndexing(" apps/desktop/src
 rg -qF "function StageJourney(" apps/desktop/src/screens/home.tsx
 rg -qF 'className="first-stage-mark"' apps/desktop/src/screens/home.tsx
+rg -qF 'if (/embedding_frames|visual/.test(stage)) return 2;' apps/desktop/src/screens/home.tsx
+! rg -qF 'if (/sampling_frames|embedding_frames|visual/.test(stage)) return 2;' apps/desktop/src/screens/home.tsx
 rg -qF '.first-stage-journey' apps/desktop/src/styles/selected-ui.css
 rg -qF '@keyframes copper-relay-line' apps/desktop/src/styles/selected-ui.css
 rg -qF '@keyframes copper-relay-node' apps/desktop/src/styles/selected-ui.css
