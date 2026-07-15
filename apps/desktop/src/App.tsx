@@ -1168,7 +1168,19 @@ function AppWorkspace() {
   const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
     return subscribeDesktopMenuCommand((command) => {
-      if (command.type !== "new_source" || hasOpenModalSurface()) {
+      if (hasOpenModalSurface()) {
+        return;
+      }
+      if (command.type === "find") {
+        if (view === "item-detail" || view === "onboarding") return;
+        const focusEvent = view === "home"
+          ? "cerul:focus-home-search"
+          : view === "library"
+            ? "cerul:focus-library-search"
+            : view === "jobs"
+              ? "cerul:focus-jobs-search"
+              : "cerul:focus-bridge-search";
+        window.dispatchEvent(new Event(focusEvent));
         return;
       }
       if (command.triggeredByAccelerator && isEditableTarget(document.activeElement)) {
@@ -1176,10 +1188,25 @@ function AppWorkspace() {
       }
       setShowAddSource(true);
     });
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLocaleLowerCase() === "f") {
+        if (hasOpenModalSurface() || view === "item-detail" || view === "onboarding") {
+          return;
+        }
+        event.preventDefault();
+        const focusEvent = view === "home"
+          ? "cerul:focus-home-search"
+          : view === "library"
+            ? "cerul:focus-library-search"
+            : view === "jobs"
+              ? "cerul:focus-jobs-search"
+              : "cerul:focus-bridge-search";
+        window.dispatchEvent(new Event(focusEvent));
+        return;
+      }
       if (acceleratorMatchesEvent(newSourceHotkey, event)) {
         // Don't stack a new dialog on top of an open modal or steal the
         // shortcut while the user is typing in a field.
@@ -1193,7 +1220,7 @@ function AppWorkspace() {
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [newSourceHotkey]);
+  }, [newSourceHotkey, view]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1927,6 +1954,7 @@ function AppWorkspace() {
               navigate("item-detail", { itemId: item.id, timestamp })
             }
             onOpenLibrary={() => navigate("library")}
+            onOpenSources={() => navigate("sources")}
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}

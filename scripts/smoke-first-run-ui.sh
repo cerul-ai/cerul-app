@@ -16,7 +16,7 @@ rg -qF "function resolveFirstRun()" apps/desktop/src
 
 # Guidance only engages with real, loaded state (PR #76 review): ② needs an
 # active index, ③ needs an online core with indexed content.
-rg -qF "firstRunActive && searchDisabled && activeJobs.length > 0 && !onlyPausedQueuedJobs" apps/desktop/src
+rg -qF "(firstRunActive || firstRunJourneyFixture) && searchDisabled && activeJobs.length > 0 && !onlyPausedQueuedJobs" apps/desktop/src
 rg -qF 'const firstRunReady = firstRunActive && apiStatus === "online" && indexedCount > 0' apps/desktop/src
 # Blank submits and overlay re-runs are handled (PR #76 review, P3).
 rg -qF "if (submittedQuery.trim()) {" apps/desktop/src
@@ -29,10 +29,14 @@ rg -qF "void persistFirstRunActive(false)" apps/desktop/src/OverlayApp.tsx
 rg -qF "if (response.results.length > 0) {" apps/desktop/src/OverlayApp.tsx
 rg -qF "if (answer.citations.length > 0) {" apps/desktop/src/OverlayApp.tsx
 
-# ② first-index cinematic takeover (the one earned takeover moment).
+# ② first-index stage journey with a finite copper relay.
 rg -qF "if (firstRunIndexing)" apps/desktop/src
 rg -qF "function FirstRunIndexing(" apps/desktop/src
-rg -qF "onb-illo onb-illo-source fr-illo" apps/desktop/src
+rg -qF "function StageJourney(" apps/desktop/src/screens/home.tsx
+rg -qF 'className="first-stage-mark"' apps/desktop/src/screens/home.tsx
+rg -qF '.first-stage-journey' apps/desktop/src/styles/selected-ui.css
+rg -qF '@keyframes copper-relay-line' apps/desktop/src/styles/selected-ui.css
+rg -qF '@keyframes copper-relay-node' apps/desktop/src/styles/selected-ui.css
 
 # ③ ready banner + horizontal stepper over the real home, plus example chips.
 rg -qF "function FirstRunReadyHeader(" apps/desktop/src
@@ -54,4 +58,4 @@ rg -qF ".fr-example" apps/desktop/src/styles/home-redesign.css
 # Wired into the smoke entrypoint.
 rg -qF "scripts/smoke-first-run-ui.sh" scripts/smoke.sh
 
-echo "first_run_ui_smoke flag=firstRunActive indexing_takeover=scheme2 ready_banner=scheme3 stepper=3step examples=clickable resolves_on=search_or_dismiss"
+echo "first_run_ui_smoke flag=firstRunActive indexing_takeover=copper_relay_5stage ready_banner=scheme3 examples=clickable resolves_on=search_or_dismiss"

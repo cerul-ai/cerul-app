@@ -37,9 +37,14 @@ rg -qF '".scrim, .account-pop, .menu, .bridge-menu' apps/desktop/src/App.tsx app
 ! rg -qF '.rail-dl-pill' apps/desktop/src
 rg -qF "[data-theme=\"dark\"] .segmented button.active" apps/desktop/src/styles/ui.css
 rg -qF "scripts/smoke-theme-ui.sh" scripts/smoke.sh
-rg -qF 'className={`cerul-launch splash-playing' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'phase === "waiting" ? " is-waiting" : " splash-playing"' apps/desktop/src/components/launch-splash.tsx
 rg -qF 'Where video becomes citable' apps/desktop/src/components/launch-splash.tsx
 rg -qF 'window.matchMedia("(prefers-reduced-motion: reduce)").matches' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'params.get("forceMotion") === "1"' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'document.visibilityState !== "visible"' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'document.addEventListener("visibilitychange", playWhenVisible)' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'const SPLASH_LEAVE_AFTER_MS = 2760;' apps/desktop/src/components/launch-splash.tsx
+rg -qF 'const SPLASH_HIDE_AFTER_MS = 3320;' apps/desktop/src/components/launch-splash.tsx
 rg -qF '/brand/svg/cerul-icon-paper.svg' apps/desktop/src/components/launch-splash.tsx
 rg -qF '.cerul-launch__tagline' apps/desktop/src/styles/selected-ui.css
 

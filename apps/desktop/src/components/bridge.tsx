@@ -111,6 +111,15 @@ export function Bridge(props: BridgeProps) {
   useEffect(() => {
     setValue(settingsMode ? "" : query);
   }, [query, settingsMode]);
+  useEffect(() => {
+    const focusSearch = () => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      setFocused(true);
+    };
+    window.addEventListener("cerul:focus-bridge-search", focusSearch);
+    return () => window.removeEventListener("cerul:focus-bridge-search", focusSearch);
+  }, []);
   const tall = searchVisible && focused && !settingsMode;
 
   function submit(event: FormEvent) {

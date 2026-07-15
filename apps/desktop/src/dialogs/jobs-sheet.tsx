@@ -75,11 +75,12 @@ export function JobsSheet({
 }) {
   const t = useT();
   const dialogRef = useRef<HTMLElement | null>(null);
+  const queryInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const cabinCardRef = useRef<HTMLElement | null>(null);
   const returnRowRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  useEscapeToClose(onClose, !embedded);
+  useEscapeToClose(onClose, true);
   useDialogFocus(dialogRef, !embedded);
 
   const [query, setQuery] = useState("");
@@ -123,7 +124,10 @@ export function JobsSheet({
   // carries the *current* stage, so transitions are recorded app-side as polls
   // land. Keyed dedupe makes the render-time mutation idempotent (safe under
   // StrictMode double-render); jobs seen mid-flight seed from started_at.
-  const activityLog = useRef(new Map<string, { key: string; events: Array<{ label: string; at: number | null }> }>());
+  const activityLog = useRef(new Map<string, {
+    key: string;
+    events: Array<{ label: string; status: string; progress: number; at: number | null }>;
+  }>());
   for (const job of jobs) {
     const key = `${job.status}:${job.stage ?? ""}:${job.error ? "error" : ""}`;
     const entry = activityLog.current.get(job.id);
@@ -131,12 +135,22 @@ export function JobsSheet({
       activityLog.current.set(job.id, {
         key,
         events: isActiveJob(job)
-          ? [{ label: jobDisplayStatus(job, t), at: job.started_at !== null ? job.started_at * 1000 : null }]
+          ? [{
+              label: jobStageMessage(job, t) ?? jobDisplayStatus(job, t),
+              status: jobDisplayStatus(job, t),
+              progress: jobStepProgressPercent(job),
+              at: job.started_at !== null ? job.started_at * 1000 : null,
+            }]
           : [],
       });
     } else if (entry.key !== key) {
       entry.key = key;
-      entry.events.unshift({ label: jobDisplayStatus(job, t), at: Date.now() });
+      entry.events.unshift({
+        label: jobStageMessage(job, t) ?? jobDisplayStatus(job, t),
+        status: jobDisplayStatus(job, t),
+        progress: jobStepProgressPercent(job),
+        at: Date.now(),
+      });
       if (entry.events.length > 6) entry.events.length = 6;
     }
   }
@@ -181,12 +195,57 @@ export function JobsSheet({
   const selectablePageJobs = pageJobs.filter(isActiveJob);
   const allPageSelected = selectablePageJobs.length > 0 && selectablePageJobs.every((job) => selectedIds.has(job.id));
   const forceMotion = import.meta.env.DEV && new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("forceMotion") === "1";
+  const suppressIssueFixture = import.meta.env.DEV && new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("suppressIssues") === "1";
   const reduceMotion = !forceMotion && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, reduceMotion ? 0 : ms));
 
   useEffect(() => {
     setPage(0);
   }, [filter, normalizedQuery]);
+
+  useEffect(() => {
+    const focusSearch = () => {
+      queryInputRef.current?.focus();
+      queryInputRef.current?.select();
+    };
+    window.addEventListener("cerul:focus-jobs-search", focusSearch);
+    return () => window.removeEventListener("cerul:focus-jobs-search", focusSearch);
+  }, []);
+
+  useEffect(() => {
+    if (!embedded) return;
+    function handlePageKeyDown(event: globalThis.KeyboardEvent) {
+      const target = event.target;
+      if (
+        event.metaKey || event.ctrlKey || event.altKey ||
+        (target instanceof HTMLElement && (
+          target.isContentEditable || target.matches("input, textarea, select")
+        )) ||
+        document.querySelector(".scrim, [role='dialog']")
+      ) {
+        return;
+      }
+      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && pageJobs.length > 0) {
+        event.preventDefault();
+        const selectedIndex = Math.max(0, pageJobs.findIndex((job) => job.id === inspectedJob?.id));
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = (selectedIndex + delta + pageJobs.length) % pageJobs.length;
+        const nextJob = pageJobs[nextIndex];
+        setSelectedJobId(nextJob.id);
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>(`[data-job-id="${CSS.escape(nextJob.id)}"] .jobs-ledger-title-button`)?.focus();
+        });
+        return;
+      }
+      if (event.key === " " && inspectedJob) {
+        event.preventDefault();
+        setSelectedJobId(inspectedJob.id);
+        document.querySelector<HTMLElement>(`[data-job-id="${CSS.escape(inspectedJob.id)}"] .jobs-ledger-title-button`)?.focus();
+      }
+    }
+    window.addEventListener("keydown", handlePageKeyDown);
+    return () => window.removeEventListener("keydown", handlePageKeyDown);
+  }, [embedded, inspectedJob?.id, pageJobs.map((job) => job.id).join("|")]);
 
   useEffect(() => {
     const ids = new Set(jobs.filter(isActiveJob).map((job) => job.id));
@@ -205,14 +264,14 @@ export function JobsSheet({
   }, [issueOpen, repairPhase, activeIssueJob?.id, activeIssueJob?.status]);
 
   useEffect(() => {
-    if (issueOpen || repairPhase !== "idle") return;
+    if (suppressIssueFixture || issueOpen || repairPhase !== "idle") return;
     const nextIssue = filteredJobs.find(
       (job) => jobGroup(job) === "failed" && !dismissedIssueIds.has(job.id),
     );
     if (!nextIssue) return;
     const timer = window.setTimeout(() => openIssue(nextIssue), reduceMotion ? 0 : 360);
     return () => window.clearTimeout(timer);
-  }, [filteredJobs.map((job) => job.id).join("|"), issueOpen, repairPhase, dismissedIssueIds]);
+  }, [filteredJobs.map((job) => job.id).join("|"), issueOpen, repairPhase, dismissedIssueIds, suppressIssueFixture]);
 
   function flyTransfer(from: DOMRect, to: HTMLElement, job: api.JobRecord) {
     if (reduceMotion || !workspaceRef.current) return Promise.resolve();
@@ -331,8 +390,10 @@ export function JobsSheet({
     const selected = selectedIds.has(job.id);
     return (
       <div
-        className={`jobs-ledger-row ${extraClass}`}
+        className={`jobs-ledger-row${inspectedJob?.id === job.id ? " is-inspected" : ""}${extraClass ? ` ${extraClass}` : ""}`}
         data-tone={jobBadgeStatus(job.status)}
+        data-job-id={job.id}
+        aria-selected={inspectedJob?.id === job.id}
         key={`${extraClass}:${job.id}`}
         ref={(node) => {
           if (extraClass.includes("jobs-return-row")) returnRowRef.current = node;
@@ -386,10 +447,17 @@ export function JobsSheet({
         }}
       >
         <header className="jobs-ledger-head">
-          <div>
-            <p className="section-label eyebrow">{t("jobs.eyebrow")}</p>
-            <h2 id="jobs-ledger-title">{t("jobs.ledger.title")}</h2>
-            <p>{t("jobs.ledger.subtitle", { count: totalCount })}</p>
+          <div className="jobs-ledger-title-group">
+            {embedded ? (
+              <button type="button" className="jobs-ledger-back" onClick={onClose}>
+                <ChevronLeft size={16} />{t("jobs.back")}
+              </button>
+            ) : null}
+            <div>
+              <p className="section-label eyebrow">{t("jobs.eyebrow")}</p>
+              <h2 id="jobs-ledger-title">{t("jobs.ledger.title")}</h2>
+              <p>{t("jobs.ledger.subtitle", { count: totalCount })}</p>
+            </div>
           </div>
           <div className="jobs-ledger-head-actions">
             <button type="button" className="btn btn-secondary sm" onClick={() => void exportRecords()}>
@@ -400,14 +468,12 @@ export function JobsSheet({
                 {paused ? <Play size={13} /> : <Pause size={13} />}{paused ? t("jobs.resume") : t("jobs.pause")}
               </button>
             ) : null}
-            <button type="button" className="btn-icon" aria-label={t("jobs.closeAria")} onClick={onClose}>
-              {embedded ? <ChevronLeft size={17} /> : <X size={17} />}
-            </button>
+            {!embedded ? <button type="button" className="btn-icon" aria-label={t("jobs.closeAria")} onClick={onClose}><X size={17} /></button> : null}
           </div>
         </header>
 
         <div className="jobs-ledger-toolbar">
-          <label><Search size={15} /><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("jobs.ledger.search")} /></label>
+          <label><Search size={15} /><input ref={queryInputRef} value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("jobs.ledger.search")} /></label>
           <div role="tablist" aria-label={t("jobs.filter.aria")}>
             {filters.map((entry) => (
               <button key={entry.id} type="button" role="tab" aria-selected={filter === entry.id} className={filter === entry.id ? "active" : ""} onClick={() => onFilterChange(entry.id)}>
@@ -509,7 +575,6 @@ export function JobsSheet({
                   </div>
                   <dl className="jobs-inspector-stats">
                     <div><dt>{t("jobs.ledger.col.source")}</dt><dd>{inspectedItem?.source ?? t("jobs.localProcessing")}</dd></div>
-                    <div><dt>{t("jobs.inspector.location")}</dt><dd>{t("jobs.localProcessing")}</dd></div>
                     <div><dt>{t("jobs.ledger.col.stage")}</dt><dd>{jobStageMessage(inspectedJob, t)}</dd></div>
                     <div><dt>{t("jobs.inspector.media")}</dt><dd>{inspectedItem?.duration || "—"}</dd></div>
                   </dl>
@@ -518,9 +583,14 @@ export function JobsSheet({
                     {inspectedJob.error ? <p className="danger">{inspectedJob.error}</p> : null}
                     {inspectedActivity.length > 0
                       ? inspectedActivity.map((event, index) => (
-                          <p key={`${event.label}:${event.at ?? index}`}><time>{activityTime(event.at)}</time>{event.label}</p>
+                          <article className={index === 0 ? "jobs-activity-event is-current" : "jobs-activity-event"} key={`${event.label}:${event.at ?? index}`}>
+                            <time>{activityTime(event.at)}</time>
+                            <i aria-hidden="true" />
+                            <span><b>{event.label}</b><small>{event.status}</small></span>
+                            <code>{event.progress}%</code>
+                          </article>
                         ))
-                      : <p>{jobStageMessage(inspectedJob, t)}</p>}
+                      : <article className="jobs-activity-event is-current"><time>—</time><i aria-hidden="true" /><span><b>{jobStageMessage(inspectedJob, t)}</b><small>{jobDisplayStatus(inspectedJob, t)}</small></span><code>{jobStepProgressPercent(inspectedJob)}%</code></article>}
                   </div>
                 </>
               ) : <EmptyState title={t("jobs.focus.empty")} body={t("jobs.emptyBody")} />}

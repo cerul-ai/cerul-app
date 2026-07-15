@@ -64,10 +64,9 @@ export type DesktopUpdaterCheckOptions = {
   installWhenDownloaded?: boolean;
 };
 
-export type DesktopMenuCommand = {
-  type: "new_source";
-  triggeredByAccelerator: boolean;
-};
+export type DesktopMenuCommand =
+  | { type: "new_source"; triggeredByAccelerator: boolean }
+  | { type: "find"; triggeredByAccelerator: boolean };
 
 type ElectronDesktopHost = {
   apiBaseUrl?: string;
@@ -186,7 +185,11 @@ export function subscribeDesktopMenuCommand(
 ): () => void {
   if (window.cerulDesktop) {
     return window.cerulDesktop.onMenuCommand((command) => {
-      if (command && typeof command === "object" && command.type === "new_source") {
+      if (
+        command &&
+        typeof command === "object" &&
+        (command.type === "new_source" || command.type === "find")
+      ) {
         callback(command);
       }
     });

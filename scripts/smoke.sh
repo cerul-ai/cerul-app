@@ -24,6 +24,7 @@ bash scripts/smoke-confirm-dialog-ui.sh
 bash scripts/smoke-brand-assets-ui.sh
 bash scripts/smoke-settings-ui.sh
 bash scripts/smoke-theme-ui.sh
+bash scripts/smoke-page-shortcuts.sh
 bash scripts/smoke-ui-state.sh
 cargo check --workspace
 pnpm typecheck

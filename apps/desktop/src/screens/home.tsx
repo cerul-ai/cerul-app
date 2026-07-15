@@ -1,7 +1,6 @@
 import {
   Check,
   ChevronRight,
-  Command,
   Folder,
   FolderDown,
   Image as ImageIcon,
@@ -16,7 +15,7 @@ import {
   Youtube,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { BrandMark } from "../components/brand";
 import { ItemModalityIcon } from "../components/cards";
@@ -32,6 +31,7 @@ import {
   isNearEndPosition,
   itemKindLabel,
 } from "../lib/items";
+import { jobStepProgressPercent } from "../lib/jobs";
 import { durationMinutes } from "../lib/library";
 import { readLastOpened } from "../lib/last-opened";
 import { submitSearchInputOnEnter } from "../lib/route";
@@ -109,18 +109,6 @@ const FIRST_RUN_EXAMPLE_KEYS: { key: string; icon: LucideIcon; tagKey?: string }
   { key: "firstRun.example.todo", icon: Sparkles },
 ];
 
-function firstRunFeatures(t: TFunction, globalHotkey: string) {
-  return [
-    { icon: Mic, title: t("firstRun.feat.said.title"), desc: t("firstRun.feat.said.desc") },
-    { icon: ImageIcon, title: t("firstRun.feat.shown.title"), desc: t("firstRun.feat.shown.desc") },
-    {
-      icon: Command,
-      title: t("firstRun.feat.summon.title"),
-      desc: t("firstRun.feat.summon.desc", { hotkey: formatHotkeyLabel(globalHotkey) }),
-    },
-  ];
-}
-
 function FirstRunStepper({ activeIndex }: { activeIndex: number }) {
   const t = useT();
   const labels = [t("firstRun.steps.source"), t("firstRun.steps.index"), t("firstRun.steps.search")];
@@ -144,20 +132,58 @@ function FirstRunStepper({ activeIndex }: { activeIndex: number }) {
   );
 }
 
-function FirstRunIndexing({ statusLabel, globalHotkey }: { statusLabel: string; globalHotkey: string }) {
+const FIRST_RUN_STAGE_KEYS = [
+  "jobs.stage.fetching",
+  "jobs.stage.transcribing",
+  "jobs.stage.embedding_frames",
+  "understanding.title",
+  "jobs.stage.writing_index",
+] as const;
+
+function firstRunStageIndex(job: api.JobRecord | null) {
+  if (!job) return 0;
+  if (job.status === "completed") return FIRST_RUN_STAGE_KEYS.length;
+  const stage = job.stage ?? "";
+  if (/writing_index|completed|partial/.test(stage)) return 4;
+  if (/embedding_text|ocr_frames/.test(stage)) return 3;
+  if (/sampling_frames|embedding_frames|visual/.test(stage)) return 2;
+  if (/transcrib|chunking_transcript|writing_transcript/.test(stage)) return 1;
+  return 0;
+}
+
+function StageJourney({ job, compact = false }: { job: api.JobRecord | null; compact?: boolean }) {
   const t = useT();
-  const features = firstRunFeatures(t, globalHotkey);
+  const activeIndex = firstRunStageIndex(job);
   return (
-    <div className="page home-firstrun">
-      <div className="fr-indexing">
-        <div className="onb-illo onb-illo-source fr-illo" aria-hidden="true">
-          <span className="onb-file onb-file-l"><span className="onb-play" /></span>
-          <span className="onb-file onb-file-r"><span className="onb-play" /></span>
-          <span className="onb-file onb-file-c"><span className="onb-play" /></span>
-          <span className="onb-folder">
-            <BrandMark className="onb-folder-mark" />
-          </span>
-        </div>
+    <div
+      className={compact ? "first-stage-journey is-compact" : "first-stage-journey"}
+      role="list"
+      aria-label={t("firstRun.steps.aria")}
+    >
+      {FIRST_RUN_STAGE_KEYS.map((key, index) => {
+        const done = index < activeIndex || job?.status === "completed";
+        const active = !done && index === activeIndex && Boolean(job && isActiveJob(job));
+        return (
+          <Fragment key={key}>
+            {index > 0 ? <span className={index <= activeIndex ? "stage-relay is-filled" : "stage-relay"} aria-hidden="true" /> : null}
+            <span className={`stage-journey-node${done ? " is-done" : active ? " is-active" : ""}`} role="listitem">
+              <i>{done ? <Check size={12} /> : index + 1}</i>
+              <span>{t(key)}</span>
+            </span>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function FirstRunIndexing({ statusLabel, job }: { statusLabel: string; job: api.JobRecord | null }) {
+  const t = useT();
+  const progress = job ? jobStepProgressPercent(job) : 0;
+  return (
+    <div className="page home-firstrun home-stage-journey-page">
+      <div className="fr-indexing first-stage-panel">
+        <BrandMark className="first-stage-mark" />
         <p className="fr-eyebrow"><span className="dot" />{t("firstRun.indexing.eyebrow")}</p>
         <h1 className="fr-title">{t("firstRun.indexing.title")}</h1>
         <p className="fr-lead">{t("firstRun.indexing.body")}</p>
@@ -165,23 +191,55 @@ function FirstRunIndexing({ statusLabel, globalHotkey }: { statusLabel: string; 
         <div className="fr-progress" role="status">
           <div className="fr-progress-head">
             <span className="chip indexing"><Loader2 size={13} className="spin" />{statusLabel}</span>
+            <span className="mono first-stage-percent">{progress}%</span>
           </div>
-          <div className="fr-bar"><span className="fr-bar-fill" /></div>
+          <div className="fr-bar"><span className="fr-bar-fill" style={{ width: `${Math.max(8, progress)}%` }} /></div>
         </div>
 
-        <FirstRunStepper activeIndex={1} />
+        <StageJourney job={job} />
 
-        <p className="fr-feat-label">{t("firstRun.indexing.featuresLabel")}</p>
-        <div className="fr-feat-grid">
-          {features.map((feat) => (
-            <div className="fr-feat" key={feat.title}>
-              <span className="fr-feat-icon"><feat.icon size={18} /></span>
-              <strong>{feat.title}</strong>
-              <span>{feat.desc}</span>
-            </div>
-          ))}
+        <p className="fr-cost"><Lock size={13} />{t("home.emptyHero.costBadge")}</p>
+      </div>
+    </div>
+  );
+}
+
+function SearchFirstPendingState({
+  activeJob,
+  statusLabel,
+  onAddSource,
+  onOpenSources,
+}: {
+  activeJob: api.JobRecord | null;
+  statusLabel: string;
+  onAddSource: () => void;
+  onOpenSources: () => void;
+}) {
+  const t = useT();
+  return (
+    <div className="page wide home-search-first-pending">
+      <div className="search-first-content">
+        <BrandMark className="search-first-mark" />
+        <p className="page-eyebrow">{t("home.pending.eyebrow")}</p>
+        <h1>{t("home.pending.title")}</h1>
+        <p className="search-first-lead">{t("firstRun.indexing.body")}</p>
+        <div className="search-wrap disabled search-first-locked" aria-disabled="true">
+          <Search size={18} />
+          <span>{t("home.searchLockedPlaceholder")}</span>
         </div>
-
+        <div className="search-first-examples" aria-label={t("home.emptyHero.examplesAria")}>
+          {FIRST_RUN_EXAMPLE_KEYS.map(({ key }) => <span key={key}>“{t(key)}”</span>)}
+        </div>
+        {activeJob ? (
+          <section className="search-first-progress" aria-label={statusLabel}>
+            <header><span><Loader2 size={14} className="spin" />{statusLabel}</span><code>{jobStepProgressPercent(activeJob)}%</code></header>
+            <StageJourney job={activeJob} compact />
+          </section>
+        ) : null}
+        <div className="search-first-actions">
+          <button type="button" className="btn btn-primary" onClick={onAddSource}><Plus size={15} />{t("home.addSource")}</button>
+          <button type="button" className="btn btn-secondary" onClick={onOpenSources}>{t("nav.sources")}<ChevronRight size={15} /></button>
+        </div>
         <p className="fr-cost"><Lock size={13} />{t("home.emptyHero.costBadge")}</p>
       </div>
     </div>
@@ -235,6 +293,7 @@ export function HomeScreen({
   onAddSource,
   onOpenItem,
   onOpenLibrary,
+  onOpenSources,
   items,
   sources,
   jobs,
@@ -252,6 +311,7 @@ export function HomeScreen({
   onAddSource: () => void;
   onOpenItem: (item: Item, timestamp?: string | null) => void;
   onOpenLibrary: () => void;
+  onOpenSources: () => void;
   items: Item[];
   sources: Source[];
   jobs: api.JobRecord[];
@@ -264,10 +324,43 @@ export function HomeScreen({
   onRunQuery: (query: string) => void;
 }) {
   const t = useT();
-  const indexedCount = indexedItemCount;
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const fixtureParams = import.meta.env.DEV
+    ? new URLSearchParams(window.location.hash.split("?")[1] ?? "")
+    : null;
+  const pendingHomeFixture = fixtureParams?.get("pendingHome") === "1";
+  const firstRunJourneyFixture = fixtureParams?.get("firstRunJourney") === "1";
+  const indexedCount = pendingHomeFixture ? 0 : indexedItemCount;
   const activeSources = sources.filter((source) => source.status === "active").length;
   const erroredSources = sources.filter((source) => source.status === "error");
-  const activeJobs = jobs.filter(isActiveJob);
+  const fixtureJob: api.JobRecord | null = pendingHomeFixture
+    ? {
+        id: "__cerul_pending_home_fixture__",
+        item_id: items[0]?.id ?? null,
+        job_type: "index_video",
+        status: "running",
+        started_at: Date.now() / 1000 - 42,
+        finished_at: null,
+        error: null,
+        progress: 0.46,
+        stage: "embedding_frames",
+        stage_message: null,
+        usage: {
+          event_count: 0,
+          request_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          audio_seconds: 0,
+          image_count: 0,
+          video_seconds: 0,
+          estimated_usd: 0,
+          billed_credits: 0,
+          unpriced_events: 0,
+        },
+        error_info: null,
+      }
+    : null;
+  const activeJobs = fixtureJob ? [fixtureJob] : jobs.filter(isActiveJob);
   const runningJobs = activeJobs.filter((job) => job.status === "running");
   const queuedJobs = activeJobs.filter((job) => job.status === "queued");
   const completedJobs = jobs.filter((job) => job.status === "completed").length;
@@ -368,16 +461,36 @@ export function HomeScreen({
     };
   }, [apiStatus, indexedCount, activeJobs.length]);
 
+  useEffect(() => {
+    const focusSearch = () => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    };
+    window.addEventListener("cerul:focus-home-search", focusSearch);
+    return () => window.removeEventListener("cerul:focus-home-search", focusSearch);
+  }, []);
+
   if (!hasSources && apiStatus === "online") {
     return <HomeEmptyState onAddSource={onAddSource} />;
   }
 
   const firstRunIndexing =
-    firstRunActive && searchDisabled && activeJobs.length > 0 && !onlyPausedQueuedJobs;
+    (firstRunActive || firstRunJourneyFixture) && searchDisabled && activeJobs.length > 0 && !onlyPausedQueuedJobs;
   const firstRunReady = firstRunActive && apiStatus === "online" && indexedCount > 0;
 
   if (firstRunIndexing) {
-    return <FirstRunIndexing statusLabel={statusLabel} globalHotkey={globalHotkey} />;
+    return <FirstRunIndexing statusLabel={statusLabel} job={runningJobs[0] ?? activeJobs[0] ?? null} />;
+  }
+
+  if (searchDisabled && (apiStatus === "online" || pendingHomeFixture)) {
+    return (
+      <SearchFirstPendingState
+        activeJob={runningJobs[0] ?? activeJobs[0] ?? null}
+        statusLabel={statusLabel}
+        onAddSource={onAddSource}
+        onOpenSources={onOpenSources}
+      />
+    );
   }
 
   return (
@@ -419,12 +532,20 @@ export function HomeScreen({
         >
           <Search size={18} />
           <input
+            ref={searchInputRef}
             className="search-input"
             name="query"
             disabled={searchDisabled}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={submitSearchInputOnEnter}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.currentTarget.blur();
+                return;
+              }
+              submitSearchInputOnEnter(event);
+            }}
             placeholder={
               searchDisabled ? t("home.searchLockedPlaceholder") : t("home.searchPlaceholder")
             }
