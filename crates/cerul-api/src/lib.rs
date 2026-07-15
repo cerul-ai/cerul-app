@@ -3610,31 +3610,50 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction()?;
     let queued_job = if queue_rebuild {
+        let (current_version, current_status, current_unit_count, current_vector_count): (
+            Option<i32>,
+            Option<String>,
+            i64,
+            i64,
+        ) = tx.query_row(
+            r#"
+            SELECT
+                search_index_version,
+                search_index_status,
+                COALESCE(search_index_unit_count, 0),
+                COALESCE(search_index_vector_count, 0)
+            FROM items
+            WHERE id = ?1
+            "#,
+            [item_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
         let vector_count = if delete_embeddings {
             0
         } else {
-            tx.query_row(
-                "SELECT COALESCE(search_index_vector_count, 0) FROM items WHERE id = ?1",
-                [item_id],
-                |row| row.get::<_, i64>(0),
-            )?
-            .max(0)
+            current_vector_count.max(0)
         };
-        let unit_count = match rebuilt_units.as_ref() {
-            Some(units) => units.len() as i64,
-            None => tx
-                .query_row(
-                    "SELECT COALESCE(search_index_unit_count, 0) FROM items WHERE id = ?1",
-                    [item_id],
-                    |row| row.get::<_, i64>(0),
-                )?
-                .max(0),
+        let unit_count = rebuilt_units
+            .as_ref()
+            .map_or(current_unit_count.max(0), |units| units.len() as i64);
+        // A completed understanding pass writes new generated chunks before the
+        // hidden search refresh runs. Keep the previous atomic retrieval
+        // generation live while that refresh is queued; otherwise vector-only
+        // hits disappear even though their SQL units and vectors still exist.
+        let preserved_live_generation = !delete_embeddings
+            && current_version == Some(cerul_storage::SEARCH_INDEX_VERSION)
+            && current_status.as_deref() == Some("indexed")
+            && unit_count > 0;
+        let next_status = if preserved_live_generation {
+            "indexed"
+        } else {
+            "pending"
         };
         tx.execute(
             r#"
             UPDATE items
             SET search_index_version = ?2,
-                search_index_status = 'pending',
+                search_index_status = ?5,
                 search_index_error = NULL,
                 search_index_unit_count = ?3,
                 search_index_vector_count = ?4
@@ -3645,6 +3664,7 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
                 cerul_storage::SEARCH_INDEX_VERSION,
                 unit_count,
                 vector_count,
+                next_status,
             ),
         )?;
         enqueue_search_index_refresh_job(&tx, item_id, dedupe_running)?

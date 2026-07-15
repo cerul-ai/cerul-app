@@ -1362,7 +1362,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             item_index_state,
-            ("pending".to_string(), baseline_units.len() as i64, 1)
+            ("indexed".to_string(), baseline_units.len() as i64, 1)
         );
         let (running_media_jobs, queued_media_jobs, queued_refresh_jobs): (i64, i64, i64) = conn
             .query_row(
@@ -1567,7 +1567,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(search_status, "pending");
+        assert_eq!(search_status, "indexed");
         assert_eq!(queued_refreshes, 1);
     }
 
