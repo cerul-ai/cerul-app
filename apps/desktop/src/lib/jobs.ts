@@ -17,10 +17,12 @@ export function firstRunStageIndex(
   if (!job) return 0;
   if (job.status === "completed") return 5;
   const stage = job.stage ?? "";
-  if (/writing_index|completed|partial/.test(stage)) return 4;
+  if (/writing_index|embedding_units|embedding_unit_images|completed|partial/.test(stage)) {
+    return 4;
+  }
   if (/understanding|analyz/.test(stage)) return 3;
   if (
-    /embedding_(?:text|frames|units|unit_images)|visual|ocr_frames|writing_transcript|transcript_indexed/.test(
+    /embedding_(?:text|frames)|visual|ocr_frames|writing_transcript|transcript_indexed/.test(
       stage,
     )
   ) {

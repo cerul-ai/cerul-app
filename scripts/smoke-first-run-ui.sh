@@ -36,7 +36,7 @@ rg -qF "function StageJourney(" apps/desktop/src/screens/home.tsx
 rg -qF 'className="first-stage-mark"' apps/desktop/src/screens/home.tsx
 rg -qF 'export function firstRunStageIndex(' apps/desktop/src/lib/jobs.ts
 rg -qF 'ocr_frames|writing_transcript|transcript_indexed' apps/desktop/src/lib/jobs.ts
-rg -qF 'expect(indexes).toEqual([0, 0, 1, 1, 2, 2, 2, 2, 2, 2, 4, 5]);' apps/desktop/src/lib/jobs.test.ts
+rg -qF 'expect(indexes).toEqual([0, 0, 1, 1, 2, 2, 2, 2, 4, 4, 4, 5]);' apps/desktop/src/lib/jobs.test.ts
 ! rg -qF 'if (/embedding_text|ocr_frames/.test(stage)) return 3;' apps/desktop/src
 rg -qF '.first-stage-journey' apps/desktop/src/styles/selected-ui.css
 rg -qF '.first-stage-panel .fr-bar-fill { left:0; animation:none; transition:width var(--dur-hero) var(--ease); }' apps/desktop/src/styles/selected-ui.css

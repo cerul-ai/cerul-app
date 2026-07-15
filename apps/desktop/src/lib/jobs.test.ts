@@ -13,16 +13,16 @@ describe("firstRunStageIndex", () => {
       "transcript_indexed",
       "ocr_frames",
       "writing_transcript",
+      "writing_index",
       "embedding_units",
       "embedding_unit_images",
-      "writing_index",
       "completed",
     ];
     const indexes = stages.map((stage) =>
       firstRunStageIndex({ status: stage === "completed" ? "completed" : "running", stage }),
     );
 
-    expect(indexes).toEqual([0, 0, 1, 1, 2, 2, 2, 2, 2, 2, 4, 5]);
+    expect(indexes).toEqual([0, 0, 1, 1, 2, 2, 2, 2, 4, 4, 4, 5]);
     expect(indexes.every((value, index) => index === 0 || value >= indexes[index - 1])).toBe(
       true,
     );
