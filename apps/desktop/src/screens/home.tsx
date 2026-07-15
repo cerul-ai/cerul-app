@@ -30,7 +30,7 @@ import {
   isNearEndPosition,
   itemKindLabel,
 } from "../lib/items";
-import { jobStepProgressPercent } from "../lib/jobs";
+import { firstRunStageIndex, jobStepProgressPercent } from "../lib/jobs";
 import { durationMinutes } from "../lib/library";
 import { readLastOpened } from "../lib/last-opened";
 import { submitSearchInputOnEnter } from "../lib/route";
@@ -138,17 +138,6 @@ const FIRST_RUN_STAGE_KEYS = [
   "understanding.title",
   "jobs.stage.writing_index",
 ] as const;
-
-function firstRunStageIndex(job: api.JobRecord | null) {
-  if (!job) return 0;
-  if (job.status === "completed") return FIRST_RUN_STAGE_KEYS.length;
-  const stage = job.stage ?? "";
-  if (/writing_index|completed|partial/.test(stage)) return 4;
-  if (/embedding_text|ocr_frames/.test(stage)) return 3;
-  if (/embedding_frames|visual/.test(stage)) return 2;
-  if (/transcrib|chunking_transcript|writing_transcript/.test(stage)) return 1;
-  return 0;
-}
 
 function StageJourney({ job, compact = false }: { job: api.JobRecord | null; compact?: boolean }) {
   const t = useT();

@@ -1355,6 +1355,28 @@ impl VideoPipeline {
         &self,
         item_id: &str,
     ) -> anyhow::Result<StorageWriteSummary> {
+        let previous_search_state = {
+            let conn = cerul_storage::sqlite::open(&self.paths)?;
+            conn.query_row(
+                r#"
+                SELECT COALESCE(search_index_status, 'pending'),
+                       search_index_error,
+                       COALESCE(search_index_unit_count, 0),
+                       COALESCE(search_index_vector_count, 0)
+                FROM items
+                WHERE id = ?1
+                "#,
+                [item_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )?
+        };
         self.report_progress(
             item_id,
             "refreshing_search_index",
@@ -1382,13 +1404,33 @@ impl VideoPipeline {
             Err(error) => {
                 let message = error.to_string();
                 set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                let (previous_status, previous_error, unit_count, vector_count) =
+                    previous_search_state;
+                let preserve_searchable_index =
+                    matches!(previous_status.as_str(), "indexed" | "pending");
                 cerul_storage::set_item_search_index_status(
                     &self.paths,
                     item_id,
-                    "failed",
-                    Some(&message),
-                    0,
-                    0,
+                    if preserve_searchable_index {
+                        previous_status.as_str()
+                    } else {
+                        "failed"
+                    },
+                    if preserve_searchable_index {
+                        previous_error.as_deref()
+                    } else {
+                        Some(message.as_str())
+                    },
+                    if preserve_searchable_index {
+                        unit_count.max(0) as usize
+                    } else {
+                        0
+                    },
+                    if preserve_searchable_index {
+                        vector_count.max(0) as usize
+                    } else {
+                        0
+                    },
                 )?;
                 Err(error)
             }
@@ -3630,6 +3672,92 @@ mod tests {
         assert_eq!(transcript, "existing transcript remains unchanged");
         assert_eq!(status, "indexed");
         assert_eq!(search_status, "indexed");
+    }
+
+    #[tokio::test]
+    async fn refresh_item_search_index_preserves_last_searchable_index_on_embedding_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let media_dir = temp.path().join("videos");
+        std::fs::create_dir(&media_dir).unwrap();
+        let missing_video = media_dir.join("missing.mp4");
+        insert_source_and_item(&paths, &media_dir, &missing_video);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "existing transcript remains searchable".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "UPDATE items SET status = 'indexed', indexed_at = strftime('%s','now') WHERE id = 'item-1'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 3)
+            .unwrap();
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FailingTextEmbedder),
+        );
+        let error = pipeline
+            .refresh_item_search_index("item-1")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("quota exceeded"));
+        let conn = sqlite::open(&paths).unwrap();
+        let state: (String, Option<String>, i64, i64, String) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_error,
+                       search_index_unit_count, search_index_vector_count, metadata
+                FROM items
+                WHERE id = 'item-1'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&state.4).unwrap();
+        assert_eq!(state.0, "indexed");
+        assert_eq!(state.1, None);
+        assert_eq!((state.2, state.3), (1, 3));
+        assert_eq!(metadata["embedding_index_status"], "failed");
+        assert!(metadata["embedding_index_error"]
+            .as_str()
+            .unwrap()
+            .contains("quota exceeded"));
+
+        let hits = cerul_search::search_fts_only(
+            &paths,
+            cerul_search::SearchRequest {
+                q: "existing transcript".to_string(),
+                limit: 3,
+                ranking_preference: cerul_search::SearchRankingPreference::Smart,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.first().map(|hit| hit.item_id.as_str()), Some("item-1"));
     }
 
     async fn create_sample_video(path: &Path) -> anyhow::Result<()> {
