@@ -32,6 +32,10 @@ impl RetrievalEmbeddingPlan {
     pub(crate) fn image_paths(&self) -> &[PathBuf] {
         &self.image_paths
     }
+
+    pub(crate) fn units(&self) -> &[StorageRetrievalUnit] {
+        &self.units
+    }
 }
 
 pub(crate) struct RetrievalIndexWriteSummary {
@@ -41,13 +45,13 @@ pub(crate) struct RetrievalIndexWriteSummary {
     pub(crate) stale_vectors_deleted: usize,
 }
 
-pub(crate) fn rebuild_retrieval_embedding_plan(
+pub(crate) fn build_retrieval_embedding_plan(
     paths: &AppPaths,
     item_id: &str,
     profile_id: &str,
     include_image_embeddings: bool,
 ) -> anyhow::Result<RetrievalEmbeddingPlan> {
-    let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, profile_id)?;
+    let units = cerul_storage::build_item_retrieval_units(paths, item_id, profile_id)?;
     anyhow::ensure!(
         !units.is_empty(),
         "no retrieval units generated for item {item_id}"
@@ -172,15 +176,6 @@ pub(crate) async fn write_unified_retrieval_vectors(
         .await?
     };
     let vector_index_write_ms = vector_index_started.elapsed().as_millis() as u64;
-    cerul_storage::set_item_search_index_status(
-        paths,
-        item_id,
-        "indexed",
-        None,
-        plan.units.len(),
-        records.len(),
-    )?;
-
     Ok(RetrievalIndexWriteSummary {
         write_summary: StorageWriteSummary {
             transcript_chunks: plan.units.len(),

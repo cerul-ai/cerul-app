@@ -3596,8 +3596,16 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     if delete_embeddings {
         delete_item_embeddings_best_effort(paths, item_id);
     }
-    let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
-    let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, &profile.id)?;
+    let rebuilt_units = if queue_rebuild {
+        None
+    } else {
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(paths)?;
+        Some(cerul_storage::rebuild_item_retrieval_units(
+            paths,
+            item_id,
+            &profile.id,
+        )?)
+    };
 
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction()?;
@@ -3612,6 +3620,13 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
             )?
             .max(0)
         };
+        let unit_count = tx
+            .query_row(
+                "SELECT COALESCE(search_index_unit_count, 0) FROM items WHERE id = ?1",
+                [item_id],
+                |row| row.get::<_, i64>(0),
+            )?
+            .max(0);
         tx.execute(
             r#"
             UPDATE items
@@ -3625,7 +3640,7 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
             (
                 item_id,
                 cerul_storage::SEARCH_INDEX_VERSION,
-                units.len() as i64,
+                unit_count,
                 vector_count,
             ),
         )?;
@@ -3651,7 +3666,7 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
             (
                 item_id,
                 cerul_storage::SEARCH_INDEX_VERSION,
-                units.len() as i64,
+                rebuilt_units.as_ref().map_or(0, Vec::len) as i64,
                 vector_count,
             ),
         )?;

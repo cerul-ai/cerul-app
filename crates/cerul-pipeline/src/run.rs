@@ -23,8 +23,8 @@ use crate::{
         fetch::{fetch_audio_media, fetch_document_media, fetch_image_media, fetch_video_media},
         ocr::read_ocr_frames_with_progress,
         retrieval::{
-            rebuild_retrieval_embedding_plan, set_embedding_index_status,
-            write_unified_retrieval_vectors,
+            build_retrieval_embedding_plan, set_embedding_index_status,
+            write_unified_retrieval_vectors, RetrievalEmbeddingPlan,
         },
         sample::sample_video_keyframes,
         transcribe::{
@@ -1470,7 +1470,7 @@ impl VideoPipeline {
                 0,
             )?;
         }
-        let plan = rebuild_retrieval_embedding_plan(
+        let plan = build_retrieval_embedding_plan(
             &self.paths,
             item_id,
             &profile.id,
@@ -1524,6 +1524,9 @@ impl VideoPipeline {
                             "error": error.to_string()
                         }),
                     );
+                }
+                if replace_existing_vectors {
+                    self.commit_retrieval_units_without_vectors(item_id, &plan)?;
                 }
                 return Err(error);
             }
@@ -1579,12 +1582,15 @@ impl VideoPipeline {
                     );
                     Vec::new()
                 } else {
+                    if replace_existing_vectors {
+                        self.commit_retrieval_units_without_vectors(item_id, &plan)?;
+                    }
                     return Err(error);
                 }
             }
         };
 
-        let index_write = write_unified_retrieval_vectors(
+        let index_write = match write_unified_retrieval_vectors(
             &self.paths,
             item_id,
             &plan,
@@ -1593,7 +1599,28 @@ impl VideoPipeline {
             &profile,
             replace_existing_vectors,
         )
-        .await?;
+        .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                if replace_existing_vectors {
+                    self.commit_retrieval_units_without_vectors(item_id, &plan)?;
+                }
+                return Err(error);
+            }
+        };
+        // Commit the SQL generation only after the corresponding vectors are
+        // durable. Until this point searches continue hydrating the previous
+        // units against the previous vector generation.
+        cerul_storage::replace_item_retrieval_units(&self.paths, item_id, plan.units())?;
+        cerul_storage::set_item_search_index_status(
+            &self.paths,
+            item_id,
+            "indexed",
+            None,
+            plan.unit_count(),
+            index_write.vector_count,
+        )?;
         self.log_pipeline_event(
             item_id,
             "retrieval_index_written",
@@ -1612,6 +1639,27 @@ impl VideoPipeline {
         );
 
         Ok(index_write.write_summary)
+    }
+
+    fn commit_retrieval_units_without_vectors(
+        &self,
+        item_id: &str,
+        plan: &RetrievalEmbeddingPlan,
+    ) -> anyhow::Result<()> {
+        // Initial imports and explicit full rebuilds still retain an FTS-only
+        // index when embedding is unavailable. In-place understanding refreshes
+        // pass `replace_existing_vectors = false`, so they never replace the
+        // last coherent SQL/vector generation on failure.
+        cerul_storage::replace_item_retrieval_units(&self.paths, item_id, plan.units())?;
+        cerul_storage::set_item_search_index_status(
+            &self.paths,
+            item_id,
+            "indexed",
+            None,
+            plan.unit_count(),
+            0,
+        )?;
+        Ok(())
     }
 
     fn record_asr_usage(
@@ -3245,7 +3293,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retrieval_unit_rebuild_marks_search_index_pending_before_vector_write() {
+    async fn full_rebuild_keeps_fts_units_when_vector_write_fails() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
         let images = temp.path().join("images");
@@ -3288,7 +3336,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(state, ("pending".to_string(), 0, 0));
+        assert_eq!(state, ("indexed".to_string(), 1, 0));
     }
 
     #[tokio::test]
@@ -3715,12 +3763,56 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        cerul_storage::set_item_search_index_status(&paths, "item-1", "indexed", None, 1, 3)
+
+        let initial_pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        let initial = initial_pipeline
+            .refresh_item_search_index("item-1")
+            .await
             .unwrap();
+        let previous_retrieval_text: String = sqlite::open(&paths)
+            .unwrap()
+            .query_row(
+                "SELECT content_text FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(previous_retrieval_text.contains("existing transcript"));
+
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES (
+                'item-1:understanding:event:0000',
+                'item-1',
+                'understanding',
+                0,
+                8,
+                'new visual evidence must not replace old SQL units before vectors succeed',
+                '{"kind":"event"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+        drop(conn);
         // Match the state written when understanding has rebuilt the SQLite
-        // units and queued an embedding refresh for an existing index.
-        cerul_storage::set_item_search_index_status(&paths, "item-1", "pending", None, 1, 3)
-            .unwrap();
+        // chunks and queued an embedding refresh for an existing index.
+        let previous_vector_count = initial.text_vectors + initial.image_vectors;
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "pending",
+            None,
+            initial.transcript_chunks,
+            previous_vector_count,
+        )
+        .unwrap();
 
         let pipeline = VideoPipeline::new(
             paths.clone(),
@@ -3757,12 +3849,27 @@ mod tests {
         let metadata: serde_json::Value = serde_json::from_str(&state.4).unwrap();
         assert_eq!(state.0, "indexed");
         assert_eq!(state.1, None);
-        assert_eq!((state.2, state.3), (1, 3));
+        assert_eq!(
+            (state.2, state.3),
+            (
+                initial.transcript_chunks as i64,
+                previous_vector_count as i64
+            )
+        );
         assert_eq!(metadata["embedding_index_status"], "failed");
         assert!(metadata["embedding_index_error"]
             .as_str()
             .unwrap()
             .contains("quota exceeded"));
+        let preserved_retrieval_text: String = conn
+            .query_row(
+                "SELECT content_text FROM retrieval_units WHERE item_id = 'item-1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_retrieval_text, previous_retrieval_text);
+        assert!(!preserved_retrieval_text.contains("new visual evidence"));
 
         let hits = cerul_search::search_fts_only(
             &paths,

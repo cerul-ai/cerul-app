@@ -2738,6 +2738,56 @@ mod tests {
         assert_eq!(results[0].chunk_type, "transcript");
     }
 
+    #[test]
+    fn hydrate_summary_semantic_match_uses_real_playback_chunk() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+            VALUES ('item-1:keyframe:000000', 'item-1', 'keyframe', 0, 10, '/tmp/summary.jpg', '{}')
+            "#,
+            [],
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let mut unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            None,
+            None,
+            "placeholder",
+            Some("item-1:keyframe:000000"),
+            &profile,
+        );
+        unit.unit_kind = "summary".to_string();
+        unit.content_text = "Summary: objective whole-video overview".to_string();
+        unit.transcript_text = None;
+        unit.summary_text = Some("objective whole-video overview".to_string());
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
+
+        let results = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 0.81,
+                similarity_score: Some(0.81),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            }],
+            "what is this video about",
+        )
+        .unwrap();
+
+        assert_eq!(results[0].snippet, "Visual match");
+        assert_eq!(results[0].playback_chunk_id, "item-1:keyframe:000000");
+        assert_eq!(results[0].chunk_type, "keyframe");
+    }
+
     #[tokio::test]
     async fn search_with_paths_falls_back_to_literal_chinese_text() {
         let temp = tempfile::tempdir().unwrap();

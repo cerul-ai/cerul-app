@@ -1251,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn write_completed_record_refreshes_retrieval_units_without_reindexing_media() {
+    fn write_completed_record_queues_retrieval_refresh_without_replacing_live_units() {
         let temp = tempfile::tempdir().unwrap();
         let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
@@ -1270,6 +1270,33 @@ mod tests {
             [],
         )
         .unwrap();
+        drop(conn);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "previous searchable generation".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let baseline_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            baseline_units.len(),
+            1,
+        )
+        .unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
 
         let record = write_completed_record(
             &paths,
@@ -1320,8 +1347,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(retrieval_text.contains("Checkout flow with code XR-42"));
-        assert!(retrieval_text.contains("XR-42"));
+        assert!(retrieval_text.contains("previous searchable generation"));
+        assert!(!retrieval_text.contains("XR-42"));
         let item_index_state: (String, i64, i64) = conn
             .query_row(
                 r#"
@@ -1333,7 +1360,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(item_index_state, ("pending".to_string(), 2, 0));
+        assert_eq!(
+            item_index_state,
+            ("pending".to_string(), baseline_units.len() as i64, 1)
+        );
         let (running_media_jobs, queued_media_jobs, queued_refresh_jobs): (i64, i64, i64) = conn
             .query_row(
                 r#"
@@ -1377,7 +1407,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining_understanding_chunks, 0);
-        assert_eq!(remaining_retrieval_units, 0);
+        assert_eq!(remaining_retrieval_units, baseline_units.len() as i64);
         let item_metadata: String = conn
             .query_row(
                 "SELECT metadata FROM items WHERE id = 'item-1'",
@@ -1414,6 +1444,33 @@ mod tests {
             [],
         )
         .unwrap();
+        drop(conn);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "baseline searchable content".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let baseline_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            baseline_units.len(),
+            1,
+        )
+        .unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
 
         let record = write_completed_record(
             &paths,
@@ -1447,8 +1504,26 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(!retrieval_text.contains("Old generated title"));
-        assert!(retrieval_text.contains("fresh searchable text"));
+        assert!(retrieval_text.contains("Old generated title"));
+        assert!(retrieval_text.contains("baseline searchable content"));
+        assert!(!retrieval_text.contains("fresh searchable text"));
+        let (search_status, queued_refreshes): (String, i64) = conn
+            .query_row(
+                r#"
+                SELECT i.search_index_status,
+                       (SELECT COUNT(*) FROM jobs j
+                        WHERE j.item_id = i.id
+                          AND j.job_type = 'refresh_search_index'
+                          AND j.status = 'queued')
+                FROM items i
+                WHERE i.id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(search_status, "pending");
+        assert_eq!(queued_refreshes, 1);
     }
 
     #[test]

@@ -94,12 +94,24 @@ pub fn rebuild_item_retrieval_units(
     item_id: &str,
     embedding_profile_id: &str,
 ) -> anyhow::Result<Vec<StorageRetrievalUnit>> {
+    let units = build_item_retrieval_units(paths, item_id, embedding_profile_id)?;
     let mut conn = sqlite::open(paths)?;
-    let units = build_item_retrieval_units_with_conn(&conn, item_id, embedding_profile_id)?;
     let tx = conn.transaction()?;
     replace_item_retrieval_units_with_tx(&tx, item_id, SEARCH_INDEX_VERSION, &units)?;
     tx.commit()?;
     Ok(units)
+}
+
+/// Builds the next retrieval-unit generation without replacing the currently
+/// searchable SQL rows. Callers can embed and commit this generation only
+/// after its vector write succeeds.
+pub fn build_item_retrieval_units(
+    paths: &AppPaths,
+    item_id: &str,
+    embedding_profile_id: &str,
+) -> anyhow::Result<Vec<StorageRetrievalUnit>> {
+    let conn = sqlite::open(paths)?;
+    build_item_retrieval_units_with_conn(&conn, item_id, embedding_profile_id)
 }
 
 pub fn replace_item_retrieval_units(
@@ -390,21 +402,29 @@ fn build_timed_units(
             continue;
         }
 
-        let representative_chunk = (!summary_only)
-            .then(|| {
-                representative_chunk(
-                    &transcript_lines,
-                    &transcript_chunks,
-                    &understanding_chunks,
-                    &ocr_chunks,
-                    &window,
-                    &frame_times,
-                )
-                .or_else(|| {
-                    nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone())
-                })
+        let representative_chunk = if summary_only {
+            // Summary text remains untimed and does not absorb transcript/OCR,
+            // but playback still needs an actual row from `chunks`. Prefer a
+            // sampled frame, then fall back to the earliest timed evidence.
+            frame_chunks
+                .first()
+                .or_else(|| transcript_lines.first())
+                .or_else(|| transcript_chunks.first())
+                .or_else(|| ocr_chunks.first())
+                .map(|chunk| chunk.id.clone())
+        } else {
+            representative_chunk(
+                &transcript_lines,
+                &transcript_chunks,
+                &understanding_chunks,
+                &ocr_chunks,
+                &window,
+                &frame_times,
+            )
+            .or_else(|| {
+                nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone())
             })
-            .flatten();
+        };
         let representative_frame = (!summary_only)
             .then(|| {
                 nearest_frame(&frame_chunks, window.start_sec)
@@ -1703,7 +1723,19 @@ mod tests {
         assert_eq!(summary.end_sec, None);
         assert_eq!(summary.transcript_text, None);
         assert_eq!(summary.ocr_text, None);
-        assert_eq!(summary.representative_chunk_id, None);
+        let representative_chunk_id = summary
+            .representative_chunk_id
+            .as_deref()
+            .expect("summary playback should use a real chunk");
+        let representative_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE id = ?1",
+                [representative_chunk_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(representative_exists, 1);
+        assert!(representative_chunk_id.contains(":keyframe:"));
         assert_eq!(summary.representative_frame_path, None);
         assert!(!summary.content_text.contains("spoken evidence"));
         assert!(!summary.content_text.contains("XR-42"));
