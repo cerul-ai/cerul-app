@@ -684,8 +684,10 @@ function AppWorkspace() {
   const activeJobCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
     : visibleJobs.filter(isActiveJob).length;
-  const searchRefreshJobCount = apiStatus === "online" && !indexingPaused
-    ? data.jobSummary?.search_refresh_jobs ?? 0
+  const searchRefreshJobCount = apiStatus === "online"
+    ? indexingPaused
+      ? data.jobSummary?.running_search_refresh_jobs ?? 0
+      : data.jobSummary?.search_refresh_jobs ?? 0
     : 0;
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
   const syncingSourceCount = syncingSources.length;

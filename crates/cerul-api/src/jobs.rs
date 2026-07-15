@@ -55,6 +55,8 @@ pub struct JobStatusSummary {
     /// Internal search-index refreshes are excluded from user task counts but
     /// still exposed as a non-UI settling signal for immediate search retries.
     pub search_refresh_jobs: u64,
+    pub queued_search_refresh_jobs: u64,
+    pub running_search_refresh_jobs: u64,
     pub failed_jobs: u64,
     pub attention_jobs: u64,
     pub indexed_items: u64,
@@ -632,24 +634,38 @@ pub fn indexing_diagnostics(paths: &AppPaths) -> anyhow::Result<IndexingDiagnost
 
 pub fn job_status_summary(paths: &AppPaths) -> anyhow::Result<JobStatusSummary> {
     let conn = cerul_storage::sqlite::open(paths)?;
+    let queued_search_refresh_jobs = count_rows(
+        &conn,
+        r#"
+        SELECT COUNT(*)
+        FROM jobs j
+        WHERE j.job_type = 'refresh_search_index'
+          AND j.status = 'queued'
+          AND EXISTS (
+              SELECT 1 FROM items i
+              WHERE i.id = j.item_id AND i.status != 'deleting'
+          )
+        "#,
+    )?;
+    let running_search_refresh_jobs = count_rows(
+        &conn,
+        r#"
+        SELECT COUNT(*)
+        FROM jobs j
+        WHERE j.job_type = 'refresh_search_index'
+          AND j.status = 'running'
+          AND EXISTS (
+              SELECT 1 FROM items i
+              WHERE i.id = j.item_id AND i.status != 'deleting'
+          )
+        "#,
+    )?;
     Ok(JobStatusSummary {
         queued_jobs: visible_job_count(&conn, Some("queued"))?,
         running_jobs: visible_job_count(&conn, Some("running"))?,
-        search_refresh_jobs: count_rows(
-            &conn,
-            r#"
-            SELECT COUNT(*)
-            FROM jobs j
-            WHERE j.job_type = 'refresh_search_index'
-              AND j.status IN ('queued', 'running')
-              AND EXISTS (
-                  SELECT 1
-                  FROM items i
-                  WHERE i.id = j.item_id
-                    AND i.status != 'deleting'
-              )
-            "#,
-        )?,
+        search_refresh_jobs: queued_search_refresh_jobs + running_search_refresh_jobs,
+        queued_search_refresh_jobs,
+        running_search_refresh_jobs,
         failed_jobs: visible_job_count(&conn, Some("failed"))?,
         attention_jobs: attention_job_count(&conn)?,
         indexed_items: count_rows(

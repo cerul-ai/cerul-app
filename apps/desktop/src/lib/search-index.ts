@@ -8,14 +8,15 @@ export function searchIndexIsSettling(
   const activeJobs = data.jobs.some(
     (job) => job.status === "running" || (!paused && job.status === "queued"),
   );
-  const queuedSearchWork = !paused && (
-    (data.jobSummary?.search_refresh_jobs ?? 0) > 0 ||
+  const hiddenRefreshWork = paused
+    ? (data.jobSummary?.running_search_refresh_jobs ?? 0) > 0
+    : (data.jobSummary?.search_refresh_jobs ?? 0) > 0;
+  const queuedSearchWork = hiddenRefreshWork || (!paused &&
     data.items.some(
       (item) =>
         item.embeddingIndexStatus === "pending" ||
         item.visualIndexStatus === "pending",
-    )
-  );
+    ));
 
   return (
     data.sources.some((source) => source.status === "syncing") ||

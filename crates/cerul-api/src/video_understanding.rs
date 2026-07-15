@@ -615,7 +615,7 @@ fn write_status_record(
         write_item_display_title(paths, item_id, None)?;
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
         crate::refresh_item_retrieval_units_after_understanding_update(
-            paths, item_id, false, false, true,
+            paths, item_id, false, true, true,
         )?;
     }
     read_understanding_record(paths, item_id)
@@ -1382,6 +1382,28 @@ mod tests {
         assert_eq!(queued_media_jobs, 0);
         assert_eq!(queued_refresh_jobs, 1);
 
+        // Simulate the queued refresh completing so the live generation now
+        // contains generated understanding text before a later analysis fails.
+        let generated_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            generated_units.len(),
+            1,
+        )
+        .unwrap();
+        let generated_retrieval_text: String = conn
+            .query_row(
+                "SELECT GROUP_CONCAT(content_text, ' ') FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(generated_retrieval_text.contains("XR-42"));
+
         write_status_record(
             &paths,
             "item-1",
@@ -1408,6 +1430,29 @@ mod tests {
             .unwrap();
         assert_eq!(remaining_understanding_chunks, 0);
         assert_eq!(remaining_retrieval_units, baseline_units.len() as i64);
+        let cleared_retrieval_text: String = conn
+            .query_row(
+                "SELECT GROUP_CONCAT(content_text, ' ') FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(cleared_retrieval_text.contains("previous searchable generation"));
+        assert!(!cleared_retrieval_text.contains("XR-42"));
+        let cleared_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            cleared_index_state,
+            ("pending".to_string(), baseline_units.len() as i64, 0)
+        );
         let item_metadata: String = conn
             .query_row(
                 "SELECT metadata FROM items WHERE id = 'item-1'",

@@ -20,7 +20,11 @@ function appData(overrides: Partial<AppData> = {}) {
 describe("searchIndexIsSettling", () => {
   it("waits for hidden refreshes while indexing is active", () => {
     const data = appData({
-      jobSummary: { search_refresh_jobs: 1 } as AppData["jobSummary"],
+      jobSummary: {
+        search_refresh_jobs: 1,
+        queued_search_refresh_jobs: 1,
+        running_search_refresh_jobs: 0,
+      } as AppData["jobSummary"],
     });
 
     expect(searchIndexIsSettling(data)).toBe(true);
@@ -29,10 +33,27 @@ describe("searchIndexIsSettling", () => {
   it("does not wait for queued hidden refreshes while indexing is paused", () => {
     const data = appData({
       settings: { indexing_paused: true },
-      jobSummary: { search_refresh_jobs: 1 } as AppData["jobSummary"],
+      jobSummary: {
+        search_refresh_jobs: 1,
+        queued_search_refresh_jobs: 1,
+        running_search_refresh_jobs: 0,
+      } as AppData["jobSummary"],
     });
 
     expect(searchIndexIsSettling(data)).toBe(false);
+  });
+
+  it("keeps waiting for a hidden refresh that was already running before pause", () => {
+    const data = appData({
+      settings: { indexing_paused: true },
+      jobSummary: {
+        search_refresh_jobs: 1,
+        queued_search_refresh_jobs: 0,
+        running_search_refresh_jobs: 1,
+      } as AppData["jobSummary"],
+    });
+
+    expect(searchIndexIsSettling(data)).toBe(true);
   });
 
   it("still waits for work that is already running when pause is enabled", () => {

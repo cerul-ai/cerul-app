@@ -19,9 +19,12 @@ rg -qF 'const taskAttentionCount = apiStatus === "online" && data.jobSummary' ap
 rg -qF 'data.jobSummary.attention_jobs' apps/desktop/src/App.tsx
 rg -qF 'attention_jobs: attention_job_count(&conn)?' crates/cerul-api/src/jobs.rs
 rg -qF 'pub search_refresh_jobs: u64' crates/cerul-api/src/jobs.rs
+rg -qF 'pub queued_search_refresh_jobs: u64' crates/cerul-api/src/jobs.rs
+rg -qF 'pub running_search_refresh_jobs: u64' crates/cerul-api/src/jobs.rs
 rg -qF 'data.jobSummary?.search_refresh_jobs ?? 0' apps/desktop/src/lib/search-index.ts
+rg -qF 'data.jobSummary?.running_search_refresh_jobs ?? 0' apps/desktop/src/lib/search-index.ts
 rg -qF 'const paused = settingBoolean(data.settings, "indexing_paused", false)' apps/desktop/src/lib/search-index.ts
-rg -qF 'const searchRefreshJobCount = apiStatus === "online" && !indexingPaused' apps/desktop/src/App.tsx
+rg -qF 'data.jobSummary?.running_search_refresh_jobs ?? 0' apps/desktop/src/App.tsx
 rg -qF 'const backgroundActivityCount = activeJobCount + syncingSourceCount + searchRefreshJobCount' apps/desktop/src/App.tsx
 rg -qF '!searchIndexIsSettling(nextData)' apps/desktop/src/App.tsx
 rg -qF 'ROW_NUMBER() OVER (' crates/cerul-api/src/jobs.rs
