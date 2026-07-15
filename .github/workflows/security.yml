@@ -68,7 +68,15 @@ jobs:
       - name: Install dependencies (no postinstall binaries)
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level high
+        shell: bash
+        run: |
+          # pnpm 9 still calls npm's retired legacy audit endpoint. Run the
+          # current bulk-advisory client against the committed lockfile in an
+          # isolated directory, without changing the repository package manager.
+          audit_dir="$(mktemp -d)"
+          cp pnpm-lock.yaml "$audit_dir/pnpm-lock.yaml"
+          cd "$audit_dir"
+          corepack pnpm@11.13.0 audit --prod --audit-level high
 
   cargo-audit:
     name: Cargo audit
