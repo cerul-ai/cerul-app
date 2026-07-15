@@ -5,7 +5,6 @@ import {
   FolderDown,
   Image as ImageIcon,
   Loader2,
-  Lock,
   Mic,
   Play,
   Plus,
@@ -184,21 +183,18 @@ function FirstRunIndexing({ statusLabel, job }: { statusLabel: string; job: api.
     <div className="page home-firstrun home-stage-journey-page">
       <div className="fr-indexing first-stage-panel">
         <BrandMark className="first-stage-mark" />
-        <p className="fr-eyebrow"><span className="dot" />{t("firstRun.indexing.eyebrow")}</p>
         <h1 className="fr-title">{t("firstRun.indexing.title")}</h1>
-        <p className="fr-lead">{t("firstRun.indexing.body")}</p>
 
         <div className="fr-progress" role="status">
           <div className="fr-progress-head">
             <span className="chip indexing"><Loader2 size={13} className="spin" />{statusLabel}</span>
             <span className="mono first-stage-percent">{progress}%</span>
           </div>
-          <div className="fr-bar"><span className="fr-bar-fill" style={{ width: `${Math.max(8, progress)}%` }} /></div>
+          <div className="fr-bar"><span className="fr-bar-fill" style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} /></div>
         </div>
 
         <StageJourney job={job} />
 
-        <p className="fr-cost"><Lock size={13} />{t("home.emptyHero.costBadge")}</p>
       </div>
     </div>
   );
@@ -220,9 +216,7 @@ function SearchFirstPendingState({
     <div className="page wide home-search-first-pending">
       <div className="search-first-content">
         <BrandMark className="search-first-mark" />
-        <p className="page-eyebrow">{t("home.pending.eyebrow")}</p>
         <h1>{t("home.pending.title")}</h1>
-        <p className="search-first-lead">{t("firstRun.indexing.body")}</p>
         <div className="search-wrap disabled search-first-locked" aria-disabled="true">
           <Search size={18} />
           <span>{t("home.searchLockedPlaceholder")}</span>
@@ -240,7 +234,6 @@ function SearchFirstPendingState({
           <button type="button" className="btn btn-primary" onClick={onAddSource}><Plus size={15} />{t("home.addSource")}</button>
           <button type="button" className="btn btn-secondary" onClick={onOpenSources}>{t("nav.sources")}<ChevronRight size={15} /></button>
         </div>
-        <p className="fr-cost"><Lock size={13} />{t("home.emptyHero.costBadge")}</p>
       </div>
     </div>
   );
@@ -687,10 +680,10 @@ export function HomeScreen({
       </div>
       <aside className="home-pulse-card">
         <header><strong>{t("nav.sources")}</strong><span className="mono">{sources.length}</span></header>
-        <div><span>{t("jobs.summary.live")}<b className="mono">{activeSources}</b></span><span>{t("jobs.status.failed")}<b className="mono">{erroredSources.length}</b></span><span>{t("jobs.localProcessing")}<b className="mono">✓</b></span></div>
+        <div><span>{t("jobs.summary.live")}<b className="mono">{activeSources}</b></span><span>{t("jobs.status.failed")}<b className="mono">{erroredSources.length}</b></span></div>
       </aside>
       <aside className="home-pulse-card">
-        <header><strong>{t("nav.jobs")}</strong><span>{t("jobs.localProcessing")}</span></header>
+        <header><strong>{t("nav.jobs")}</strong></header>
         <div><span>{t("jobs.groupRunning")}<b className="mono">{runningJobs.length}</b></span><span>{t("jobs.groupQueued")}<b className="mono">{queuedJobs.length}</b></span><span>{t("jobs.status.failed")}<b className="mono">{failedJobs}</b></span></div>
       </aside>
       </div>

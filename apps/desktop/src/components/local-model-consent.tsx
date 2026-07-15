@@ -149,11 +149,6 @@ export function LocalModelConsent({
           <>
             <h3 className="lm-title">{t("localModel.consent.title")}</h3>
             <p className="lm-desc">{t("localModel.consent.body", { size: formatSize(totalMb) })}</p>
-            <div className="lm-props">
-              <span className="lm-prop">🔒 {t("localModel.prop.local")}</span>
-              <span className="lm-prop">⚡ {t("localModel.prop.free")}</span>
-              <span className="lm-prop">✈ {t("localModel.prop.offline")}</span>
-            </div>
             {capability ? (
               <div className={canLocal ? "lm-machine ok" : "lm-machine weak"}>
                 {canLocal ? <Check size={13} /> : null}

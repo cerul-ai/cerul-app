@@ -93,7 +93,6 @@ function AddSourceStep({
 
 // Step 2 — smart / local processing. A dark video frame → steel arrow → a
 // "transcript" card with a scan-line sweep and a 🔒 本地 badge, then the
-// three local-first chips and the $0.00 cost line.
 function SmartStep({
   modelDownloadState,
   apiStatus,

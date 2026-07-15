@@ -23,6 +23,9 @@ const t: TFunction = (key, vars) => {
   if (key === "results.snippet.visualFrameAt") {
     return `visual ${vars?.ts}`;
   }
+  if (key === "results.snippet.understandingAt") {
+    return `visual match ${vars?.ts}`;
+  }
   if (key === "results.snippet.searchMatchAt") {
     return `search ${vars?.ts}`;
   }
@@ -130,6 +133,17 @@ describe("results helpers", () => {
     expect(isBackendFallbackSnippet("Document match", "document", null)).toBe(true);
     expect(isBackendFallbackSnippet("Search match", "document", null)).toBe(true);
     expect(isBackendFallbackSnippet("Search match at 0:12", "document", 12)).toBe(true);
+    const generatedVisual = mapSearchResults(
+      [record({
+        chunk_id: "understanding-1",
+        chunk_type: "understanding",
+        start_sec: 210,
+        snippet: "Video understanding at 3:30",
+      })],
+      [item],
+      t,
+    );
+    expect(generatedVisual[0].snippet).toBe("visual match 3:30");
     expect(resultConfidence(0.9, 1)).toBe("high");
     expect(resultConfidence(0.5, 1)).toBe("medium");
     expect(resultConfidence(0.2, 1)).toBe("low");

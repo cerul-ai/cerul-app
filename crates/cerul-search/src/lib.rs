@@ -390,11 +390,12 @@ pub async fn search_with_vectors_for_profile_diagnostics(
     )
     .await?;
 
-    let mut results = hydrate(paths, &top_hits, &req.q)?;
+    let ranking_preference = req.effective_ranking_preference();
+    let mut results = hydrate_with_preference(paths, &top_hits, &req.q, ranking_preference)?;
     let legacy_results = legacy_rebuild_chunk_search(paths, &req.q, retrieval_limit)?;
     fts_hits_count += legacy_results.len();
     results.extend(legacy_results);
-    let results = finalize_results(results, limit, req.effective_ranking_preference());
+    let results = finalize_results(results, limit, ranking_preference);
     let retrieval_mode =
         retrieval_mode(vector_hits_count, fts_hits_count, vector_index_point_count);
     Ok(SearchResponse {
@@ -966,6 +967,15 @@ fn similarity_from_vector_index_score(score: f32, distance_metric: &str) -> f32 
 }
 
 fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec<SearchResult>> {
+    hydrate_with_preference(paths, hits, query, SearchRankingPreference::Smart)
+}
+
+fn hydrate_with_preference(
+    paths: &AppPaths,
+    hits: &[RawHit],
+    query: &str,
+    ranking_preference: SearchRankingPreference,
+) -> anyhow::Result<Vec<SearchResult>> {
     if hits.is_empty() {
         return Ok(Vec::new());
     }
@@ -977,7 +987,15 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
         let Some(unit) = units.get(&hit.chunk_id) else {
             continue;
         };
-        let (snippet, matched_field) = best_snippet(unit, query);
+        let (snippet, matched_field) = best_snippet(unit, query, ranking_preference);
+        // Video-understanding text is generated retrieval metadata, not source
+        // evidence. Keep it available for matching and playback selection, but
+        // never expose it verbatim as a quote in search results.
+        let hide_generated_snippet = unit.item_content_type == "video"
+            && matches!(
+                matched_field,
+                Some(SnippetField::Visual | SnippetField::Summary)
+            );
         let visual_sub_unit = if matched_field.is_some_and(SnippetField::prefers_visual_playback) {
             cerul_storage::best_visual_sub_unit_for_query(
                 paths,
@@ -1033,7 +1051,11 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
             chunk_type,
             start_sec,
             end_sec: unit.end_sec,
-            snippet,
+            snippet: if hide_generated_snippet {
+                String::new()
+            } else {
+                snippet
+            },
             frame_path: None,
             match_score: 0.0,
             score: hit.score,
@@ -1047,6 +1069,11 @@ fn hydrate(paths: &AppPaths, hits: &[RawHit], query: &str) -> anyhow::Result<Vec
     }
 
     attach_nearest_frame_chunk_ids(&conn, &mut results)?;
+    for result in &mut results {
+        if result.snippet.is_empty() {
+            result.snippet = fallback_snippet(&result.chunk_type, result.start_sec);
+        }
+    }
     Ok(results)
 }
 
@@ -1377,7 +1404,11 @@ impl SnippetField {
     }
 }
 
-fn best_snippet(unit: &HydratedUnit, query: &str) -> (String, Option<SnippetField>) {
+fn best_snippet(
+    unit: &HydratedUnit,
+    query: &str,
+    ranking_preference: SearchRankingPreference,
+) -> (String, Option<SnippetField>) {
     let structured_fields = [
         (SnippetField::Transcript, unit.transcript_text.as_deref()),
         (SnippetField::Ocr, unit.ocr_text.as_deref()),
@@ -1427,13 +1458,35 @@ fn best_snippet(unit: &HydratedUnit, query: &str) -> (String, Option<SnippetFiel
         }
     }
 
-    for (_, text) in structured_fields.iter().copied() {
+    let fallback_fields = match ranking_preference {
+        SearchRankingPreference::Smart
+        | SearchRankingPreference::Video
+        | SearchRankingPreference::Image => [
+            (SnippetField::Visual, unit.visual_text.as_deref()),
+            (SnippetField::Ocr, unit.ocr_text.as_deref()),
+            (SnippetField::Summary, unit.summary_text.as_deref()),
+            (SnippetField::Transcript, unit.transcript_text.as_deref()),
+        ],
+        SearchRankingPreference::Audio => [
+            (SnippetField::Transcript, unit.transcript_text.as_deref()),
+            (SnippetField::Summary, unit.summary_text.as_deref()),
+            (SnippetField::Visual, unit.visual_text.as_deref()),
+            (SnippetField::Ocr, unit.ocr_text.as_deref()),
+        ],
+        SearchRankingPreference::Document => [
+            (SnippetField::Summary, unit.summary_text.as_deref()),
+            (SnippetField::Transcript, unit.transcript_text.as_deref()),
+            (SnippetField::Visual, unit.visual_text.as_deref()),
+            (SnippetField::Ocr, unit.ocr_text.as_deref()),
+        ],
+    };
+    for (field, text) in fallback_fields {
         let Some(text) = text else {
             continue;
         };
         let trimmed = text.trim();
         if !trimmed.is_empty() {
-            return (trimmed.chars().take(320).collect(), None);
+            return (trimmed.chars().take(320).collect(), Some(field));
         }
     }
     if !unit.content_text.trim().is_empty() {
@@ -1533,15 +1586,24 @@ fn attach_nearest_frame_chunk_ids(
         let Some(frames) = frames_by_item.get(&result.item_id) else {
             continue;
         };
-        result.nearest_frame_chunk_id = frames
-            .iter()
-            .min_by(|left, right| {
-                (left.0 - target)
-                    .abs()
-                    .partial_cmp(&(right.0 - target).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(_, chunk_id)| chunk_id.clone());
+        let nearest_frame = frames.iter().min_by(|left, right| {
+            let distance_order = (left.0 - target)
+                .abs()
+                .partial_cmp(&(right.0 - target).abs())
+                .unwrap_or(std::cmp::Ordering::Equal);
+            distance_order
+                // On an exact tie, prefer the following frame. It is the
+                // first frame inside a newly-started visual moment, while
+                // the earlier frame often still belongs to the prior shot.
+                .then_with(|| (left.0 < target).cmp(&(right.0 < target)))
+                .then_with(|| left.0.total_cmp(&right.0))
+        });
+        if let Some((frame_start, chunk_id)) = nearest_frame {
+            result.nearest_frame_chunk_id = Some(chunk_id.clone());
+            if matches!(result.chunk_type.as_str(), "ocr" | "understanding") {
+                result.start_sec = Some(*frame_start);
+            }
+        }
     }
     Ok(())
 }
@@ -2553,6 +2615,70 @@ mod tests {
         assert_eq!(
             results[0].nearest_frame_chunk_id.as_deref(),
             Some("item-1:keyframe:000034")
+        );
+    }
+
+    #[test]
+    fn hydrate_smart_semantic_visual_fallback_uses_following_frame_on_tie() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES
+              ('item-1:transcript:000000', 'item-1', 'transcript', 205, 327, 'unrelated spoken narration', '{}'),
+              ('item-1:understanding:event:000000', 'item-1', 'understanding', 205, 327, '雨夜大雨，主角通过夜视镜观察树林。', '{}');
+
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, frame_path, metadata)
+            VALUES
+              ('item-1:keyframe:000200', 'item-1', 'keyframe', 200, 210, '/tmp/day.jpg', '{}'),
+              ('item-1:keyframe:000210', 'item-1', 'keyframe', 210, 220, '/tmp/rain-night.jpg', '{}');
+            "#,
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let mut unit = manual_unit(
+            "item-1:unit:v2:000000",
+            "item-1",
+            0,
+            Some(205.0),
+            Some(327.0),
+            "unrelated spoken narration",
+            Some("item-1:transcript:000000"),
+            &profile,
+        );
+        unit.visual_text = Some("雨夜大雨，主角通过夜视镜观察树林。".to_string());
+        unit.content_text =
+            "Transcript: unrelated spoken narration\nVisual: 雨夜大雨，主角通过夜视镜观察树林。"
+                .to_string();
+        cerul_storage::replace_item_retrieval_units(&paths, "item-1", &[unit]).unwrap();
+        mark_item_search_indexed(&paths, "item-1", 1);
+
+        let results = hydrate(
+            &paths,
+            &[RawHit {
+                chunk_id: "item-1:unit:v2:000000".to_string(),
+                score: 0.82,
+                similarity_score: Some(0.82),
+                exact_match: false,
+                source_mask: SOURCE_TEXT_VECTOR,
+            }],
+            "下雨天的夜晚",
+        )
+        .unwrap();
+
+        assert_eq!(results[0].snippet, "Video understanding at 3:30");
+        assert_eq!(
+            results[0].playback_chunk_id,
+            "item-1:understanding:event:000000"
+        );
+        assert_eq!(results[0].chunk_type, "understanding");
+        assert_eq!(results[0].start_sec, Some(210.0));
+        assert_eq!(
+            results[0].nearest_frame_chunk_id.as_deref(),
+            Some("item-1:keyframe:000210")
         );
     }
 

@@ -20,9 +20,20 @@ rg -qF 'activeJobs.length > 0 &&' apps/desktop/src/screens/home.tsx
 rg -qF '(apiStatus === "online" || pendingHomeFixture)' apps/desktop/src/screens/home.tsx
 rg -qF 'className="search-first-examples"' apps/desktop/src/screens/home.tsx
 rg -qF '.home-search-first-pending' apps/desktop/src/styles/selected-ui.css
-rg -qF '"home.searchLockedPlaceholder": "Search unlocks after the first item is indexed"' apps/desktop/src/lib/i18n-catalog.ts
-rg -qF '"home.lockedHint": "Cerul is indexing your first sources. Search becomes available as soon as one item is ready."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"home.searchLockedPlaceholder": "Search when complete"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"home.lockedHint": "Search when complete."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"home.summary": "{count} media · {runtime} ready · {sources} sources"' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"firstRun.indexing.body": "Search when complete."' apps/desktop/src/lib/i18n-catalog.ts
+! rg -qF 't("home.emptyHero.costBadge")' apps/desktop/src/screens/home.tsx
+! rg -qF 'jobs-ledger-local' apps/desktop/src/dialogs/jobs-sheet.tsx
+! rg -qF 'indexing-strip__cost' apps/desktop/src/components/indexing-strip.tsx
+! rg -qF 't("localModel.prop.local")' apps/desktop/src/components/local-model-consent.tsx
+! rg -qF 't("localModel.prop.free")' apps/desktop/src/components/local-model-consent.tsx
 rg -qF 'className={searchDisabled ? "search-wrap disabled" : "search-wrap"}' apps/desktop/src
+rg -qF 'function RankingPreferenceMenu(' apps/desktop/src/screens/results.tsx
+! rg -qF '<select value={rankingPreference}' apps/desktop/src/screens/results.tsx
+rg -qF 'z-index:3; overflow:visible' apps/desktop/src/styles/selected-ui.css
+rg -qF 'top:auto; bottom:calc(100% + 8px)' apps/desktop/src/styles/selected-ui.css
 rg -qF "disabled={searchDisabled}" apps/desktop/src
 rg -qF "function handleGlobalKeyDown(event: globalThis.KeyboardEvent)" apps/desktop/src
 rg -qF 'settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY)' apps/desktop/src

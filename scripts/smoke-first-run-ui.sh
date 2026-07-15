@@ -37,6 +37,8 @@ rg -qF 'className="first-stage-mark"' apps/desktop/src/screens/home.tsx
 rg -qF 'if (/embedding_frames|visual/.test(stage)) return 2;' apps/desktop/src/screens/home.tsx
 ! rg -qF 'if (/sampling_frames|embedding_frames|visual/.test(stage)) return 2;' apps/desktop/src/screens/home.tsx
 rg -qF '.first-stage-journey' apps/desktop/src/styles/selected-ui.css
+rg -qF '.first-stage-panel .fr-bar-fill { left:0; animation:none; transition:width var(--dur-hero) var(--ease); }' apps/desktop/src/styles/selected-ui.css
+rg -qF 'style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}' apps/desktop/src/screens/home.tsx
 rg -qF '@keyframes copper-relay-line' apps/desktop/src/styles/selected-ui.css
 rg -qF '@keyframes copper-relay-node' apps/desktop/src/styles/selected-ui.css
 
@@ -47,7 +49,7 @@ rg -qF "function FirstRunExamples(" apps/desktop/src
 rg -qF "onClick={() => onRunQuery(text)}" apps/desktop/src
 
 # Copy (English catalog) — the two "now what?" valleys + the search payoff.
-rg -qF '"firstRun.indexing.title": "Turning your videos into searchable memory."' apps/desktop/src/lib/i18n-catalog.ts
+rg -qF '"firstRun.indexing.title": "Indexing"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"firstRun.banner.title": "Your first batch is ready"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"firstRun.steps.search": "Run your first search"' apps/desktop/src/lib/i18n-catalog.ts
 rg -qF '"firstRun.example.said": "what was said about pricing strategy"' apps/desktop/src/lib/i18n-catalog.ts

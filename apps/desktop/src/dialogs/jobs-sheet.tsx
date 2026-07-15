@@ -433,7 +433,7 @@ export function JobsSheet({
           <span className="clamp2">{jobItemTitle(job, items, t)}</span>
         </button>
         <span className="muted clamp1">{jobTypeLabel(job.job_type, t)}</span>
-        <span className="muted clamp1">{item?.source ?? t("jobs.localProcessing")}</span>
+        <span className="muted clamp1">{item?.source ?? "—"}</span>
         <span className="jobs-ledger-stage clamp1">
           {jobStageMessage(job, t)}
           {job.status === "running" ? <i><b style={{ width: `${jobStepProgressPercent(job)}%` }} /></i> : null}
@@ -493,7 +493,6 @@ export function JobsSheet({
               </button>
             ))}
           </div>
-          <span className="jobs-ledger-local"><i />{t("jobs.localProcessing")}</span>
           {onCancelQueuedJobs && controlsEnabled && queuedCount > 0 && (filter === "all" || filter === "running") ? <button type="button" className="btn btn-secondary sm" onClick={onCancelQueuedJobs}>{t("jobs.clearQueued")}</button> : null}
         </div>
 
@@ -504,7 +503,7 @@ export function JobsSheet({
                 <header><strong>{t("jobs.repair.title")}</strong><span>{t("jobs.repair.count", { count: failedCount })}</span></header>
                 <article className="jobs-repair-card" ref={cabinCardRef}>
                   <strong>{jobItemTitle(repairJob, items, t)}</strong>
-                  <span>{jobTypeLabel(repairJob.job_type, t)} · {itemForJob(repairJob)?.source ?? t("jobs.localProcessing")}</span>
+                  <span>{jobTypeLabel(repairJob.job_type, t)} · {itemForJob(repairJob)?.source ?? "—"}</span>
                 </article>
                 <div className="jobs-repair-detail">
                   <h3>{repairJob.error_info ? t(`jobs.error.${repairJob.error_info.code}`, { capability: jobTypeLabel(repairJob.job_type, t) }) : jobDisplayStatus(repairJob, t)}</h3>
@@ -570,7 +569,7 @@ export function JobsSheet({
                     <span className={inspectedItem?.thumbnailUrl ? "jobs-inspector-thumb has-image" : "jobs-inspector-thumb"}>
                       {inspectedItem?.thumbnailUrl ? <img src={inspectedItem.thumbnailUrl} alt="" /> : <FileVideo size={22} />}
                     </span>
-                    <span><strong className="clamp2">{jobItemTitle(inspectedJob, items, t)}</strong><small>{inspectedItem?.source ?? t("jobs.localProcessing")} · {jobTypeLabel(inspectedJob.job_type, t)}</small></span>
+                    <span><strong className="clamp2">{jobItemTitle(inspectedJob, items, t)}</strong><small>{inspectedItem?.source ?? "—"} · {jobTypeLabel(inspectedJob.job_type, t)}</small></span>
                   </article>
                   <div className="jobs-inspector-progress">
                     <span><b>{t("jobs.inspector.progress")}</b><code>{jobStepProgressPercent(inspectedJob)}%</code></span>
@@ -586,7 +585,7 @@ export function JobsSheet({
                     })}
                   </div>
                   <dl className="jobs-inspector-stats">
-                    <div><dt>{t("jobs.ledger.col.source")}</dt><dd>{inspectedItem?.source ?? t("jobs.localProcessing")}</dd></div>
+                    <div><dt>{t("jobs.ledger.col.source")}</dt><dd>{inspectedItem?.source ?? "—"}</dd></div>
                     <div><dt>{t("jobs.ledger.col.stage")}</dt><dd>{jobStageMessage(inspectedJob, t)}</dd></div>
                     <div><dt>{t("jobs.inspector.media")}</dt><dd>{inspectedItem?.duration || "—"}</dd></div>
                   </dl>

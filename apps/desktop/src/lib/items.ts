@@ -80,12 +80,14 @@ export function itemHasSpeechSearch(
 }
 
 export function itemHasVisualSearch(
-  item: Pick<Item, "contentType" | "embeddingIndexStatus" | "visualIndexStatus">,
+  item: Pick<Item, "contentType" | "embeddingIndexStatus" | "visualIndexStatus" | "imageEmbeddingCount">,
 ) {
   if (itemHasPartialIndex(item)) {
     return false;
   }
-  return item.contentType === "image" || (item.contentType === "video" && item.visualIndexStatus === "indexed");
+  return item.contentType === "image" ||
+    (item.contentType === "video" &&
+      (item.visualIndexStatus === "indexed" || (item.imageEmbeddingCount ?? 0) > 0));
 }
 
 export function itemSourceLabel(record: api.ItemRecord, t: TFunction) {
@@ -554,6 +556,7 @@ export function mapItemRecord(
     visualIndexMessage: itemVisualIndexMessage(record, visualIndexStatus, t),
     embeddingIndexStatus,
     embeddingIndexMessage: itemEmbeddingIndexMessage(record, embeddingIndexStatus, t),
+    imageEmbeddingCount: metadataNumber(record.metadata, "embedding_image_vectors") ?? 0,
     hasAudio: itemHasAudio(record),
     playbackPosition: itemPlaybackPosition(record),
     usage: record.usage,

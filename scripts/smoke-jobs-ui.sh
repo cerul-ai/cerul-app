@@ -18,7 +18,9 @@ rg -qF 'apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
 rg -qF 'const taskAttentionCount = apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
 rg -qF 'data.jobSummary.attention_jobs' apps/desktop/src/App.tsx
 rg -qF 'attention_jobs: attention_job_count(&conn)?' crates/cerul-api/src/jobs.rs
-rg -qF "active.status IN ('queued', 'running')" crates/cerul-api/src/jobs.rs
+rg -qF 'ROW_NUMBER() OVER (' crates/cerul-api/src/jobs.rs
+rg -qF "j.job_type != 'refresh_search_index'" crates/cerul-api/src/jobs.rs
+rg -qF 'WHERE j.logical_rank = 1' crates/cerul-api/src/jobs.rs
 rg -qF 'indexedItemCount={indexedItemCount}' apps/desktop/src/App.tsx
 rg -qF 'taskAttentionCount={taskAttentionCount}' apps/desktop/src/App.tsx
 rg -qF 'className="badge-count task-attention-count"' apps/desktop/src/components/bridge.tsx

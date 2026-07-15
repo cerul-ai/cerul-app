@@ -2282,18 +2282,35 @@ async fn list_jobs(
     let mut params: Vec<SqlValue> = Vec::new();
     let mut sql = format!(
         r#"
+        WITH ranked_jobs AS (
+            SELECT j.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(j.item_id, j.id), j.job_type
+                       ORDER BY
+                           CASE
+                               WHEN j.status = 'running' THEN 0
+                               WHEN j.status = 'queued' THEN 1
+                               ELSE 2
+                           END,
+                           COALESCE(j.finished_at, j.started_at, 0) DESC,
+                           j.id DESC
+                   ) AS logical_rank
+            FROM jobs j
+            WHERE j.job_type != 'refresh_search_index'
+              AND (
+                  j.item_id IS NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM items visible_item
+                      WHERE visible_item.id = j.item_id
+                        AND visible_item.status != 'deleting'
+                  )
+              )
+        )
         SELECT j.id, j.item_id, j.job_type, j.status, j.started_at, j.finished_at,
                {error_expr} AS error, j.progress, j.stage, {stage_message_expr} AS stage_message
-        FROM jobs j
-        WHERE (
-            j.item_id IS NULL
-            OR EXISTS (
-                SELECT 1
-                FROM items visible_item
-                WHERE visible_item.id = j.item_id
-                  AND visible_item.status != 'deleting'
-            )
-        )
+        FROM ranked_jobs j
+        WHERE j.logical_rank = 1
         "#
     );
     if !statuses.is_empty() {
@@ -3473,6 +3490,53 @@ fn enqueue_embedding_rebuild_job(
     Ok(true)
 }
 
+fn enqueue_search_index_refresh_job(
+    tx: &Transaction<'_>,
+    item_id: &str,
+    dedupe_running: bool,
+) -> anyhow::Result<bool> {
+    let active_statuses = if dedupe_running {
+        &["queued", "running"][..]
+    } else {
+        &["queued"][..]
+    };
+    let mut params = vec![SqlValue::from(item_id.to_string())];
+    params.extend(
+        active_statuses
+            .iter()
+            .map(|status| SqlValue::from((*status).to_string())),
+    );
+    let status_placeholders = std::iter::repeat_n("?", active_statuses.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        r#"
+        SELECT COUNT(*)
+        FROM jobs
+        WHERE item_id = ?
+          AND job_type = '{}'
+          AND status IN ({status_placeholders})
+        "#,
+        jobs::SEARCH_INDEX_REFRESH_JOB_TYPE
+    );
+    let existing_active: i64 =
+        tx.query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
+            row.get(0)
+        })?;
+    if existing_active > 0 {
+        return Ok(false);
+    }
+
+    tx.execute(
+        r#"
+        INSERT INTO jobs (id, item_id, job_type, status, progress)
+        VALUES (?1, ?2, ?3, 'queued', 0)
+        "#,
+        (new_id("job"), item_id, jobs::SEARCH_INDEX_REFRESH_JOB_TYPE),
+    )?;
+    Ok(true)
+}
+
 fn clear_item_unified_search_index_with_tx(
     tx: &Transaction<'_>,
     item_id: &str,
@@ -3538,12 +3602,6 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
     let mut conn = cerul_storage::sqlite::open(paths)?;
     let tx = conn.transaction()?;
     let queued_job = if queue_rebuild {
-        let content_type: String = tx.query_row(
-            "SELECT content_type FROM items WHERE id = ?1",
-            [item_id],
-            |row| row.get(0),
-        )?;
-        let content_type = parse_content_type(&content_type)?;
         let vector_count = if delete_embeddings {
             0
         } else {
@@ -3571,7 +3629,7 @@ pub(crate) fn refresh_item_retrieval_units_after_understanding_update(
                 vector_count,
             ),
         )?;
-        enqueue_embedding_rebuild_job(&tx, item_id, content_type, dedupe_running)?
+        enqueue_search_index_refresh_job(&tx, item_id, dedupe_running)?
     } else {
         let vector_count = tx
             .query_row(
@@ -8554,6 +8612,7 @@ mod tests {
     async fn usage_routes_and_records_include_usage_totals() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_indexing_schema_version(&paths);
         {
             let conn = cerul_storage::sqlite::open(&paths).unwrap();
             conn.execute(
@@ -8784,7 +8843,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_jobs_drawer_scope_returns_active_and_recent_terminal_jobs() {
+    async fn list_jobs_drawer_scope_returns_one_user_task_per_item() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         {
@@ -8859,6 +8918,18 @@ mod tests {
                         1,
                         'completed',
                         NULL
+                    ),
+                    (
+                        'job-internal-refresh',
+                        'item-a',
+                        'refresh_search_index',
+                        'queued',
+                        NULL,
+                        NULL,
+                        NULL,
+                        0,
+                        'queued',
+                        NULL
                     )
                 "#,
                 [],
@@ -8888,16 +8959,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ids,
-            vec![
-                "job-running".to_string(),
-                "job-queued".to_string(),
-                "job-recent-failed".to_string(),
-                "job-recent-completed".to_string()
-            ]
+            vec!["job-running".to_string(), "job-queued".to_string()]
         );
         assert!(!ids.contains(&"job-completed-old".to_string()));
         assert!(!ids.contains(&"job-stale-completed".to_string()));
         assert!(!ids.contains(&"job-old-failed".to_string()));
+        assert!(!ids.contains(&"job-internal-refresh".to_string()));
     }
 
     #[tokio::test]
@@ -8955,6 +9022,7 @@ mod tests {
     async fn list_jobs_filters_invisible_items_before_limit() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_indexing_schema_version(&paths);
         {
             let conn = cerul_storage::sqlite::open(&paths).unwrap();
             conn.execute(
@@ -9008,7 +9076,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn job_summary_counts_all_statuses() {
+    async fn job_summary_counts_logical_user_tasks_only() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         {
@@ -9021,7 +9089,9 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO items (id, source_id, content_type, external_id, status, metadata)
-                VALUES ('item-deleting', 'source-a', 'video', 'deleting.mp4', 'deleting', '{}')
+                VALUES
+                    ('item-deleting', 'source-a', 'video', 'deleting.mp4', 'deleting', '{}'),
+                    ('item-visible', 'source-a', 'video', 'visible.mp4', 'indexed', '{}')
                 "#,
                 [],
             )
@@ -9036,11 +9106,29 @@ mod tests {
                     ('job-failed', NULL, 'index_video', 'failed', 1),
                     ('job-completed', NULL, 'index_video', 'completed', 1),
                     ('job-cancelled', NULL, 'index_video', 'cancelled', 1),
+                    ('job-visible-completed-old', 'item-visible', 'index_video', 'completed', 1),
+                    ('job-visible-completed-new', 'item-visible', 'index_video', 'completed', 1),
+                    ('job-visible-refresh', 'item-visible', 'refresh_search_index', 'queued', 0),
                     ('job-deleting-queued', 'item-deleting', 'index_video', 'queued', 0),
                     ('job-deleting-completed', 'item-deleting', 'index_video', 'completed', 1),
                     ('job-orphan-running', 'item-missing', 'index_video', 'running', 0.5)
                 "#,
                 [],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO settings (key, value, updated_at)
+                VALUES
+                    (?1, ?2, strftime('%s','now')),
+                    (?3, ?4, strftime('%s','now'))
+                "#,
+                (
+                    INDEXING_SCHEMA_VERSION_SETTING,
+                    Value::from(INDEXING_SCHEMA_VERSION).to_string(),
+                    VECTOR_INDEX_BACKEND_SETTING,
+                    Value::from(ACTIVE_VECTOR_INDEX_BACKEND).to_string(),
+                ),
             )
             .unwrap();
         }
@@ -9063,10 +9151,10 @@ mod tests {
         assert_eq!(summary["running_jobs"], 1);
         assert_eq!(summary["failed_jobs"], 1);
         assert_eq!(summary["attention_jobs"], 1);
-        assert_eq!(summary["indexed_items"], 0);
-        assert_eq!(summary["completed_jobs"], 1);
+        assert_eq!(summary["indexed_items"], 1);
+        assert_eq!(summary["completed_jobs"], 2);
         assert_eq!(summary["cancelled_jobs"], 1);
-        assert_eq!(summary["total_jobs"], 5);
+        assert_eq!(summary["total_jobs"], 6);
     }
 
     #[tokio::test]
@@ -9096,6 +9184,7 @@ mod tests {
                 INSERT INTO jobs (id, item_id, job_type, status, progress, stage)
                 VALUES
                     ('job-a-queued', 'item-a', 'index_video', 'queued', 0, 'queued'),
+                    ('job-a-refresh', 'item-a', 'refresh_search_index', 'queued', 0, 'queued'),
                     ('job-b-queued', 'item-b', 'index_video', 'queued', 0, 'queued'),
                     ('job-itemless-queued', NULL, 'index_video', 'queued', 0, 'queued'),
                     ('job-running', 'item-running', 'index_video', 'running', 0.5, 'processing')
@@ -9125,7 +9214,7 @@ mod tests {
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
         let job_statuses = conn
             .prepare(
-                "SELECT id, status FROM jobs WHERE id IN ('job-a-queued', 'job-b-queued', 'job-itemless-queued', 'job-running') ORDER BY id",
+                "SELECT id, status FROM jobs WHERE id IN ('job-a-queued', 'job-a-refresh', 'job-b-queued', 'job-itemless-queued', 'job-running') ORDER BY id",
             )
             .unwrap()
             .query_map([], |row| {
@@ -9138,6 +9227,7 @@ mod tests {
             job_statuses,
             vec![
                 ("job-a-queued".to_string(), "cancelled".to_string()),
+                ("job-a-refresh".to_string(), "cancelled".to_string()),
                 ("job-b-queued".to_string(), "queued".to_string()),
                 ("job-itemless-queued".to_string(), "queued".to_string()),
                 ("job-running".to_string(), "running".to_string())

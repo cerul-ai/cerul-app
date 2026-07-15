@@ -644,21 +644,7 @@ fn windows_for_item(
     frame_chunks: &[&ChunkInfo],
     frame_times: &HashMap<String, f64>,
 ) -> Vec<Window> {
-    let mut windows = understanding_chunks
-        .iter()
-        .filter_map(|chunk| {
-            let text = chunk.text.as_deref()?.trim();
-            if text.is_empty() {
-                return None;
-            }
-            Some(Window {
-                start_sec: chunk.start_sec,
-                end_sec: chunk.end_sec,
-                visual_text: Some(text.to_string()),
-                summary_text: None,
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut windows = understanding_windows(understanding_chunks);
 
     let mut starts = transcript_chunks
         .iter()
@@ -715,6 +701,113 @@ fn windows_for_item(
         start += WINDOW_STEP_SEC;
     }
     windows
+}
+
+fn understanding_windows(chunks: &[&ChunkInfo]) -> Vec<Window> {
+    let mut timed = Vec::<(Window, u8)>::new();
+    let mut summary = String::new();
+
+    for chunk in chunks {
+        let Some(text) = chunk
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        let kind = chunk
+            .metadata
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if kind == "summary" || (chunk.start_sec.is_none() && chunk.end_sec.is_none()) {
+            append_unique_text(&mut summary, text, SUMMARY_BUDGET);
+            continue;
+        }
+
+        // Chapter and event records commonly describe the exact same time
+        // range. Treat them as alternate annotations for one searchable
+        // moment, preferring the denser event evidence instead of emitting two
+        // vectors that overweight the same scene.
+        let priority = match kind {
+            "event" => 2,
+            "chapter" => 1,
+            _ => 0,
+        };
+        if let Some((window, current_priority)) = timed.iter_mut().find(|(window, _)| {
+            same_time_range(
+                window.start_sec,
+                window.end_sec,
+                chunk.start_sec,
+                chunk.end_sec,
+            )
+        }) {
+            if priority > *current_priority {
+                window.visual_text = Some(text.to_string());
+                *current_priority = priority;
+            } else if priority == *current_priority {
+                let mut merged = window.visual_text.take().unwrap_or_default();
+                append_unique_text(&mut merged, text, VISUAL_BUDGET);
+                window.visual_text = normalize_optional_text(merged);
+            }
+            continue;
+        }
+        timed.push((
+            Window {
+                start_sec: chunk.start_sec,
+                end_sec: chunk.end_sec,
+                visual_text: Some(text.to_string()),
+                summary_text: None,
+            },
+            priority,
+        ));
+    }
+
+    let mut windows = timed
+        .into_iter()
+        .map(|(window, _)| window)
+        .collect::<Vec<_>>();
+    if let Some(summary_text) = normalize_optional_text(summary) {
+        windows.push(Window {
+            start_sec: None,
+            end_sec: None,
+            visual_text: None,
+            summary_text: Some(summary_text),
+        });
+    }
+    windows
+}
+
+fn same_time_range(
+    left_start: Option<f64>,
+    left_end: Option<f64>,
+    right_start: Option<f64>,
+    right_end: Option<f64>,
+) -> bool {
+    same_optional_time(left_start, right_start) && same_optional_time(left_end, right_end)
+}
+
+fn same_optional_time(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => (left - right).abs() < f64::EPSILON,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn append_unique_text(target: &mut String, text: &str, budget: usize) {
+    let text = text.trim();
+    if text.is_empty() || target.split('\n').any(|existing| existing == text) {
+        return;
+    }
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(text);
+    if target.chars().count() > budget {
+        *target = limit_text(target, budget);
+    }
 }
 
 fn visual_only_windows(
@@ -1186,7 +1279,7 @@ pub fn best_visual_sub_unit_for_query(
     let frame_times = load_frame_times_for_item(&conn, item_id)?;
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, start_sec, end_sec, text, frame_path
+        SELECT id, chunk_type, start_sec, end_sec, text, frame_path
         FROM chunks
         WHERE item_id = ?1
           AND chunk_type IN ('ocr', 'understanding')
@@ -1201,16 +1294,18 @@ pub fn best_visual_sub_unit_for_query(
     let rows = stmt.query_map(params![item_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, Option<f64>>(1)?,
+            row.get::<_, String>(1)?,
             row.get::<_, Option<f64>>(2)?,
-            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<f64>>(3)?,
             row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
 
     let mut best_match = None::<(String, Option<f64>, usize)>;
+    let mut fallback = None::<(String, Option<f64>, bool)>;
     for row in rows {
-        let (id, chunk_start, chunk_end, text, frame_path) = row?;
+        let (id, chunk_type, chunk_start, chunk_end, text, frame_path) = row?;
         let effective_start = chunk_start.or_else(|| {
             frame_path
                 .as_deref()
@@ -1225,6 +1320,15 @@ pub fn best_visual_sub_unit_for_query(
         let Some(text) = text.as_deref() else {
             continue;
         };
+        let is_understanding = chunk_type == "understanding";
+        if fallback
+            .as_ref()
+            .is_none_or(|(_, _, current_is_understanding)| {
+                is_understanding && !*current_is_understanding
+            })
+        {
+            fallback = Some((id.clone(), effective_start, is_understanding));
+        }
         let score = query_text_score(text, pattern.as_deref(), &terms);
         if score > 0
             && best_match
@@ -1237,7 +1341,7 @@ pub fn best_visual_sub_unit_for_query(
     if let Some((id, start, _)) = best_match {
         return Ok(Some((id, start)));
     }
-    Ok(None)
+    Ok(fallback.map(|(id, start, _)| (id, start)))
 }
 
 fn load_frame_times_for_item(
@@ -1495,6 +1599,32 @@ mod tests {
             units[0].representative_chunk_id.as_deref(),
             Some("item-1:understanding:event:0000")
         );
+    }
+
+    #[test]
+    fn build_units_merge_chapter_and_event_for_the_same_time_range() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES
+              ('item-1:understanding:chapter:0000', 'item-1', 'understanding', 205, 327, '雨夜的诡秘身影', '{"kind":"chapter"}'),
+              ('item-1:understanding:event:0000', 'item-1', 'understanding', 205, 327, '暴雨中可见树林间的白色人影', '{"kind":"event"}');
+            "#,
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(
+            units[0].visual_text.as_deref(),
+            Some("暴雨中可见树林间的白色人影")
+        );
+        assert!(!units[0].content_text.contains("雨夜的诡秘身影"));
     }
 
     #[test]

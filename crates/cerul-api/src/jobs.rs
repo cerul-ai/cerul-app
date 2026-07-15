@@ -22,6 +22,7 @@ const MAX_CONCURRENT_JOBS: usize = 4;
 const JOB_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(500);
 const JOB_PROGRESS_MIN_DELTA: f64 = 0.01;
 const PIPELINE_JOB_LOG_FILE: &str = "pipeline-jobs.jsonl";
+pub(crate) const SEARCH_INDEX_REFRESH_JOB_TYPE: &str = "refresh_search_index";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedJob {
@@ -132,6 +133,18 @@ impl JobProcessor for PipelineJobProcessor {
                     state: Mutex::new(JobProgressState::default()),
                 }))
                 .process_document_item(&job.item_id)
+                .await
+                .map(|_| ()),
+            SEARCH_INDEX_REFRESH_JOB_TYPE => self
+                .pipeline
+                .clone()
+                .with_usage_job_id(job.id.clone())
+                .with_progress(Arc::new(JobProgressReporter {
+                    paths: self.paths.clone(),
+                    job_id: job.id.clone(),
+                    state: Mutex::new(JobProgressState::default()),
+                }))
+                .refresh_item_search_index(&job.item_id)
                 .await
                 .map(|_| ()),
             other => Err(anyhow::anyhow!("unsupported job type: {other}")),
@@ -514,9 +527,9 @@ pub fn indexing_snapshot(paths: &AppPaths) -> anyhow::Result<IndexingSnapshot> {
         "SELECT COUNT(*) FROM items WHERE status = 'indexed' OR indexed_at IS NOT NULL",
     )?;
     let total_items = count_rows(&conn, "SELECT COUNT(*) FROM items")?;
-    let queued_jobs = count_rows(&conn, "SELECT COUNT(*) FROM jobs WHERE status = 'queued'")?;
-    let running_jobs = count_rows(&conn, "SELECT COUNT(*) FROM jobs WHERE status = 'running'")?;
-    let failed_jobs = count_rows(&conn, "SELECT COUNT(*) FROM jobs WHERE status = 'failed'")?;
+    let queued_jobs = visible_job_count(&conn, Some("queued"))?;
+    let running_jobs = visible_job_count(&conn, Some("running"))?;
+    let failed_jobs = visible_job_count(&conn, Some("failed"))?;
 
     Ok(IndexingSnapshot {
         paused,
@@ -977,17 +990,34 @@ fn visible_job_count(
 ) -> anyhow::Result<u64> {
     let mut sql = String::from(
         r#"
-        SELECT COUNT(*)
-        FROM jobs j
-        WHERE (
-            j.item_id IS NULL
-            OR EXISTS (
-                SELECT 1
-                FROM items i
-                WHERE i.id = j.item_id
-                  AND i.status != 'deleting'
-            )
+        WITH ranked_jobs AS (
+            SELECT j.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(j.item_id, j.id), j.job_type
+                       ORDER BY
+                           CASE
+                               WHEN j.status = 'running' THEN 0
+                               WHEN j.status = 'queued' THEN 1
+                               ELSE 2
+                           END,
+                           COALESCE(j.finished_at, j.started_at, 0) DESC,
+                           j.id DESC
+                   ) AS logical_rank
+            FROM jobs j
+            WHERE j.job_type != 'refresh_search_index'
+              AND (
+                  j.item_id IS NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM items i
+                      WHERE i.id = j.item_id
+                        AND i.status != 'deleting'
+                  )
+              )
         )
+        SELECT COUNT(*)
+        FROM ranked_jobs j
+        WHERE j.logical_rank = 1
         "#,
     );
     if let Some(status) = status {
@@ -1002,31 +1032,44 @@ fn attention_job_count(conn: &rusqlite::Connection) -> anyhow::Result<u64> {
     count_rows(
         conn,
         r#"
-        SELECT COUNT(*)
-        FROM (
-            SELECT COALESCE(j.item_id, j.id) AS attention_key
+        WITH ranked_jobs AS (
+            SELECT j.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(j.item_id, j.id), j.job_type
+                       ORDER BY
+                           CASE
+                               WHEN j.status = 'running' THEN 0
+                               WHEN j.status = 'queued' THEN 1
+                               ELSE 2
+                           END,
+                           COALESCE(j.finished_at, j.started_at, 0) DESC,
+                           j.id DESC
+                   ) AS logical_rank
             FROM jobs j
-            WHERE j.status = 'failed'
+            WHERE j.job_type != 'refresh_search_index'
               AND (
                   j.item_id IS NULL
                   OR EXISTS (
                       SELECT 1
                       FROM items i
                       WHERE i.id = j.item_id
-                        AND i.status = 'failed'
+                        AND i.status != 'deleting'
                   )
               )
-              AND (
-                  j.item_id IS NULL
-                  OR NOT EXISTS (
-                      SELECT 1
-                      FROM jobs active
-                      WHERE active.item_id = j.item_id
-                        AND active.status IN ('queued', 'running')
-                  )
+        )
+        SELECT COUNT(*)
+        FROM ranked_jobs j
+        WHERE j.logical_rank = 1
+          AND j.status = 'failed'
+          AND (
+              j.item_id IS NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM items i
+                  WHERE i.id = j.item_id
+                    AND i.status = 'failed'
               )
-            GROUP BY COALESCE(j.item_id, j.id)
-        ) unresolved
+          )
         "#,
     )
 }
@@ -1108,7 +1151,6 @@ fn claim_next_job(paths: &AppPaths, max_running_jobs: usize) -> anyhow::Result<O
                   FROM jobs AS running
                   WHERE running.status = 'running'
                     AND running.item_id = queued.item_id
-                    AND running.job_type = queued.job_type
               )
             ORDER BY queued.id ASC
             LIMIT 1
@@ -1151,16 +1193,18 @@ fn claim_next_job(paths: &AppPaths, max_running_jobs: usize) -> anyhow::Result<O
         return Ok(None);
     }
 
-    tx.execute(
-        r#"
-        UPDATE items
-        SET status = 'fetching',
-            error = NULL
-        WHERE id = ?1
-          AND status != 'indexed'
-        "#,
-        [job.item_id.as_str()],
-    )?;
+    if job.job_type != SEARCH_INDEX_REFRESH_JOB_TYPE {
+        tx.execute(
+            r#"
+            UPDATE items
+            SET status = 'fetching',
+                error = NULL
+            WHERE id = ?1
+              AND status != 'indexed'
+            "#,
+            [job.item_id.as_str()],
+        )?;
+    }
 
     tx.commit()?;
     Ok(Some(job))
@@ -1168,32 +1212,44 @@ fn claim_next_job(paths: &AppPaths, max_running_jobs: usize) -> anyhow::Result<O
 
 fn mark_item_processing(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
-    conn.execute(
-        r#"
-        UPDATE items
-        SET status = 'processing',
-            error = NULL
-        WHERE id = ?1
-          AND status != 'indexed'
-        "#,
-        [job.item_id.as_str()],
-    )?;
+    let stage_message = if job.job_type == SEARCH_INDEX_REFRESH_JOB_TYPE {
+        "Preparing search index"
+    } else {
+        "Preparing media"
+    };
+    if job.job_type != SEARCH_INDEX_REFRESH_JOB_TYPE {
+        conn.execute(
+            r#"
+            UPDATE items
+            SET status = 'processing',
+                error = NULL
+            WHERE id = ?1
+              AND status != 'indexed'
+            "#,
+            [job.item_id.as_str()],
+        )?;
+    }
     conn.execute(
         r#"
         UPDATE jobs
         SET progress = 0.1,
             stage = 'processing',
-            stage_message = 'Preparing media'
+            stage_message = ?2
         WHERE id = ?1
           AND status = 'running'
         "#,
-        [job.id.as_str()],
+        params![job.id.as_str(), stage_message],
     )?;
     Ok(())
 }
 
 fn complete_job(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
+    let stage_message = if job.job_type == SEARCH_INDEX_REFRESH_JOB_TYPE {
+        "Search index updated"
+    } else {
+        "Index complete"
+    };
     conn.execute(
         r#"
         UPDATE jobs
@@ -1202,16 +1258,21 @@ fn complete_job(paths: &AppPaths, job: &ClaimedJob) -> anyhow::Result<()> {
             error = NULL,
             progress = 1,
             stage = 'completed',
-            stage_message = 'Index complete'
+            stage_message = ?2
         WHERE id = ?1
         "#,
-        [job.id.as_str()],
+        params![job.id.as_str(), stage_message],
     )?;
     Ok(())
 }
 
 fn fail_job(paths: &AppPaths, job: &ClaimedJob, error: &str) -> anyhow::Result<()> {
     let conn = cerul_storage::sqlite::open(paths)?;
+    let stage_message = if job.job_type == SEARCH_INDEX_REFRESH_JOB_TYPE {
+        "Search refresh failed"
+    } else {
+        "Index failed"
+    };
     conn.execute(
         r#"
         UPDATE jobs
@@ -1220,26 +1281,28 @@ fn fail_job(paths: &AppPaths, job: &ClaimedJob, error: &str) -> anyhow::Result<(
             error = ?2,
             progress = 1,
             stage = 'failed',
-            stage_message = 'Index failed'
+            stage_message = ?3
         WHERE id = ?1
         "#,
-        params![job.id.as_str(), error],
+        params![job.id.as_str(), error, stage_message],
     )?;
-    conn.execute(
-        r#"
-        UPDATE items
-        SET status = CASE
-                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
-                ELSE 'failed'
-            END,
-            error = CASE
-                WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN NULL
-                ELSE ?2
-            END
-        WHERE id = ?1
-        "#,
-        params![job.item_id.as_str(), error],
-    )?;
+    if job.job_type != SEARCH_INDEX_REFRESH_JOB_TYPE {
+        conn.execute(
+            r#"
+            UPDATE items
+            SET status = CASE
+                    WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN 'indexed'
+                    ELSE 'failed'
+                END,
+                error = CASE
+                    WHEN indexed_at IS NOT NULL OR status = 'indexed' THEN NULL
+                    ELSE ?2
+                END
+            WHERE id = ?1
+            "#,
+            params![job.item_id.as_str(), error],
+        )?;
+    }
     Ok(())
 }
 
@@ -1248,13 +1311,19 @@ pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<Cance
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let job = tx
         .query_row(
-            "SELECT item_id, status FROM jobs WHERE id = ?1",
+            "SELECT item_id, status, job_type FROM jobs WHERE id = ?1",
             [job_id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()?;
 
-    let Some((item_id, status)) = job else {
+    let Some((item_id, status, job_type)) = job else {
         tx.commit()?;
         return Ok(None);
     };
@@ -1276,6 +1345,23 @@ pub fn cancel_job(paths: &AppPaths, job_id: &str) -> anyhow::Result<Option<Cance
             [job_id],
         )?;
         if let Some(item_id) = item_id.as_deref() {
+            if job_type != SEARCH_INDEX_REFRESH_JOB_TYPE {
+                tx.execute(
+                    r#"
+                    UPDATE jobs
+                    SET status = 'cancelled',
+                        finished_at = strftime('%s','now'),
+                        error = NULL,
+                        progress = 1,
+                        stage = 'cancelled',
+                        stage_message = 'Cancelled'
+                    WHERE item_id = ?1
+                      AND job_type = ?2
+                      AND status = 'queued'
+                    "#,
+                    params![item_id, SEARCH_INDEX_REFRESH_JOB_TYPE],
+                )?;
+            }
             tx.execute(
                 r#"
                 UPDATE items
@@ -1322,6 +1408,7 @@ pub fn cancel_queued_jobs_batch(
                ) AS has_running_job
         FROM jobs j
         WHERE j.status = 'queued'
+          AND j.job_type != 'refresh_search_index'
         "#,
     );
     if let Some(ids) = job_ids.filter(|ids| !ids.is_empty()) {
@@ -1374,6 +1461,23 @@ pub fn cancel_queued_jobs_batch(
             "#,
             [job.id.as_str()],
         )?;
+        if let Some(item_id) = job.item_id.as_deref() {
+            tx.execute(
+                r#"
+                UPDATE jobs
+                SET status = 'cancelled',
+                    finished_at = strftime('%s','now'),
+                    error = NULL,
+                    progress = 1,
+                    stage = 'cancelled',
+                    stage_message = 'Cancelled'
+                WHERE item_id = ?1
+                  AND job_type = ?2
+                  AND status = 'queued'
+                "#,
+                params![item_id, SEARCH_INDEX_REFRESH_JOB_TYPE],
+            )?;
+        }
         if !job.cleanup_deferred {
             let Some(item_id) = job.item_id.as_deref() else {
                 continue;
@@ -2064,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_next_job_waits_for_same_item_running_job() {
+    fn claim_next_job_waits_for_any_same_item_running_job() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         set_setting(&paths, CONCURRENT_JOBS_SETTING, serde_json::json!(2));
@@ -2081,7 +2185,7 @@ mod tests {
             conn.execute(
                 r#"
                 INSERT INTO jobs (id, item_id, job_type, status, progress)
-                VALUES ('job-followup', 'item-1', 'index_video', 'queued', 0)
+                VALUES ('job-followup', 'item-1', 'refresh_search_index', 'queued', 0)
                 "#,
                 [],
             )
@@ -2112,6 +2216,46 @@ mod tests {
         assert_eq!(
             claim_next_job(&paths, limit).unwrap().unwrap().id,
             "job-followup"
+        );
+        assert_item_status(&paths, "item-1", "processing", None);
+    }
+
+    #[test]
+    fn internal_search_refresh_preserves_parent_item_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        insert_job(
+            &paths,
+            "job-refresh",
+            "item-1",
+            SEARCH_INDEX_REFRESH_JOB_TYPE,
+            "running",
+            "failed",
+        );
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            "UPDATE items SET error = 'media indexing failed' WHERE id = 'item-1'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let job = ClaimedJob {
+            id: "job-refresh".to_string(),
+            item_id: "item-1".to_string(),
+            job_type: SEARCH_INDEX_REFRESH_JOB_TYPE.to_string(),
+            was_indexed: false,
+        };
+
+        mark_item_processing(&paths, &job).unwrap();
+        fail_job(&paths, &job, "search refresh failed").unwrap();
+
+        assert_item_status(&paths, "item-1", "failed", Some("media indexing failed"));
+        assert_job(
+            &paths,
+            "job-refresh",
+            "failed",
+            1.0,
+            Some("search refresh failed"),
         );
     }
 
@@ -2160,7 +2304,7 @@ mod tests {
     }
 
     #[test]
-    fn job_summary_counts_only_current_failure_attention() {
+    fn job_summary_counts_one_current_logical_failure() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path()).unwrap();
         insert_job(
@@ -2184,7 +2328,7 @@ mod tests {
         }
 
         let failed = job_status_summary(&paths).unwrap();
-        assert_eq!(failed.failed_jobs, 2);
+        assert_eq!(failed.failed_jobs, 1);
         assert_eq!(failed.attention_jobs, 1);
         assert_eq!(failed.indexed_items, 0);
 
@@ -2206,7 +2350,7 @@ mod tests {
         }
 
         let retried = job_status_summary(&paths).unwrap();
-        assert_eq!(retried.failed_jobs, 2);
+        assert_eq!(retried.failed_jobs, 0);
         assert_eq!(retried.attention_jobs, 0);
 
         cerul_storage::mark_indexed(&paths, "item-1").unwrap();
@@ -2425,6 +2569,17 @@ mod tests {
             "queued",
             "processing",
         );
+        {
+            let conn = sqlite::open(&paths).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO jobs (id, item_id, job_type, status, progress)
+                VALUES ('job-refresh', 'item-1', 'refresh_search_index', 'queued', 0)
+                "#,
+                [],
+            )
+            .unwrap();
+        }
 
         let cancelled = cancel_job(&paths, "job-1").unwrap();
 
@@ -2438,6 +2593,7 @@ mod tests {
             })
         );
         assert_job(&paths, "job-1", "cancelled", 1.0, None);
+        assert_job(&paths, "job-refresh", "cancelled", 1.0, None);
         assert_item_status(&paths, "item-1", "discovered", None);
     }
 

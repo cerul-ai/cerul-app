@@ -564,7 +564,7 @@ fn write_completed_record(
     write_item_display_title(paths, item_id, display_title.as_deref())?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
     crate::refresh_item_retrieval_units_after_understanding_update(
-        paths, item_id, false, true, true,
+        paths, item_id, false, false, true,
     )?;
     read_understanding_record(paths, item_id)
 }
@@ -787,7 +787,12 @@ fn video_understanding_prompt() -> &'static str {
      language (or, if there is no speech, the dominant on-screen text language) and write every \
      natural-language field — display_title, summary, chapter titles and summaries, event captions, \
      visual and audio descriptions, topics, and searchable_text — in that same language. For example, \
-     if the speech is Chinese, respond in Chinese. Prefer concise, searchable language. Make \
+     if the speech is Chinese, respond in Chinese. Use literal, factual, neutral descriptions \
+     suitable for retrieval, not story narration or editorial copy. Describe only observable \
+     visual and audible evidence. Do not infer plot, genre, intentions, identities, roles, or \
+     relationships; labels such as protagonist, father, or uncle are allowed only when explicitly \
+     spoken or shown as text. Keep chapter titles objective and avoid dramatic adjectives. Avoid \
+     repeating the same wording across a chapter and its events. Prefer concise, searchable language. Make \
      display_title a short content title, not a source filename, URL, platform ID, model name, or \
      provider name. If exact timing is uncertain, estimate a short range. Do not invent people, \
      brands, or text that are not visible or audible."
@@ -815,8 +820,8 @@ fn video_understanding_schema() -> Value {
                     "properties": {
                         "start_sec": { "type": "NUMBER" },
                         "end_sec": { "type": "NUMBER" },
-                        "title": { "type": "STRING" },
-                        "summary": { "type": "STRING" }
+                        "title": { "type": "STRING", "description": "A neutral factual label for the visible activity or setting; no dramatic or editorial language." },
+                        "summary": { "type": "STRING", "description": "A concise factual summary grounded only in visible or audible evidence." }
                     },
                     "required": ["start_sec", "end_sec", "title", "summary"]
                 }
@@ -828,9 +833,9 @@ fn video_understanding_schema() -> Value {
                     "properties": {
                         "start_sec": { "type": "NUMBER" },
                         "end_sec": { "type": "NUMBER" },
-                        "caption": { "type": "STRING" },
-                        "visual": { "type": "STRING" },
-                        "audio": { "type": "STRING" },
+                        "caption": { "type": "STRING", "description": "A neutral factual event label that does not repeat the chapter wording." },
+                        "visual": { "type": "STRING", "description": "Only directly observable visual details, without inferred plot, roles, or relationships." },
+                        "audio": { "type": "STRING", "description": "Only directly audible speech or sounds, without inferred context." },
                         "actions": {
                             "type": "ARRAY",
                             "items": { "type": "STRING" }
@@ -1222,6 +1227,16 @@ mod tests {
     }
 
     #[test]
+    fn understanding_prompt_requires_neutral_observable_descriptions() {
+        let prompt = video_understanding_prompt();
+
+        assert!(prompt.contains("literal, factual, neutral descriptions"));
+        assert!(prompt.contains("Describe only observable visual and audible evidence"));
+        assert!(prompt.contains("avoid dramatic adjectives"));
+        assert!(prompt.contains("Avoid repeating the same wording"));
+    }
+
+    #[test]
     fn read_understanding_record_returns_not_started_when_missing() {
         let temp = tempfile::tempdir().unwrap();
         let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
@@ -1236,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn write_completed_record_refreshes_retrieval_units_and_queues_rebuild() {
+    fn write_completed_record_refreshes_retrieval_units_without_reindexing_media() {
         let temp = tempfile::tempdir().unwrap();
         let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
@@ -1319,22 +1334,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item_index_state, ("pending".to_string(), 2, 0));
-        let (running_jobs, queued_jobs): (i64, i64) = conn
+        let (running_media_jobs, queued_media_jobs, queued_refresh_jobs): (i64, i64, i64) = conn
             .query_row(
                 r#"
                 SELECT
-                  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END),
-                  SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END)
+                  SUM(CASE WHEN job_type = 'index_video' AND status = 'running' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN job_type = 'index_video' AND status = 'queued' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN job_type = 'refresh_search_index' AND status = 'queued' THEN 1 ELSE 0 END)
                 FROM jobs
                 WHERE item_id = 'item-1'
-                  AND job_type = 'index_video'
                 "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(running_jobs, 1);
-        assert_eq!(queued_jobs, 1);
+        assert_eq!(running_media_jobs, 1);
+        assert_eq!(queued_media_jobs, 0);
+        assert_eq!(queued_refresh_jobs, 1);
 
         write_status_record(
             &paths,

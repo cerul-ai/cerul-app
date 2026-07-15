@@ -1351,6 +1351,50 @@ impl VideoPipeline {
         ))
     }
 
+    pub async fn refresh_item_search_index(
+        &self,
+        item_id: &str,
+    ) -> anyhow::Result<StorageWriteSummary> {
+        self.report_progress(
+            item_id,
+            "refreshing_search_index",
+            0.05,
+            "Refreshing searchable moments",
+        );
+        set_embedding_index_status(&self.paths, item_id, "pending", None, 0, 0)?;
+
+        let result = self
+            .embed_and_write_retrieval_units(item_id, 0.10, 0.85, true, true)
+            .await;
+        match result {
+            Ok(summary) => {
+                set_embedding_index_status(
+                    &self.paths,
+                    item_id,
+                    "indexed",
+                    None,
+                    summary.text_vectors,
+                    summary.image_vectors,
+                )?;
+                self.report_progress(item_id, "writing_index", 1.0, "Search index updated");
+                Ok(summary)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                set_embedding_index_status(&self.paths, item_id, "failed", Some(&message), 0, 0)?;
+                cerul_storage::set_item_search_index_status(
+                    &self.paths,
+                    item_id,
+                    "failed",
+                    Some(&message),
+                    0,
+                    0,
+                )?;
+                Err(error)
+            }
+        }
+    }
+
     fn active_embedding_profile(&self) -> anyhow::Result<cerul_storage::vectors::EmbeddingProfile> {
         match &self.embedding_profile {
             Some(profile) => Ok(profile.clone()),
@@ -3511,6 +3555,81 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_item_search_index_reuses_existing_media_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("app")).unwrap();
+        let media_dir = temp.path().join("videos");
+        std::fs::create_dir(&media_dir).unwrap();
+        let missing_video = media_dir.join("missing.mp4");
+        insert_source_and_item(&paths, &media_dir, &missing_video);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "existing transcript remains unchanged".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES (
+                'item-1:understanding:event:0000',
+                'item-1',
+                'understanding',
+                2,
+                6,
+                'Rain is visibly falling under street lights.',
+                '{"kind":"event"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE items SET status = 'indexed', indexed_at = strftime('%s','now') WHERE id = 'item-1'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let pipeline = VideoPipeline::new(
+            paths.clone(),
+            Arc::new(UnexpectedTranscriber),
+            Arc::new(FakeEmbedder),
+        );
+        let summary = pipeline.refresh_item_search_index("item-1").await.unwrap();
+
+        assert!(summary.text_vectors > 0);
+        assert_eq!(summary.image_vectors, 0);
+        assert!(!missing_video.exists());
+        let conn = sqlite::open(&paths).unwrap();
+        let transcript: String = conn
+            .query_row(
+                "SELECT text FROM chunks WHERE item_id = 'item-1' AND chunk_type = 'transcript'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (status, search_status): (String, String) = conn
+            .query_row(
+                "SELECT status, search_index_status FROM items WHERE id = 'item-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(transcript, "existing transcript remains unchanged");
+        assert_eq!(status, "indexed");
+        assert_eq!(search_status, "indexed");
     }
 
     async fn create_sample_video(path: &Path) -> anyhow::Result<()> {

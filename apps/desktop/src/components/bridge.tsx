@@ -345,7 +345,7 @@ export function Bridge(props: BridgeProps) {
                   {/* Queued count, not the all-time job total — the footer and
                       the library banner count waiting work, and a third number
                       here read like a bug. */}
-                  <small className="mono">{t("jobs.popover.queue", { count: queuedCount })} · {t("jobs.localProcessing")}</small>
+                  <small className="mono">{t("jobs.popover.queue", { count: queuedCount })}</small>
                 </span>
                 <button type="button" onClick={onTogglePause}>
                   {indexingPaused ? <Play size={12} /> : <Pause size={12} />}
