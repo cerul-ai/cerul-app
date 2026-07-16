@@ -162,6 +162,7 @@ import {
 import {
   mapSearchResults,
 } from "./lib/results";
+import { searchIndexIsSettling } from "./lib/search-index";
 import { readRouteState, routeHash } from "./lib/route";
 import { recordLastOpened } from "./lib/last-opened";
 import {
@@ -456,18 +457,6 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function searchIndexIsSettling(data: AppData) {
-  return (
-    data.sources.some((source) => source.status === "syncing") ||
-    data.jobs.some(isActiveJob) ||
-    data.items.some(
-      (item) =>
-        item.embeddingIndexStatus === "pending" ||
-        item.visualIndexStatus === "pending",
-    )
-  );
-}
-
 const settingsSections = [
   "General",
   "Shortcuts",
@@ -695,9 +684,14 @@ function AppWorkspace() {
   const activeJobCount = apiStatus === "online" && data.jobSummary
     ? data.jobSummary.queued_jobs + data.jobSummary.running_jobs
     : visibleJobs.filter(isActiveJob).length;
+  const searchRefreshJobCount = apiStatus === "online"
+    ? indexingPaused
+      ? data.jobSummary?.running_search_refresh_jobs ?? 0
+      : data.jobSummary?.search_refresh_jobs ?? 0
+    : 0;
   const syncingSources = visibleSources.filter((source) => source.status === "syncing");
   const syncingSourceCount = syncingSources.length;
-  const backgroundActivityCount = activeJobCount + syncingSourceCount;
+  const backgroundActivityCount = activeJobCount + syncingSourceCount + searchRefreshJobCount;
   // T1: background work is not a notification. Only failed jobs that require
   // a decision from the user earn a count in the global task entry.
   const taskAttentionCount = apiStatus === "online" && data.jobSummary
@@ -1168,7 +1162,19 @@ function AppWorkspace() {
   const newSourceHotkey = settingString(data.settings, "hotkey_new_source", NEW_SOURCE_DEFAULT_HOTKEY);
   useEffect(() => {
     return subscribeDesktopMenuCommand((command) => {
-      if (command.type !== "new_source" || hasOpenModalSurface()) {
+      if (hasOpenModalSurface()) {
+        return;
+      }
+      if (command.type === "find") {
+        if (view === "item-detail" || view === "onboarding") return;
+        const focusEvent = view === "home"
+          ? "cerul:focus-home-search"
+          : view === "library"
+            ? "cerul:focus-library-search"
+            : view === "jobs"
+              ? "cerul:focus-jobs-search"
+              : "cerul:focus-bridge-search";
+        window.dispatchEvent(new Event(focusEvent));
         return;
       }
       if (command.triggeredByAccelerator && isEditableTarget(document.activeElement)) {
@@ -1176,10 +1182,28 @@ function AppWorkspace() {
       }
       setShowAddSource(true);
     });
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
+      if (
+        event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
+        event.key.toLocaleLowerCase() === "f"
+      ) {
+        if (hasOpenModalSurface() || view === "item-detail" || view === "onboarding") {
+          return;
+        }
+        event.preventDefault();
+        const focusEvent = view === "home"
+          ? "cerul:focus-home-search"
+          : view === "library"
+            ? "cerul:focus-library-search"
+            : view === "jobs"
+              ? "cerul:focus-jobs-search"
+              : "cerul:focus-bridge-search";
+        window.dispatchEvent(new Event(focusEvent));
+        return;
+      }
       if (acceleratorMatchesEvent(newSourceHotkey, event)) {
         // Don't stack a new dialog on top of an open modal or steal the
         // shortcut while the user is typing in a field.
@@ -1193,7 +1217,7 @@ function AppWorkspace() {
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [newSourceHotkey]);
+  }, [newSourceHotkey, view]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1320,7 +1344,6 @@ function AppWorkspace() {
           readDaemonStatus(),
         ]);
       const mappedItems = itemRecords.map((record) => mapItemRecord(record, jobRecords, t));
-      const hasSyncingSources = sourceRecords.some((source) => source.status === "syncing");
       const nextData: AppData = {
         sources: sourceRecords.map((source) => mapSourceRecord(source, mappedItems, t)),
         items: mappedItems,
@@ -1334,7 +1357,10 @@ function AppWorkspace() {
       setData(nextData);
       setApiStatus("online");
       const pendingRetry = lastSearchRef.current;
-      if (pendingRetry?.retryWhenIdle && !hasSyncingSources && !jobRecords.some(isActiveJob)) {
+      if (
+        pendingRetry?.retryWhenIdle &&
+        !searchIndexIsSettling(nextData)
+      ) {
         lastSearchRef.current = {
           query: pendingRetry.query,
           retryWhenIdle: false,
@@ -1927,6 +1953,7 @@ function AppWorkspace() {
               navigate("item-detail", { itemId: item.id, timestamp })
             }
             onOpenLibrary={() => navigate("library")}
+            onOpenSources={() => navigate("sources")}
             items={visibleItems}
             sources={visibleSources}
             jobs={visibleJobs}

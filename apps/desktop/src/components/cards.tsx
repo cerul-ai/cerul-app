@@ -38,7 +38,8 @@ export function itemModalityLabel(item: Item, t: TFunction): string {
   }
   const hasVisual =
     item.contentType === "image" ||
-    (item.contentType === "video" && item.visualIndexStatus === "indexed");
+    (item.contentType === "video" &&
+      (item.visualIndexStatus === "indexed" || (item.imageEmbeddingCount ?? 0) > 0));
   const hasSpeech =
     (item.contentType === "video" || item.contentType === "audio") && item.hasAudio !== false;
   if (hasVisual && hasSpeech) {
@@ -217,6 +218,7 @@ export function ItemCard({
   viewMode = "grid",
   selectable = false,
   selected = false,
+  keyboardIndex,
   transitionName,
   onSelect,
   onOpen,
@@ -225,6 +227,7 @@ export function ItemCard({
   viewMode?: "grid" | "list";
   selectable?: boolean;
   selected?: boolean;
+  keyboardIndex?: number;
   transitionName?: string;
   onSelect?: (selected: boolean) => void;
   onOpen: () => void;
@@ -257,6 +260,7 @@ export function ItemCard({
     <article
       className={selected ? "item-card-shell lib-card selected" : "item-card-shell lib-card"}
       data-view={viewMode}
+      data-library-index={keyboardIndex}
       style={transitionName ? { viewTransitionName: transitionName } : undefined}
     >
       {selectable ? (

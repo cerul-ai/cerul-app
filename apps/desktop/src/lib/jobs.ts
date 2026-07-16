@@ -11,6 +11,27 @@ import { formatDuration, formatUsd } from "./formatters";
 import { formatEtaDuration, isActiveJob } from "./items";
 import type { ApiStatus, Item } from "./types";
 
+export function firstRunStageIndex(
+  job: Pick<api.JobRecord, "status" | "stage"> | null,
+): number {
+  if (!job) return 0;
+  if (job.status === "completed") return 5;
+  const stage = job.stage ?? "";
+  if (/writing_index|embedding_units|embedding_unit_images|completed|partial/.test(stage)) {
+    return 4;
+  }
+  if (/understanding|analyz/.test(stage)) return 3;
+  if (
+    /embedding_(?:text|frames)|visual|ocr_frames|writing_transcript|transcript_indexed/.test(
+      stage,
+    )
+  ) {
+    return 2;
+  }
+  if (/transcrib|chunking_transcript/.test(stage)) return 1;
+  return 0;
+}
+
 // Coarse, user-facing steps per pipeline. Each groups several backend stages and
 // owns an equal slice of the progress bar, so "step N of M" and the bar fill
 // always agree. `lo`/`hi` are the backend-progress range the step spans, used to

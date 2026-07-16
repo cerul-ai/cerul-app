@@ -94,12 +94,24 @@ pub fn rebuild_item_retrieval_units(
     item_id: &str,
     embedding_profile_id: &str,
 ) -> anyhow::Result<Vec<StorageRetrievalUnit>> {
+    let units = build_item_retrieval_units(paths, item_id, embedding_profile_id)?;
     let mut conn = sqlite::open(paths)?;
-    let units = build_item_retrieval_units_with_conn(&conn, item_id, embedding_profile_id)?;
     let tx = conn.transaction()?;
     replace_item_retrieval_units_with_tx(&tx, item_id, SEARCH_INDEX_VERSION, &units)?;
     tx.commit()?;
     Ok(units)
+}
+
+/// Builds the next retrieval-unit generation without replacing the currently
+/// searchable SQL rows. Callers can embed and commit this generation only
+/// after its vector write succeeds.
+pub fn build_item_retrieval_units(
+    paths: &AppPaths,
+    item_id: &str,
+    embedding_profile_id: &str,
+) -> anyhow::Result<Vec<StorageRetrievalUnit>> {
+    let conn = sqlite::open(paths)?;
+    build_item_retrieval_units_with_conn(&conn, item_id, embedding_profile_id)
 }
 
 pub fn replace_item_retrieval_units(
@@ -110,6 +122,39 @@ pub fn replace_item_retrieval_units(
     let mut conn = sqlite::open(paths)?;
     let tx = conn.transaction()?;
     replace_item_retrieval_units_with_tx(&tx, item_id, SEARCH_INDEX_VERSION, units)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Atomically makes a prepared retrieval-unit generation searchable and
+/// records the vector count that belongs to that same generation.
+pub fn commit_item_retrieval_generation(
+    paths: &AppPaths,
+    item_id: &str,
+    units: &[StorageRetrievalUnit],
+    vector_count: usize,
+) -> anyhow::Result<()> {
+    let mut conn = sqlite::open(paths)?;
+    let tx = conn.transaction()?;
+    replace_item_retrieval_units_with_tx(&tx, item_id, SEARCH_INDEX_VERSION, units)?;
+    let updated = tx.execute(
+        r#"
+        UPDATE items
+        SET search_index_version = ?2,
+            search_index_status = 'indexed',
+            search_index_error = NULL,
+            search_index_unit_count = ?3,
+            search_index_vector_count = ?4
+        WHERE id = ?1
+        "#,
+        params![
+            item_id,
+            SEARCH_INDEX_VERSION,
+            units.len() as i64,
+            vector_count as i64
+        ],
+    )?;
+    anyhow::ensure!(updated == 1, "item not found: {item_id}");
     tx.commit()?;
     Ok(())
 }
@@ -358,10 +403,19 @@ fn build_timed_units(
     let mut units = Vec::new();
 
     for (index, window) in windows.into_iter().enumerate() {
-        let transcript_text =
+        let summary_only =
+            window.summary_text.is_some() && window.start_sec.is_none() && window.end_sec.is_none();
+        let transcript_text = if summary_only {
+            None
+        } else {
             collect_text_in_window(&transcript_chunks, &window, TRANSCRIPT_BUDGET)
-                .or_else(|| collect_text_in_window(&transcript_lines, &window, TRANSCRIPT_BUDGET));
-        let ocr_text = collect_ocr_text_in_window(&ocr_chunks, &window, &frame_times, OCR_BUDGET);
+                .or_else(|| collect_text_in_window(&transcript_lines, &window, TRANSCRIPT_BUDGET))
+        };
+        let ocr_text = if summary_only {
+            None
+        } else {
+            collect_ocr_text_in_window(&ocr_chunks, &window, &frame_times, OCR_BUDGET)
+        };
         let visual_text = window
             .visual_text
             .as_deref()
@@ -381,17 +435,35 @@ fn build_timed_units(
             continue;
         }
 
-        let representative_chunk = representative_chunk(
-            &transcript_lines,
-            &transcript_chunks,
-            &understanding_chunks,
-            &ocr_chunks,
-            &window,
-            &frame_times,
-        )
-        .or_else(|| nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone()));
-        let representative_frame = nearest_frame(&frame_chunks, window.start_sec)
-            .and_then(|chunk| chunk.frame_path.clone());
+        let representative_chunk = if summary_only {
+            // Summary text remains untimed and does not absorb transcript/OCR,
+            // but playback still needs an actual row from `chunks`. Prefer a
+            // sampled frame, then fall back to the earliest timed evidence.
+            frame_chunks
+                .first()
+                .or_else(|| transcript_lines.first())
+                .or_else(|| transcript_chunks.first())
+                .or_else(|| ocr_chunks.first())
+                .map(|chunk| chunk.id.clone())
+        } else {
+            representative_chunk(
+                &transcript_lines,
+                &transcript_chunks,
+                &understanding_chunks,
+                &ocr_chunks,
+                &window,
+                &frame_times,
+            )
+            .or_else(|| {
+                nearest_frame(&frame_chunks, window.start_sec).map(|chunk| chunk.id.clone())
+            })
+        };
+        let representative_frame = (!summary_only)
+            .then(|| {
+                nearest_frame(&frame_chunks, window.start_sec)
+                    .and_then(|chunk| chunk.frame_path.clone())
+            })
+            .flatten();
         let content_text = content_text(ContentTextParts {
             item,
             source_label: source_label.as_deref(),
@@ -407,7 +479,7 @@ fn build_timed_units(
             id: retrieval_unit_id(&item.id, index),
             item_id: item.id.clone(),
             unit_index: index as i64,
-            unit_kind: "moment".to_string(),
+            unit_kind: if summary_only { "summary" } else { "moment" }.to_string(),
             start_sec: window.start_sec,
             end_sec: window.end_sec,
             content_text,
@@ -419,7 +491,9 @@ fn build_timed_units(
             representative_frame_path: representative_frame,
             embedding_profile_id: embedding_profile_id.to_string(),
             index_version: SEARCH_INDEX_VERSION,
-            metadata: serde_json::json!({ "window": "timed" }),
+            metadata: serde_json::json!({
+                "window": if summary_only { "summary" } else { "timed" }
+            }),
         });
     }
 
@@ -432,10 +506,11 @@ fn build_timed_units(
         let covered_by_timed_unit = units
             .iter()
             .filter(|unit| {
-                unit.transcript_text.is_some()
-                    || unit.ocr_text.is_some()
-                    || unit.visual_text.is_some()
-                    || unit.summary_text.is_some()
+                unit.unit_kind != "summary"
+                    && (unit.transcript_text.is_some()
+                        || unit.ocr_text.is_some()
+                        || unit.visual_text.is_some()
+                        || unit.summary_text.is_some())
             })
             .any(|unit| {
                 overlaps(
@@ -644,21 +719,7 @@ fn windows_for_item(
     frame_chunks: &[&ChunkInfo],
     frame_times: &HashMap<String, f64>,
 ) -> Vec<Window> {
-    let mut windows = understanding_chunks
-        .iter()
-        .filter_map(|chunk| {
-            let text = chunk.text.as_deref()?.trim();
-            if text.is_empty() {
-                return None;
-            }
-            Some(Window {
-                start_sec: chunk.start_sec,
-                end_sec: chunk.end_sec,
-                visual_text: Some(text.to_string()),
-                summary_text: None,
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut windows = understanding_windows(understanding_chunks);
 
     let mut starts = transcript_chunks
         .iter()
@@ -715,6 +776,113 @@ fn windows_for_item(
         start += WINDOW_STEP_SEC;
     }
     windows
+}
+
+fn understanding_windows(chunks: &[&ChunkInfo]) -> Vec<Window> {
+    let mut timed = Vec::<(Window, u8)>::new();
+    let mut summary = String::new();
+
+    for chunk in chunks {
+        let Some(text) = chunk
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        let kind = chunk
+            .metadata
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if kind == "summary" || (chunk.start_sec.is_none() && chunk.end_sec.is_none()) {
+            append_unique_text(&mut summary, text, SUMMARY_BUDGET);
+            continue;
+        }
+
+        // Chapter and event records commonly describe the exact same time
+        // range. Treat them as alternate annotations for one searchable
+        // moment, preferring the denser event evidence instead of emitting two
+        // vectors that overweight the same scene.
+        let priority = match kind {
+            "event" => 2,
+            "chapter" => 1,
+            _ => 0,
+        };
+        if let Some((window, current_priority)) = timed.iter_mut().find(|(window, _)| {
+            same_time_range(
+                window.start_sec,
+                window.end_sec,
+                chunk.start_sec,
+                chunk.end_sec,
+            )
+        }) {
+            if priority > *current_priority {
+                window.visual_text = Some(text.to_string());
+                *current_priority = priority;
+            } else if priority == *current_priority {
+                let mut merged = window.visual_text.take().unwrap_or_default();
+                append_unique_text(&mut merged, text, VISUAL_BUDGET);
+                window.visual_text = normalize_optional_text(merged);
+            }
+            continue;
+        }
+        timed.push((
+            Window {
+                start_sec: chunk.start_sec,
+                end_sec: chunk.end_sec,
+                visual_text: Some(text.to_string()),
+                summary_text: None,
+            },
+            priority,
+        ));
+    }
+
+    let mut windows = timed
+        .into_iter()
+        .map(|(window, _)| window)
+        .collect::<Vec<_>>();
+    if let Some(summary_text) = normalize_optional_text(summary) {
+        windows.push(Window {
+            start_sec: None,
+            end_sec: None,
+            visual_text: None,
+            summary_text: Some(summary_text),
+        });
+    }
+    windows
+}
+
+fn same_time_range(
+    left_start: Option<f64>,
+    left_end: Option<f64>,
+    right_start: Option<f64>,
+    right_end: Option<f64>,
+) -> bool {
+    same_optional_time(left_start, right_start) && same_optional_time(left_end, right_end)
+}
+
+fn same_optional_time(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => (left - right).abs() < f64::EPSILON,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn append_unique_text(target: &mut String, text: &str, budget: usize) {
+    let text = text.trim();
+    if text.is_empty() || target.split('\n').any(|existing| existing == text) {
+        return;
+    }
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(text);
+    if target.chars().count() > budget {
+        *target = limit_text(target, budget);
+    }
 }
 
 fn visual_only_windows(
@@ -1186,7 +1354,7 @@ pub fn best_visual_sub_unit_for_query(
     let frame_times = load_frame_times_for_item(&conn, item_id)?;
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, start_sec, end_sec, text, frame_path
+        SELECT id, chunk_type, start_sec, end_sec, text, frame_path
         FROM chunks
         WHERE item_id = ?1
           AND chunk_type IN ('ocr', 'understanding')
@@ -1201,16 +1369,18 @@ pub fn best_visual_sub_unit_for_query(
     let rows = stmt.query_map(params![item_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, Option<f64>>(1)?,
+            row.get::<_, String>(1)?,
             row.get::<_, Option<f64>>(2)?,
-            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<f64>>(3)?,
             row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
 
     let mut best_match = None::<(String, Option<f64>, usize)>;
+    let mut fallback = None::<(String, Option<f64>, bool)>;
     for row in rows {
-        let (id, chunk_start, chunk_end, text, frame_path) = row?;
+        let (id, chunk_type, chunk_start, chunk_end, text, frame_path) = row?;
         let effective_start = chunk_start.or_else(|| {
             frame_path
                 .as_deref()
@@ -1225,6 +1395,15 @@ pub fn best_visual_sub_unit_for_query(
         let Some(text) = text.as_deref() else {
             continue;
         };
+        let is_understanding = chunk_type == "understanding";
+        if fallback
+            .as_ref()
+            .is_none_or(|(_, _, current_is_understanding)| {
+                is_understanding && !*current_is_understanding
+            })
+        {
+            fallback = Some((id.clone(), effective_start, is_understanding));
+        }
         let score = query_text_score(text, pattern.as_deref(), &terms);
         if score > 0
             && best_match
@@ -1237,7 +1416,7 @@ pub fn best_visual_sub_unit_for_query(
     if let Some((id, start, _)) = best_match {
         return Ok(Some((id, start)));
     }
-    Ok(None)
+    Ok(fallback.map(|(id, start, _)| (id, start)))
 }
 
 fn load_frame_times_for_item(
@@ -1355,6 +1534,58 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn commit_generation_rolls_back_units_when_status_update_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "live searchable generation".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let live = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+        let live_id = live[0].id.clone();
+        let mut candidate = live[0].clone();
+        candidate.id = "item-1:unit:v2:candidate:000000".to_string();
+        candidate.content_text = "candidate generation".to_string();
+
+        sqlite::open(&paths)
+            .unwrap()
+            .execute_batch(
+                r#"
+                CREATE TRIGGER fail_search_status_update
+                BEFORE UPDATE OF search_index_status ON items
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced status failure');
+                END;
+                "#,
+            )
+            .unwrap();
+
+        let error =
+            commit_item_retrieval_generation(&paths, "item-1", &[candidate], 1).unwrap_err();
+        assert!(error.to_string().contains("forced status failure"));
+        let conn = sqlite::open(&paths).unwrap();
+        let preserved: (String, String) = conn
+            .query_row(
+                "SELECT id, content_text FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved.0, live_id);
+        assert!(preserved.1.contains("live searchable generation"));
     }
 
     #[test]
@@ -1495,6 +1726,110 @@ mod tests {
             units[0].representative_chunk_id.as_deref(),
             Some("item-1:understanding:event:0000")
         );
+    }
+
+    #[test]
+    fn build_units_merge_chapter_and_event_for_the_same_time_range() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES
+              ('item-1:understanding:chapter:0000', 'item-1', 'understanding', 205, 327, '雨夜的诡秘身影', '{"kind":"chapter"}'),
+              ('item-1:understanding:event:0000', 'item-1', 'understanding', 205, 327, '暴雨中可见树林间的白色人影', '{"kind":"event"}');
+            "#,
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+
+        assert_eq!(units.len(), 1);
+        assert_eq!(
+            units[0].visual_text.as_deref(),
+            Some("暴雨中可见树林间的白色人影")
+        );
+        assert!(!units[0].content_text.contains("雨夜的诡秘身影"));
+    }
+
+    #[test]
+    fn build_units_keeps_untimed_summary_separate_from_timed_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path()).unwrap();
+        seed_item(&paths);
+        let frame_path = temp.path().join("summary-frame.jpg");
+        crate::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[StorageTranscriptChunk {
+                start: 10.0,
+                end: 20.0,
+                text: "spoken evidence with a precise timestamp".to_string(),
+            }],
+            &[],
+            &[StorageOcrChunk::frame(
+                frame_path.clone(),
+                "visible slide label XR-42",
+            )],
+            &[StorageImageChunk::keyframe_at(frame_path, 10.0, 20.0)],
+        )
+        .unwrap();
+        let conn = sqlite::open(&paths).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO chunks (id, item_id, chunk_type, start_sec, end_sec, text, metadata)
+            VALUES (
+                'item-1:understanding:summary',
+                'item-1',
+                'understanding',
+                NULL,
+                NULL,
+                'objective whole-video summary',
+                '{"kind":"summary"}'
+            )
+            "#,
+            [],
+        )
+        .unwrap();
+
+        let units = rebuild_item_retrieval_units(&paths, "item-1", "profile-1").unwrap();
+        let summary = units
+            .iter()
+            .find(|unit| unit.unit_kind == "summary")
+            .expect("summary unit should be built separately");
+
+        assert_eq!(
+            summary.summary_text.as_deref(),
+            Some("objective whole-video summary")
+        );
+        assert_eq!(summary.start_sec, None);
+        assert_eq!(summary.end_sec, None);
+        assert_eq!(summary.transcript_text, None);
+        assert_eq!(summary.ocr_text, None);
+        let representative_chunk_id = summary
+            .representative_chunk_id
+            .as_deref()
+            .expect("summary playback should use a real chunk");
+        let representative_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE id = ?1",
+                [representative_chunk_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(representative_exists, 1);
+        assert!(representative_chunk_id.contains(":keyframe:"));
+        assert_eq!(summary.representative_frame_path, None);
+        assert!(!summary.content_text.contains("spoken evidence"));
+        assert!(!summary.content_text.contains("XR-42"));
+        assert!(units.iter().any(|unit| {
+            unit.unit_kind == "moment"
+                && unit.start_sec.is_some()
+                && unit.transcript_text.is_some()
+                && unit.ocr_text.is_some()
+        }));
     }
 
     #[test]

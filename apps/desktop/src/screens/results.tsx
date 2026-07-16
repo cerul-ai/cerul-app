@@ -1,10 +1,11 @@
-import { AlertTriangle, Search } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import * as api from "../lib/api";
 import { useT, type TFunction } from "../lib/i18n";
 import { resultModality } from "../lib/results";
 import type { ApiStatus, Result, ResultModalityFilter } from "../lib/types";
+import { useClickOutside, useEscapeToClose } from "../lib/use-dismissable";
 import { EmptyState } from "../components/leaf";
 import { ResultCard } from "../components/cards";
 
@@ -217,16 +218,10 @@ export function ResultsScreen({
               />
             ))}
           </FilterGroup>
-          <label className="results-ranking-select">
+          <div className="results-ranking-select">
             <span>{t("results.preference.label")}</span>
-            <select value={rankingPreference} onChange={(event) => onRankingPreferenceChange(event.currentTarget.value as api.SearchRankingPreference)}>
-              <option value="smart">{t("results.preference.smart")}</option>
-              <option value="video">{t("results.preference.video")}</option>
-              <option value="image">{t("results.preference.image")}</option>
-              <option value="document">{t("results.preference.document")}</option>
-              <option value="audio">{t("results.preference.audio")}</option>
-            </select>
-          </label>
+            <RankingPreferenceMenu value={rankingPreference} onChange={onRankingPreferenceChange} />
+          </div>
         </aside>
 
         <main
@@ -263,6 +258,100 @@ export function ResultsScreen({
         </main>
 
       </div>
+    </div>
+  );
+}
+
+const RANKING_PREFERENCES: api.SearchRankingPreference[] = [
+  "smart",
+  "video",
+  "image",
+  "document",
+  "audio",
+];
+
+function RankingPreferenceMenu({
+  value,
+  onChange,
+}: {
+  value: api.SearchRankingPreference;
+  onChange: (value: api.SearchRankingPreference) => void;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(() =>
+    Math.max(0, RANKING_PREFERENCES.indexOf(value)),
+  );
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEscapeToClose(() => setOpen(false), open);
+  useClickOutside(rootRef, () => setOpen(false), open);
+
+  useEffect(() => {
+    setActiveIndex(Math.max(0, RANKING_PREFERENCES.indexOf(value)));
+  }, [value]);
+
+  const label = (preference: api.SearchRankingPreference) =>
+    t(`results.preference.${preference}`);
+
+  function choose(preference: api.SearchRankingPreference) {
+    setOpen(false);
+    if (preference !== value) onChange(preference);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      setOpen(true);
+      setActiveIndex((current) =>
+        (current + direction + RANKING_PREFERENCES.length) % RANKING_PREFERENCES.length,
+      );
+      return;
+    }
+    if (open && event.key === "Enter") {
+      event.preventDefault();
+      choose(RANKING_PREFERENCES[activeIndex]);
+    }
+    if (event.key === "Tab") setOpen(false);
+  }
+
+  return (
+    <div
+      className={open ? "model-combobox results-ranking-menu open" : "model-combobox results-ranking-menu"}
+      ref={rootRef}
+      onKeyDown={handleKeyDown}
+    >
+      <button
+        type="button"
+        className="model-combobox__field"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={t("results.preference.aria")}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="model-combobox__value">{label(value)}</span>
+        <ChevronDown size={15} className="model-combobox__chev" />
+      </button>
+      {open ? (
+        <div className="model-combobox__pop">
+          <div className="model-combobox__list" role="listbox" aria-label={t("results.preference.aria")}>
+            {RANKING_PREFERENCES.map((preference, index) => (
+              <button
+                type="button"
+                key={preference}
+                className={index === activeIndex ? "model-combobox__opt active" : "model-combobox__opt"}
+                role="option"
+                aria-selected={preference === value}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => choose(preference)}
+              >
+                <span className="model-combobox__opt-id">{label(preference)}</span>
+                {preference === value ? <Check size={14} aria-hidden="true" /> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

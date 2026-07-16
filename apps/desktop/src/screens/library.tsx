@@ -9,7 +9,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ItemCard } from "../components/cards";
 import { EmptyState, InlineNotice } from "../components/leaf";
 import * as api from "../lib/api";
@@ -89,6 +89,7 @@ export function LibraryScreen({
   requestConfirm: RequestConfirm;
 }) {
   const t = useT();
+  const queryInputRef = useRef<HTMLInputElement | null>(null);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<LibrarySourceFilter>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | Item["status"]>("all");
@@ -156,6 +157,42 @@ export function LibraryScreen({
       return next.size === current.size ? current : next;
     });
   }, [items]);
+
+  useEffect(() => {
+    const focusSearch = () => {
+      queryInputRef.current?.focus();
+      queryInputRef.current?.select();
+    };
+    window.addEventListener("cerul:focus-library-search", focusSearch);
+    return () => window.removeEventListener("cerul:focus-library-search", focusSearch);
+  }, []);
+
+  useEffect(() => {
+    function handleLibraryKeyDown(event: globalThis.KeyboardEvent) {
+      const target = event.target;
+      if (
+        event.metaKey || event.ctrlKey || event.altKey ||
+        (target instanceof HTMLElement && (
+          target.isContentEditable || target.matches("input, textarea, select")
+        )) ||
+        document.querySelector(".scrim, [role='dialog']") ||
+        filteredItems.length === 0
+      ) {
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      const focusedShell = document.activeElement?.closest<HTMLElement>("[data-library-index]");
+      const currentIndex = Number(focusedShell?.dataset.libraryIndex ?? -1);
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = currentIndex < 0
+        ? (event.key === "ArrowDown" ? 0 : filteredItems.length - 1)
+        : (currentIndex + delta + filteredItems.length) % filteredItems.length;
+      document.querySelector<HTMLElement>(`[data-library-index="${nextIndex}"] .item-card`)?.focus();
+    }
+    window.addEventListener("keydown", handleLibraryKeyDown);
+    return () => window.removeEventListener("keydown", handleLibraryKeyDown);
+  }, [filteredItems.length]);
 
   function clearLibraryFilters() {
     setLibraryQuery("");
@@ -467,7 +504,7 @@ export function LibraryScreen({
           <div className="library-final-toolbar">
             <label className="library-retrieval-search">
               <Search size={17} aria-hidden="true" />
-              <input value={libraryQuery} placeholder={t("library.searchPlaceholder")} aria-label={t("library.searchPlaceholder")} onChange={(event) => setLibraryQuery(event.currentTarget.value)} />
+              <input ref={queryInputRef} value={libraryQuery} placeholder={t("library.searchPlaceholder")} aria-label={t("library.searchPlaceholder")} onChange={(event) => setLibraryQuery(event.currentTarget.value)} />
             </label>
             <span className="library-result-count mono">{t("library.final.items", { count: filteredItems.length })}</span>
             <select className="select" aria-label={t("library.sort.aria")} value={sortKey} onChange={(event) => setSortKey(event.currentTarget.value as "recent" | "longest" | "shortest" | "title")}>
@@ -501,7 +538,7 @@ export function LibraryScreen({
           {items.length > 0 && filteredItems.length > 0 ? (
             <div className={viewMode === "grid" ? "lib-grid library-l3-grid library-view-collection" : "tbl lib-table library-retrieval-table library-view-collection"}>
               {viewMode === "list" ? <div className="lib-table-head" aria-hidden="true"><span>{t("library.col.title")}</span><span>{t("library.col.source")}</span><span>{t("library.col.duration")}</span><span>{t("library.col.indexed")}</span><span>{t("library.col.status")}</span></div> : null}
-              {filteredItems.map((item, index) => <ItemCard key={item.id} item={item} viewMode={viewMode} transitionName={`library-item-${index}`} selectable selected={selectedItemIds.has(item.id)} onSelect={(selected) => toggleItemSelection(item.id, selected)} onOpen={() => onOpenItem(item)} />)}
+              {filteredItems.map((item, index) => <ItemCard key={item.id} item={item} keyboardIndex={index} viewMode={viewMode} transitionName={`library-item-${index}`} selectable selected={selectedItemIds.has(item.id)} onSelect={(selected) => toggleItemSelection(item.id, selected)} onOpen={() => onOpenItem(item)} />)}
             </div>
           ) : items.length === 0 ? (
             <EmptyState title={t("library.empty.none.title")} body={t("library.empty.none.body")} actionLabel={t("library.empty.addSource")} onAction={onAddSource} />

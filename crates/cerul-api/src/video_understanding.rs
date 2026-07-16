@@ -564,7 +564,7 @@ fn write_completed_record(
     write_item_display_title(paths, item_id, display_title.as_deref())?;
     replace_understanding_chunks(paths, item_id, &result, searchable_text.as_deref())?;
     crate::refresh_item_retrieval_units_after_understanding_update(
-        paths, item_id, false, true, true,
+        paths, item_id, false, false, true,
     )?;
     read_understanding_record(paths, item_id)
 }
@@ -615,7 +615,7 @@ fn write_status_record(
         write_item_display_title(paths, item_id, None)?;
         replace_understanding_chunks(paths, item_id, &json!({}), None)?;
         crate::refresh_item_retrieval_units_after_understanding_update(
-            paths, item_id, false, false, true,
+            paths, item_id, false, true, true,
         )?;
     }
     read_understanding_record(paths, item_id)
@@ -787,7 +787,12 @@ fn video_understanding_prompt() -> &'static str {
      language (or, if there is no speech, the dominant on-screen text language) and write every \
      natural-language field — display_title, summary, chapter titles and summaries, event captions, \
      visual and audio descriptions, topics, and searchable_text — in that same language. For example, \
-     if the speech is Chinese, respond in Chinese. Prefer concise, searchable language. Make \
+     if the speech is Chinese, respond in Chinese. Use literal, factual, neutral descriptions \
+     suitable for retrieval, not story narration or editorial copy. Describe only observable \
+     visual and audible evidence. Do not infer plot, genre, intentions, identities, roles, or \
+     relationships; labels such as protagonist, father, or uncle are allowed only when explicitly \
+     spoken or shown as text. Keep chapter titles objective and avoid dramatic adjectives. Avoid \
+     repeating the same wording across a chapter and its events. Prefer concise, searchable language. Make \
      display_title a short content title, not a source filename, URL, platform ID, model name, or \
      provider name. If exact timing is uncertain, estimate a short range. Do not invent people, \
      brands, or text that are not visible or audible."
@@ -815,8 +820,8 @@ fn video_understanding_schema() -> Value {
                     "properties": {
                         "start_sec": { "type": "NUMBER" },
                         "end_sec": { "type": "NUMBER" },
-                        "title": { "type": "STRING" },
-                        "summary": { "type": "STRING" }
+                        "title": { "type": "STRING", "description": "A neutral factual label for the visible activity or setting; no dramatic or editorial language." },
+                        "summary": { "type": "STRING", "description": "A concise factual summary grounded only in visible or audible evidence." }
                     },
                     "required": ["start_sec", "end_sec", "title", "summary"]
                 }
@@ -828,9 +833,9 @@ fn video_understanding_schema() -> Value {
                     "properties": {
                         "start_sec": { "type": "NUMBER" },
                         "end_sec": { "type": "NUMBER" },
-                        "caption": { "type": "STRING" },
-                        "visual": { "type": "STRING" },
-                        "audio": { "type": "STRING" },
+                        "caption": { "type": "STRING", "description": "A neutral factual event label that does not repeat the chapter wording." },
+                        "visual": { "type": "STRING", "description": "Only directly observable visual details, without inferred plot, roles, or relationships." },
+                        "audio": { "type": "STRING", "description": "Only directly audible speech or sounds, without inferred context." },
                         "actions": {
                             "type": "ARRAY",
                             "items": { "type": "STRING" }
@@ -1222,6 +1227,16 @@ mod tests {
     }
 
     #[test]
+    fn understanding_prompt_requires_neutral_observable_descriptions() {
+        let prompt = video_understanding_prompt();
+
+        assert!(prompt.contains("literal, factual, neutral descriptions"));
+        assert!(prompt.contains("Describe only observable visual and audible evidence"));
+        assert!(prompt.contains("avoid dramatic adjectives"));
+        assert!(prompt.contains("Avoid repeating the same wording"));
+    }
+
+    #[test]
     fn read_understanding_record_returns_not_started_when_missing() {
         let temp = tempfile::tempdir().unwrap();
         let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
@@ -1236,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn write_completed_record_refreshes_retrieval_units_and_queues_rebuild() {
+    fn write_completed_record_queues_retrieval_refresh_without_replacing_live_units() {
         let temp = tempfile::tempdir().unwrap();
         let paths = cerul_storage::AppPaths::from_data_dir(temp.path()).unwrap();
         let conn = cerul_storage::sqlite::open(&paths).unwrap();
@@ -1255,6 +1270,33 @@ mod tests {
             [],
         )
         .unwrap();
+        drop(conn);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "previous searchable generation".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let baseline_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            baseline_units.len(),
+            1,
+        )
+        .unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
 
         let record = write_completed_record(
             &paths,
@@ -1305,8 +1347,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(retrieval_text.contains("Checkout flow with code XR-42"));
-        assert!(retrieval_text.contains("XR-42"));
+        assert!(retrieval_text.contains("previous searchable generation"));
+        assert!(!retrieval_text.contains("XR-42"));
         let item_index_state: (String, i64, i64) = conn
             .query_row(
                 r#"
@@ -1318,23 +1360,49 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(item_index_state, ("pending".to_string(), 2, 0));
-        let (running_jobs, queued_jobs): (i64, i64) = conn
+        assert_eq!(
+            item_index_state,
+            ("indexed".to_string(), baseline_units.len() as i64, 1)
+        );
+        let (running_media_jobs, queued_media_jobs, queued_refresh_jobs): (i64, i64, i64) = conn
             .query_row(
                 r#"
                 SELECT
-                  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END),
-                  SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END)
+                  SUM(CASE WHEN job_type = 'index_video' AND status = 'running' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN job_type = 'index_video' AND status = 'queued' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN job_type = 'refresh_search_index' AND status = 'queued' THEN 1 ELSE 0 END)
                 FROM jobs
                 WHERE item_id = 'item-1'
-                  AND job_type = 'index_video'
                 "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(running_jobs, 1);
-        assert_eq!(queued_jobs, 1);
+        assert_eq!(running_media_jobs, 1);
+        assert_eq!(queued_media_jobs, 0);
+        assert_eq!(queued_refresh_jobs, 1);
+
+        // Simulate the queued refresh completing so the live generation now
+        // contains generated understanding text before a later analysis fails.
+        let generated_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            generated_units.len(),
+            1,
+        )
+        .unwrap();
+        let generated_retrieval_text: String = conn
+            .query_row(
+                "SELECT GROUP_CONCAT(content_text, ' ') FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(generated_retrieval_text.contains("XR-42"));
 
         write_status_record(
             &paths,
@@ -1361,7 +1429,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining_understanding_chunks, 0);
-        assert_eq!(remaining_retrieval_units, 0);
+        assert_eq!(remaining_retrieval_units, baseline_units.len() as i64);
+        let cleared_retrieval_text: String = conn
+            .query_row(
+                "SELECT GROUP_CONCAT(content_text, ' ') FROM retrieval_units WHERE item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(cleared_retrieval_text.contains("previous searchable generation"));
+        assert!(!cleared_retrieval_text.contains("XR-42"));
+        let cleared_index_state: (String, i64, i64) = conn
+            .query_row(
+                r#"
+                SELECT search_index_status, search_index_unit_count, search_index_vector_count
+                FROM items WHERE id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            cleared_index_state,
+            ("pending".to_string(), baseline_units.len() as i64, 0)
+        );
         let item_metadata: String = conn
             .query_row(
                 "SELECT metadata FROM items WHERE id = 'item-1'",
@@ -1398,6 +1489,33 @@ mod tests {
             [],
         )
         .unwrap();
+        drop(conn);
+        cerul_storage::write_media_sqlite_chunks_with_ocr_and_lines(
+            &paths,
+            "item-1",
+            &[cerul_storage::StorageTranscriptChunk {
+                start: 0.0,
+                end: 8.0,
+                text: "baseline searchable content".to_string(),
+            }],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let profile = cerul_storage::vectors::ensure_active_embedding_profile(&paths).unwrap();
+        let baseline_units =
+            cerul_storage::rebuild_item_retrieval_units(&paths, "item-1", &profile.id).unwrap();
+        cerul_storage::set_item_search_index_status(
+            &paths,
+            "item-1",
+            "indexed",
+            None,
+            baseline_units.len(),
+            1,
+        )
+        .unwrap();
+        let conn = cerul_storage::sqlite::open(&paths).unwrap();
 
         let record = write_completed_record(
             &paths,
@@ -1431,8 +1549,26 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(!retrieval_text.contains("Old generated title"));
-        assert!(retrieval_text.contains("fresh searchable text"));
+        assert!(retrieval_text.contains("Old generated title"));
+        assert!(retrieval_text.contains("baseline searchable content"));
+        assert!(!retrieval_text.contains("fresh searchable text"));
+        let (search_status, queued_refreshes): (String, i64) = conn
+            .query_row(
+                r#"
+                SELECT i.search_index_status,
+                       (SELECT COUNT(*) FROM jobs j
+                        WHERE j.item_id = i.id
+                          AND j.job_type = 'refresh_search_index'
+                          AND j.status = 'queued')
+                FROM items i
+                WHERE i.id = 'item-1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(search_status, "indexed");
+        assert_eq!(queued_refreshes, 1);
     }
 
     #[test]

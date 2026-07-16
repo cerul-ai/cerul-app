@@ -123,10 +123,9 @@ const updaterController = createUpdaterController({
   installUpdate: installDesktopUpdate,
 });
 
-type MainWindowCommand = {
-  type: "new_source";
-  triggeredByAccelerator: boolean;
-};
+type MainWindowCommand =
+  | { type: "new_source"; triggeredByAccelerator: boolean }
+  | { type: "find"; triggeredByAccelerator: boolean };
 
 type ApplicationMenuShortcuts = {
   newSource?: string;
@@ -2631,6 +2630,27 @@ function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemC
     },
     ...(isMac ? [] : [{ type: "separator" as const }, { role: "quit" as const }]),
   ];
+  const editSubmenu: MenuItemConstructorOptions[] = [
+    { role: "undo" },
+    { role: "redo" },
+    { type: "separator" },
+    { role: "cut" },
+    { role: "copy" },
+    { role: "paste" },
+    ...(isMac ? [{ role: "pasteAndMatchStyle" as const }] : []),
+    { role: "delete" },
+    { role: "selectAll" },
+    { type: "separator" },
+    {
+      label: "Find",
+      accelerator: "CommandOrControl+F",
+      click: (_menuItem, _window, event) =>
+        sendMainWindowCommand({
+          type: "find",
+          triggeredByAccelerator: Boolean(event.triggeredByAccelerator),
+        }),
+    },
+  ];
   return [
     ...(isMac
       ? [
@@ -2654,7 +2674,7 @@ function applicationMenuTemplate(shortcuts: ApplicationMenuShortcuts): MenuItemC
         ]
       : []),
     { label: "File", submenu: fileSubmenu },
-    { role: "editMenu" },
+    { label: "Edit", submenu: editSubmenu },
     { role: "viewMenu" },
     windowMenuTemplate(isMac),
   ];

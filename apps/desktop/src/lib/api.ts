@@ -65,6 +65,9 @@ export type JobRecord = {
 export type JobStatusSummary = {
   queued_jobs: number;
   running_jobs: number;
+  search_refresh_jobs: number;
+  queued_search_refresh_jobs: number;
+  running_search_refresh_jobs: number;
   failed_jobs: number;
   attention_jobs: number;
   indexed_items: number;

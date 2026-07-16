@@ -69,7 +69,7 @@ rg -qF "<BrandMark className=\"overlay-mark\" />" apps/desktop/src/components/ov
 rg -qF "<BrandMark className=\"overlay-watermark\" />" apps/desktop/src/components/overlay-leaf.tsx
 rg -qF "<BrandMark className=\"onb-logo-mark\" />" apps/desktop/src/screens/onboarding.tsx
 rg -qF "<BrandMark className=\"onb-folder-mark\" />" apps/desktop/src/screens/onboarding.tsx
-rg -qF "<BrandMark className=\"onb-folder-mark\" />" apps/desktop/src/screens/home.tsx
+rg -qF "<BrandMark className=\"first-stage-mark\" />" apps/desktop/src/screens/home.tsx
 ! rg -qF "function BrandGlyph" apps/desktop/src
 ! rg -qF "viewBox=\"0 0 508 508\"" apps/desktop/src
 ! rg -qF "<rect width=\"211\"" apps/desktop/src

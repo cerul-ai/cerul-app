@@ -18,7 +18,18 @@ rg -qF 'apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
 rg -qF 'const taskAttentionCount = apiStatus === "online" && data.jobSummary' apps/desktop/src/App.tsx
 rg -qF 'data.jobSummary.attention_jobs' apps/desktop/src/App.tsx
 rg -qF 'attention_jobs: attention_job_count(&conn)?' crates/cerul-api/src/jobs.rs
-rg -qF "active.status IN ('queued', 'running')" crates/cerul-api/src/jobs.rs
+rg -qF 'pub search_refresh_jobs: u64' crates/cerul-api/src/jobs.rs
+rg -qF 'pub queued_search_refresh_jobs: u64' crates/cerul-api/src/jobs.rs
+rg -qF 'pub running_search_refresh_jobs: u64' crates/cerul-api/src/jobs.rs
+rg -qF 'data.jobSummary?.search_refresh_jobs ?? 0' apps/desktop/src/lib/search-index.ts
+rg -qF 'data.jobSummary?.running_search_refresh_jobs ?? 0' apps/desktop/src/lib/search-index.ts
+rg -qF 'const paused = settingBoolean(data.settings, "indexing_paused", false)' apps/desktop/src/lib/search-index.ts
+rg -qF 'data.jobSummary?.running_search_refresh_jobs ?? 0' apps/desktop/src/App.tsx
+rg -qF 'const backgroundActivityCount = activeJobCount + syncingSourceCount + searchRefreshJobCount' apps/desktop/src/App.tsx
+rg -qF '!searchIndexIsSettling(nextData)' apps/desktop/src/App.tsx
+rg -qF 'ROW_NUMBER() OVER (' crates/cerul-api/src/jobs.rs
+rg -qF "j.job_type != 'refresh_search_index'" crates/cerul-api/src/jobs.rs
+rg -qF 'WHERE j.logical_rank = 1' crates/cerul-api/src/jobs.rs
 rg -qF 'indexedItemCount={indexedItemCount}' apps/desktop/src/App.tsx
 rg -qF 'taskAttentionCount={taskAttentionCount}' apps/desktop/src/App.tsx
 rg -qF 'className="badge-count task-attention-count"' apps/desktop/src/components/bridge.tsx
@@ -82,15 +93,26 @@ rg -qF ".jobs-tl-card" apps/desktop/src/styles/handoff.css
 rg -qF ".jobs-ledger-workspace.has-issue" apps/desktop/src/styles/selected-ui.css
 rg -qF ".jobs-transfer-ghost" apps/desktop/src/styles/selected-ui.css
 rg -qF 'className="jobs-current-inspector"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'useEscapeToClose(onClose, true)' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className="jobs-ledger-back"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className="jobs-activity-event is-current"' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'className={`jobs-ledger-row${inspectedJob?.id === job.id ? " is-inspected" : ""}' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'target.closest("button, a[href]' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'entry.events[0].progress = jobStepProgressPercent(job)' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF 'selectedIndex < 0' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF '(event.key === "ArrowDown" ? 0 : pageJobs.length - 1)' apps/desktop/src/dialogs/jobs-sheet.tsx
+! rg -qF 't("jobs.inspector.location")' apps/desktop/src/dialogs/jobs-sheet.tsx
+rg -qF '.jobs-ledger-row.is-inspected::before' apps/desktop/src/styles/selected-ui.css
+rg -qF '.jobs-activity-event' apps/desktop/src/styles/selected-ui.css
 rg -qF 'className={item?.thumbnailUrl ? "jobs-ledger-thumb has-image" : "jobs-ledger-thumb"}' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'const nextIssue = filteredJobs.find' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'if (activeIssueJob && jobGroup(activeIssueJob) === "failed") return;' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'const selectedJobs = pageJobs.filter' apps/desktop/src/dialogs/jobs-sheet.tsx
 ! rg -qF 'const selectedJobs = ledgerJobs.filter' apps/desktop/src/dialogs/jobs-sheet.tsx
 rg -qF 'const queuedJobIds = jobsSheetVisibleJobs' apps/desktop/src/App.tsx
-rg -qF 'grid-template-columns:0 minmax(0,1fr) 276px' apps/desktop/src/styles/selected-ui.css
+rg -qF 'grid-template-columns:0 minmax(0,1fr) 340px' apps/desktop/src/styles/selected-ui.css
 rg -qF '.jobs-ledger-page {' apps/desktop/src/styles/selected-ui.css
 rg -qF '.jobs-ledger-dialog.jobs-sheet.is-page {' apps/desktop/src/styles/selected-ui.css
 rg -qF "scripts/smoke-jobs-ui.sh" scripts/smoke.sh
 
-echo "jobs_ui_smoke bridge_glance=T1_unresolved_attention_only route_page=enabled modal_removed_from_view_all=true layout=J6_ledger_plus_current_inspector thumbnails=enabled anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop recovered_failures=quiet indexed_availability=summary_backed stale_issue_reset=enabled pause_cancel_controls=enabled"
+echo "jobs_ui_smoke bridge_glance=T1_unresolved_attention_only route_page=enabled esc_back=enabled title_left_back=enabled selection=settings_sweep timeline=vertical location=removed columns=safe layout=J6_ledger_plus_current_inspector anomaly=H2_priority_cabin repair_roundtrip=A_entity_loop"

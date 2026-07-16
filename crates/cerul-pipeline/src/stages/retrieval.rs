@@ -32,6 +32,10 @@ impl RetrievalEmbeddingPlan {
     pub(crate) fn image_paths(&self) -> &[PathBuf] {
         &self.image_paths
     }
+
+    pub(crate) fn units(&self) -> &[StorageRetrievalUnit] {
+        &self.units
+    }
 }
 
 pub(crate) struct RetrievalIndexWriteSummary {
@@ -39,19 +43,27 @@ pub(crate) struct RetrievalIndexWriteSummary {
     pub(crate) vector_count: usize,
     pub(crate) vector_index_write_ms: u64,
     pub(crate) stale_vectors_deleted: usize,
+    pub(crate) records: Vec<cerul_storage::vectors::VectorRecord>,
 }
 
-pub(crate) fn rebuild_retrieval_embedding_plan(
+pub(crate) fn build_retrieval_embedding_plan(
     paths: &AppPaths,
     item_id: &str,
     profile_id: &str,
     include_image_embeddings: bool,
+    generation: &str,
 ) -> anyhow::Result<RetrievalEmbeddingPlan> {
-    let units = cerul_storage::rebuild_item_retrieval_units(paths, item_id, profile_id)?;
+    let mut units = cerul_storage::build_item_retrieval_units(paths, item_id, profile_id)?;
     anyhow::ensure!(
         !units.is_empty(),
         "no retrieval units generated for item {item_id}"
     );
+    for unit in &mut units {
+        unit.id = format!(
+            "{}:unit:v{}:{generation}:{:06}",
+            unit.item_id, unit.index_version, unit.unit_index
+        );
+    }
     Ok(plan_from_units(units, include_image_embeddings))
 }
 
@@ -98,12 +110,10 @@ fn plan_from_units(
 
 pub(crate) async fn write_unified_retrieval_vectors(
     paths: &AppPaths,
-    item_id: &str,
     plan: &RetrievalEmbeddingPlan,
     text_vectors: &[Vec<f32>],
     image_vectors: &[Vec<f32>],
     profile: &EmbeddingProfile,
-    replace_existing_vectors: bool,
 ) -> anyhow::Result<RetrievalIndexWriteSummary> {
     anyhow::ensure!(
         text_vectors.len() == plan.text_unit_indexes.len(),
@@ -144,43 +154,24 @@ pub(crate) async fn write_unified_retrieval_vectors(
     }
 
     let vector_index_started = Instant::now();
-    let stale_vectors_deleted = if replace_existing_vectors {
-        cerul_storage::vectors::replace_item_unified_embeddings_for_profile(
-            paths,
-            item_id,
-            &records,
-            profile,
-            cerul_storage::SEARCH_INDEX_VERSION,
-        )
-        .await?;
-        0
-    } else {
-        cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
-            paths,
-            &records,
-            profile,
-            cerul_storage::SEARCH_INDEX_VERSION,
-        )
-        .await?;
-        cerul_storage::vectors::delete_stale_item_unified_embeddings_for_profile(
-            paths,
-            item_id,
-            &records,
-            profile,
-            cerul_storage::SEARCH_INDEX_VERSION,
-        )
-        .await?
-    };
-    let vector_index_write_ms = vector_index_started.elapsed().as_millis() as u64;
-    cerul_storage::set_item_search_index_status(
+    if let Err(error) = cerul_storage::vectors::upsert_item_unified_embeddings_for_profile(
         paths,
-        item_id,
-        "indexed",
-        None,
-        plan.units.len(),
-        records.len(),
-    )?;
-
+        &records,
+        profile,
+        cerul_storage::SEARCH_INDEX_VERSION,
+    )
+    .await
+    {
+        let _ = cerul_storage::vectors::delete_unified_embedding_records_for_profile(
+            paths,
+            &records,
+            profile,
+            cerul_storage::SEARCH_INDEX_VERSION,
+        )
+        .await;
+        return Err(error);
+    }
+    let vector_index_write_ms = vector_index_started.elapsed().as_millis() as u64;
     Ok(RetrievalIndexWriteSummary {
         write_summary: StorageWriteSummary {
             transcript_chunks: plan.units.len(),
@@ -190,7 +181,8 @@ pub(crate) async fn write_unified_retrieval_vectors(
         },
         vector_count: records.len(),
         vector_index_write_ms,
-        stale_vectors_deleted,
+        stale_vectors_deleted: 0,
+        records,
     })
 }
 
