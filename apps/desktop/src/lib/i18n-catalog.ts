@@ -383,8 +383,7 @@ export const zh: Record<string, string> = {
   "settings.section.about": "关于",
   "settings.section.connectAgent": "接入 Agent",
   "settings.section.connectAgent.eyebrow": "让本地 Agent 搜索你的资料库",
-  "settings.connectAgent.desc":
-    "接入后，Agent 在需要查证视频/播客内容时会自动调用本地搜索 API，并拿到带时间戳的可引用出处。数据不出本机。",
+  "settings.connectAgent.desc": "接入后，Agent 在需要查证视频/播客内容时会自动调用本地搜索 API，并拿到带时间戳的可引用出处。数据不出本机。",
   "settings.connectAgent.offline": "本地 API 未响应，请确认 Cerul 服务正在运行",
   "settings.connectAgent.offline.retry": "重试",
   "settings.connectAgent.step1.title": "1 · 选择你的 Agent",
@@ -411,8 +410,7 @@ export const zh: Record<string, string> = {
   "settings.connectAgent.copied": "已复制",
   "settings.connectAgent.preview.toggle": "查看将写入的 SKILL.md",
   "settings.connectAgent.plugin.title": "Claude Code 插件",
-  "settings.connectAgent.plugin.hint":
-    "Skill 与 /cerul 命令打包为插件，在 Claude Code 中执行以下命令安装；已安装时会提示更新",
+  "settings.connectAgent.plugin.hint": "Skill 与 /cerul 命令打包为插件，在 Claude Code 中执行以下命令安装；已安装时会提示更新",
   "settings.connectAgent.step3.title": "3 · 验证",
   "settings.connectAgent.verify.idle": "用资料库里最近的内容试一次搜索",
   "settings.connectAgent.verify.run": "开始验证",
@@ -427,13 +425,11 @@ export const zh: Record<string, string> = {
   "settings.connectAgent.verify.caption": "你的 Agent 拿到的就是这样的引文",
   "settings.connectAgent.faq.title": "疑难解答",
   "settings.connectAgent.faq.notCalled.q": "Agent 没调用？",
-  "settings.connectAgent.faq.notCalled.a":
-    "确认 Cerul 在运行（API 随应用启动）；重启一次 Agent 让它重新加载 Skill。",
+  "settings.connectAgent.faq.notCalled.a": "确认 Cerul 在运行（API 随应用启动）；重启一次 Agent 让它重新加载 Skill。",
   "settings.connectAgent.faq.port.q": "改过端口？",
   "settings.connectAgent.faq.port.a": "重装 Skill 即可，安装器会写入当前端口。",
   "settings.connectAgent.faq.lan.q": "局域网访问？",
-  "settings.connectAgent.faq.lan.a":
-    "在「高级」中绑定 0.0.0.0 并设置远程密钥；Skill 默认只写本机地址。",
+  "settings.connectAgent.faq.lan.a": "在「高级」中绑定 0.0.0.0 并设置远程密钥；Skill 默认只写本机地址。",
   "settings.connectAgent.docs": "原生 HTTP 接入 · API 文档",
   "settings.section.account": "帐户",
   "settings.account.intro": "登录 Cerul Cloud 以使用云端额度、同步与 Pro 功能。本地搜索无需登录。",
@@ -2070,8 +2066,7 @@ export const en: Record<string, string> = {
   "settings.section.about": "About",
   "settings.section.connectAgent": "Connect Agent",
   "settings.section.connectAgent.eyebrow": "Let local agents search your library",
-  "settings.connectAgent.desc":
-    "Once connected, your agent automatically calls the local search API when it needs to check what a video or podcast said, and gets timestamped, citable evidence. Nothing leaves this machine.",
+  "settings.connectAgent.desc": "Once connected, your agent automatically calls the local search API when it needs to check what a video or podcast said, and gets timestamped, citable evidence. Nothing leaves this machine.",
   "settings.connectAgent.offline": "The local API is not responding. Make sure the Cerul service is running.",
   "settings.connectAgent.offline.retry": "Retry",
   "settings.connectAgent.step1.title": "1 · Choose your agent",
@@ -2093,14 +2088,12 @@ export const en: Record<string, string> = {
   "settings.connectAgent.oneClick.uninstall": "Uninstall",
   "settings.connectAgent.oneClick.desktopOnly": "One-click install is only available in the desktop app",
   "settings.connectAgent.cli.title": "Or use the command line",
-  "settings.connectAgent.cli.hint":
-    "For scripted setups; produces the same bundle as one-click install, generated for the current port",
+  "settings.connectAgent.cli.hint": "For scripted setups; produces the same bundle as one-click install, generated for the current port",
   "settings.connectAgent.copy": "Copy",
   "settings.connectAgent.copied": "Copied",
   "settings.connectAgent.preview.toggle": "Preview the SKILL.md that will be written",
   "settings.connectAgent.plugin.title": "Claude Code plugin",
-  "settings.connectAgent.plugin.hint":
-    "The skill plus a /cerul command, packaged as a plugin. Run these commands inside Claude Code; re-running prompts an update.",
+  "settings.connectAgent.plugin.hint": "The skill plus a /cerul command, packaged as a plugin. Run these commands inside Claude Code; re-running prompts an update.",
   "settings.connectAgent.step3.title": "3 · Verify",
   "settings.connectAgent.verify.idle": "Runs one real search against your library",
   "settings.connectAgent.verify.run": "Verify",
@@ -2115,13 +2108,11 @@ export const en: Record<string, string> = {
   "settings.connectAgent.verify.caption": "This is exactly what your agent receives",
   "settings.connectAgent.faq.title": "Troubleshooting",
   "settings.connectAgent.faq.notCalled.q": "Agent never calls the API? ",
-  "settings.connectAgent.faq.notCalled.a":
-    "Make sure Cerul is running (the API starts with the app), then restart the agent so it reloads the skill.",
+  "settings.connectAgent.faq.notCalled.a": "Make sure Cerul is running (the API starts with the app), then restart the agent so it reloads the skill.",
   "settings.connectAgent.faq.port.q": "Changed the port? ",
   "settings.connectAgent.faq.port.a": "Reinstall the skill — the installer writes the current port.",
   "settings.connectAgent.faq.lan.q": "LAN access? ",
-  "settings.connectAgent.faq.lan.a":
-    "Bind to 0.0.0.0 and set a remote key under Advanced; the skill only writes the loopback address by default.",
+  "settings.connectAgent.faq.lan.a": "Bind to 0.0.0.0 and set a remote key under Advanced; the skill only writes the loopback address by default.",
   "settings.connectAgent.docs": "Raw HTTP access · API reference",
   "settings.section.account": "Account",
   "settings.account.intro": "Sign in to Cerul Cloud for managed credits, sync, and Pro features. Local search works without an account.",
