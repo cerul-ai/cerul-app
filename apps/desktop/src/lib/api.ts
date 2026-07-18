@@ -254,6 +254,11 @@ type V1SearchResult = {
     snippet: string;
     quote: string;
   };
+  evidence?: {
+    preview?: { url: string } | null;
+    open_in_cerul?: string | null;
+  } | null;
+  score?: { match: number | null } | null;
 };
 
 export type EntitySummary = {
@@ -760,6 +765,80 @@ export function isAgentExperienceEnabled() {
 
 export async function listAgentTools() {
   return fetchV1Json<AgentToolsResponse>("/agent/tools");
+}
+
+export type AgentSkillFile = {
+  path: string;
+  content: string;
+};
+
+export type AgentSkillBundle = {
+  request_id: string;
+  version: string;
+  dir_name: string;
+  files: AgentSkillFile[];
+};
+
+export async function getAgentSkillBundle() {
+  return fetchV1Json<AgentSkillBundle>("/agent/skill");
+}
+
+export type V1StatusSummary = {
+  status: string;
+  version: string;
+  library: {
+    total_items: number;
+    indexed_items: number;
+  };
+  search: {
+    retrieval_mode: string;
+  };
+};
+
+export async function getV1Status() {
+  return fetchV1Json<V1StatusSummary>("/status");
+}
+
+export type AgentConnectProbe = {
+  durationMs: number;
+  result: {
+    title: string;
+    timestamp: string | null;
+    quote: string;
+    openInCerul: string | null;
+    previewUrl: string | null;
+    match: number | null;
+  } | null;
+};
+
+// Runs the same search an agent would run, to prove the connection end to end.
+export async function probeAgentSearch(query: string): Promise<AgentConnectProbe> {
+  const startedAt = performance.now();
+  const response = await fetchV1Json<{ results: V1SearchResult[] }>("/search", {
+    method: "POST",
+    body: JSON.stringify({ query, max_results: 1, target: "local" }),
+  });
+  const durationMs = Math.round(performance.now() - startedAt);
+  const first = response.results[0];
+  if (!first) {
+    return { durationMs, result: null };
+  }
+  return {
+    durationMs,
+    result: {
+      title: first.item.title,
+      timestamp: first.time.timestamp,
+      quote: first.text.quote || first.text.snippet,
+      openInCerul: first.evidence?.open_in_cerul ?? null,
+      previewUrl: first.evidence?.preview?.url ?? null,
+      match: first.score?.match ?? null,
+    },
+  };
+}
+
+export async function recentItemTitle(): Promise<string | null> {
+  const response = await fetchV1Json<{ items: Array<{ title: string }> }>("/items?limit=1");
+  return response.items[0]?.title ?? null;
 }
 
 export async function askAgentLibrary(q: string, limit = 6, locale?: string) {

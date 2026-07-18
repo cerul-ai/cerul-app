@@ -1,0 +1,14 @@
+{
+  "name": "cerul",
+  "owner": {
+    "name": "Cerul",
+    "url": "https://github.com/cerul-ai/cerul-app"
+  },
+  "plugins": [
+    {
+      "name": "cerul",
+      "source": "./plugins/cerul",
+      "description": "Search your local Cerul video library from Claude Code: timestamped, citable evidence from videos, podcasts, and talks. 让 Claude Code 搜索你的本地视频资料库。"
+    }
+  ]
+}

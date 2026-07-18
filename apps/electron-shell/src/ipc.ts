@@ -1,4 +1,11 @@
 import { app, dialog, ipcMain } from "electron";
+import {
+  detectAgentTargets,
+  installAgentSkill,
+  uninstallAgentSkill,
+  type AgentConnectTargetId,
+  type AgentSkillFilePayload,
+} from "./agent-connect";
 import { appScheme } from "./protocol";
 import type { UpdaterCheckOptions } from "./updater";
 
@@ -136,4 +143,29 @@ export function registerIpcHandlers(handlers: IpcHandlers) {
       window: payload.window ?? "renderer",
     });
   });
+  ipcMain.handle("cerul:agent-connect-detect", async (event) => {
+    assertTrustedIpcSender(event);
+    return detectAgentTargets();
+  });
+  ipcMain.handle(
+    "cerul:agent-connect-install",
+    async (
+      event,
+      payload: {
+        target?: AgentConnectTargetId;
+        baseDir?: string;
+        files: AgentSkillFilePayload[];
+      },
+    ) => {
+      assertTrustedIpcSender(event);
+      return installAgentSkill(payload);
+    },
+  );
+  ipcMain.handle(
+    "cerul:agent-connect-uninstall",
+    async (event, payload: { target?: AgentConnectTargetId; baseDir?: string }) => {
+      assertTrustedIpcSender(event);
+      return uninstallAgentSkill(payload);
+    },
+  );
 }
