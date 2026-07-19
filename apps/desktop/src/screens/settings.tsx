@@ -3910,7 +3910,9 @@ const CONNECT_SKILL_DIR_LABELS: Record<AgentConnectTargetId, string> = {
 function connectCurlCommand(target: ConnectTargetChoice) {
   const dir =
     target === "other" ? "<skills-dir>" : CONNECT_SKILL_DIR_LABELS[target];
-  return `curl -fsSL ${localApiBaseUrl()}/v1/agent/skill.tar | tar -x -C ${dir}`;
+  // mkdir -p first: tar -C fails on first-time setups where the skills
+  // directory does not exist yet.
+  return `mkdir -p ${dir} && curl -fsSL ${localApiBaseUrl()}/v1/agent/skill.tar | tar -x -C ${dir}`;
 }
 
 const CONNECT_PLUGIN_COMMANDS = `/plugin marketplace add cerul-ai/cerul-app
@@ -4001,12 +4003,10 @@ function ConnectAgentSettings() {
         setVerify({ state: "empty" });
         return;
       }
-      const title = await api.recentItemTitle().catch(() => null);
-      const probe = await api.probeAgentSearch(title ?? "video");
-      if (!probe.result) {
-        setVerify({ state: "empty" });
-        return;
-      }
+      const query = await api.recentIndexedProbeQuery().catch(() => null);
+      const probe = await api.probeAgentSearch(query ?? "video");
+      // Library is non-empty here, so a result-less probe still proves the
+      // API works — show connected without the citation card, not "empty".
       setVerify({ state: "ok", probe });
     } catch (error) {
       setCoreState("offline");

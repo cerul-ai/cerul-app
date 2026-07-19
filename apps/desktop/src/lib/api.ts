@@ -836,9 +836,31 @@ export async function probeAgentSearch(query: string): Promise<AgentConnectProbe
   };
 }
 
-export async function recentItemTitle(): Promise<string | null> {
-  const response = await fetchV1Json<{ items: Array<{ title: string }> }>("/items?limit=1");
-  return response.items[0]?.title ?? null;
+// Builds the verification query from actually indexed text (a transcript
+// snippet) rather than the item title — titles are not guaranteed to appear in
+// the retrieval index, which made the probe report an empty library falsely.
+export async function recentIndexedProbeQuery(): Promise<string | null> {
+  const response = await fetchV1Json<{ items: Array<{ id: string; title: string }> }>(
+    "/items?limit=1&status=indexed",
+  );
+  const item = response.items[0];
+  if (!item) {
+    return null;
+  }
+  try {
+    const chunkResponse = await fetchV1Json<{
+      chunks: Array<{ text: { content: string | null; snippet: string | null } }>;
+    }>(`/items/${encodeURIComponent(item.id)}/chunks?limit=5&type=transcript`);
+    for (const chunk of chunkResponse.chunks) {
+      const text = (chunk.text.snippet || chunk.text.content || "").trim();
+      if (text.length >= 8) {
+        return text.split(/\s+/).slice(0, 12).join(" ").slice(0, 80);
+      }
+    }
+  } catch {
+    // Chunk fetch is best-effort; fall back to the title below.
+  }
+  return item.title || null;
 }
 
 export async function askAgentLibrary(q: string, limit = 6, locale?: string) {
