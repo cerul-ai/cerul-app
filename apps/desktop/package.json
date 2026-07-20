@@ -14,9 +14,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
   },
   "dependencies": {
-    "@fontsource/hanken-grotesk": "^5.2.8",
-    "@fontsource/jetbrains-mono": "^5.2.8",
-    "@fontsource/space-grotesk": "^5.2.10",
+    "@fontsource/hanken-grotesk": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
     "lucide-react": "^0.577.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
