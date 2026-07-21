@@ -8,6 +8,11 @@
     "node": ">=22",
     "pnpm": "9.15.9"
   },
+  "pnpm": {
+    "overrides": {
+      "js-yaml": "^4.3.0"
+    }
+  },
   "scripts": {
     "dev": "./run.sh",
     "dev:electron": "pnpm --filter @cerul/electron-shell dev",
