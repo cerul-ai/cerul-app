@@ -6,6 +6,7 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    inject_app_version();
     println!("cargo:rerun-if-env-changed=ZVEC_ROOT");
     println!("cargo:rerun-if-env-changed=ZVEC_LIB_DIR");
     println!("cargo:rerun-if-env-changed=ZVEC_BUNDLED_WHEEL_PATH");
@@ -25,6 +26,20 @@ fn main() {
     if let Err(error) = stage_zvec_runtime_library(&target_os) {
         println!("cargo:warning=failed to stage zvec runtime library next to cerul-api: {error}");
     }
+}
+
+fn inject_app_version() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let app_manifest = manifest_dir.join("../../package.json");
+    println!("cargo:rerun-if-changed={}", app_manifest.display());
+
+    let contents = fs::read_to_string(&app_manifest).expect("read root package.json");
+    let package: serde_json::Value =
+        serde_json::from_str(&contents).expect("parse root package.json");
+    let version = package["version"]
+        .as_str()
+        .expect("root package.json must contain a string version");
+    println!("cargo:rustc-env=CERUL_APP_VERSION={version}");
 }
 
 fn reject_unsupported_zvec_runtime_target(target_os: &str, target_arch: &str) {

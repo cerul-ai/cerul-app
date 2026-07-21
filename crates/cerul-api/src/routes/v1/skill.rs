@@ -15,7 +15,10 @@ use serde::Serialize;
 use crate::{new_id, ApiResult, ApiState};
 
 pub(crate) const SKILL_DIR_NAME: &str = "cerul-video-search";
-pub(crate) const SKILL_VERSION: &str = env!("CARGO_PKG_VERSION");
+// The generated skill ships with the desktop app, whose version is bumped by
+// the release workflow. The Rust workspace version intentionally remains
+// independent, so use the app manifest value injected by build.rs.
+pub(crate) const SKILL_VERSION: &str = env!("CERUL_APP_VERSION");
 
 #[derive(Serialize)]
 pub(crate) struct SkillFile {
@@ -64,7 +67,8 @@ metadata:
 
 Cerul is a local-first video search app running on this machine. It exposes an
 HTTP API at `{base_url}` (loopback only; no auth needed from this machine).
-Queries run locally — nothing leaves the machine.
+Your library stays on this machine. Depending on the processing mode selected
+in Cerul, a search query may be sent to the configured remote model provider.
 
 ## Quick check
 
@@ -275,7 +279,13 @@ mod tests {
         assert!(skill.content.starts_with("---\n"));
         assert!(skill.content.contains("name: cerul-video-search"));
         assert!(skill.content.contains(&format!("version: {SKILL_VERSION}")));
+        let app_manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../package.json"))
+                .expect("root package.json parses");
+        assert_eq!(Some(SKILL_VERSION), app_manifest["version"].as_str());
         assert!(skill.content.contains(BASE));
+        assert!(skill.content.contains("a search query may be sent"));
+        assert!(!skill.content.contains("nothing leaves the machine"));
         let reference = files
             .iter()
             .find(|file| file.path == "references/api.md")

@@ -34,3 +34,6 @@ keyring = "3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+serde_json = "1"

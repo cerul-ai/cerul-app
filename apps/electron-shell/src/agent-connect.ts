@@ -28,7 +28,7 @@ export const SKILL_DIR_NAME = "cerul-video-search";
 
 const TARGET_BASE_DIRS: Record<AgentConnectTargetId, () => string> = {
   "claude-code": () => path.join(os.homedir(), ".claude"),
-  codex: () => path.join(os.homedir(), ".codex"),
+  codex: () => process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"),
 };
 
 function isTargetId(value: unknown): value is AgentConnectTargetId {

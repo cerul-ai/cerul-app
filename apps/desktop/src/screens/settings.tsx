@@ -3932,7 +3932,7 @@ function ConnectAgentSettings() {
   const [detections, setDetections] = useState<AgentConnectDetection[]>([]);
   const [bundle, setBundle] = useState<api.AgentSkillBundle | null>(null);
   const [target, setTarget] = useState<ConnectTargetChoice>("claude-code");
-  const [targetTouched, setTargetTouched] = useState(false);
+  const targetTouchedRef = useRef(false);
   const [installTab, setInstallTab] = useState<"skill" | "plugin">("skill");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
@@ -3957,7 +3957,7 @@ function ConnectAgentSettings() {
           ),
           refreshDetections(),
         ]);
-        if (!cancelled && !targetTouched) {
+        if (!cancelled && !targetTouchedRef.current) {
           const firstDetected = detected.find((item) => item.detected);
           setTarget(firstDetected?.id ?? (detected.length > 0 ? detected[0].id : "other"));
         }
@@ -3972,8 +3972,6 @@ function ConnectAgentSettings() {
     return () => {
       cancelled = true;
     };
-    // targetTouched intentionally omitted: this effect only seeds the default once.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshDetections]);
 
   const selectedDetection =
@@ -4097,7 +4095,7 @@ function ConnectAgentSettings() {
                 className={choice.id === target ? "agent-connect-target active" : "agent-connect-target"}
                 onClick={() => {
                   setTarget(choice.id);
-                  setTargetTouched(true);
+                  targetTouchedRef.current = true;
                 }}
               >
                 <strong>{choice.label}</strong>
