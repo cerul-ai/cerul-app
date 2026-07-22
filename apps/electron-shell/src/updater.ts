@@ -75,8 +75,11 @@ export type UpdaterCheckOptions = {
 };
 
 export type UpdaterControllerOptions = {
+  checkForReleaseUpdate?: () => Promise<DesktopUpdateInfo | null>;
   clearPreparedUpdate: (version?: string) => void;
   getMainWindow: () => BrowserWindow | null;
+  isPackaged?: () => boolean;
+  resolveAutoUpdater?: () => AppUpdater | null;
   markInstallWhenPrepared: () => void;
   prepareDownloadedUpdateForRestart: (
     version: string,
@@ -104,6 +107,11 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
   let updateInstallRequested = false;
   let updaterCheckInstallRequested = false;
   let latestUpdaterState: UpdaterState = { phase: "idle" };
+  const checkForReleaseUpdate = options.checkForReleaseUpdate ?? checkForGitHubReleaseUpdate;
+
+  function isPackaged() {
+    return options.isPackaged?.() ?? app.isPackaged;
+  }
 
   function setState(next: UpdaterState) {
     latestUpdaterState = next;
@@ -179,6 +187,10 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
       return autoUpdaterInstance;
     }
     try {
+      if (options.resolveAutoUpdater) {
+        autoUpdaterInstance = options.resolveAutoUpdater();
+        return autoUpdaterInstance;
+      }
       const mod = require("electron-updater") as typeof import("electron-updater");
       autoUpdaterInstance = mod.autoUpdater;
       return autoUpdaterInstance;
@@ -219,6 +231,12 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
       updaterCheckInstallRequested = false;
       updateInstallRequested = false;
       options.clearPreparedUpdate();
+      // A successful, definitive check must recover from an earlier failure.
+      // Without this transition, an error pill survives for the lifetime of the
+      // process even after the update server confirms that this build is current.
+      if (latestUpdaterState.phase === "error") {
+        setState({ phase: "idle" });
+      }
     });
     updater.on("download-progress", (progress) => {
       const version =
@@ -249,6 +267,18 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
         updateInstallRequested = false;
       }
       options.clearPreparedUpdate();
+      // A provider check can fail while no update exists at all (for example,
+      // Chromium reports ERR_NETWORK_CHANGED during Wi-Fi/VPN or wake routing
+      // changes). Keep background probe failures quiet, and preserve a GitHub
+      // release fallback if that independent probe already found a newer build.
+      // Download/preparation/install failures remain user-visible below.
+      if (
+        latestUpdaterState.phase === "idle" ||
+        (latestUpdaterState.phase === "available" && !latestUpdaterState.canAutoInstall)
+      ) {
+        console.warn("electron-updater provider check failed; keeping current update state", error);
+        return;
+      }
       setState({
         phase: "error",
         version:
@@ -275,13 +305,17 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
   async function refreshManualUpdateState(): Promise<boolean> {
     let info: DesktopUpdateInfo | null = null;
     try {
-      info = await checkForGitHubReleaseUpdate();
+      info = await checkForReleaseUpdate();
     } catch (error) {
       console.error("github update check failed", error);
       return false;
     }
     if (info) {
-      if (latestUpdaterState.phase === "idle" || latestUpdaterState.phase === "available") {
+      if (
+        latestUpdaterState.phase === "idle" ||
+        latestUpdaterState.phase === "available" ||
+        latestUpdaterState.phase === "error"
+      ) {
         setState({
           phase: "available",
           version: info.version,
@@ -290,7 +324,10 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
           releaseNotes: info.releaseNotes,
         });
       }
-    } else if (latestUpdaterState.phase === "available") {
+    } else if (
+      latestUpdaterState.phase === "available" ||
+      latestUpdaterState.phase === "error"
+    ) {
       setState({ phase: "idle" });
     }
     return true;
@@ -306,7 +343,7 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
     // Dev demo hook: CERUL_FAKE_UPDATE=<version> renders the pill without a real
     // release so the flow is reviewable before signed releases exist.
     const fake = process.env.CERUL_FAKE_UPDATE;
-    if (fake && !app.isPackaged) {
+    if (fake && !isPackaged()) {
       setState({
         phase: "available",
         version: normalizeVersion(fake),
@@ -357,7 +394,7 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
     // notarized with a latest-mac.yml that Squirrel.Mac can apply. When that
     // lands, these events upgrade the pill from "open download page" to a
     // one-click download followed by an automatic restart-to-install.
-    if (!app.isPackaged) {
+    if (!isPackaged()) {
       return githubOk;
     }
     const updater = getAutoUpdater();
@@ -414,7 +451,7 @@ export function createUpdaterController(options: UpdaterControllerOptions): Upda
   }
 
   return {
-    checkForUpdate: checkForGitHubReleaseUpdate,
+    checkForUpdate: checkForReleaseUpdate,
     clearInstallRequests: () => {
       updaterCheckInstallRequested = false;
       updateInstallRequested = false;
