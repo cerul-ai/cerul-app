@@ -3904,7 +3904,7 @@ type ConnectTargetChoice = AgentConnectTargetId | "other";
 
 const CONNECT_SKILL_DIR_LABELS: Record<AgentConnectTargetId, string> = {
   "claude-code": "~/.claude/skills",
-  codex: "~/.codex/skills",
+  codex: "$CODEX_HOME/skills (fallback: ~/.codex/skills)",
 };
 
 function shellQuote(value: string) {
@@ -3912,10 +3912,11 @@ function shellQuote(value: string) {
 }
 
 function connectCurlCommand(target: ConnectTargetChoice, detectedSkillsDir?: string) {
-  const dir = target === "other"
-    ? "<skills-dir>"
-    : detectedSkillsDir ?? CONNECT_SKILL_DIR_LABELS[target];
-  const quotedDir = shellQuote(dir);
+  const quotedDir = detectedSkillsDir
+    ? shellQuote(detectedSkillsDir)
+    : target === "codex"
+      ? '"${CODEX_HOME:-$HOME/.codex}/skills"'
+      : shellQuote(target === "other" ? "<skills-dir>" : CONNECT_SKILL_DIR_LABELS[target]);
   // mkdir -p first: tar -C fails on first-time setups where the skills
   // directory does not exist yet.
   return `mkdir -p ${quotedDir} && curl -fsSL ${localApiBaseUrl()}/v1/agent/skill.tar | tar -x -C ${quotedDir}`;
