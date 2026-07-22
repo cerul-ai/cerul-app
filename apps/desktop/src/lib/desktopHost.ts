@@ -83,6 +83,7 @@ export type AgentConnectSkillState = {
 export type AgentConnectDetection = {
   id: AgentConnectTargetId;
   detected: boolean;
+  skillsDir: string;
   skill: AgentConnectSkillState;
 };
 

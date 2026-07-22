@@ -17,7 +17,9 @@ description: >-
 
 Cerul is a local-first video search app running on this machine. It exposes an
 HTTP API at `http://127.0.0.1:23785/v1` (default port; loopback only, no auth
-needed from this machine). Queries run locally — nothing leaves the machine.
+needed from this machine). Your library stays on this machine. Depending on
+the processing mode selected in Cerul, a search query may be sent to the
+configured remote model provider.
 
 ## Quick check
 

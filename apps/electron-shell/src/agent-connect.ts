@@ -21,6 +21,7 @@ export type AgentConnectSkillState = {
 export type AgentConnectDetection = {
   id: AgentConnectTargetId;
   detected: boolean;
+  skillsDir: string;
   skill: AgentConnectSkillState;
 };
 
@@ -72,6 +73,7 @@ export function detectAgentTargets(): AgentConnectDetection[] {
     return {
       id,
       detected,
+      skillsDir: path.join(base, "skills"),
       skill: readSkillState(path.join(base, "skills", SKILL_DIR_NAME)),
     };
   });
