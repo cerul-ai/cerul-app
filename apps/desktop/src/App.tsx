@@ -1472,7 +1472,16 @@ function AppWorkspace() {
     } else if (updaterState.phase === "downloaded") {
       await installDesktopUpdate();
     } else if (updaterState.phase === "error") {
-      window.open(updaterState.releaseUrl, "_blank", "noopener,noreferrer");
+      const fallbackUrl = updaterState.releaseUrl;
+      try {
+        const next = await runDesktopUpdaterCheck({ installWhenDownloaded: true });
+        setUpdaterState(next);
+        if (next.phase === "available" && !next.canAutoInstall) {
+          window.open(next.releaseUrl, "_blank", "noopener,noreferrer");
+        }
+      } catch {
+        window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+      }
     }
   }
 
