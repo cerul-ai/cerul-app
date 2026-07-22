@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod models;
+mod skill;
 
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,8 @@ pub(crate) const API_PATHS: &[(&str, &[&str])] = &[
     ("/v1/status", &["get"]),
     ("/v1/openapi.json", &["get"]),
     ("/v1/agent/tools", &["get"]),
+    ("/v1/agent/skill", &["get"]),
+    ("/v1/agent/skill.tar", &["get"]),
     ("/v1/agent/material-insight", &["post"]),
     ("/v1/agent/storyboard", &["post"]),
     ("/v1/agent/broll-search", &["post"]),
@@ -50,6 +53,8 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/status", get(v1_status))
         .route("/openapi.json", get(v1_openapi_json))
         .route("/agent/tools", get(v1_agent_tools))
+        .route("/agent/skill", get(skill::v1_agent_skill))
+        .route("/agent/skill.tar", get(skill::v1_agent_skill_tar))
         .route("/agent/material-insight", post(v1_material_insight))
         .route("/agent/storyboard", post(v1_storyboard))
         .route("/agent/broll-search", post(v1_broll_search))

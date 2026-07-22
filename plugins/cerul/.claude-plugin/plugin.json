@@ -1,0 +1,9 @@
+{
+  "name": "cerul",
+  "description": "Search your local Cerul video library: timestamped, citable evidence from videos, podcasts, and talks. Requires the Cerul desktop app running on this machine.",
+  "version": "0.0.65",
+  "author": {
+    "name": "Cerul",
+    "url": "https://github.com/cerul-ai/cerul-app"
+  }
+}

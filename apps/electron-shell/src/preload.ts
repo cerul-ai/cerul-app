@@ -39,4 +39,9 @@ contextBridge.exposeInMainWorld("cerulDesktop", {
   startOAuth: (provider: "google" | "github") => ipcRenderer.invoke("cerul:oauth-start", provider),
   reportRendererError: (payload: Record<string, unknown>) =>
     ipcRenderer.invoke("cerul:renderer-error", payload).catch(() => undefined),
+  agentConnectDetect: () => ipcRenderer.invoke("cerul:agent-connect-detect"),
+  agentConnectInstall: (payload: Record<string, unknown>) =>
+    ipcRenderer.invoke("cerul:agent-connect-install", payload),
+  agentConnectUninstall: (payload: Record<string, unknown>) =>
+    ipcRenderer.invoke("cerul:agent-connect-uninstall", payload),
 });

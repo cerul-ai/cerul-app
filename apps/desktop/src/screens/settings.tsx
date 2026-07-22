@@ -18,6 +18,7 @@ import {
   ListChecks,
   Loader2,
   Lock,
+  Plug,
   Podcast,
   RefreshCcw,
   ReceiptText,
@@ -66,17 +67,24 @@ import { appLocaleTag, useLang, useT, type TFunction } from "../lib/i18n";
 import {
   checkForDesktopUpdate,
   downloadDesktopUpdate,
+  detectAgentConnectTargets,
   getDesktopAppVersion,
   getDesktopUpdaterDiagnostics,
   getDesktopUpdaterState,
   hasDesktopHost,
+  installAgentConnectSkill,
   installDesktopUpdate,
   invokeHostCommand,
+  localApiBaseUrl,
   openDialog,
   runDesktopUpdaterCheck,
   subscribeDesktopUpdater,
   syncDesktopApplicationMenu,
+  uninstallAgentConnectSkill,
   validateDesktopApplicationMenuShortcut,
+  type AgentConnectDetection,
+  type AgentConnectInstallPayload,
+  type AgentConnectTargetId,
   type DesktopUpdate,
   type DesktopUpdaterState,
 } from "../lib/desktopHost";
@@ -107,6 +115,7 @@ const settingsSections = [
   "Models",
   "Library",
   "Usage",
+  "ConnectAgent",
   "Advanced",
   "About",
 ] as const;
@@ -118,6 +127,7 @@ const settingsCommandAliases: Record<SettingsSection, string> = {
   Models: "models providers processing ai 模型 供应商 处理方式",
   Library: "library storage cache index 资料库 存储 缓存 索引",
   Usage: "account usage billing cost 账户 用量 账单 费用",
+  ConnectAgent: "agent skill api claude codex mcp 接入 智能体 技能 插件 搜索接口",
   Advanced: "advanced logs reset network 高级 日志 重置 网络",
   About: "about version update license 关于 版本 更新 许可",
 };
@@ -345,6 +355,7 @@ export function SettingsScreen({
     Models: Cpu,
     Usage: Wallet,
     Library,
+    ConnectAgent: Plug,
     Advanced: Wrench,
     About: Info,
   };
@@ -354,6 +365,7 @@ export function SettingsScreen({
     Models: t("settings.section.models"),
     Library: t("settings.section.library"),
     Usage: t("settings.section.usage"),
+    ConnectAgent: t("settings.section.connectAgent"),
     Advanced: t("settings.section.advanced"),
     About: t("settings.section.about"),
   };
@@ -363,6 +375,7 @@ export function SettingsScreen({
     Models: t("settings.section.models.eyebrow"),
     Library: t("settings.section.library.eyebrow"),
     Usage: t("settings.section.usage.eyebrow"),
+    ConnectAgent: t("settings.section.connectAgent.eyebrow"),
     Advanced: t("settings.section.advanced.eyebrow"),
     About: t("settings.section.about.eyebrow"),
   };
@@ -582,6 +595,7 @@ export function SettingsScreen({
             />
           ) : null}
           {activeSection === "Usage" ? <UsageSettings /> : null}
+          {activeSection === "ConnectAgent" ? <ConnectAgentSettings /> : null}
           {activeSection === "Advanced" ? (
             <AdvancedSettings
               settings={settings}
@@ -3883,6 +3897,469 @@ function AboutSettings() {
         />
       ) : null}
     </>
+  );
+}
+
+type ConnectTargetChoice = AgentConnectTargetId | "other";
+
+const CONNECT_SKILL_DIR_LABELS: Record<AgentConnectTargetId, string> = {
+  "claude-code": "~/.claude/skills",
+  codex: "$CODEX_HOME/skills (fallback: ~/.codex/skills)",
+};
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function connectCurlCommand(target: ConnectTargetChoice, detectedSkillsDir?: string) {
+  const quotedDir = detectedSkillsDir
+    ? shellQuote(detectedSkillsDir)
+    : target === "codex"
+      ? '"${CODEX_HOME:-$HOME/.codex}/skills"'
+      : target === "claude-code"
+        ? '"$HOME/.claude/skills"'
+        : shellQuote("<skills-dir>");
+  // mkdir -p first: tar -C fails on first-time setups where the skills
+  // directory does not exist yet.
+  return `mkdir -p ${quotedDir} && curl -fsSL ${localApiBaseUrl()}/v1/agent/skill.tar | tar -x -C ${quotedDir}`;
+}
+
+const CONNECT_PLUGIN_COMMANDS = `/plugin marketplace add cerul-ai/cerul-app
+/plugin install cerul`;
+
+type ConnectVerifyState =
+  | { state: "idle" }
+  | { state: "running" }
+  | { state: "ok"; probe: api.AgentConnectProbe }
+  | { state: "empty" }
+  | { state: "fail"; message: string };
+
+function ConnectAgentSettings() {
+  const t = useT();
+  const isDesktop = hasDesktopHost();
+  const [coreState, setCoreState] = useState<"loading" | "online" | "offline">("loading");
+  const [detections, setDetections] = useState<AgentConnectDetection[]>([]);
+  const [bundle, setBundle] = useState<api.AgentSkillBundle | null>(null);
+  const [target, setTarget] = useState<ConnectTargetChoice>("claude-code");
+  const targetTouchedRef = useRef(false);
+  const [installTab, setInstallTab] = useState<"skill" | "plugin">("skill");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [installBusy, setInstallBusy] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [verify, setVerify] = useState<ConnectVerifyState>({ state: "idle" });
+
+  const refreshDetections = useCallback(async () => {
+    const detected = await detectAgentConnectTargets().catch(() => null);
+    setDetections(detected ?? []);
+    return detected ?? [];
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [, detected] = await Promise.all([
+          api.getV1Status().then(
+            () => !cancelled && setCoreState("online"),
+            () => !cancelled && setCoreState("offline"),
+          ),
+          refreshDetections(),
+        ]);
+        if (!cancelled && !targetTouchedRef.current) {
+          const firstDetected = detected.find((item) => item.detected);
+          setTarget(firstDetected?.id ?? (detected.length > 0 ? detected[0].id : "other"));
+        }
+        const skillBundle = await api.getAgentSkillBundle().catch(() => null);
+        if (!cancelled && skillBundle) {
+          setBundle(skillBundle);
+        }
+      } catch {
+        // Individual failures already surfaced through coreState / detections.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshDetections]);
+
+  const selectedDetection =
+    target === "other" ? null : detections.find((item) => item.id === target) ?? null;
+  const selectedSkillsDir = selectedDetection?.skillsDir;
+  const requiresDirectoryChoice =
+    target === "other" || selectedDetection?.requiresDirectoryChoice === true;
+  const commandSkillsDir = requiresDirectoryChoice ? undefined : selectedSkillsDir;
+  const installedVersion = selectedDetection?.skill.installed
+    ? selectedDetection.skill.version ?? null
+    : null;
+  const updateAvailable = Boolean(
+    installedVersion && bundle && installedVersion !== bundle.version,
+  );
+  const skillMarkdown =
+    bundle?.files.find((file) => file.path === "SKILL.md")?.content ?? null;
+
+  function copyText(key: string, text: string) {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopiedKey(key);
+      window.setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1600);
+    });
+  }
+
+  const runVerify = useCallback(async () => {
+    setVerify({ state: "running" });
+    try {
+      const status = await api.getV1Status();
+      setCoreState("online");
+      if (status.library.indexed_items === 0) {
+        setVerify({ state: "empty" });
+        return;
+      }
+      const query = await api.recentIndexedProbeQuery().catch(() => null);
+      const probe = await api.probeAgentSearch(query ?? "video");
+      // Library is non-empty here, so a result-less probe still proves the
+      // API works — show connected without the citation card, not "empty".
+      setVerify({ state: "ok", probe });
+    } catch (error) {
+      setCoreState("offline");
+      setVerify({ state: "fail", message: errorMessage(error) });
+    }
+  }, []);
+
+  async function handleInstall() {
+    setInstallBusy(true);
+    setInstallError(null);
+    try {
+      const skillBundle = bundle ?? (await api.getAgentSkillBundle());
+      setBundle(skillBundle);
+      const payload: AgentConnectInstallPayload = { files: skillBundle.files };
+      if (requiresDirectoryChoice) {
+        const picked = await openDialog({ directory: true, multiple: false });
+        const dir = Array.isArray(picked) ? picked[0] : picked;
+        if (!dir) {
+          return;
+        }
+        payload.baseDir = dir;
+      } else {
+        payload.target = target;
+      }
+      await installAgentConnectSkill(payload);
+      await refreshDetections();
+      void runVerify();
+    } catch (error) {
+      setInstallError(errorMessage(error));
+    } finally {
+      setInstallBusy(false);
+    }
+  }
+
+  async function handleUninstall() {
+    if (target === "other") {
+      return;
+    }
+    setInstallBusy(true);
+    setInstallError(null);
+    try {
+      await uninstallAgentConnectSkill({ target });
+      await refreshDetections();
+    } catch (error) {
+      setInstallError(errorMessage(error));
+    } finally {
+      setInstallBusy(false);
+    }
+  }
+
+  const targetChoices: Array<{
+    id: ConnectTargetChoice;
+    label: string;
+    detection: AgentConnectDetection | null;
+  }> = [
+    {
+      id: "claude-code",
+      label: "Claude Code",
+      detection: detections.find((item) => item.id === "claude-code") ?? null,
+    },
+    {
+      id: "codex",
+      label: "Codex CLI",
+      detection: detections.find((item) => item.id === "codex") ?? null,
+    },
+    { id: "other", label: t("settings.connectAgent.target.other"), detection: null },
+  ];
+
+  return (
+    <div className="agent-connect">
+      {coreState === "offline" ? (
+        <InlineNotice
+          tone="error"
+          message={t("settings.connectAgent.offline")}
+          action={{ label: t("settings.connectAgent.offline.retry"), onClick: () => void runVerify() }}
+        />
+      ) : null}
+      <p className="agent-connect-desc">{t("settings.connectAgent.desc")}</p>
+
+      <SettingsGroup title={t("settings.connectAgent.step1.title")}>
+        <div className="agent-connect-targets">
+          {targetChoices.map((choice) => {
+            const installed = choice.detection?.skill.installed ?? false;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                className={choice.id === target ? "agent-connect-target active" : "agent-connect-target"}
+                onClick={() => {
+                  setTarget(choice.id);
+                  targetTouchedRef.current = true;
+                }}
+              >
+                <strong>{choice.label}</strong>
+                <small>
+                  {choice.id === "other"
+                    ? t("settings.connectAgent.target.other.hint")
+                    : choice.detection?.detected
+                      ? t("settings.connectAgent.target.detected")
+                      : t("settings.connectAgent.target.notDetected")}
+                </small>
+                {installed ? (
+                  <span className="agent-connect-chip ok">
+                    {t("settings.connectAgent.target.installed", {
+                      version: choice.detection?.skill.version ?? "?",
+                    })}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.connectAgent.step2.title")}>
+        <div className="segmented agent-connect-tabs">
+          <button
+            type="button"
+            className={installTab === "skill" ? "active" : ""}
+            onClick={() => setInstallTab("skill")}
+          >
+            {t("settings.connectAgent.tab.skill")}
+          </button>
+          <button
+            type="button"
+            className={installTab === "plugin" ? "active" : ""}
+            onClick={() => setInstallTab("plugin")}
+          >
+            {t("settings.connectAgent.tab.plugin")}
+          </button>
+        </div>
+        {installTab === "skill" ? (
+          <>
+            {updateAvailable ? (
+              <div className="agent-connect-banner">
+                {t("settings.connectAgent.updateBanner", { version: bundle?.version ?? "" })}
+              </div>
+            ) : null}
+            <div className="agent-connect-install">
+              <div className="agent-connect-card">
+                <strong>{t("settings.connectAgent.oneClick.title")}</strong>
+                <small>
+                  {requiresDirectoryChoice
+                    ? t("settings.connectAgent.oneClick.pickDir")
+                    : t("settings.connectAgent.oneClick.path", {
+                        path: `${selectedSkillsDir ?? CONNECT_SKILL_DIR_LABELS[target]}/cerul-video-search/`,
+                      })}
+                </small>
+                <div className="agent-connect-card-actions">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={!isDesktop || installBusy}
+                    onClick={() => void handleInstall()}
+                  >
+                    {installBusy ? (
+                      <Loader2 size={14} className="spin" />
+                    ) : installedVersion ? (
+                      updateAvailable ? (
+                        t("settings.connectAgent.oneClick.update")
+                      ) : (
+                        t("settings.connectAgent.oneClick.reinstall")
+                      )
+                    ) : (
+                      t("settings.connectAgent.oneClick.install")
+                    )}
+                  </button>
+                  {installedVersion ? (
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      disabled={installBusy}
+                      onClick={() => void handleUninstall()}
+                    >
+                      {t("settings.connectAgent.oneClick.uninstall")}
+                    </button>
+                  ) : null}
+                </div>
+                {installedVersion ? (
+                  <span className="agent-connect-chip ok">
+                    {t("settings.connectAgent.target.installed", { version: installedVersion })}
+                  </span>
+                ) : null}
+                {!isDesktop ? <small>{t("settings.connectAgent.oneClick.desktopOnly")}</small> : null}
+                {installError ? <small className="agent-connect-error">{installError}</small> : null}
+              </div>
+              <div className="agent-connect-card">
+                <strong>{t("settings.connectAgent.cli.title")}</strong>
+                <small>{t("settings.connectAgent.cli.hint")}</small>
+                <pre className="agent-connect-code">{connectCurlCommand(target, commandSkillsDir)}</pre>
+                <div className="agent-connect-card-actions">
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => copyText("curl", connectCurlCommand(target, commandSkillsDir))}
+                  >
+                    <Copy size={13} />
+                    {copiedKey === "curl"
+                      ? t("settings.connectAgent.copied")
+                      : t("settings.connectAgent.copy")}
+                  </button>
+                </div>
+              </div>
+            </div>
+            {skillMarkdown ? (
+              <div className="agent-connect-preview">
+                <button type="button" className="btn-ghost" onClick={() => setPreviewOpen(!previewOpen)}>
+                  <ChevronDown
+                    size={13}
+                    style={{ transform: previewOpen ? "rotate(180deg)" : undefined }}
+                  />
+                  {t("settings.connectAgent.preview.toggle")}
+                </button>
+                {previewOpen ? <pre className="agent-connect-code agent-connect-code-tall">{skillMarkdown}</pre> : null}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="agent-connect-install">
+            <div className="agent-connect-card agent-connect-card-wide">
+              <strong>{t("settings.connectAgent.plugin.title")}</strong>
+              <small>{t("settings.connectAgent.plugin.hint")}</small>
+              <pre className="agent-connect-code">{CONNECT_PLUGIN_COMMANDS}</pre>
+              <div className="agent-connect-card-actions">
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => copyText("plugin", CONNECT_PLUGIN_COMMANDS)}
+                >
+                  <Copy size={13} />
+                  {copiedKey === "plugin"
+                    ? t("settings.connectAgent.copied")
+                    : t("settings.connectAgent.copy")}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.connectAgent.step3.title")}>
+        <div className="agent-connect-verify">
+          {verify.state === "idle" ? (
+            <div className="agent-connect-verify-head">
+              <span>{t("settings.connectAgent.verify.idle")}</span>
+              <button type="button" className="btn-ghost" onClick={() => void runVerify()}>
+                {t("settings.connectAgent.verify.run")}
+              </button>
+            </div>
+          ) : null}
+          {verify.state === "running" ? (
+            <div className="agent-connect-verify-head">
+              <Loader2 size={14} className="spin" />
+              <span>{t("settings.connectAgent.verify.running")}</span>
+            </div>
+          ) : null}
+          {verify.state === "empty" ? (
+            <div className="agent-connect-verify-head">
+              <span className="agent-connect-chip ok">{t("settings.connectAgent.verify.reachable")}</span>
+              <span>{t("settings.connectAgent.verify.empty")}</span>
+              <button type="button" className="btn-ghost" onClick={() => void runVerify()}>
+                {t("settings.connectAgent.verify.rerun")}
+              </button>
+            </div>
+          ) : null}
+          {verify.state === "fail" ? (
+            <InlineNotice
+              tone="error"
+              message={t("settings.connectAgent.verify.fail")}
+              detail={verify.message}
+              action={{ label: t("settings.connectAgent.verify.rerun"), onClick: () => void runVerify() }}
+            />
+          ) : null}
+          {verify.state === "ok" ? (
+            <>
+              <div className="agent-connect-verify-head">
+                <span className="agent-connect-chip ok">{t("settings.connectAgent.verify.ok")}</span>
+                <span className="agent-connect-verify-meta">
+                  {t("settings.connectAgent.verify.meta", { ms: verify.probe.durationMs })}
+                </span>
+                <button type="button" className="btn-ghost" onClick={() => void runVerify()}>
+                  {t("settings.connectAgent.verify.rerun")}
+                </button>
+              </div>
+              {verify.probe.result ? (
+                <div className="agent-connect-cite">
+                  {verify.probe.result.previewUrl ? (
+                    <img src={verify.probe.result.previewUrl} alt="" loading="lazy" />
+                  ) : (
+                    <div className="agent-connect-cite-thumb" aria-hidden="true" />
+                  )}
+                  <div>
+                    <strong>{verify.probe.result.title}</strong>
+                    <p>{verify.probe.result.quote}</p>
+                    <small>
+                      {verify.probe.result.timestamp ?? "—"}
+                      {verify.probe.result.openInCerul ? (
+                        <>
+                          {" · "}
+                          <a href={verify.probe.result.openInCerul}>
+                            {t("settings.connectAgent.verify.open")}
+                          </a>
+                        </>
+                      ) : null}
+                      {" — "}
+                      {t("settings.connectAgent.verify.caption")}
+                    </small>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.connectAgent.faq.title")}>
+        <div className="agent-connect-faq">
+          <p>
+            <strong>{t("settings.connectAgent.faq.notCalled.q")}</strong>
+            {t("settings.connectAgent.faq.notCalled.a")}
+          </p>
+          <p>
+            <strong>{t("settings.connectAgent.faq.port.q")}</strong>
+            {t("settings.connectAgent.faq.port.a")}
+          </p>
+          <p>
+            <strong>{t("settings.connectAgent.faq.lan.q")}</strong>
+            {t("settings.connectAgent.faq.lan.a")}
+          </p>
+          <p>
+            <a
+              href={`${localApiBaseUrl()}/v1/openapi.json`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t("settings.connectAgent.docs")}
+              <ExternalLink size={12} />
+            </a>
+          </p>
+        </div>
+      </SettingsGroup>
+    </div>
   );
 }
 

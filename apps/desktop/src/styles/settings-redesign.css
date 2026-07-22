@@ -762,3 +762,88 @@
 /* local-only reassurance */
 .settings-page .usage-b__reassure { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: var(--fs-caption); color: var(--text-faint); }
 .settings-page .usage-b__reassure svg { flex: none; color: var(--success); }
+
+/* ============================================================
+   Connect Agent (settings · 接入 Agent) — three-step wizard
+   ============================================================ */
+.settings-page .agent-connect { display: flex; flex-direction: column; gap: 18px; }
+.settings-page .agent-connect-desc { font-size: 13.5px; color: var(--text-muted); max-width: 560px; }
+
+.settings-page .agent-connect-targets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.settings-page .agent-connect-target {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 12px 14px; border-radius: var(--r-lg); text-align: left; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); font: inherit; color: var(--text);
+}
+.settings-page .agent-connect-target:hover { border-color: var(--line-strong); }
+.settings-page .agent-connect-target.active {
+  border-color: var(--accent-line); background: var(--accent-tint);
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+.settings-page .agent-connect-target strong { font-size: 13.5px; font-weight: var(--fw-semibold); }
+.settings-page .agent-connect-target.active strong { color: var(--accent); }
+.settings-page .agent-connect-target small { font-size: var(--fs-caption); color: var(--text-faint); }
+
+.settings-page .agent-connect-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption);
+  padding: 1px 9px; border-radius: var(--r-pill); border: 1px solid var(--line); color: var(--text-muted);
+}
+.settings-page .agent-connect-chip.ok {
+  color: var(--success); border-color: var(--success-line); background: var(--success-tint);
+  font-weight: var(--fw-medium);
+}
+
+.settings-page .agent-connect-tabs { margin-bottom: 12px; }
+.settings-page .agent-connect-banner {
+  font-size: var(--fs-caption); color: var(--warn); background: var(--warn-tint);
+  border: 1px solid var(--warn-line); border-radius: var(--r-md);
+  padding: 7px 12px; margin-bottom: 12px;
+}
+
+.settings-page .agent-connect-install { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.settings-page .agent-connect-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 14px 16px; border-radius: var(--r-lg); background: var(--surface); border: 1px solid var(--line);
+}
+.settings-page .agent-connect-card-wide { grid-column: 1 / -1; }
+.settings-page .agent-connect-card strong { font-size: 13.5px; font-weight: var(--fw-semibold); }
+.settings-page .agent-connect-card small { font-size: var(--fs-caption); color: var(--text-faint); line-height: 1.5; }
+.settings-page .agent-connect-card-actions { display: flex; align-items: center; gap: 8px; }
+.settings-page .agent-connect-error { color: var(--danger); }
+
+.settings-page .agent-connect-code {
+  width: 100%; margin: 0; padding: 10px 13px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: var(--fs-caption); line-height: 1.7;
+  color: var(--text); white-space: pre; overflow-x: auto;
+}
+.settings-page .agent-connect-code-tall { max-height: 320px; overflow-y: auto; white-space: pre-wrap; }
+.settings-page .agent-connect-preview { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 10px; }
+
+.settings-page .agent-connect-verify { display: flex; flex-direction: column; gap: 10px; }
+.settings-page .agent-connect-verify-head { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text-muted); flex-wrap: wrap; }
+.settings-page .agent-connect-verify-meta { color: var(--text-faint); font-size: var(--fs-caption); }
+
+.settings-page .agent-connect-cite {
+  display: flex; gap: 12px; padding: 12px 14px; border-radius: var(--r-lg);
+  background: var(--surface); border: 1px solid var(--line);
+}
+.settings-page .agent-connect-cite img,
+.settings-page .agent-connect-cite-thumb {
+  width: 96px; height: 56px; border-radius: var(--r-sm); object-fit: cover; flex: none;
+  background: var(--icon-grad-graphite);
+}
+.settings-page .agent-connect-cite strong { font-size: 13px; font-weight: var(--fw-semibold); }
+.settings-page .agent-connect-cite p { font-size: 12.5px; color: var(--text-muted); line-height: 1.55; margin: 2px 0 3px; }
+.settings-page .agent-connect-cite small { font-size: var(--fs-caption); color: var(--text-faint); }
+.settings-page .agent-connect-cite a { color: var(--accent); text-decoration: none; }
+
+.settings-page .agent-connect-faq { display: flex; flex-direction: column; gap: 6px; }
+.settings-page .agent-connect-faq p { font-size: var(--fs-caption); color: var(--text-muted); line-height: 1.6; margin: 0; }
+.settings-page .agent-connect-faq strong { color: var(--text); font-weight: var(--fw-medium); margin-right: 4px; }
+.settings-page .agent-connect-faq a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); text-decoration: none; }
+
+@media (max-width: 900px) {
+  .settings-page .agent-connect-targets { grid-template-columns: 1fr; }
+  .settings-page .agent-connect-install { grid-template-columns: 1fr; }
+}

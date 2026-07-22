@@ -68,6 +68,32 @@ export type DesktopMenuCommand =
   | { type: "new_source"; triggeredByAccelerator: boolean }
   | { type: "find"; triggeredByAccelerator: boolean };
 
+export type AgentConnectTargetId = "claude-code" | "codex";
+
+export type AgentSkillFilePayload = {
+  path: string;
+  content: string;
+};
+
+export type AgentConnectSkillState = {
+  installed: boolean;
+  version?: string;
+};
+
+export type AgentConnectDetection = {
+  id: AgentConnectTargetId;
+  detected: boolean;
+  skillsDir: string;
+  requiresDirectoryChoice: boolean;
+  skill: AgentConnectSkillState;
+};
+
+export type AgentConnectInstallPayload = {
+  target?: AgentConnectTargetId;
+  baseDir?: string;
+  files: AgentSkillFilePayload[];
+};
+
 type ElectronDesktopHost = {
   apiBaseUrl?: string;
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -88,6 +114,12 @@ type ElectronDesktopHost = {
   secureTokenSet(key: string, value: string | null): Promise<void>;
   startOAuth(provider: "google" | "github"): Promise<void>;
   reportRendererError(payload: Record<string, unknown>): Promise<void>;
+  agentConnectDetect(): Promise<AgentConnectDetection[]>;
+  agentConnectInstall(payload: AgentConnectInstallPayload): Promise<AgentConnectSkillState>;
+  agentConnectUninstall(payload: {
+    target?: AgentConnectTargetId;
+    baseDir?: string;
+  }): Promise<AgentConnectSkillState>;
 };
 
 declare global {
@@ -207,6 +239,32 @@ export async function syncDesktopApplicationMenu(): Promise<void> {
   if (window.cerulDesktop) {
     await window.cerulDesktop.invoke("sync_application_menu");
   }
+}
+
+export async function detectAgentConnectTargets(): Promise<AgentConnectDetection[] | null> {
+  if (window.cerulDesktop?.agentConnectDetect) {
+    return window.cerulDesktop.agentConnectDetect();
+  }
+  return null;
+}
+
+export async function installAgentConnectSkill(
+  payload: AgentConnectInstallPayload,
+): Promise<AgentConnectSkillState> {
+  if (window.cerulDesktop?.agentConnectInstall) {
+    return window.cerulDesktop.agentConnectInstall(payload);
+  }
+  throw new Error("skill install is only available in the desktop app");
+}
+
+export async function uninstallAgentConnectSkill(payload: {
+  target?: AgentConnectTargetId;
+  baseDir?: string;
+}): Promise<AgentConnectSkillState> {
+  if (window.cerulDesktop?.agentConnectUninstall) {
+    return window.cerulDesktop.agentConnectUninstall(payload);
+  }
+  throw new Error("skill uninstall is only available in the desktop app");
 }
 
 export async function loadDesktopStore(path: string): Promise<DesktopStore | null> {

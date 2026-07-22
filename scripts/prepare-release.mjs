@@ -11,6 +11,7 @@ const manifestPaths = [
   "package.json",
   "apps/desktop/package.json",
   "apps/electron-shell/package.json",
+  "plugins/cerul/.claude-plugin/plugin.json",
 ];
 const releaseMetadataPaths = [
   "README.md",
