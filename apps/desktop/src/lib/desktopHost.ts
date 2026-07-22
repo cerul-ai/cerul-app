@@ -84,6 +84,7 @@ export type AgentConnectDetection = {
   id: AgentConnectTargetId;
   detected: boolean;
   skillsDir: string;
+  requiresDirectoryChoice: boolean;
   skill: AgentConnectSkillState;
 };
 

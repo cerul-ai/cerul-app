@@ -3916,7 +3916,9 @@ function connectCurlCommand(target: ConnectTargetChoice, detectedSkillsDir?: str
     ? shellQuote(detectedSkillsDir)
     : target === "codex"
       ? '"${CODEX_HOME:-$HOME/.codex}/skills"'
-      : shellQuote(target === "other" ? "<skills-dir>" : CONNECT_SKILL_DIR_LABELS[target]);
+      : target === "claude-code"
+        ? '"$HOME/.claude/skills"'
+        : shellQuote("<skills-dir>");
   // mkdir -p first: tar -C fails on first-time setups where the skills
   // directory does not exist yet.
   return `mkdir -p ${quotedDir} && curl -fsSL ${localApiBaseUrl()}/v1/agent/skill.tar | tar -x -C ${quotedDir}`;
@@ -3984,6 +3986,9 @@ function ConnectAgentSettings() {
   const selectedDetection =
     target === "other" ? null : detections.find((item) => item.id === target) ?? null;
   const selectedSkillsDir = selectedDetection?.skillsDir;
+  const requiresDirectoryChoice =
+    target === "other" || selectedDetection?.requiresDirectoryChoice === true;
+  const commandSkillsDir = requiresDirectoryChoice ? undefined : selectedSkillsDir;
   const installedVersion = selectedDetection?.skill.installed
     ? selectedDetection.skill.version ?? null
     : null;
@@ -4027,7 +4032,7 @@ function ConnectAgentSettings() {
       const skillBundle = bundle ?? (await api.getAgentSkillBundle());
       setBundle(skillBundle);
       const payload: AgentConnectInstallPayload = { files: skillBundle.files };
-      if (target === "other") {
+      if (requiresDirectoryChoice) {
         const picked = await openDialog({ directory: true, multiple: false });
         const dir = Array.isArray(picked) ? picked[0] : picked;
         if (!dir) {
@@ -4155,7 +4160,7 @@ function ConnectAgentSettings() {
               <div className="agent-connect-card">
                 <strong>{t("settings.connectAgent.oneClick.title")}</strong>
                 <small>
-                  {target === "other"
+                  {requiresDirectoryChoice
                     ? t("settings.connectAgent.oneClick.pickDir")
                     : t("settings.connectAgent.oneClick.path", {
                         path: `${selectedSkillsDir ?? CONNECT_SKILL_DIR_LABELS[target]}/cerul-video-search/`,
@@ -4202,12 +4207,12 @@ function ConnectAgentSettings() {
               <div className="agent-connect-card">
                 <strong>{t("settings.connectAgent.cli.title")}</strong>
                 <small>{t("settings.connectAgent.cli.hint")}</small>
-                <pre className="agent-connect-code">{connectCurlCommand(target, selectedSkillsDir)}</pre>
+                <pre className="agent-connect-code">{connectCurlCommand(target, commandSkillsDir)}</pre>
                 <div className="agent-connect-card-actions">
                   <button
                     type="button"
                     className="btn-ghost"
-                    onClick={() => copyText("curl", connectCurlCommand(target, selectedSkillsDir))}
+                    onClick={() => copyText("curl", connectCurlCommand(target, commandSkillsDir))}
                   >
                     <Copy size={13} />
                     {copiedKey === "curl"

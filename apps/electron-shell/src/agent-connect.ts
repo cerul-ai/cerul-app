@@ -22,6 +22,7 @@ export type AgentConnectDetection = {
   id: AgentConnectTargetId;
   detected: boolean;
   skillsDir: string;
+  requiresDirectoryChoice: boolean;
   skill: AgentConnectSkillState;
 };
 
@@ -62,6 +63,11 @@ function readSkillState(skillDir: string): AgentConnectSkillState {
 }
 
 export function detectAgentTargets(): AgentConnectDetection[] {
+  // Finder/Dock launches frequently do not inherit shell-only variables such
+  // as CODEX_HOME. Ask for the real skills directory instead of silently
+  // assuming ~/.codex when that environment signal is unavailable.
+  const hasExplicitCodexHome = Boolean(process.env.CODEX_HOME?.trim());
+
   return (Object.keys(TARGET_BASE_DIRS) as AgentConnectTargetId[]).map((id) => {
     const base = TARGET_BASE_DIRS[id]();
     let detected = false;
@@ -74,6 +80,7 @@ export function detectAgentTargets(): AgentConnectDetection[] {
       id,
       detected,
       skillsDir: path.join(base, "skills"),
+      requiresDirectoryChoice: id === "codex" && !hasExplicitCodexHome,
       skill: readSkillState(path.join(base, "skills", SKILL_DIR_NAME)),
     };
   });
